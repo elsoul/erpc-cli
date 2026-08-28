@@ -105,13 +105,22 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: 20
+          node-version: 24
       - run: corepack enable
       - run: corepack prepare pnpm@11.24.0 --activate
       - run: corepack pnpm install --frozen-lockfile
       - run: corepack pnpm check
       - run: corepack pnpm test
       - run: corepack pnpm build
+      - name: Switch to the minimum application runtime
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 20
+      - name: Verify the bundled application starts on Node.js 20
+        run: >-
+          node --input-type=module -e
+          "process.env.HOST='127.0.0.1'; process.env.PORT='0';
+          await import('./dist/index.js'); process.kill(process.pid, 'SIGTERM')"
 
   deno-example:
     name: Deno example

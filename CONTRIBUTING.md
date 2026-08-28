@@ -4,8 +4,9 @@ Thank you for contributing to the ERPC CLI.
 
 ## Development
 
-The root CLI requires Deno 2.9.6. Node.js 20 and pnpm 11 are needed only when
-changing or verifying the generated Node application template.
+The root CLI requires Deno 2.9.6. Node.js 24 and pnpm 11 are needed only when
+changing or verifying the generated Node application template. Its bundled
+deployment artifact remains compatible with Node.js 20.
 
 ```bash
 deno task fmt:check
