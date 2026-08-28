@@ -1,16 +1,8 @@
-import {
-  mkdtemp,
-  readFile,
-  rm,
-  stat,
-} from 'node:fs/promises'
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
-import {
-  readErpcConfig,
-  runCli,
-} from '../src'
+import { afterEach, describe, expect, it } from './testing.ts'
+import { readErpcConfig, runCli } from '../src/index.ts'
 
 const directories: string[] = []
 
@@ -36,7 +28,9 @@ describe('local ERPC application registry', () => {
 
     expect((await stat(erpcHome)).mode & 0o777).toBe(0o700)
     expect((await stat(config.configPath)).mode & 0o777).toBe(0o600)
-    expect(source).not.toMatch(/access.?token|refresh.?token|password|private.?key/i)
+    expect(source).not.toMatch(
+      /access.?token|refresh.?token|password|private.?key/i,
+    )
     expect(config.appsDirectory).toBe(join(erpcHome, 'apps'))
   })
 

@@ -1,9 +1,9 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from './testing.ts'
 import {
   DeviceAuthClient,
-  OAuthProtocolError,
   type DeviceAuthorization,
-} from '../src'
+  OAuthProtocolError,
+} from '../src/index.ts'
 
 const authorization: DeviceAuthorization = {
   deviceCode: 'device-secret',
@@ -16,9 +16,11 @@ const authorization: DeviceAuthorization = {
 
 describe('Device OAuth client', () => {
   it('rejects plaintext remote authorization endpoints', () => {
-    expect(() => new DeviceAuthClient({
-      endpoint: 'http://auth.example',
-    })).toThrow('must use HTTPS except on localhost')
+    expect(() =>
+      new DeviceAuthClient({
+        endpoint: 'http://auth.example',
+      })
+    ).toThrow('must use HTTPS except on localhost')
   })
 
   it('starts the fixed public client with explicit Cloud scopes', async () => {
@@ -48,17 +50,21 @@ describe('Device OAuth client', () => {
 
   it('polls through pending without exposing the device credential', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>()
-      .mockResolvedValueOnce(new Response(
-        JSON.stringify({ error: 'authorization_pending' }),
-        { status: 400 },
-      ))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        access_token: 'access-secret',
-        refresh_token: 'refresh-secret',
-        token_type: 'Bearer',
-        expires_in: 300,
-        scope: 'usage:read',
-      })))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ error: 'authorization_pending' }),
+          { status: 400 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({
+          access_token: 'access-secret',
+          refresh_token: 'refresh-secret',
+          token_type: 'Bearer',
+          expires_in: 300,
+          scope: 'usage:read',
+        })),
+      )
     const auth = new DeviceAuthClient({
       endpoint: 'https://auth.example',
       fetch,
@@ -74,10 +80,14 @@ describe('Device OAuth client', () => {
   it('returns only the OAuth error code for rejected token requests', async () => {
     const auth = new DeviceAuthClient({
       endpoint: 'https://auth.example',
-      fetch: async () => new Response(JSON.stringify({
-        error: 'invalid_grant',
-        error_description: 'refresh-secret must never be retained',
-      }), { status: 400 }),
+      fetch: async () =>
+        new Response(
+          JSON.stringify({
+            error: 'invalid_grant',
+            error_description: 'refresh-secret must never be retained',
+          }),
+          { status: 400 },
+        ),
     })
 
     const error = await auth.refresh('refresh-secret').catch((value) => value)

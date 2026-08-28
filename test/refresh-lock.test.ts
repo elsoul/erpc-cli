@@ -1,8 +1,8 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
-import { withRefreshLock } from '../src'
+import { afterEach, describe, expect, it } from './testing.ts'
+import { withRefreshLock } from '../src/index.ts'
 
 const directories: string[] = []
 
@@ -22,12 +22,13 @@ describe('refresh lock', () => {
     let active = 0
     let maximumActive = 0
 
-    const operation = () => withRefreshLock(async () => {
-      active++
-      maximumActive = Math.max(maximumActive, active)
-      await new Promise((resolve) => setTimeout(resolve, 20))
-      active--
-    }, lockPath)
+    const operation = () =>
+      withRefreshLock(async () => {
+        active++
+        maximumActive = Math.max(maximumActive, active)
+        await new Promise((resolve) => setTimeout(resolve, 20))
+        active--
+      }, lockPath)
 
     await Promise.all([operation(), operation()])
 

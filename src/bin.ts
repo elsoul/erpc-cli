@@ -1,12 +1,11 @@
-import { runCli } from './cli'
+import { runCli } from './cli.ts'
 
-runCli(process.argv.slice(2)).then(
-  (code) => {
-    process.exitCode = code
-  },
-  (error: unknown) => {
+if (import.meta.main) {
+  try {
+    Deno.exit(await runCli(Deno.args))
+  } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'ERPC CLI failed'
-    console.error(message)
-    process.exitCode = 1
-  },
-)
+    console.error(`erpc: ${message}`)
+    Deno.exit(1)
+  }
+}

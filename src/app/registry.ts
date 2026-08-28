@@ -1,12 +1,12 @@
 import { readdir } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import {
-  readErpcConfig,
   type ErpcConfigOptions,
   type ErpcLocalConfig,
-} from '../config'
-import { loadErpcManifest } from './manifest'
-import type { AppRuntime } from './templates'
+  readErpcConfig,
+} from '../config.ts'
+import { loadErpcManifest } from './manifest.ts'
+import type { AppRuntime } from './templates.ts'
 
 export interface RegisteredApplication {
   readonly config: string
@@ -16,7 +16,9 @@ export interface RegisteredApplication {
   readonly target: string
 }
 
-const managedConfigPaths = async (config: ErpcLocalConfig): Promise<string[]> => {
+const managedConfigPaths = async (
+  config: ErpcLocalConfig,
+): Promise<string[]> => {
   const entries = await readdir(config.appsDirectory, { withFileTypes: true })
   return entries
     .filter((entry) => entry.isDirectory())

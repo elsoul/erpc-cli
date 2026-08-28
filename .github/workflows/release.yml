@@ -1,4 +1,4 @@
-name: Release npm package
+name: Release standalone binaries
 
 on:
   release:
@@ -7,19 +7,41 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 concurrency:
-  group: npm-release
+  group: binary-release
   cancel-in-progress: false
 
 jobs:
-  publish:
-    name: Publish @elsoul/erpc-cli
+  build:
+    name: Build ${{ matrix.target }}
     if: github.event.release.prerelease == false
-    environment: npm
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            binary: erpc
+            archive: erpc-x86_64-unknown-linux-gnu.tar.gz
+          - target: aarch64-unknown-linux-gnu
+            binary: erpc
+            archive: erpc-aarch64-unknown-linux-gnu.tar.gz
+          - target: x86_64-apple-darwin
+            binary: erpc
+            archive: erpc-x86_64-apple-darwin.tar.gz
+          - target: aarch64-apple-darwin
+            binary: erpc
+            archive: erpc-aarch64-apple-darwin.tar.gz
+          - target: x86_64-pc-windows-msvc
+            binary: erpc.exe
+            archive: erpc-x86_64-pc-windows-msvc.zip
+          - target: aarch64-pc-windows-msvc
+            binary: erpc.exe
+            archive: erpc-aarch64-pc-windows-msvc.zip
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -28,21 +50,131 @@ jobs:
           ref: ${{ github.event.release.tag_name }}
       - name: Verify release commit is on main
         run: git merge-base --is-ancestor HEAD origin/main
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2
         with:
-          node-version: 24
-          registry-url: https://registry.npmjs.org
-          package-manager-cache: false
-      - name: Install supported npm CLI
-        run: npm install --global npm@11.19.1
-      - name: Enable pnpm
+          deno-version: v2.9.6
+      - run: deno run --frozen-lockfile --allow-read scripts/verify-release.ts "$RELEASE_TAG"
+      - name: Compile standalone executable
         run: |
-          corepack enable
-          corepack prepare pnpm@11.24.0 --activate
-      - run: corepack pnpm install --frozen-lockfile
-      - name: Verify release identity
-        run: node scripts/verify-release.mjs "${{ github.event.release.tag_name }}"
-      - run: corepack pnpm release:check
-      - run: corepack pnpm pack:check
-      - name: Publish with npm Trusted Publishing
-        run: npm publish --access public
+          mkdir -p artifacts
+          deno compile --frozen-lockfile \
+            --target "${{ matrix.target }}" \
+            --allow-env \
+            --allow-net \
+            --allow-read \
+            --allow-write \
+            --allow-run \
+            --allow-sys \
+            --output "artifacts/${{ matrix.binary }}" \
+            src/bin.ts
+          if [[ "${{ matrix.archive }}" == *.zip ]]; then
+            (cd artifacts && zip -q "${{ matrix.archive }}" "${{ matrix.binary }}")
+          else
+            tar -C artifacts -czf "artifacts/${{ matrix.archive }}" "${{ matrix.binary }}"
+          fi
+      - name: Verify native executable
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          "artifacts/${{ matrix.binary }}" --version
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          if-no-files-found: error
+          name: erpc-${{ matrix.target }}
+          path: artifacts/${{ matrix.archive }}
+          retention-days: 7
+
+  publish-r2:
+    name: Publish immutable R2 release
+    needs:
+      - build
+    environment: r2
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.release.tag_name }}
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2
+        with:
+          deno-version: v2.9.6
+      - run: deno run --frozen-lockfile --allow-read scripts/verify-release.ts "$RELEASE_TAG"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          merge-multiple: true
+          path: artifacts
+      - name: Create release manifest
+        run: |
+          cd artifacts
+          sha256sum erpc-*.tar.gz erpc-*.zip > SHA256SUMS
+      - name: Preflight immutable object keys
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_DEFAULT_REGION: auto
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+        run: |
+          set -eu
+          : "${R2_ENDPOINT:?R2_ENDPOINT is required}"
+          : "${R2_BUCKET:?R2_BUCKET is required}"
+          version="$RELEASE_TAG"
+          for file in artifacts/erpc-*.tar.gz artifacts/erpc-*.zip artifacts/SHA256SUMS; do
+            key="erpc/${version}/$(basename "$file")"
+            if aws s3api head-object --endpoint-url "$R2_ENDPOINT" --bucket "$R2_BUCKET" --key "$key" >/dev/null 2>&1; then
+              echo "Refusing to overwrite immutable object: $key" >&2
+              exit 1
+            fi
+          done
+      - name: Publish immutable binaries and checksums
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_DEFAULT_REGION: auto
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+        run: |
+          set -eu
+          version="$RELEASE_TAG"
+          for file in artifacts/erpc-*.tar.gz artifacts/erpc-*.zip artifacts/SHA256SUMS; do
+            key="erpc/${version}/$(basename "$file")"
+            aws s3api put-object \
+              --endpoint-url "$R2_ENDPOINT" \
+              --bucket "$R2_BUCKET" \
+              --key "$key" \
+              --body "$file" \
+              --cache-control 'public,max-age=31536000,immutable' \
+              --if-none-match '*'
+          done
+      - name: Update installers and latest pointer
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_DEFAULT_REGION: auto
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+        run: |
+          aws s3api put-object \
+            --endpoint-url "$R2_ENDPOINT" \
+            --bucket "$R2_BUCKET" \
+            --key install \
+            --body install \
+            --cache-control 'no-cache,max-age=0' \
+            --content-type text/x-shellscript
+          aws s3api put-object \
+            --endpoint-url "$R2_ENDPOINT" \
+            --bucket "$R2_BUCKET" \
+            --key install.ps1 \
+            --body install.ps1 \
+            --cache-control 'no-cache,max-age=0' \
+            --content-type text/plain
+          printf '%s\n' "$RELEASE_TAG" > latest
+          aws s3api put-object \
+            --endpoint-url "$R2_ENDPOINT" \
+            --bucket "$R2_BUCKET" \
+            --key erpc/latest \
+            --body latest \
+            --cache-control 'no-cache,max-age=0' \
+            --content-type text/plain

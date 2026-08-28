@@ -1,11 +1,18 @@
 import { randomUUID } from 'node:crypto'
-import { realpath } from 'node:fs/promises'
-import type { ErpcManifest } from '../app/manifest'
-import type { ErpcNodeConfig } from '../config'
-import type { BuildArtifact, LinuxArchitecture } from './build'
-import { runProcess, type ProcessRequest, type ProcessRunner } from '../process'
+import { encodeBase64 } from '@std/encoding/base64'
+import type { ErpcManifest } from '../app/manifest.ts'
+import type { ErpcNodeConfig } from '../config.ts'
+import type { BuildArtifact, LinuxArchitecture } from './build.ts'
+import {
+  type ProcessRequest,
+  type ProcessRunner,
+  runProcess,
+} from '../process.ts'
 
 export interface SshDeployOptions {
+  readonly resolveNodeRuntime?: (
+    architecture: LinuxArchitecture,
+  ) => Promise<string>
   readonly run?: ProcessRunner
 }
 
@@ -13,12 +20,6 @@ export interface DeploymentResult {
   readonly node: string
   readonly release: string
   readonly service: string
-}
-
-const localArchitecture = (): LinuxArchitecture | null => {
-  if (process.arch === 'x64') return 'x64'
-  if (process.arch === 'arm64') return 'arm64'
-  return null
 }
 
 const remoteArchitecture = (value: string): LinuxArchitecture | null => {
@@ -110,13 +111,18 @@ const activationScript = (input: {
     : `$sudo_cmd install -m 0755 ${input.nodeTemporary} ${release}/node\n`
   const unitPath = `/etc/systemd/system/${input.service}.service`
   const unitBackup = `${release}/previous.service`
+  const encodedUnit = encodeBase64(input.unit)
   return `set -eu
 if [ "$(id -u)" -eq 0 ]; then sudo_cmd=""; else sudo_cmd="sudo -n"; fi
-cleanup() { rm -f -- ${input.artifactTemporary}${input.nodeTemporary ? ` ${input.nodeTemporary}` : ''}; }
+cleanup() { rm -f -- ${input.artifactTemporary}${
+    input.nodeTemporary ? ` ${input.nodeTemporary}` : ''
+  }; }
 trap cleanup EXIT
 $sudo_cmd install -d -m 0755 /opt/erpc/apps/${input.manifest.name}/releases
 $sudo_cmd install -d -m 0755 ${release}
-$sudo_cmd install -m ${input.manifest.app.runtime === 'node' ? '0644' : '0755'} ${input.artifactTemporary} ${release}/${artifactName}
+$sudo_cmd install -m ${
+    input.manifest.app.runtime === 'node' ? '0644' : '0755'
+  } ${input.artifactTemporary} ${release}/${artifactName}
 ${nodeInstall}if ! id -u erpc-app >/dev/null 2>&1; then $sudo_cmd useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin erpc-app; fi
 previous=$($sudo_cmd readlink ${base}/current 2>/dev/null || true)
 had_unit=false
@@ -125,7 +131,7 @@ if $sudo_cmd test -f ${unitPath}; then
   had_unit=true
 fi
 activate() {
-  printf '%s' '${Buffer.from(input.unit).toString('base64')}' | base64 -d | $sudo_cmd tee ${unitPath} >/dev/null &&
+  printf '%s' '${encodedUnit}' | base64 -d | $sudo_cmd tee ${unitPath} >/dev/null &&
   $sudo_cmd chmod 0644 ${unitPath} &&
   $sudo_cmd ln -sfn ${release} ${base}/current &&
   $sudo_cmd systemctl daemon-reload &&
@@ -167,14 +173,18 @@ export const deployOverSsh = async (
     args: [
       ...ssh,
       target,
-      "set -eu; test \"$(uname -s)\" = Linux; command -v systemctl >/dev/null; command -v base64 >/dev/null; command -v install >/dev/null; command -v useradd >/dev/null; if [ \"$(id -u)\" -ne 0 ]; then command -v sudo >/dev/null; sudo -n true; fi; uname -m",
+      'set -eu; test "$(uname -s)" = Linux; command -v systemctl >/dev/null; command -v base64 >/dev/null; command -v install >/dev/null; command -v useradd >/dev/null; if [ "$(id -u)" -ne 0 ]; then command -v sudo >/dev/null; sudo -n true; fi; uname -m',
     ],
     command: 'ssh',
   }, 'Remote Linux/systemd/sudo preflight failed; nothing was uploaded')
   const remoteArch = remoteArchitecture(preflight.stdout)
-  if (!remoteArch) throw new Error('The target node architecture is unsupported')
+  if (!remoteArch) {
+    throw new Error('The target node architecture is unsupported')
+  }
   if (artifact.architecture && artifact.architecture !== remoteArch) {
-    throw new Error('The local Linux binary architecture does not match the target node')
+    throw new Error(
+      'The local Linux binary architecture does not match the target node',
+    )
   }
 
   let nodeExecutable = ''
@@ -184,7 +194,7 @@ export const deployOverSsh = async (
       args: [
         ...ssh,
         target,
-        "node_path=$(command -v node || true); if [ -n \"$node_path\" ]; then printf '%s\\n' \"$node_path\"; node -p 'process.versions.node.split(\".\")[0]'; fi",
+        'node_path=$(command -v node || true); if [ -n "$node_path" ]; then printf \'%s\\n\' "$node_path"; node -p \'process.versions.node.split(".")[0]\'; fi',
       ],
       command: 'ssh',
     }, 'Unable to inspect the Node.js runtime on the target')
@@ -193,12 +203,12 @@ export const deployOverSsh = async (
     if (lines[0] && /^\/[A-Za-z0-9_./-]+$/.test(lines[0]) && major >= 20) {
       nodeExecutable = lines[0]
     } else {
-      if (process.platform !== 'linux' || localArchitecture() !== remoteArch) {
+      if (!options.resolveNodeRuntime) {
         throw new Error(
-          'Target Node.js 20+ is missing and the local CLI runtime cannot be installed for this architecture',
+          'Target Node.js 20+ is missing and no verified application-local runtime is available',
         )
       }
-      localNode = await realpath(process.execPath)
+      localNode = await options.resolveNodeRuntime(remoteArch)
       nodeExecutable = `/opt/erpc/apps/${manifest.name}/current/node`
     }
   }
@@ -242,12 +252,16 @@ export const deployOverSsh = async (
     service,
     unit,
   })
-  await checked(run, {
-    args: [...ssh, target, 'bash -se'],
-    command: 'ssh',
-    input: activation,
-    display: true,
-  }, 'Remote activation failed; the previous release was restored when available')
+  await checked(
+    run,
+    {
+      args: [...ssh, target, 'bash -se'],
+      command: 'ssh',
+      input: activation,
+      display: true,
+    },
+    'Remote activation failed; the previous release was restored when available',
+  )
 
   return { node: nodeName, release, service }
 }

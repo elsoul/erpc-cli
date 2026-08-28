@@ -1,13 +1,7 @@
-import {
-  chmod,
-  mkdir,
-  readFile,
-  rename,
-  writeFile,
-} from 'node:fs/promises'
+import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { isAbsolute, join, resolve } from 'node:path'
-import { parse, stringify } from 'smol-toml'
+import { parse, stringify } from '@std/toml'
 
 const NAME = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/
 const SSH_HOST = /^[A-Za-z0-9._:[\]%-]+$/
@@ -43,15 +37,16 @@ const objectValue = (value: unknown): Record<string, unknown> | null =>
     ? value as Record<string, unknown>
     : null
 
-const expandHome = (value: string): string => value === '~'
-  ? homedir()
-  : value.startsWith('~/')
+const expandHome = (value: string): string =>
+  value === '~'
+    ? homedir()
+    : value.startsWith('~/')
     ? join(homedir(), value.slice(2))
     : value
 
 export const resolveErpcHome = (options: ErpcConfigOptions = {}): string =>
   resolve(
-    options.erpcHome ?? process.env.ERPC_HOME ?? join(homedir(), '.erpc'),
+    options.erpcHome ?? Deno.env.get('ERPC_HOME') ?? join(homedir(), '.erpc'),
   )
 
 const initialConfig = (appsDirectory: string): string =>
@@ -71,7 +66,9 @@ export const ensureErpcConfig = async (
       mode: 0o600,
     })
   } catch (error) {
-    if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST')) {
+    if (
+      !(error instanceof Error && 'code' in error && error.code === 'EEXIST')
+    ) {
       throw error
     }
   }
@@ -81,7 +78,9 @@ export const ensureErpcConfig = async (
 }
 
 const parseNode = (name: string, value: unknown): ErpcNodeConfig => {
-  if (!NAME.test(name)) throw new Error(`Invalid node name in config.toml: ${name}`)
+  if (!NAME.test(name)) {
+    throw new Error(`Invalid node name in config.toml: ${name}`)
+  }
   const node = objectValue(value)
   if (!node) throw new Error(`Node ${name} must be a TOML table`)
   const { host, identity_file: identityFile, port = 22, user } = node
@@ -117,7 +116,9 @@ const parseApp = (value: unknown): ErpcAppRegistration => {
     typeof app.config !== 'string'
   ) throw new Error('config.toml contains an invalid app registration')
   const expanded = expandHome(app.config)
-  if (!isAbsolute(expanded)) throw new Error('Registered app config must be absolute')
+  if (!isAbsolute(expanded)) {
+    throw new Error('Registered app config must be absolute')
+  }
   const config = resolve(expanded)
   return { config, name: app.name }
 }
@@ -128,7 +129,10 @@ export const readErpcConfig = async (
   const configPath = await ensureErpcConfig(options)
   let document: Record<string, unknown>
   try {
-    document = parse(await readFile(configPath, 'utf8')) as Record<string, unknown>
+    document = parse(await readFile(configPath, 'utf8')) as Record<
+      string,
+      unknown
+    >
   } catch {
     throw new Error(`Unable to parse ERPC config: ${configPath}`)
   }
@@ -146,10 +150,14 @@ export const readErpcConfig = async (
     : objectValue(document.nodes)
   if (!rawNodes) throw new Error('config.toml nodes must be a TOML table')
   const nodes = Object.fromEntries(
-    Object.entries(rawNodes).map(([name, value]) => [name, parseNode(name, value)]),
+    Object.entries(rawNodes).map((
+      [name, value],
+    ) => [name, parseNode(name, value)]),
   )
   const rawApps = document.apps === undefined ? [] : document.apps
-  if (!Array.isArray(rawApps)) throw new Error('config.toml apps must be an array')
+  if (!Array.isArray(rawApps)) {
+    throw new Error('config.toml apps must be an array')
+  }
   const apps = rawApps.map(parseApp)
   return {
     apps,
@@ -177,8 +185,10 @@ const serializableConfig = (config: ErpcLocalConfig) => ({
   apps: config.apps.map((app) => ({ name: app.name, config: app.config })),
 })
 
-export const writeErpcConfig = async (config: ErpcLocalConfig): Promise<void> => {
-  const temporary = `${config.configPath}.tmp-${process.pid}-${Date.now()}`
+export const writeErpcConfig = async (
+  config: ErpcLocalConfig,
+): Promise<void> => {
+  const temporary = `${config.configPath}.tmp-${Deno.pid}-${Date.now()}`
   await writeFile(temporary, stringify(serializableConfig(config)), {
     encoding: 'utf8',
     flag: 'wx',

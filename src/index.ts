@@ -2,86 +2,92 @@ export {
   DEFAULT_AUTH_ENDPOINT,
   DEFAULT_CLIENT_ID,
   DeviceAuthClient,
-  ERPC_CLOUD_SCOPES,
-  OAuthProtocolError,
-  type DeviceAuthorization,
   type DeviceAuthClientConfig,
+  type DeviceAuthorization,
+  ERPC_CLOUD_SCOPES,
   type ErpcCloudScope,
+  OAuthProtocolError,
   type OAuthTokenSet,
-} from './auth/device'
-export { defaultRefreshLockPath, withRefreshLock } from './auth/refresh-lock'
-export { CliAuthSession } from './auth/session'
+} from './auth/device.ts'
+export { defaultRefreshLockPath, withRefreshLock } from './auth/refresh-lock.ts'
+export { CliAuthSession } from './auth/session.ts'
 export {
   KeyringRefreshTokenStore,
   type RefreshTokenStore,
-} from './auth/token-store'
-export { CLI_VERSION, runCli, type CliDependencies } from './cli'
+} from './auth/token-store.ts'
+export { CLI_VERSION } from './version.ts'
+export { type CliDependencies, runCli } from './cli.ts'
 export {
   ensureErpcConfig,
-  readErpcConfig,
-  registerErpcApplication,
-  resolveErpcHome,
-  writeErpcConfig,
   type ErpcAppRegistration,
   type ErpcConfigOptions,
   type ErpcLocalConfig,
   type ErpcNodeConfig,
-} from './config'
+  readErpcConfig,
+  registerErpcApplication,
+  resolveErpcHome,
+  writeErpcConfig,
+} from './config.ts'
 export {
   initializeApp,
-  type InitializedApp,
   type InitializeAppOptions,
-} from './app/init'
+  type InitializedApp,
+} from './app/init.ts'
 export {
+  type ErpcManifest,
   findErpcManifest,
   loadErpcManifest,
-  type ErpcManifest,
-} from './app/manifest'
+} from './app/manifest.ts'
 export {
   listErpcApplications,
   type RegisteredApplication,
-} from './app/registry'
+} from './app/registry.ts'
 export {
   APP_RUNTIMES,
-  createAppTemplate,
   type AppRuntime,
   type AppTemplate,
-} from './app/templates'
+  createAppTemplate,
+} from './app/templates.ts'
 export {
-  buildForDeployment,
   type BuildArtifact,
+  buildForDeployment,
   type BuildOptions,
   type LinuxArchitecture,
-} from './deploy/build'
+} from './deploy/build.ts'
 export {
-  deployOverSsh,
   type DeploymentResult,
+  deployOverSsh,
   type SshDeployOptions,
-} from './deploy/ssh'
+} from './deploy/ssh.ts'
 export {
-  runProcess,
+  NODE_RUNTIME_VERSION,
+  type NodeRuntimeOptions,
+  resolveVerifiedNodeRuntime,
+} from './deploy/node-runtime.ts'
+export {
   type ProcessRequest,
   type ProcessResult,
   type ProcessRunner,
-} from './process'
+  runProcess,
+} from './process.ts'
 export {
   CloudApiClient,
-  DEFAULT_USER_ENDPOINT,
+  type CloudApiClientConfig,
   type CloudCredit,
   type CloudCreditAlertLevel,
   type CloudOffering,
   type CloudOfferingBilling,
   type CloudOfferingCompute,
   type CloudOfferingSolana,
-  type CloudApiClientConfig,
   type CloudResource,
   type CloudResourceKind,
   type CloudResourceMode,
   type CloudResourceStatus,
   type CloudResourceStatusBilling,
-  type MonthlyUsage,
-  type MonthlyUsageParams,
+  DEFAULT_USER_ENDPOINT,
   type MonthlyApiKeyChainUsage,
   type MonthlyApiKeyMethodUsage,
   type MonthlyApiKeyUsageEntry,
-} from './cloud'
+  type MonthlyUsage,
+  type MonthlyUsageParams,
+} from './cloud.ts'

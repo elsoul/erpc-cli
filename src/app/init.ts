@@ -1,6 +1,6 @@
 import { mkdir, readdir, writeFile } from 'node:fs/promises'
 import { basename, dirname, resolve } from 'node:path'
-import { createAppTemplate, type AppRuntime } from './templates'
+import { type AppRuntime, createAppTemplate } from './templates.ts'
 
 export interface InitializeAppOptions {
   readonly directory: string

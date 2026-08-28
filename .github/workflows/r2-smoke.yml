@@ -1,0 +1,79 @@
+name: Test release storage
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: r2-smoke
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    name: Upload, verify, and remove a probe
+    environment: r2
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify release storage credentials
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_DEFAULT_REGION: auto
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+        run: |
+          set -eu
+          : "${AWS_ACCESS_KEY_ID:?R2_ACCESS_KEY_ID is required}"
+          : "${AWS_SECRET_ACCESS_KEY:?R2_SECRET_ACCESS_KEY is required}"
+          : "${R2_ENDPOINT:?R2_ENDPOINT is required}"
+          : "${R2_BUCKET:?R2_BUCKET is required}"
+
+          key="erpc/smoke/github-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt"
+          probe="$(mktemp)"
+          downloaded="$(mktemp)"
+          cleanup() {
+            aws s3api delete-object \
+              --endpoint-url "$R2_ENDPOINT" \
+              --bucket "$R2_BUCKET" \
+              --key "$key" >/dev/null 2>&1 || true
+            rm -f "$probe" "$downloaded"
+          }
+          trap cleanup EXIT
+
+          printf 'ERPC release storage probe %s-%s\n' \
+            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" > "$probe"
+          aws s3api put-object \
+            --endpoint-url "$R2_ENDPOINT" \
+            --bucket "$R2_BUCKET" \
+            --key "$key" \
+            --body "$probe" \
+            --cache-control 'no-store' \
+            --content-type text/plain \
+            --if-none-match '*' >/dev/null
+          aws s3api head-object \
+            --endpoint-url "$R2_ENDPOINT" \
+            --bucket "$R2_BUCKET" \
+            --key "$key" >/dev/null
+          aws s3api get-object \
+            --endpoint-url "$R2_ENDPOINT" \
+            --bucket "$R2_BUCKET" \
+            --key "$key" \
+            "$downloaded" >/dev/null
+          cmp "$probe" "$downloaded"
+          aws s3api delete-object \
+            --endpoint-url "$R2_ENDPOINT" \
+            --bucket "$R2_BUCKET" \
+            --key "$key" >/dev/null
+          if aws s3api head-object \
+            --endpoint-url "$R2_ENDPOINT" \
+            --bucket "$R2_BUCKET" \
+            --key "$key" >/dev/null 2>&1; then
+            echo 'Release storage probe was not removed.' >&2
+            exit 1
+          fi
+          trap - EXIT
+          rm -f "$probe" "$downloaded"
+          echo 'Release storage upload, download, and cleanup verified.'

@@ -1,40 +1,43 @@
-import { describe, expect, it } from 'vitest'
-import { CloudApiClient } from '../src'
+import { describe, expect, it } from './testing.ts'
+import { CloudApiClient } from '../src/index.ts'
 
 describe('Cloud API client', () => {
   it('rejects plaintext remote API endpoints', () => {
-    expect(() => new CloudApiClient({
-      accessToken: 'access-secret',
-      endpoint: 'http://user.example',
-    })).toThrow('must use HTTPS except on localhost')
+    expect(() =>
+      new CloudApiClient({
+        accessToken: 'access-secret',
+        endpoint: 'http://user.example',
+      })
+    ).toThrow('must use HTTPS except on localhost')
   })
 
   it('returns masked monthly usage without retaining full API keys', async () => {
     const cloud = new CloudApiClient({
       accessToken: 'access-secret',
       endpoint: 'https://user.example',
-      fetch: async () => new Response(JSON.stringify({
-        success: true,
-        message: {
-          yearMonth: '2026-08',
-          totalCount: 12,
-          totalCredits: 3,
-          updatedAt: null,
-          keyCount: 1,
-          hasStrandedUsage: false,
-          chains: [],
-          apiKeys: [{
-            keyId: 7,
-            apiKeyLast4: 'cdef',
-            apiKeyLength: 32,
-            count: 12,
-            credits: 3,
+      fetch: async () =>
+        new Response(JSON.stringify({
+          success: true,
+          message: {
+            yearMonth: '2026-08',
+            totalCount: 12,
+            totalCredits: 3,
             updatedAt: null,
+            keyCount: 1,
+            hasStrandedUsage: false,
             chains: [],
-            apiKey: 'must-not-leave-the-client',
-          }],
-        },
-      })),
+            apiKeys: [{
+              keyId: 7,
+              apiKeyLast4: 'cdef',
+              apiKeyLength: 32,
+              count: 12,
+              credits: 3,
+              updatedAt: null,
+              chains: [],
+              apiKey: 'must-not-leave-the-client',
+            }],
+          },
+        })),
     })
 
     const usage = await cloud.getMonthlyApiKeyUsage({ yearMonth: '2026-08' })
@@ -111,23 +114,24 @@ describe('Cloud API client', () => {
     const cloud = new CloudApiClient({
       accessToken: 'access-secret',
       endpoint: 'https://user.example',
-      fetch: async () => new Response(JSON.stringify({
-        success: true,
-        message: {
-          offerings: [{
-            id: 'vps',
-            kind: 'vps',
-            mode: 'shared',
-            name: 'Virtual server',
-            description: 'General compute',
-            regions: [],
-            capabilities: ['node', 'deno'],
-            compute: { tenancy: 'virtual-machine' },
-            provider: 'must-not-leave-the-client',
-            priceCents: 100,
-          }],
-        },
-      })),
+      fetch: async () =>
+        new Response(JSON.stringify({
+          success: true,
+          message: {
+            offerings: [{
+              id: 'vps',
+              kind: 'vps',
+              mode: 'shared',
+              name: 'Virtual server',
+              description: 'General compute',
+              regions: [],
+              capabilities: ['node', 'deno'],
+              compute: { tenancy: 'virtual-machine' },
+              provider: 'must-not-leave-the-client',
+              priceCents: 100,
+            }],
+          },
+        })),
     })
 
     await expect(cloud.listCatalog()).resolves.toEqual([{

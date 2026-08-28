@@ -2,9 +2,9 @@ import {
   DeviceAuthClient,
   OAuthProtocolError,
   type OAuthTokenSet,
-} from './device'
-import { withRefreshLock } from './refresh-lock'
-import type { RefreshTokenStore } from './token-store'
+} from './device.ts'
+import { withRefreshLock } from './refresh-lock.ts'
+import type { RefreshTokenStore } from './token-store.ts'
 
 export class CliAuthSession {
   readonly #auth: DeviceAuthClient
@@ -26,7 +26,10 @@ export class CliAuthSession {
       try {
         tokens = await this.#auth.refresh(refreshToken)
       } catch (error) {
-        if (error instanceof OAuthProtocolError && error.oauthCode === 'invalid_grant') {
+        if (
+          error instanceof OAuthProtocolError &&
+          error.oauthCode === 'invalid_grant'
+        ) {
           await this.#store.delete()
           throw new Error('ERPC login expired. Run `erpc login` again.')
         }

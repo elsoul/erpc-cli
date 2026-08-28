@@ -1,9 +1,9 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from './testing.ts'
 import {
   CliAuthSession,
   DeviceAuthClient,
   type RefreshTokenStore,
-} from '../src'
+} from '../src/index.ts'
 
 class MemoryStore implements RefreshTokenStore {
   value: string | null = 'old-refresh'
@@ -26,13 +26,14 @@ describe('CLI auth session', () => {
     const store = new MemoryStore()
     const auth = new DeviceAuthClient({
       endpoint: 'https://auth.example',
-      fetch: async () => new Response(JSON.stringify({
-        access_token: 'access-secret',
-        refresh_token: 'new-refresh',
-        token_type: 'Bearer',
-        expires_in: 300,
-        scope: 'usage:read',
-      })),
+      fetch: async () =>
+        new Response(JSON.stringify({
+          access_token: 'access-secret',
+          refresh_token: 'new-refresh',
+          token_type: 'Bearer',
+          expires_in: 300,
+          scope: 'usage:read',
+        })),
     })
     const session = new CliAuthSession(auth, store)
 

@@ -1,0 +1,79 @@
+#!/bin/sh
+
+set -eu
+
+RELEASE_BASE_URL="${ERPC_RELEASE_BASE_URL:-https://storage.erpc.global/erpc}"
+INSTALL_DIRECTORY="${ERPC_INSTALL_DIR:-${HOME}/.erpc/bin}"
+
+fail() {
+  printf 'erpc installer: %s\n' "$1" >&2
+  exit 1
+}
+
+command -v curl >/dev/null 2>&1 || fail 'curl is required'
+command -v grep >/dev/null 2>&1 || fail 'grep is required'
+command -v install >/dev/null 2>&1 || fail 'install is required'
+command -v tar >/dev/null 2>&1 || fail 'tar is required'
+
+operating_system="$(uname -s)"
+architecture="$(uname -m)"
+
+case "${operating_system}:${architecture}" in
+  Linux:x86_64 | Linux:amd64) target='x86_64-unknown-linux-gnu' ;;
+  Linux:aarch64 | Linux:arm64) target='aarch64-unknown-linux-gnu' ;;
+  Darwin:x86_64 | Darwin:amd64) target='x86_64-apple-darwin' ;;
+  Darwin:aarch64 | Darwin:arm64) target='aarch64-apple-darwin' ;;
+  *) fail "unsupported platform: ${operating_system} ${architecture}" ;;
+esac
+
+temporary_directory="$(mktemp -d 2>/dev/null || mktemp -d -t erpc-install)"
+trap 'rm -rf "$temporary_directory"' EXIT INT TERM
+
+version="$(curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL "${RELEASE_BASE_URL}/latest")"
+printf '%s' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' ||
+  fail 'the published version pointer is invalid'
+
+archive="erpc-${target}.tar.gz"
+curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fSL \
+  "${RELEASE_BASE_URL}/${version}/${archive}" \
+  -o "${temporary_directory}/${archive}"
+curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL \
+  "${RELEASE_BASE_URL}/${version}/SHA256SUMS" \
+  -o "${temporary_directory}/SHA256SUMS"
+
+expected="$(awk -v file="$archive" '$2 == file { print $1 }' "${temporary_directory}/SHA256SUMS")"
+[ -n "$expected" ] || fail 'the checksum entry is missing'
+
+if command -v sha256sum >/dev/null 2>&1; then
+  actual="$(sha256sum "${temporary_directory}/${archive}" | awk '{ print $1 }')"
+elif command -v shasum >/dev/null 2>&1; then
+  actual="$(shasum -a 256 "${temporary_directory}/${archive}" | awk '{ print $1 }')"
+else
+  fail 'sha256sum or shasum is required'
+fi
+[ "$actual" = "$expected" ] || fail 'binary checksum verification failed'
+
+mkdir -p "${temporary_directory}/unpacked"
+entries="$(tar -tzf "${temporary_directory}/${archive}")"
+[ "$entries" = 'erpc' ] || fail 'the release archive contains unexpected paths'
+tar -xzf "${temporary_directory}/${archive}" -C "${temporary_directory}/unpacked"
+[ -f "${temporary_directory}/unpacked/erpc" ] &&
+  [ ! -L "${temporary_directory}/unpacked/erpc" ] ||
+  fail 'the release archive is invalid'
+chmod 0755 "${temporary_directory}/unpacked/erpc"
+
+binary_version="$("${temporary_directory}/unpacked/erpc" --version)"
+[ "v${binary_version}" = "$version" ] || fail 'binary version does not match the release'
+
+mkdir -p "$INSTALL_DIRECTORY"
+temporary_install="${INSTALL_DIRECTORY}/.erpc-install-$$"
+install -m 0755 "${temporary_directory}/unpacked/erpc" "$temporary_install"
+mv -f "$temporary_install" "${INSTALL_DIRECTORY}/erpc"
+
+printf 'Installed erpc %s at %s/erpc\n' "$binary_version" "$INSTALL_DIRECTORY"
+case ":${PATH}:" in
+  *:"${INSTALL_DIRECTORY}":*) ;;
+  *)
+    printf 'Add this directory to PATH:\n  export PATH="%s:$PATH"\n' "$INSTALL_DIRECTORY"
+    ;;
+esac

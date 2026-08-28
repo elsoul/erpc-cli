@@ -33,3 +33,16 @@ release when one exists.
 Operators remain responsible for securing the target host, reviewing its SSH
 host key, limiting the deployment user's sudo permissions, and protecting any
 application secrets supplied outside this CLI.
+
+## Binary distribution
+
+Standalone releases for Linux, macOS, and Windows are published under immutable
+versioned object keys. The installers accept only a strict semantic version
+pointer, verify the selected archive against the versioned SHA-256 manifest,
+check the executable's own version, and install without root or administrator
+privileges. The public `latest` pointer is updated only after all release
+artifacts are present.
+
+Linux refresh credentials are passed to the operating-system Secret Service on
+standard input and are never included in command arguments, configuration files,
+or logs.

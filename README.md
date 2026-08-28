@@ -1,33 +1,58 @@
-# `@elsoul/erpc-cli`
+# ERPC CLI
 
 Build and deploy applications for ERPC Cloud from the terminal. The first
 release provides secure Cloud login, read-only account commands, minimal Hono
 application templates for Node.js with pnpm and Deno, and build-gated SSH
-deployment to user-owned Linux nodes.
+deployment to user-owned Linux nodes. The CLI itself is a standalone executable
+compiled with Deno; Node.js, npm, pnpm, and Deno are not required to run it.
 
 ## Install
 
-With pnpm:
+Linux and macOS on x86-64 and ARM64 are supported. The installer selects the
+matching binary automatically:
 
 ```bash
-pnpm add --global @elsoul/erpc-cli
+curl -fsSL https://storage.erpc.global/install | sh
 ```
 
-With npm:
+The installer downloads the platform archive, requires its entry in the
+versioned `SHA256SUMS` file, verifies the embedded CLI version, and installs it
+at `~/.erpc/bin/erpc`. It never uses `sudo` or edits shell startup files. Add
+the directory to `PATH` when the installer asks:
 
 ```bash
-npm install --global @elsoul/erpc-cli
+export PATH="$HOME/.erpc/bin:$PATH"
 ```
 
-You can also run a command without a global install:
+Windows on x86-64 and ARM64 uses the native PowerShell installer:
+
+```powershell
+irm https://storage.erpc.global/install.ps1 | iex
+```
+
+It installs `erpc.exe` below `%USERPROFILE%\.erpc\bin` and prints a PATH
+instruction when needed. Preview binaries are not yet notarized or
+Authenticode-signed; platform signing is tracked on the roadmap.
+
+For a review-first installation, download and inspect the script before running
+it:
 
 ```bash
-pnpm dlx @elsoul/erpc-cli app init my-api
-npx @elsoul/erpc-cli app init my-api
+curl -fsSL https://storage.erpc.global/install -o erpc-install.sh
+less erpc-install.sh
+sh erpc-install.sh
 ```
 
-Node.js 20 or newer is required to run the CLI. Generated Deno applications
-use Deno directly and do not require Node.js at runtime.
+On Windows, use the corresponding review-first flow:
+
+```powershell
+iwr https://storage.erpc.global/install.ps1 -OutFile erpc-install.ps1
+Get-Content ./erpc-install.ps1
+& ./erpc-install.ps1
+```
+
+The npm `0.1.x` package remains available for existing installations, but new
+CLI releases are distributed as Deno-compiled binaries.
 
 ## Create an application
 
@@ -46,8 +71,8 @@ erpc app init my-node-api --runtime node
 erpc app init my-deno-api --runtime deno
 ```
 
-Pass a relative or absolute path when the source should live elsewhere. The
-CLI records that external manifest in `~/.erpc/config.toml`:
+Pass a relative or absolute path when the source should live elsewhere. The CLI
+records that external manifest in `~/.erpc/config.toml`:
 
 ```bash
 erpc app init ./services/my-api --runtime node
@@ -112,11 +137,11 @@ The runtime field is intentionally extensible. Rust templates are planned
 without changing the Node.js and Deno manifest shape.
 
 Build and run commands use argument arrays so local build execution does not
-need a shell to interpret project-controlled strings. Both templates
-expose unauthenticated `/health` and `/doc` routes, listen on
-`0.0.0.0:8080` by default, and handle graceful shutdown signals. The Deno
-build produces a single executable; the Node.js build bundles its runtime
-dependencies into one JavaScript artifact.
+need a shell to interpret project-controlled strings. Both templates expose
+unauthenticated `/health` and `/doc` routes, listen on `0.0.0.0:8080` by
+default, and handle graceful shutdown signals. The Deno build produces a single
+executable; the Node.js build bundles its runtime dependencies into one
+JavaScript artifact.
 
 The Deno deployment build targets 64-bit Linux by default. Change the
 `build:linux` task explicitly when deploying to an ARM64 node.
@@ -124,9 +149,9 @@ The Deno deployment build targets 64-bit Linux by default. Change the
 ## Local configuration and applications
 
 The CLI creates `~/.erpc` with directory mode `0700` and writes
-`~/.erpc/config.toml` with mode `0600`. It stores application locations and
-SSH node references, never access tokens, refresh tokens, passwords, or private
-key material.
+`~/.erpc/config.toml` with mode `0600`. It stores application locations and SSH
+node references, never access tokens, refresh tokens, passwords, or private key
+material.
 
 ```toml
 schema_version = 1
@@ -185,11 +210,12 @@ Deployment is ordered so a local failure cannot touch the node:
    and restart it, and require the service to become active.
 6. Restore the previous release and unit automatically if activation fails.
 
-Node applications deploy their bundled JavaScript. If Node.js 20 or newer is
-not already available, a Linux CLI running on the same architecture installs
-its own Node executable as an application-local runtime; no remote package
-manager or download script is used. Deno applications deploy the locally
-compiled binary and require no Deno installation on the node.
+Node applications deploy their bundled JavaScript. If Node.js 20 or newer is not
+already available, the CLI downloads a pinned Linux Node.js runtime on the local
+machine, verifies the official archive checksum, and uploads it as an
+application-local runtime; no remote package manager or download script is used.
+Deno applications deploy the locally compiled binary and require no Deno
+installation on the node.
 
 The node must be user-owned, reachable through OpenSSH, and use systemd. This
 first transport does not expose ERPC infrastructure credentials or resolve
@@ -204,7 +230,11 @@ erpc login
 The CLI opens the ERPC verification page and requests read-only usage and
 resource scopes. If the browser cannot be opened, follow the URL printed in the
 terminal. The access credential stays in process memory and the refresh
-credential is stored in the operating-system keychain.
+credential is stored in the operating-system keychain. Linux login currently
+requires `secret-tool` and an available Secret Service; on Debian and Ubuntu it
+is provided by the `libsecret-tools` package. The macOS and Windows binaries
+currently support local application and deployment commands, while native
+keychain-backed login on those systems remains on the roadmap.
 
 After login:
 
@@ -219,8 +249,8 @@ erpc resources status <resource-id>
 erpc logout
 ```
 
-The catalog is capability-only in the first release: it does not claim prices
-or regional availability that the service cannot verify. `credit` returns a
+The catalog is capability-only in the first release: it does not claim prices or
+regional availability that the service cannot verify. `credit` returns a
 read-only cents balance, current burn rate, estimated time to zero, alert level,
 and the snapshot validity timestamps.
 
@@ -228,23 +258,25 @@ and the snapshot validity timestamps.
 deleting its keychain entry. Credentials are never written to `erpc.toml`,
 project files, environment files, logs, or shell history by the CLI.
 
-Cloud purchase, billing, and resource mutation commands remain unavailable
-until their scoped authorization and confirmation contracts are enabled. The
-SSH deployment transport operates only on a node explicitly configured by the
-user. See the [roadmap](./ROADMAP.md).
+Cloud purchase, billing, and resource mutation commands remain unavailable until
+their scoped authorization and confirmation contracts are enabled. The SSH
+deployment transport operates only on a node explicitly configured by the user.
+See the [roadmap](./ROADMAP.md).
 
 ## Development
 
 ```bash
-corepack pnpm install
-corepack pnpm check
-corepack pnpm test
-corepack pnpm build
-corepack pnpm pack:check
+deno task fmt:check
+deno task lint
+deno task check
+deno task test
+deno task build
 ```
 
-The release workflow publishes only from a human-approved GitHub Release. See
-the [release guide](./docs/RELEASING.md).
+The root CLI requires Deno 2.9.6. Node.js with pnpm is used only by the
+generated Node application example. The release workflow publishes versioned
+Linux, macOS, and Windows binaries and checksums to R2 only from a
+human-approved GitHub Release. See the [release guide](./docs/RELEASING.md).
 
 Release notes are maintained in the [changelog](./CHANGELOG.md).
 

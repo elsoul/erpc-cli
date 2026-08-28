@@ -367,7 +367,8 @@ const parseOffering = (value: unknown): CloudOffering | null => {
       ? { mode: offering.mode as CloudResourceMode }
       : {}),
     ...(compute &&
-        (compute.tenancy === 'virtual-machine' || compute.tenancy === 'bare-metal')
+        (compute.tenancy === 'virtual-machine' ||
+          compute.tenancy === 'bare-metal')
       ? { compute: { tenancy: compute.tenancy } }
       : {}),
     ...(solana &&
@@ -488,9 +489,10 @@ export class CloudApiClient {
       throw new Error('yearMonth must use YYYY-MM format')
     }
     const usage = parseMonthlyUsage(
-      await this.#get('/v3/user/api-keys/usage', params.yearMonth
-        ? { yearMonth: params.yearMonth }
-        : undefined),
+      await this.#get(
+        '/v3/user/api-keys/usage',
+        params.yearMonth ? { yearMonth: params.yearMonth } : undefined,
+      ),
     )
     if (usage === null) {
       throw new Error('ERPC Cloud returned invalid monthly usage')
@@ -499,9 +501,11 @@ export class CloudApiClient {
   }
 
   async listResources(): Promise<readonly CloudResource[]> {
-    const message = objectValue(await this.#get(
-      '/v4/cloud/resources',
-    ))
+    const message = objectValue(
+      await this.#get(
+        '/v4/cloud/resources',
+      ),
+    )
     if (!Array.isArray(message?.resources)) {
       throw new Error('ERPC Cloud returned an invalid resource list')
     }
@@ -536,7 +540,9 @@ export class CloudApiClient {
     const normalizedId = resourceId.trim()
     if (!normalizedId) throw new Error('resourceId must not be empty')
     const message = objectValue(
-      await this.#get(`/v4/cloud/resources/${encodeURIComponent(normalizedId)}`),
+      await this.#get(
+        `/v4/cloud/resources/${encodeURIComponent(normalizedId)}`,
+      ),
     )
     const resource = parseResource(message?.resource)
     if (resource === null) {
@@ -559,7 +565,10 @@ export class CloudApiClient {
     return status
   }
 
-  async #get<T>(path: string, query?: Readonly<Record<string, string>>): Promise<T> {
+  async #get<T>(
+    path: string,
+    query?: Readonly<Record<string, string>>,
+  ): Promise<T> {
     const url = new URL(this.#endpoint)
     const base = url.pathname === '/' ? '' : url.pathname.replace(/\/+$/, '')
     url.pathname = `${base}/${path.replace(/^\/+/, '')}`.replace(/\/{2,}/g, '/')

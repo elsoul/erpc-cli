@@ -11,29 +11,86 @@ permissions:
 
 jobs:
   cli:
-    name: CLI package
+    name: Deno CLI
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2
         with:
-          node-version: 24
-      - run: corepack enable
-      - run: corepack prepare pnpm@11.24.0 --activate
-      - run: corepack pnpm install --frozen-lockfile
-      - run: corepack pnpm check
-      - run: corepack pnpm test
-      - run: corepack pnpm build
-      - run: corepack pnpm pack:check
-      - name: Switch to the minimum supported Node.js version
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+          deno-version: v2.9.6
+      - run: deno task --frozen-lockfile release:check
+      - run: dist/erpc --version
+      - run: sh -n install
+
+  macos-cli:
+    name: macOS CLI
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          node-version: 20
-      - name: Verify the built package on Node.js 20
-        run: node scripts/verify-package.mjs
+          persist-credentials: false
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2
+        with:
+          deno-version: v2.9.6
+      - name: Compile and run native executable
+        run: |
+          mkdir -p dist
+          deno compile --frozen-lockfile \
+            --allow-env \
+            --allow-net \
+            --allow-read \
+            --allow-write \
+            --allow-run \
+            --allow-sys \
+            --output dist/erpc \
+            src/bin.ts
+          dist/erpc --version
+          dist/erpc --help >/dev/null
+      - run: sh -n install
+
+  windows-cli:
+    name: Windows CLI and installer
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2
+        with:
+          deno-version: v2.9.6
+      - name: Compile and run native executable
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          deno compile --frozen-lockfile `
+            --allow-env `
+            --allow-net `
+            --allow-read `
+            --allow-write `
+            --allow-run `
+            --allow-sys `
+            --output dist/erpc.exe `
+            src/bin.ts
+          & ./dist/erpc.exe --version
+          & ./dist/erpc.exe --help | Out-Null
+      - name: Parse PowerShell installer
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path ./install.ps1),
+            [ref]$tokens,
+            [ref]$errors
+          )
+          if ($errors.Count -ne 0) {
+            $errors | Format-List | Out-String | Write-Error
+          }
 
   node-example:
     name: Node example

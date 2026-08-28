@@ -28,7 +28,10 @@ export const withRefreshLock = async <T>(
         await unlink(lockPath).catch(() => undefined)
       }
     } catch (error) {
-      if (!(error instanceof Error) || !('code' in error) || error.code !== 'EEXIST') {
+      if (
+        !(error instanceof Error) || !('code' in error) ||
+        error.code !== 'EEXIST'
+      ) {
         throw error
       }
 

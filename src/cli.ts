@@ -1,30 +1,26 @@
-import { spawn } from 'node:child_process'
 import { basename, isAbsolute, join, relative, resolve } from 'node:path'
-import { CloudApiClient } from './cloud'
+import { CLI_VERSION } from './version.ts'
+import { CloudApiClient } from './cloud.ts'
 import {
   DeviceAuthClient,
   ERPC_CLOUD_SCOPES,
   type ErpcCloudScope,
-} from './auth/device'
-import { CliAuthSession } from './auth/session'
+} from './auth/device.ts'
+import { CliAuthSession } from './auth/session.ts'
 import {
   KeyringRefreshTokenStore,
   type RefreshTokenStore,
-} from './auth/token-store'
-import { initializeApp } from './app/init'
-import { findErpcManifest, loadErpcManifest } from './app/manifest'
-import { promptForRuntime } from './app/prompt'
-import { listErpcApplications } from './app/registry'
-import { APP_RUNTIMES, type AppRuntime } from './app/templates'
-import {
-  readErpcConfig,
-  registerErpcApplication,
-} from './config'
-import { buildForDeployment } from './deploy/build'
-import { deployOverSsh } from './deploy/ssh'
-import type { ProcessRunner } from './process'
-
-export const CLI_VERSION = '0.1.0'
+} from './auth/token-store.ts'
+import { initializeApp } from './app/init.ts'
+import { findErpcManifest, loadErpcManifest } from './app/manifest.ts'
+import { promptForRuntime } from './app/prompt.ts'
+import { listErpcApplications } from './app/registry.ts'
+import { APP_RUNTIMES, type AppRuntime } from './app/templates.ts'
+import { readErpcConfig, registerErpcApplication } from './config.ts'
+import { buildForDeployment } from './deploy/build.ts'
+import { deployOverSsh } from './deploy/ssh.ts'
+import { resolveVerifiedNodeRuntime } from './deploy/node-runtime.ts'
+import type { ProcessRunner } from './process.ts'
 
 export interface CliDependencies {
   readonly auth?: DeviceAuthClient
@@ -63,15 +59,19 @@ Bare names are created below ~/.erpc/apps. Paths are created where specified.
 When --runtime is omitted in a terminal, the CLI asks you to choose.`
 
 const defaultOpenExternal = (url: string): void => {
-  const platform = process.platform
+  const platform = Deno.build.os
   const [command, args] = platform === 'darwin'
     ? ['open', [url]]
-    : platform === 'win32'
-      ? ['cmd', ['/c', 'start', '', url]]
-      : ['xdg-open', [url]]
+    : platform === 'windows'
+    ? ['cmd', ['/c', 'start', '', url]]
+    : ['xdg-open', [url]]
   try {
-    const child = spawn(command, args, { detached: true, stdio: 'ignore' })
-    child.on('error', () => undefined)
+    const child = new Deno.Command(command, {
+      args,
+      stdin: 'null',
+      stdout: 'null',
+      stderr: 'null',
+    }).spawn()
     child.unref()
   } catch {
     // The verification URL is always printed, so browser launch is best effort.
@@ -92,9 +92,7 @@ const parseScopes = (args: readonly string[]): readonly ErpcCloudScope[] => {
     requested.push(value as ErpcCloudScope)
     index++
   }
-  return requested.length > 0
-    ? requested
-    : ['usage:read', 'resources:read']
+  return requested.length > 0 ? requested : ['usage:read', 'resources:read']
 }
 
 const parseRuntime = (value: string | undefined): AppRuntime | undefined => {
@@ -197,21 +195,22 @@ export const runCli = async (
 ): Promise<number> => {
   const output = dependencies.output ?? console.log
   const [command, subcommand] = args
-  const cwd = resolve(dependencies.cwd ?? process.cwd())
+  const cwd = resolve(dependencies.cwd ?? Deno.cwd())
   const configOptions = dependencies.erpcHome === undefined
     ? {}
     : { erpcHome: dependencies.erpcHome }
 
   const createAuth = () => {
-    const authEndpoint = process.env.ERPC_AUTH_ENDPOINT
+    const authEndpoint = Deno.env.get('ERPC_AUTH_ENDPOINT')
     return dependencies.auth ?? new DeviceAuthClient({
       ...(authEndpoint === undefined ? {} : { endpoint: authEndpoint }),
     })
   }
-  const createStore = () =>
-    dependencies.store ?? new KeyringRefreshTokenStore()
+  const createStore = () => dependencies.store ?? new KeyringRefreshTokenStore()
 
-  if (!command || command === 'help' || command === '--help' || command === '-h') {
+  if (
+    !command || command === 'help' || command === '--help' || command === '-h'
+  ) {
     output(help)
     return 0
   }
@@ -228,7 +227,7 @@ export const runCli = async (
     output(`Open ${authorization.verificationUriComplete}`)
     output(`Device code: ${authorization.userCode}`)
     if (!args.includes('--no-open')) {
-      (dependencies.openExternal ?? defaultOpenExternal)(
+      ;(dependencies.openExternal ?? defaultOpenExternal)(
         authorization.verificationUriComplete,
       )
     }
@@ -239,7 +238,9 @@ export const runCli = async (
       await auth.revoke(tokens.refreshToken).catch(() => undefined)
       throw error
     }
-    output('Logged in to ERPC. The refresh credential is stored in the OS keychain.')
+    output(
+      'Logged in to ERPC. The refresh credential is stored in the OS keychain.',
+    )
     return 0
   }
 
@@ -258,7 +259,7 @@ export const runCli = async (
     const session = new CliAuthSession(createAuth(), createStore())
     const yearMonth = args[2]
     const accessToken = await session.getAccessToken()
-    const userEndpoint = process.env.ERPC_USER_ENDPOINT
+    const userEndpoint = Deno.env.get('ERPC_USER_ENDPOINT')
     const cloud = new CloudApiClient({
       accessToken,
       ...(userEndpoint === undefined ? {} : { endpoint: userEndpoint }),
@@ -276,7 +277,7 @@ export const runCli = async (
     }
     const session = new CliAuthSession(createAuth(), createStore())
     const accessToken = await session.getAccessToken()
-    const userEndpoint = process.env.ERPC_USER_ENDPOINT
+    const userEndpoint = Deno.env.get('ERPC_USER_ENDPOINT')
     const cloud = new CloudApiClient({
       accessToken,
       ...(userEndpoint === undefined ? {} : { endpoint: userEndpoint }),
@@ -291,7 +292,7 @@ export const runCli = async (
     }
     const session = new CliAuthSession(createAuth(), createStore())
     const accessToken = await session.getAccessToken()
-    const userEndpoint = process.env.ERPC_USER_ENDPOINT
+    const userEndpoint = Deno.env.get('ERPC_USER_ENDPOINT')
     const cloud = new CloudApiClient({
       accessToken,
       ...(userEndpoint === undefined ? {} : { endpoint: userEndpoint }),
@@ -308,7 +309,7 @@ export const runCli = async (
     if (!resourceId) throw new Error('resource-id is required')
     const session = new CliAuthSession(createAuth(), createStore())
     const accessToken = await session.getAccessToken()
-    const userEndpoint = process.env.ERPC_USER_ENDPOINT
+    const userEndpoint = Deno.env.get('ERPC_USER_ENDPOINT')
     const cloud = new CloudApiClient({
       accessToken,
       ...(userEndpoint === undefined ? {} : { endpoint: userEndpoint }),
@@ -325,7 +326,7 @@ export const runCli = async (
     if (!resourceId) throw new Error('resource-id is required')
     const session = new CliAuthSession(createAuth(), createStore())
     const accessToken = await session.getAccessToken()
-    const userEndpoint = process.env.ERPC_USER_ENDPOINT
+    const userEndpoint = Deno.env.get('ERPC_USER_ENDPOINT')
     const cloud = new CloudApiClient({
       accessToken,
       ...(userEndpoint === undefined ? {} : { endpoint: userEndpoint }),
@@ -338,7 +339,7 @@ export const runCli = async (
     if (args.length !== 1) throw new Error('credit does not accept arguments')
     const session = new CliAuthSession(createAuth(), createStore())
     const accessToken = await session.getAccessToken()
-    const userEndpoint = process.env.ERPC_USER_ENDPOINT
+    const userEndpoint = Deno.env.get('ERPC_USER_ENDPOINT')
     const cloud = new CloudApiClient({
       accessToken,
       ...(userEndpoint === undefined ? {} : { endpoint: userEndpoint }),
@@ -361,8 +362,8 @@ export const runCli = async (
       requested === undefined
         ? 'erpc-app'
         : pathLike(requested)
-          ? basename(resolve(cwd, requested))
-          : requested
+        ? basename(resolve(cwd, requested))
+        : requested
     )
     const directory = requested !== undefined && pathLike(requested)
       ? resolve(cwd, requested)
@@ -378,7 +379,9 @@ export const runCli = async (
         name: initialized.name,
       }, configOptions)
     }
-    output(`Created ${initialized.name} with the ${initialized.runtime} runtime.`)
+    output(
+      `Created ${initialized.name} with the ${initialized.runtime} runtime.`,
+    )
     output(`Next: cd ${initialized.directory}`)
     output(`      ${initialized.installCommand}`)
     output(`      ${initialized.startCommand}`)
@@ -413,8 +416,8 @@ export const runCli = async (
       manifest.deploy.target !== 'auto'
         ? manifest.deploy.target
         : nodeNames.length === 1
-          ? nodeNames[0]
-          : undefined
+        ? nodeNames[0]
+        : undefined
     )
     if (!nodeName) {
       throw new Error(
@@ -442,6 +445,16 @@ export const runCli = async (
         ...(dependencies.runProcess === undefined
           ? {}
           : { run: dependencies.runProcess }),
+        resolveNodeRuntime: async (architecture) =>
+          await resolveVerifiedNodeRuntime(
+            architecture,
+            localConfig.erpcHome,
+            {
+              ...(dependencies.runProcess === undefined
+                ? {}
+                : { run: dependencies.runProcess }),
+            },
+          ),
       },
     )
     output(

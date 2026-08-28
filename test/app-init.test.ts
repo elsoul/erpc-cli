@@ -1,8 +1,8 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
-import { createAppTemplate, initializeApp, runCli } from '../src'
+import { afterEach, describe, expect, it } from './testing.ts'
+import { createAppTemplate, initializeApp, runCli } from '../src/index.ts'
 
 const directories: string[] = []
 
@@ -21,10 +21,12 @@ afterEach(async () => {
 })
 
 describe('app init', () => {
-  it.each([
-    ['node', 'node-hono-example', 'node-hono'],
-    ['deno', 'deno-hono-example', 'deno-hono'],
-  ] as const)(
+  it.each(
+    [
+      ['node', 'node-hono-example', 'node-hono'],
+      ['deno', 'deno-hono-example', 'deno-hono'],
+    ] as const,
+  )(
     'keeps the %s example synchronized with the generated template',
     async (runtime, name, exampleDirectory) => {
       const template = createAppTemplate(name, runtime)
@@ -141,6 +143,6 @@ describe('CLI metadata', () => {
       ['--version'],
       { output: (message) => output.push(message) },
     )).resolves.toBe(0)
-    expect(output).toEqual(['0.1.0'])
+    expect(output).toEqual(['0.2.0'])
   })
 })

@@ -98,7 +98,9 @@ const requiredNumber = (
   return result
 }
 
-const oauthError = (body: Record<string, unknown> | null): OAuthProtocolError => {
+const oauthError = (
+  body: Record<string, unknown> | null,
+): OAuthProtocolError => {
   const code = typeof body?.error === 'string' ? body.error : 'server_error'
   return new OAuthProtocolError(code, `OAuth request failed: ${code}`)
 }
@@ -128,7 +130,9 @@ const parseTokenSet = (body: Record<string, unknown> | null): OAuthTokenSet => {
   }
 }
 
-const parseJson = async (response: Response): Promise<Record<string, unknown> | null> => {
+const parseJson = async (
+  response: Response,
+): Promise<Record<string, unknown> | null> => {
   try {
     return objectValue(await response.json())
   } catch {
@@ -167,7 +171,9 @@ export class DeviceAuthClient {
     if (typeof this.#fetch !== 'function') {
       throw new Error('A Fetch API implementation is required')
     }
-    if (!Number.isFinite(this.#requestTimeoutMs) || this.#requestTimeoutMs <= 0) {
+    if (
+      !Number.isFinite(this.#requestTimeoutMs) || this.#requestTimeoutMs <= 0
+    ) {
       throw new Error('requestTimeoutMs must be a positive finite number')
     }
   }
@@ -186,7 +192,10 @@ export class DeviceAuthClient {
       interval: requiredNumber(body, 'interval'),
       userCode: requiredString(body, 'user_code'),
       verificationUri: requiredString(body, 'verification_uri'),
-      verificationUriComplete: requiredString(body, 'verification_uri_complete'),
+      verificationUriComplete: requiredString(
+        body,
+        'verification_uri_complete',
+      ),
     }
   }
 
@@ -216,10 +225,16 @@ export class DeviceAuthClient {
       throw error
     }
 
-    throw new OAuthProtocolError('expired_token', 'Device authorization expired')
+    throw new OAuthProtocolError(
+      'expired_token',
+      'Device authorization expired',
+    )
   }
 
-  async refresh(refreshToken: string, signal?: AbortSignal): Promise<OAuthTokenSet> {
+  async refresh(
+    refreshToken: string,
+    signal?: AbortSignal,
+  ): Promise<OAuthTokenSet> {
     const response = await this.#post('/oauth/token', {
       client_id: this.#clientId,
       grant_type: 'refresh_token',

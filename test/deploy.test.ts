@@ -1,12 +1,7 @@
-import {
-  mkdir,
-  mkdtemp,
-  rm,
-  writeFile,
-} from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from './testing.ts'
 import {
   buildForDeployment,
   createAppTemplate,
@@ -14,11 +9,11 @@ import {
   findErpcManifest,
   initializeApp,
   loadErpcManifest,
-  runCli,
   type ProcessRequest,
   type ProcessResult,
   type ProcessRunner,
-} from '../src'
+  runCli,
+} from '../src/index.ts'
 
 const directories: string[] = []
 
@@ -44,14 +39,18 @@ const result = (
 
 const writeNodeConfig = async (erpcHome: string) => {
   await mkdir(join(erpcHome, 'apps'), { recursive: true })
-  await writeFile(join(erpcHome, 'config.toml'), `schema_version = 1
+  await writeFile(
+    join(erpcHome, 'config.toml'),
+    `schema_version = 1
 apps_directory = "${join(erpcHome, 'apps')}"
 
 [nodes.primary]
 host = "node.example.test"
 user = "ubuntu"
 port = 22
-`, { mode: 0o600 })
+`,
+    { mode: 0o600 },
+  )
 }
 
 describe('deployment manifest and local build gate', () => {
@@ -63,7 +62,9 @@ describe('deployment manifest and local build gate', () => {
     await mkdir(nested, { recursive: true })
 
     await expect(findErpcManifest(nested)).resolves.toBe(join(app, 'erpc.toml'))
-    await expect(findErpcManifest(parent, app)).resolves.toBe(join(app, 'erpc.toml'))
+    await expect(findErpcManifest(parent, app)).resolves.toBe(
+      join(app, 'erpc.toml'),
+    )
   })
 
   it('validates a locally produced Linux Deno binary', async () => {
@@ -73,10 +74,10 @@ describe('deployment manifest and local build gate', () => {
     const manifest = await loadErpcManifest(join(app, 'erpc.toml'))
     const run: ProcessRunner = async () => {
       await mkdir(join(app, 'dist'), { recursive: true })
-      const header = Buffer.alloc(20)
+      const header = new Uint8Array(20)
       header.set([0x7f, 0x45, 0x4c, 0x46])
       header[5] = 1
-      header.writeUInt16LE(62, 18)
+      new DataView(header.buffer).setUint16(18, 62, true)
       await writeFile(join(app, 'dist', 'erpc-app'), header)
       return result()
     }
@@ -102,7 +103,9 @@ describe('deployment manifest and local build gate', () => {
     await expect(runCli(
       ['deploy', '--config', join(app, 'erpc.toml')],
       { erpcHome, output: () => undefined, runProcess: run },
-    )).rejects.toThrow('Local build failed; no deployment connection was attempted')
+    )).rejects.toThrow(
+      'Local build failed; no deployment connection was attempted',
+    )
     expect(calls.map((call) => call.command)).toEqual(['pnpm'])
   })
 
@@ -120,10 +123,14 @@ describe('deployment manifest and local build gate', () => {
         await writeFile(join(app, 'dist', 'index.js'), 'console.log("ok")\n')
         return result()
       }
-      if (request.command === 'ssh' && request.args.at(-1)?.includes('uname -m')) {
+      if (
+        request.command === 'ssh' && request.args.at(-1)?.includes('uname -m')
+      ) {
         return result(0, 'x86_64\n')
       }
-      if (request.command === 'ssh' && request.args.at(-1)?.includes('node_path')) {
+      if (
+        request.command === 'ssh' && request.args.at(-1)?.includes('node_path')
+      ) {
         return result(0, '/usr/bin/node\n22\n')
       }
       return result()
@@ -160,10 +167,17 @@ describe('deployment manifest and local build gate', () => {
     const calls: ProcessRequest[] = []
     const run: ProcessRunner = async (request) => {
       calls.push(request)
-      if (request.command === 'ssh' && request.args.at(-1)?.includes('uname -m')) {
-        return result(0, `${process.arch === 'arm64' ? 'aarch64' : 'x86_64'}\n`)
+      if (
+        request.command === 'ssh' && request.args.at(-1)?.includes('uname -m')
+      ) {
+        return result(
+          0,
+          `${Deno.build.arch === 'aarch64' ? 'aarch64' : 'x86_64'}\n`,
+        )
       }
-      if (request.command === 'ssh' && request.args.at(-1)?.includes('node_path')) {
+      if (
+        request.command === 'ssh' && request.args.at(-1)?.includes('node_path')
+      ) {
         return result()
       }
       return result()
@@ -174,7 +188,10 @@ describe('deployment manifest and local build gate', () => {
       { path: join(app, 'dist', 'index.js'), runtime: 'node' },
       'primary',
       { host: 'node.example.test', port: 22, user: 'ubuntu' },
-      { run },
+      {
+        resolveNodeRuntime: async () => Deno.execPath(),
+        run,
+      },
     )).resolves.toMatchObject({ node: 'primary', service: 'erpc-app' })
 
     expect(calls.map((call) => call.command)).toEqual([
@@ -186,7 +203,9 @@ describe('deployment manifest and local build gate', () => {
     ])
     const encodedUnit = calls.at(-1)?.input?.match(/printf '%s' '([^']+)'/)?.[1]
     expect(encodedUnit).toBeDefined()
-    expect(Buffer.from(encodedUnit ?? '', 'base64').toString()).toContain(
+    expect(
+      new TextDecoder().decode(Uint8Array.fromBase64(encodedUnit ?? '')),
+    ).toContain(
       'ExecStart=/opt/erpc/apps/app/current/node /opt/erpc/apps/app/current/app.js',
     )
   })

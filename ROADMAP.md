@@ -3,7 +3,7 @@
 The CLI exposes only capabilities whose authorization and server contracts are
 ready for public use.
 
-## Available in 0.1
+## Available
 
 - OAuth Device Authorization login and server-side logout
 - refresh credentials stored in the operating-system keychain
@@ -12,16 +12,21 @@ ready for public use.
 - `erpc app init` templates for Node.js with pnpm and Deno
 - private `~/.erpc` configuration and application discovery
 - local Linux build-gated SSH deployment with systemd activation and rollback
+- standalone Deno-compiled CLI binaries for Linux, macOS, and Windows on x86-64
+  and ARM64
+- checksum-verified installation from ERPC object storage
 
 ## Planned
 
 - inspect and validate `erpc.toml` without deploying
-- resolve owned Cloud compute resources into deployment targets without
-  exposing infrastructure credentials
+- resolve owned Cloud compute resources into deployment targets without exposing
+  infrastructure credentials
 - managed artifact upload and deployment through the ERPC control plane
 - resource provisioning and hourly billing controls
 - deployment logs, status, rollback, and health checks
 - Rust application templates
+- macOS Keychain and Windows Credential Manager integration for Cloud login
+- macOS notarization and Windows Authenticode signing
 - additional application runtimes based on demand
 
 Write, billing, and deployment commands will be added only after their scoped

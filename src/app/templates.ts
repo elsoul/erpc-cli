@@ -42,32 +42,38 @@ const nodeTemplate = (name: string): AppTemplate => ({
   files: {
     '.gitignore': 'node_modules\ndist\n.env\n.env.*\n!.env.example\n',
     'erpc.toml': erpcToml(name, 'node'),
-    'package.json': `${JSON.stringify({
-      name,
-      version: '0.1.0',
-      private: true,
-      type: 'module',
-      scripts: {
-        build: 'tsup',
-        check: 'tsc --noEmit',
-        dev: 'tsx watch src/index.ts',
-        start: 'node dist/index.js',
-        test: 'vitest run',
-      },
-      dependencies: {
-        '@hono/node-server': '^2.1.1',
-        hono: '^4.13.5',
-      },
-      devDependencies: {
-        '@types/node': '^26.4.0',
-        tsup: '^8.5.1',
-        tsx: '^4.23.12',
-        typescript: '^7.0.2',
-        vitest: '^4.1.11',
-      },
-      engines: { node: '>=20' },
-      packageManager: 'pnpm@11.24.0',
-    }, null, 2)}\n`,
+    'package.json': `${
+      JSON.stringify(
+        {
+          name,
+          version: '0.1.0',
+          private: true,
+          type: 'module',
+          scripts: {
+            build: 'tsup',
+            check: 'tsc --noEmit',
+            dev: 'tsx watch src/index.ts',
+            start: 'node dist/index.js',
+            test: 'vitest run',
+          },
+          dependencies: {
+            '@hono/node-server': '^2.1.1',
+            hono: '^4.13.5',
+          },
+          devDependencies: {
+            '@types/node': '^26.4.0',
+            tsup: '^8.5.1',
+            tsx: '^4.23.12',
+            typescript: '^7.0.2',
+            vitest: '^4.1.11',
+          },
+          engines: { node: '>=20' },
+          packageManager: 'pnpm@11.24.0',
+        },
+        null,
+        2,
+      )
+    }\n`,
     'pnpm-workspace.yaml': `allowBuilds:
   esbuild: true
 `,
@@ -75,24 +81,26 @@ const nodeTemplate = (name: string): AppTemplate => ({
 
 export const app = new Hono()
 
-app.get('/', (context) => context.json({
-  message: 'Hello from ERPC',
-  success: true,
-}))
+app.get('/', (context) =>
+  context.json({
+    message: 'Hello from ERPC',
+    success: true,
+  }))
 
 app.get('/health', (context) => context.json({ status: 'ok' }))
 
-app.get('/doc', (context) => context.json({
-  info: { title: '${name}', version: '0.1.0' },
-  openapi: '3.1.0',
-  paths: {
-    '/health': {
-      get: {
-        responses: { '200': { description: 'Application is healthy' } },
+app.get('/doc', (context) =>
+  context.json({
+    info: { title: '${name}', version: '0.1.0' },
+    openapi: '3.1.0',
+    paths: {
+      '/health': {
+        get: {
+          responses: { '200': { description: 'Application is healthy' } },
+        },
       },
     },
-  },
-}))
+  }))
 `,
     'src/index.ts': `import { serve } from '@hono/node-server'
 import { app } from './app.js'
@@ -136,21 +144,27 @@ describe('app', () => {
   })
 })
 `,
-    'tsconfig.json': `${JSON.stringify({
-      compilerOptions: {
-        target: 'ES2022',
-        lib: ['ES2022'],
-        module: 'NodeNext',
-        moduleResolution: 'NodeNext',
-        strict: true,
-        noUncheckedIndexedAccess: true,
-        exactOptionalPropertyTypes: true,
-        noEmit: true,
-        skipLibCheck: true,
-        types: ['node'],
-      },
-      include: ['src', 'test', 'tsup.config.ts'],
-    }, null, 2)}\n`,
+    'tsconfig.json': `${
+      JSON.stringify(
+        {
+          compilerOptions: {
+            target: 'ES2022',
+            lib: ['ES2022'],
+            module: 'NodeNext',
+            moduleResolution: 'NodeNext',
+            strict: true,
+            noUncheckedIndexedAccess: true,
+            exactOptionalPropertyTypes: true,
+            noEmit: true,
+            skipLibCheck: true,
+            types: ['node'],
+          },
+          include: ['src', 'test', 'tsup.config.ts'],
+        },
+        null,
+        2,
+      )
+    }\n`,
     'tsup.config.ts': `import { defineConfig } from 'tsup'
 
 export default defineConfig({
@@ -173,53 +187,61 @@ const denoTemplate = (name: string): AppTemplate => ({
   startCommand: 'deno task dev',
   files: {
     '.gitignore': 'dist\n.env\n.env.*\n!.env.example\n',
-    'deno.json': `${JSON.stringify({
-      tasks: {
-        build:
-          'deno compile --allow-env=HOST,PORT --allow-net --output dist/erpc-app src/index.ts',
-        'build:linux':
-          'deno compile --target x86_64-unknown-linux-gnu --allow-env=HOST,PORT --allow-net --output dist/erpc-app src/index.ts',
-        check: 'deno check src/index.ts test/app_test.ts',
-        dev: 'deno run --allow-env --allow-net --watch src/index.ts',
-        start: 'deno run --allow-env --allow-net src/index.ts',
-        test: 'deno test --allow-env --allow-net',
-      },
-      imports: {
-        hono: 'jsr:@hono/hono@^4.13.5',
-      },
-      compilerOptions: {
-        strict: true,
-        noUncheckedIndexedAccess: true,
-        exactOptionalPropertyTypes: true,
-      },
-      fmt: {
-        semiColons: false,
-        singleQuote: true,
-      },
-    }, null, 2)}\n`,
+    'deno.json': `${
+      JSON.stringify(
+        {
+          tasks: {
+            build:
+              'deno compile --allow-env=HOST,PORT --allow-net --output dist/erpc-app src/index.ts',
+            'build:linux':
+              'deno compile --target x86_64-unknown-linux-gnu --allow-env=HOST,PORT --allow-net --output dist/erpc-app src/index.ts',
+            check: 'deno check src/index.ts test/app_test.ts',
+            dev: 'deno run --allow-env --allow-net --watch src/index.ts',
+            start: 'deno run --allow-env --allow-net src/index.ts',
+            test: 'deno test --allow-env --allow-net',
+          },
+          imports: {
+            hono: 'jsr:@hono/hono@^4.13.5',
+          },
+          compilerOptions: {
+            strict: true,
+            noUncheckedIndexedAccess: true,
+            exactOptionalPropertyTypes: true,
+          },
+          fmt: {
+            semiColons: false,
+            singleQuote: true,
+          },
+        },
+        null,
+        2,
+      )
+    }\n`,
     'erpc.toml': erpcToml(name, 'deno'),
     'src/app.ts': `import { Hono } from 'hono'
 
 export const app = new Hono()
 
-app.get('/', (context) => context.json({
-  message: 'Hello from ERPC',
-  success: true,
-}))
+app.get('/', (context) =>
+  context.json({
+    message: 'Hello from ERPC',
+    success: true,
+  }))
 
 app.get('/health', (context) => context.json({ status: 'ok' }))
 
-app.get('/doc', (context) => context.json({
-  info: { title: '${name}', version: '0.1.0' },
-  openapi: '3.1.0',
-  paths: {
-    '/health': {
-      get: {
-        responses: { '200': { description: 'Application is healthy' } },
+app.get('/doc', (context) =>
+  context.json({
+    info: { title: '${name}', version: '0.1.0' },
+    openapi: '3.1.0',
+    paths: {
+      '/health': {
+        get: {
+          responses: { '200': { description: 'Application is healthy' } },
+        },
       },
     },
-  },
-}))
+  }))
 `,
     'src/index.ts': `import { app } from './app.ts'
 

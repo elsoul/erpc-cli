@@ -1,7 +1,7 @@
 import { lstat, open, realpath } from 'node:fs/promises'
 import { relative, resolve } from 'node:path'
-import type { ErpcManifest } from '../app/manifest'
-import { runProcess, type ProcessRunner } from '../process'
+import type { ErpcManifest } from '../app/manifest.ts'
+import { type ProcessRunner, runProcess } from '../process.ts'
 
 export type LinuxArchitecture = 'arm64' | 'x64'
 
@@ -23,15 +23,19 @@ const containedPath = (root: string, path: string): boolean => {
 const elfArchitecture = async (path: string): Promise<LinuxArchitecture> => {
   const handle = await open(path, 'r')
   try {
-    const header = Buffer.alloc(20)
+    const header = new Uint8Array(20)
     const { bytesRead } = await handle.read(header, 0, header.length, 0)
     if (
       bytesRead < 20 ||
       header[0] !== 0x7f ||
-      header.subarray(1, 4).toString('ascii') !== 'ELF' ||
+      new TextDecoder().decode(header.subarray(1, 4)) !== 'ELF' ||
       header[5] !== 1
-    ) throw new Error('Deno build artifact must be a little-endian Linux ELF binary')
-    const machine = header.readUInt16LE(18)
+    ) {
+      throw new Error(
+        'Deno build artifact must be a little-endian Linux ELF binary',
+      )
+    }
+    const machine = new DataView(header.buffer).getUint16(18, true)
     if (machine === 62) return 'x64'
     if (machine === 183) return 'arm64'
     throw new Error(`Unsupported Linux artifact architecture: ${machine}`)
@@ -53,7 +57,9 @@ export const buildForDeployment = async (
     display: true,
   })
   if (result.code !== 0) {
-    throw new Error('Local build failed; no deployment connection was attempted')
+    throw new Error(
+      'Local build failed; no deployment connection was attempted',
+    )
   }
 
   const artifact = resolve(manifest.projectRoot, manifest.build.artifact)
@@ -62,7 +68,9 @@ export const buildForDeployment = async (
   }
   const info = await lstat(artifact).catch(() => null)
   if (!info?.isFile() || info.isSymbolicLink()) {
-    throw new Error('Local build succeeded but its artifact is missing or unsafe')
+    throw new Error(
+      'Local build succeeded but its artifact is missing or unsafe',
+    )
   }
   const canonicalRoot = await realpath(manifest.projectRoot)
   const canonicalArtifact = await realpath(artifact)

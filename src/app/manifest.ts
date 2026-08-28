@@ -1,7 +1,14 @@
 import { readFile, stat } from 'node:fs/promises'
-import { dirname, isAbsolute, join, parse as parsePath, relative, resolve } from 'node:path'
-import { parse } from 'smol-toml'
-import type { AppRuntime } from './templates'
+import {
+  dirname,
+  isAbsolute,
+  join,
+  parse as parsePath,
+  relative,
+  resolve,
+} from 'node:path'
+import { parse } from '@std/toml'
+import type { AppRuntime } from './templates.ts'
 
 const APP_NAME = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/
 const LISTEN_HOST = /^[A-Za-z0-9._:[\]%-]+$/
@@ -43,7 +50,10 @@ const relativeProjectPath = (value: unknown, field: string): string => {
     throw new Error(`${field} must be a non-empty relative path`)
   }
   const normalized = relative('.', value)
-  if (normalized === '..' || normalized.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`)) {
+  if (
+    normalized === '..' ||
+    normalized.startsWith(`..${Deno.build.os === 'windows' ? '\\' : '/'}`)
+  ) {
     throw new Error(`${field} must stay inside the application root`)
   }
   return value
@@ -53,16 +63,23 @@ const command = (value: unknown, field: string): readonly string[] => {
   if (
     !Array.isArray(value) ||
     value.length === 0 ||
-    !value.every((item) => typeof item === 'string' && item.length > 0 && !item.includes('\0'))
+    !value.every((item) =>
+      typeof item === 'string' && item.length > 0 && !item.includes('\0')
+    )
   ) throw new Error(`${field} must be a non-empty argument array`)
   return value as readonly string[]
 }
 
-export const loadErpcManifest = async (configPath: string): Promise<ErpcManifest> => {
+export const loadErpcManifest = async (
+  configPath: string,
+): Promise<ErpcManifest> => {
   const absoluteConfig = resolve(configPath)
   let document: Record<string, unknown>
   try {
-    document = parse(await readFile(absoluteConfig, 'utf8')) as Record<string, unknown>
+    document = parse(await readFile(absoluteConfig, 'utf8')) as Record<
+      string,
+      unknown
+    >
   } catch {
     throw new Error(`Unable to parse ERPC manifest: ${absoluteConfig}`)
   }

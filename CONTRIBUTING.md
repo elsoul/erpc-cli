@@ -4,20 +4,20 @@ Thank you for contributing to the ERPC CLI.
 
 ## Development
 
-Requirements:
-
-- Node.js 20 or newer
-- Corepack
-- pnpm 11
+The root CLI requires Deno 2.9.6. Node.js 20 and pnpm 11 are needed only when
+changing or verifying the generated Node application template.
 
 ```bash
-corepack enable
-corepack pnpm install --frozen-lockfile
-corepack pnpm check
-corepack pnpm test
-corepack pnpm build
-corepack pnpm pack:check
+deno task fmt:check
+deno task lint
+deno task check
+deno task test
+deno task build
+sh -n install
 ```
+
+PowerShell changes must also parse without errors on Windows. CI runs native
+binary smoke checks on Linux, macOS, and Windows.
 
 Keep changes focused and cover observable behavior with tests. Public APIs must
 use explicit exports and strict TypeScript types. Generated templates and the
@@ -33,6 +33,6 @@ documented scopes, confirmation, idempotency, and recovery behavior are ready.
 - Explain user-visible behavior and compatibility impact.
 - Update the README and roadmap when commands or runtimes change.
 - Verify both Node.js and Deno examples when templates change.
-- Ensure every check passes from a clean install.
+- Ensure every check passes with the frozen Deno lockfile.
 
 All releases require explicit human approval.
