@@ -1,0 +1,22 @@
+schema_version = 1
+name = "deno-hono-example"
+
+[app]
+runtime = "deno"
+entrypoint = "src/index.ts"
+
+[build]
+command = ["deno", "task", "build:linux"]
+artifact = "dist/erpc-app"
+
+[run]
+command = ["./dist/erpc-app"]
+host = "0.0.0.0"
+port = 8080
+
+[deploy]
+target = "auto"
+
+[health]
+path = "/health"
+timeout_seconds = 30

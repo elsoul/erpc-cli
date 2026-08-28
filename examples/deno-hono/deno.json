@@ -1,0 +1,22 @@
+{
+  "tasks": {
+    "build": "deno compile --allow-env=HOST,PORT --allow-net --output dist/erpc-app src/index.ts",
+    "build:linux": "deno compile --target x86_64-unknown-linux-gnu --allow-env=HOST,PORT --allow-net --output dist/erpc-app src/index.ts",
+    "check": "deno check src/index.ts test/app_test.ts",
+    "dev": "deno run --allow-env --allow-net --watch src/index.ts",
+    "start": "deno run --allow-env --allow-net src/index.ts",
+    "test": "deno test --allow-env --allow-net"
+  },
+  "imports": {
+    "hono": "jsr:@hono/hono@^4.13.5"
+  },
+  "compilerOptions": {
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true
+  },
+  "fmt": {
+    "semiColons": false,
+    "singleQuote": true
+  }
+}
