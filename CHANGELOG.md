@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.1 — 2026-08-28
+
 - Rebuild the command interface with a typed declarative parser and generated,
   command-specific help.
 - Print the colored ERPC welcome artwork after installation and with
