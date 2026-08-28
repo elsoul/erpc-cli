@@ -17,8 +17,9 @@ curl -fsSL https://storage.erpc.global/install | sh
 
 The installer downloads the platform archive, requires its entry in the
 versioned `SHA256SUMS` file, verifies the embedded CLI version, and installs it
-at `~/.erpc/bin/erpc`. It never uses `sudo` or edits shell startup files. Add
-the directory to `PATH` when the installer asks:
+at `~/.erpc/bin/erpc`. After installation it prints the ERPC welcome screen. It
+never uses `sudo` or edits shell startup files. Add the directory to `PATH` when
+the installer asks:
 
 ```bash
 export PATH="$HOME/.erpc/bin:$PATH"
@@ -31,7 +32,8 @@ irm https://storage.erpc.global/install.ps1 | iex
 ```
 
 It installs `erpc.exe` below `%USERPROFILE%\.erpc\bin` and prints a PATH
-instruction when needed. Preview binaries are not yet notarized or
+instruction when needed. It also prints the ERPC welcome screen after verifying
+the installed executable. Preview binaries are not yet notarized or
 Authenticode-signed; platform signing is tracked on the roadmap.
 
 For a review-first installation, download and inspect the script before running
@@ -53,6 +55,12 @@ Get-Content ./erpc-install.ps1
 
 The npm `0.1.x` package remains available for existing installations, but new
 CLI releases are distributed as Deno-compiled binaries.
+
+Run the welcome screen again at any time:
+
+```bash
+erpc --print
+```
 
 ## Create an application
 

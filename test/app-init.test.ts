@@ -111,12 +111,12 @@ describe('app init', () => {
       'second',
       '--runtime',
       'node',
-    ])).rejects.toThrow('only one directory')
+    ])).rejects.toThrow('Too many arguments')
     await expect(runCli([
       'app',
       'init',
       '--runtime',
-    ])).rejects.toThrow('--runtime requires a value')
+    ])).rejects.toThrow('Missing value for option "--runtime"')
     await expect(runCli([
       'app',
       'init',
@@ -143,6 +143,6 @@ describe('CLI metadata', () => {
       ['--version'],
       { output: (message) => output.push(message) },
     )).resolves.toBe(0)
-    expect(output).toEqual(['0.2.0'])
+    expect(output).toEqual(['0.2.1'])
   })
 })

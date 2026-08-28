@@ -102,6 +102,10 @@
         Move-Item -Force -LiteralPath $TemporaryInstall -Destination (Join-Path $InstallDirectory 'erpc.exe')
 
         Write-Host "Installed erpc $BinaryVersion at $(Join-Path $InstallDirectory 'erpc.exe')"
+        & (Join-Path $InstallDirectory 'erpc.exe') --print
+        if ($LASTEXITCODE -ne 0) {
+            Fail 'the installed binary could not print its welcome message'
+        }
         $PathEntries = @($env:PATH -split ';' | ForEach-Object { $_.TrimEnd('\') })
         if ($PathEntries -notcontains $InstallDirectory.TrimEnd('\')) {
             Write-Host 'Add this directory to PATH:'

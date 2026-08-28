@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Rebuild the command interface with a typed declarative parser and generated,
+  command-specific help.
+- Print the colored ERPC welcome artwork after installation and with
+  `erpc --print`.
+
 ## 0.2.0 — 2026-08-28
 
 - Move the CLI runtime and development workflow from Node.js to Deno 2.9.

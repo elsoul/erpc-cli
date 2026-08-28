@@ -71,6 +71,7 @@ install -m 0755 "${temporary_directory}/unpacked/erpc" "$temporary_install"
 mv -f "$temporary_install" "${INSTALL_DIRECTORY}/erpc"
 
 printf 'Installed erpc %s at %s/erpc\n' "$binary_version" "$INSTALL_DIRECTORY"
+"${INSTALL_DIRECTORY}/erpc" --print
 case ":${PATH}:" in
   *:"${INSTALL_DIRECTORY}":*) ;;
   *)

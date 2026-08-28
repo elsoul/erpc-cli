@@ -1,3 +1,4 @@
+import { Command, EnumType } from '@cliffy/command'
 import { basename, isAbsolute, join, relative, resolve } from 'node:path'
 import { CLI_VERSION } from './version.ts'
 import { CloudApiClient } from './cloud.ts'
@@ -21,6 +22,7 @@ import { buildForDeployment } from './deploy/build.ts'
 import { deployOverSsh } from './deploy/ssh.ts'
 import { resolveVerifiedNodeRuntime } from './deploy/node-runtime.ts'
 import type { ProcessRunner } from './process.ts'
+import { erpcAA, erpcWelcomeMessage } from './ui/welcome.ts'
 
 export interface CliDependencies {
   readonly auth?: DeviceAuthClient
@@ -189,7 +191,7 @@ const insideDirectory = (parent: string, child: string): boolean => {
   return path === '' || (!path.startsWith('..') && !isAbsolute(path))
 }
 
-export const runCli = async (
+const executeCliCommand = async (
   args: readonly string[],
   dependencies: CliDependencies = {},
 ): Promise<number> => {
@@ -464,4 +466,205 @@ export const runCli = async (
   }
 
   throw new Error(`Unknown command.\n\n${help}`)
+}
+
+const appendCommandOptions = (
+  args: string[],
+  options: ReadonlyArray<readonly [string, string | boolean | undefined]>,
+): string[] => {
+  for (const [flag, value] of options) {
+    if (value === undefined || value === false) continue
+    args.push(flag)
+    if (typeof value === 'string') args.push(value)
+  }
+  return args
+}
+
+const commandArguments = (
+  command: string,
+  options: ReadonlyArray<readonly [string, string | boolean | undefined]>,
+): string[] => appendCommandOptions([command], options)
+
+export const createProgram = (
+  dependencies: CliDependencies = {},
+) => {
+  const output = dependencies.output ?? console.log
+  const execute = async (args: readonly string[]): Promise<void> => {
+    await executeCliCommand(args, dependencies)
+  }
+  const showHelp = function (this: Command): void {
+    output(this.getHelp())
+  }
+
+  const program = new Command()
+    .name('erpc')
+    .version(CLI_VERSION)
+    .versionOption(
+      '-v, --version',
+      'Show the installed ERPC CLI version.',
+      () => output(CLI_VERSION),
+    )
+    .helpOption(
+      '-h, --help',
+      'Show help for ERPC or a command.',
+      showHelp,
+    )
+    .description(
+      'Build, deploy, and operate applications on ERPC.\n\n' +
+        'Cloud billing and resource write commands are unavailable.\n' +
+        'They will be enabled after their authorization and confirmation contracts are ready.',
+    )
+    .option('-P, --print', 'Print the ERPC welcome message.')
+    .action(({ print }) => {
+      if (print) {
+        erpcAA(output)
+        erpcWelcomeMessage(output)
+        return
+      }
+      output('Use `erpc --help` to see available commands.')
+    })
+    .noExit()
+
+  const loginCommand = new Command()
+    .description('Sign in with the ERPC device authorization flow.')
+    .type('scope', new EnumType([...ERPC_CLOUD_SCOPES]))
+    .option('--no-open', 'Do not open the verification URL in a browser.')
+    .option('--scope <scope:scope>', 'Request an ERPC Cloud scope.', {
+      collect: true,
+    })
+    .action(async ({ open, scope }) => {
+      const scopes = scope === undefined
+        ? []
+        : Array.isArray(scope)
+        ? scope
+        : [scope]
+      const args = commandArguments('login', [['--no-open', !open]])
+      for (const value of scopes) args.push('--scope', value)
+      await execute(args)
+    })
+
+  const logoutCommand = new Command()
+    .description('Sign out and remove the stored refresh credential.')
+    .action(async () => await execute(['logout']))
+
+  const monthlyUsageCommand = new Command()
+    .description('Show API key usage for a calendar month.')
+    .arguments('[year-month:string]')
+    .action(async (_options, yearMonth?: string) => {
+      await execute([
+        'usage',
+        'monthly',
+        ...(yearMonth === undefined ? [] : [yearMonth]),
+      ])
+    })
+  const usageCommand = new Command()
+    .description('Inspect ERPC usage.')
+    .action(showHelp)
+    .command('monthly', monthlyUsageCommand)
+
+  const resourcesCommand = new Command()
+    .description('Inspect ERPC resource offerings and allocations.')
+    .action(showHelp)
+    .command(
+      'catalog',
+      new Command()
+        .description('List available resource offerings.')
+        .action(async () => await execute(['resources', 'catalog'])),
+    )
+    .command(
+      'list',
+      new Command()
+        .description('List allocated resources.')
+        .action(async () => await execute(['resources', 'list'])),
+    )
+    .command(
+      'get',
+      new Command()
+        .description('Show a resource.')
+        .arguments('<resource-id:string>')
+        .action(async (_options, resourceId: string) =>
+          await execute(['resources', 'get', resourceId])
+        ),
+    )
+    .command(
+      'status',
+      new Command()
+        .description('Show resource status and billing state.')
+        .arguments('<resource-id:string>')
+        .action(async (_options, resourceId: string) =>
+          await execute(['resources', 'status', resourceId])
+        ),
+    )
+
+  const appInitCommand = new Command()
+    .description('Create a minimal ERPC application.')
+    .arguments('[directory:string]')
+    .type('runtime', new EnumType([...APP_RUNTIMES]))
+    .option('--runtime <runtime:runtime>', 'Application runtime.')
+    .option('--name <name:string>', 'Application name.')
+    .action(async ({ name, runtime }, directory?: string) => {
+      await execute(
+        appendCommandOptions([
+          'app',
+          'init',
+          ...(directory === undefined ? [] : [directory]),
+        ], [
+          ['--runtime', runtime],
+          ['--name', name],
+        ]),
+      )
+    })
+  const appCommand = new Command()
+    .description('Create and inspect local ERPC applications.')
+    .action(showHelp)
+    .command('init', appInitCommand)
+    .command(
+      'list',
+      new Command()
+        .description('List discovered ERPC applications.')
+        .action(async () => await execute(['app', 'list'])),
+    )
+
+  const deployCommand = new Command()
+    .description('Build for Linux and deploy an application over SSH.')
+    .option('--config <path:string>', 'Path to an erpc.toml file.')
+    .option('--node <name:string>', 'Configured deployment node name.')
+    .action(async ({ config, node }) => {
+      await execute(commandArguments('deploy', [
+        ['--config', config],
+        ['--node', node],
+      ]))
+    })
+
+  program
+    .command('login', loginCommand)
+    .command('logout', logoutCommand)
+    .command('usage', usageCommand)
+    .command(
+      'credit',
+      new Command()
+        .description('Show the current ERPC credit balance.')
+        .action(async () => await execute(['credit'])),
+    )
+    .command('resources', resourcesCommand)
+    .command('app', appCommand)
+    .command('deploy', deployCommand)
+    .command(
+      'version',
+      new Command().hidden().action(() => output(CLI_VERSION)),
+    )
+    .command(
+      'help',
+      new Command().hidden().action(() => output(program.getHelp())),
+    )
+
+  return program
+}
+
+export const runCli = async (
+  args: readonly string[],
+  dependencies: CliDependencies = {},
+): Promise<number> => {
+  await createProgram(dependencies).parse([...args])
+  return 0
 }

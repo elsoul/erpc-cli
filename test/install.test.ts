@@ -50,7 +50,12 @@ describe('standalone installer', () => {
     await writeFile(join(release, 'erpc', 'latest'), 'v0.2.0\n')
     await writeFile(
       join(source, 'erpc'),
-      '#!/bin/sh\n[ "${1:-}" = "--version" ] && printf "0.2.0\\n"\n',
+      `#!/bin/sh
+case "\${1:-}" in
+  --version) printf '0.2.0\\n' ;;
+  --print) printf 'Welcome to ERPC v0.2.0\\n' ;;
+esac
+`,
       { mode: 0o755 },
     )
     const archiveName = `erpc-${target}.tar.gz`
@@ -126,8 +131,11 @@ esac
     expect(new TextDecoder().decode(installed.stdout)).toContain(
       'Installed erpc 0.2.0',
     )
+    expect(new TextDecoder().decode(installed.stdout)).toContain(
+      'Welcome to ERPC v0.2.0',
+    )
     expect(await readFile(join(installDirectory, 'erpc'), 'utf8')).toContain(
-      'printf "0.2.0',
+      "printf '0.2.0",
     )
 
     await writeFile(archivePath, 'tampered archive')

@@ -16,7 +16,14 @@ export {
   type RefreshTokenStore,
 } from './auth/token-store.ts'
 export { CLI_VERSION } from './version.ts'
-export { type CliDependencies, runCli } from './cli.ts'
+export { type CliDependencies, createProgram, runCli } from './cli.ts'
+export {
+  erpcAA,
+  erpcWelcomeMessage,
+  renderErpcWelcomeArt,
+  stripAnsi,
+  type WelcomeOutput,
+} from './ui/welcome.ts'
 export {
   ensureErpcConfig,
   type ErpcAppRegistration,
