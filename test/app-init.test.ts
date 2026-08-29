@@ -143,6 +143,6 @@ describe('CLI metadata', () => {
       ['--version'],
       { output: (message) => output.push(message) },
     )).resolves.toBe(0)
-    expect(output).toEqual(['0.2.1'])
+    expect(output).toEqual(['0.2.2'])
   })
 })

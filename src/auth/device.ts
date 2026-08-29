@@ -11,6 +11,20 @@ export const ERPC_CLOUD_SCOPES = [
 
 export type ErpcCloudScope = (typeof ERPC_CLOUD_SCOPES)[number]
 
+export const ERPC_IDENTITY_SCOPES = [
+  'openid',
+  'profile',
+  'email',
+] as const
+
+export type ErpcIdentityScope = (typeof ERPC_IDENTITY_SCOPES)[number]
+export type ErpcOAuthScope = ErpcCloudScope | ErpcIdentityScope
+
+const DEFAULT_CLOUD_LOGIN_SCOPES: readonly ErpcCloudScope[] = [
+  'usage:read',
+  'resources:read',
+]
+
 export interface DeviceAuthorization {
   readonly deviceCode: string
   readonly expiresIn: number
@@ -178,7 +192,7 @@ export class DeviceAuthClient {
     }
   }
 
-  async start(scopes: readonly ErpcCloudScope[]): Promise<DeviceAuthorization> {
+  async start(scopes: readonly ErpcOAuthScope[]): Promise<DeviceAuthorization> {
     const response = await this.#post('/oauth/device/authorization', {
       client_id: this.#clientId,
       scope: [...new Set(scopes)].join(' '),
@@ -197,6 +211,29 @@ export class DeviceAuthClient {
         'verification_uri_complete',
       ),
     }
+  }
+
+  /**
+   * Start a login using read-only Cloud scopes when the authorization server
+   * advertises them. During a staged Cloud OAuth rollout, fall back to the
+   * server's existing identity scopes instead of sending an unsupported scope.
+   */
+  async startLogin(
+    requestedScopes: readonly ErpcCloudScope[] = [],
+  ): Promise<DeviceAuthorization> {
+    if (requestedScopes.length > 0) return await this.start(requestedScopes)
+
+    const supported = await this.#supportedScopes()
+    const cloudScopesAvailable = supported !== null &&
+      DEFAULT_CLOUD_LOGIN_SCOPES.every((scope) => supported.has(scope))
+    if (cloudScopesAvailable) {
+      return await this.start(DEFAULT_CLOUD_LOGIN_SCOPES)
+    }
+
+    const identityScopes = supported === null
+      ? []
+      : ERPC_IDENTITY_SCOPES.filter((scope) => supported.has(scope))
+    return await this.start(identityScopes)
   }
 
   async poll(
@@ -283,6 +320,34 @@ export class DeviceAuthClient {
     } finally {
       clearTimeout(timeout)
       signal?.removeEventListener('abort', abort)
+    }
+  }
+
+  async #supportedScopes(): Promise<ReadonlySet<string> | null> {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), this.#requestTimeoutMs)
+    try {
+      const response = await this.#fetch(
+        withPath(this.#endpoint, '/.well-known/oauth-authorization-server'),
+        {
+          headers: { accept: 'application/json' },
+          signal: controller.signal,
+        },
+      )
+      if (!response.ok) return null
+      const body = await parseJson(response)
+      const scopes = body?.scopes_supported
+      if (
+        !Array.isArray(scopes) ||
+        scopes.some((scope) => typeof scope !== 'string')
+      ) return null
+      return new Set(scopes as string[])
+    } catch {
+      // Metadata discovery is an optimization. An empty scope lets the
+      // authorization server apply its documented identity-scope defaults.
+      return null
+    } finally {
+      clearTimeout(timeout)
     }
   }
 }

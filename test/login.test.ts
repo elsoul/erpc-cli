@@ -20,6 +20,11 @@ describe('CLI login', () => {
     const fetch = vi.fn<typeof globalThis.fetch>()
       .mockResolvedValueOnce(
         new Response(JSON.stringify({
+          scopes_supported: ['identify', 'email', 'openid', 'profile'],
+        })),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({
           device_code: 'device-secret',
           user_code: 'ABCD-EFGH',
           verification_uri: 'https://auth.example/device',
@@ -51,7 +56,7 @@ describe('CLI login', () => {
     })).rejects.toThrow('keychain unavailable')
 
     const revocation = new URLSearchParams(
-      String(fetch.mock.calls[2]?.[1]?.body),
+      String(fetch.mock.calls[3]?.[1]?.body),
     )
     expect(revocation.get('token')).toBe('refresh-secret')
   })

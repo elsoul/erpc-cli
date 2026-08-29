@@ -5,7 +5,10 @@ export {
   type DeviceAuthClientConfig,
   type DeviceAuthorization,
   ERPC_CLOUD_SCOPES,
+  ERPC_IDENTITY_SCOPES,
   type ErpcCloudScope,
+  type ErpcIdentityScope,
+  type ErpcOAuthScope,
   OAuthProtocolError,
   type OAuthTokenSet,
 } from './auth/device.ts'

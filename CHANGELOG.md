@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.2.2 — 2026-08-29
+
+- Make `erpc login` discover the authorization server's supported scopes and
+  fall back to identity authentication while Cloud OAuth is disabled.
+
 ## 0.2.1 — 2026-08-28
 
 - Rebuild the command interface with a typed declarative parser and generated,

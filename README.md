@@ -235,8 +235,10 @@ private node addresses through the Cloud API.
 erpc login
 ```
 
-The CLI opens the ERPC verification page and requests read-only usage and
-resource scopes. If the browser cannot be opened, follow the URL printed in the
+The CLI opens the ERPC verification page. It requests read-only usage and
+resource scopes when the authorization server advertises them; during rollout,
+it uses the existing identity scopes so base account authentication remains
+available. If the browser cannot be opened, follow the URL printed in the
 terminal. The access credential stays in process memory and the refresh
 credential is stored in the operating-system keychain. Linux login currently
 requires `secret-tool` and an available Secret Service; on Debian and Ubuntu it
@@ -244,7 +246,7 @@ is provided by the `libsecret-tools` package. The macOS and Windows binaries
 currently support local application and deployment commands, while native
 keychain-backed login on those systems remains on the roadmap.
 
-After login:
+When the login grants Cloud scopes:
 
 ```bash
 erpc usage monthly

@@ -5,7 +5,7 @@ describe('CLI welcome UI', () => {
   it('renders the ERPC welcome art within the terminal width', () => {
     const art = stripAnsi(renderErpcWelcomeArt(42))
 
-    expect(art).toContain('Welcome to ERPC v0.2.1')
+    expect(art).toContain('Welcome to ERPC v0.2.2')
     for (const line of art.split('\n')) expect(line.length <= 42).toBe(true)
   })
 
@@ -17,7 +17,7 @@ describe('CLI welcome UI', () => {
     })).resolves.toBe(0)
 
     const text = stripAnsi(output.join('\n'))
-    expect(text).toContain('Welcome to ERPC v0.2.1')
+    expect(text).toContain('Welcome to ERPC v0.2.2')
     expect(text).toContain('$ erpc login')
     expect(text).toContain('$ erpc app init')
     expect(text).toContain('$ erpc deploy')

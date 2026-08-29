@@ -48,6 +48,90 @@ describe('Device OAuth client', () => {
     expect(body.get('scope')).toBe('usage:read resources:read')
   })
 
+  it('uses identity scopes while Cloud OAuth is not advertised', async () => {
+    let capturedBody = ''
+    const auth = new DeviceAuthClient({
+      endpoint: 'https://auth.example',
+      fetch: async (_input, init) => {
+        if (init?.method !== 'POST') {
+          return new Response(JSON.stringify({
+            scopes_supported: ['identify', 'email', 'openid', 'profile'],
+          }))
+        }
+        capturedBody = String(init.body)
+        return new Response(JSON.stringify({
+          device_code: authorization.deviceCode,
+          user_code: authorization.userCode,
+          verification_uri: authorization.verificationUri,
+          verification_uri_complete: authorization.verificationUriComplete,
+          expires_in: authorization.expiresIn,
+          interval: authorization.interval,
+        }))
+      },
+    })
+
+    await expect(auth.startLogin()).resolves.toEqual(authorization)
+    expect(new URLSearchParams(capturedBody).get('scope')).toBe(
+      'openid profile email',
+    )
+  })
+
+  it('uses read-only Cloud scopes as soon as they are advertised', async () => {
+    let capturedBody = ''
+    const auth = new DeviceAuthClient({
+      endpoint: 'https://auth.example',
+      fetch: async (_input, init) => {
+        if (init?.method !== 'POST') {
+          return new Response(JSON.stringify({
+            scopes_supported: [
+              'openid',
+              'profile',
+              'email',
+              'usage:read',
+              'resources:read',
+            ],
+          }))
+        }
+        capturedBody = String(init.body)
+        return new Response(JSON.stringify({
+          device_code: authorization.deviceCode,
+          user_code: authorization.userCode,
+          verification_uri: authorization.verificationUri,
+          verification_uri_complete: authorization.verificationUriComplete,
+          expires_in: authorization.expiresIn,
+          interval: authorization.interval,
+        }))
+      },
+    })
+
+    await expect(auth.startLogin()).resolves.toEqual(authorization)
+    expect(new URLSearchParams(capturedBody).get('scope')).toBe(
+      'usage:read resources:read',
+    )
+  })
+
+  it('uses authorization-server defaults when metadata is unavailable', async () => {
+    let capturedBody = ''
+    const auth = new DeviceAuthClient({
+      endpoint: 'https://auth.example',
+      fetch: async (_input, init) => {
+        if (init?.method !== 'POST') return new Response(null, { status: 503 })
+        capturedBody = String(init.body)
+        return new Response(JSON.stringify({
+          device_code: authorization.deviceCode,
+          user_code: authorization.userCode,
+          verification_uri: authorization.verificationUri,
+          verification_uri_complete: authorization.verificationUriComplete,
+          expires_in: authorization.expiresIn,
+          interval: authorization.interval,
+        }))
+      },
+    })
+
+    await expect(auth.startLogin()).resolves.toEqual(authorization)
+    expect(new URLSearchParams(capturedBody).get('scope')).toBe('')
+  })
+
   it('polls through pending without exposing the device credential', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>()
       .mockResolvedValueOnce(

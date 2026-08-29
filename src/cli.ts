@@ -94,7 +94,7 @@ const parseScopes = (args: readonly string[]): readonly ErpcCloudScope[] => {
     requested.push(value as ErpcCloudScope)
     index++
   }
-  return requested.length > 0 ? requested : ['usage:read', 'resources:read']
+  return requested
 }
 
 const parseRuntime = (value: string | undefined): AppRuntime | undefined => {
@@ -225,7 +225,7 @@ const executeCliCommand = async (
   if (command === 'login') {
     const auth = createAuth()
     const store = createStore()
-    const authorization = await auth.start(parseScopes(args.slice(1)))
+    const authorization = await auth.startLogin(parseScopes(args.slice(1)))
     output(`Open ${authorization.verificationUriComplete}`)
     output(`Device code: ${authorization.userCode}`)
     if (!args.includes('--no-open')) {
