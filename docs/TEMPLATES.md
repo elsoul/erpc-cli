@@ -16,9 +16,23 @@ ships in a later release.
   across time (a re-tagged commit produces a different archive even though
   GitHub keeps serving it at the same URL), so this CLI never fetches them.
 - The asset is a gzip-compressed tar (`.tar.gz`). `erpc-template.json` must sit
-  either at the archive root or one level under a single top-level directory
-  (the common `git archive`/`tar czf -C dir .` shapes both work; a mix of the
-  two in one archive does not).
+  either at the archive root or one level under a single top-level directory.
+  Build it with:
+
+  ```bash
+  git archive --format=tar.gz --output=erpc-template.tar.gz <tag>
+  ```
+
+  Run from inside the template's git repository at the tag being released. **Do
+  not use `tar czf out.tar.gz -C dir .`** — the leading `.` produces
+  `./`-prefixed entries (`./erpc-template.json`, `./wrangler.toml`, ...), and
+  every one of them is rejected as a path that escapes the extraction root
+  〔verified: `tar czf` with `-C dir .` produces `./` entries; this CLI's own
+  `extractTemplateArchive` rejects the first one it sees〕. If you package
+  without git for some reason, name the actual directory instead of `.` (for
+  example `tar czf out.tar.gz -C <parent> <template-dir>`, run one level above
+  `<template-dir>`) so the archive gets a single real top-level directory rather
+  than `./`-prefixed entries.
 - **No symlinks, hard links, device files, or FIFOs.** The CLI rejects every
   entry that is not a plain file or a directory.
 - **No pax `path`/`linkpath`/`size` header overrides.** This CLI's tar reader
@@ -110,10 +124,14 @@ custom_domain = true
 ```
 
 No other route form is accepted: no top-level `route`, no string `routes`
-entries, no `zone_id`/`zone_name`, and no `[env.*]` tables. This keeps a
-template from routing traffic to a zone in the user's Cloudflare account that
-the user never typed in. It is a declared-shape check, not a sandbox — see
-"Trust boundary" below.
+entries, no `zone_id`/`zone_name`, and no `[env.*]` tables. `domain` must come
+from a `prompts[]` entry with `target: "var"` and `flag: "domain"` — a `derived`
+key or a flag-less `var` named `domain` is rejected even though it would
+otherwise resolve, because neither one is guaranteed to hold a value the user
+actually typed (a `derived` expression can be a fixed string; a flag-less `var`
+never gets the `--domain` treatment). This keeps a template from routing traffic
+to a zone in the user's Cloudflare account that the user never typed in. It is a
+declared-shape check, not a sandbox — see "Trust boundary" below.
 
 ### `[secrets]` in `wrangler.toml`
 
@@ -163,8 +181,17 @@ expectations before they run it.
 
 This CLI ships a small, hand-maintained `name -> { owner, repo, asset }` table
 (`src/app/template-registry.ts`) plus a `pins: { tag: sha256 }` map per name.
-Getting a template added or pinned there is a request to the erpc-cli
-maintainers, not something a template repository can do on its own — there is
-intentionally no way for a template to make this CLI trust an arbitrary
-`owner/repo` at runtime (a remote, mutable index would let whoever controls that
-index point `name@tag` at a different repository without the user noticing).
+**This table ships empty in the current release** (see the README's
+[template section](../README.md#create-an-application-from-a-template) for why);
+`erpc app init --template <name>@<tag>` fails with "Unknown template" for every
+name until a later release adds an entry. Getting a template added or pinned
+there is a request to the erpc-cli maintainers, not something a template
+repository can do on its own — there is intentionally no way for a template to
+make this CLI trust an arbitrary `owner/repo` at runtime (a remote, mutable
+index would let whoever controls that index point `name@tag` at a different
+repository without the user noticing). Once a name is registered, adding a
+`pins` entry for a new tag is the follow-up commit; until a tag has one,
+`--sha256 <hex64>` lets a user fetch it anyway (Decision
+
+1. — that flag only pins a tag of an already-registered name, it cannot register
+   a new name.

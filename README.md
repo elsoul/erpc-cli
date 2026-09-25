@@ -122,8 +122,27 @@ collects answers, and generates a `cloudflare-worker` application:
 erpc app init my-wallet --template stablecoin-manager@v0.1.0
 ```
 
-A tag this CLI release does not have a bundled checksum for requires an explicit
-`--sha256`:
+**This release ships with an empty template registry.** The public template
+repository's owner, repo, and asset name (`TEMPLATE_REGISTRY` in
+`src/app/template-registry.ts`) were not decided when this release was cut, so
+`--template <name>@<tag>` fails with "Unknown template" for every `<name>` until
+a later release adds an entry shaped like:
+
+```ts
+export const TEMPLATE_REGISTRY: TemplateRegistry = {
+  'stablecoin-manager': {
+    source: { owner: 'elsoul', repo: '<repo>', asset: 'erpc-template.tar.gz' },
+    pins: { 'v0.1.0': '<64 lowercase hex characters>' }, // omit to ship unpinned
+  },
+}
+```
+
+The `stablecoin-manager@v0.1.0` example above becomes valid once that entry
+(with a `v0.1.0` pin) ships in a future release.
+
+Once a template _name_ is registered, `--sha256` lets you use a _tag_ that
+release doesn't have a bundled checksum for yet — it cannot register an unknown
+name by itself:
 
 ```bash
 erpc app init my-wallet --template stablecoin-manager@v0.2.0 \
@@ -132,8 +151,11 @@ erpc app init my-wallet --template stablecoin-manager@v0.2.0 \
 
 Answer template prompts non-interactively with `--set KEY=VALUE` (repeatable),
 or with the `--domain`/`--email` shorthands for prompts that declare those
-flags. Non-interactive runs (no terminal, or `--yes`) require every prompt to
-have a `--set`/shorthand value or a manifest default; a run with missing or
+flags. `--yes` is required for every non-interactive run — including one with no
+terminal attached: the CLI never infers non-interactive mode from a missing TTY
+and silently falls back to defaults; without `--yes` it fails with an explicit
+"Use --yes in non-interactive mode" error instead. With `--yes`, every prompt
+needs a `--set`/shorthand value or a manifest default; a run with missing or
 invalid answers fails once, listing every problem together. `--set` never
 accepts a value for a secret prompt (`secret-generate`, `secret-pipe`,
 `secret-input`) — those are generated during a later `erpc deploy`, never during
