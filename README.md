@@ -289,6 +289,66 @@ The node must be user-owned, reachable through OpenSSH, and use systemd. This
 first transport does not expose ERPC infrastructure credentials or resolve
 private node addresses through the Cloud API.
 
+## Deploy to Cloudflare
+
+An application created from a `cloudflare-worker` template (see
+[Create an application from a template](#create-an-application-from-a-template))
+deploys through project-local `wrangler` instead of SSH:
+
+```bash
+erpc deploy
+```
+
+`--target cloudflare` is implied for a `cloudflare-worker` application and does
+not need to be spelled out; it is only rejected when it disagrees with the
+manifest (for example passing it against a `node`/`deno` application).
+Additional flags:
+
+```bash
+erpc deploy --config /path/to/app/erpc.toml
+erpc deploy --yes                      # non-interactive; fail on any missing answer
+erpc deploy --ack-backup WALLET_MNEMONIC # acknowledge a secret-pipe backup non-interactively
+erpc deploy --no-provision             # skip Cloudflare KV/secret provisioning
+erpc deploy --dry-run                  # `wrangler deploy --dry-run`; reports missing secrets instead of stopping
+erpc deploy --verify-only              # re-run only the post-deploy verification probes
+```
+
+Each run authenticates with `wrangler whoami`, running `wrangler login`
+interactively only when no session exists and `CLOUDFLARE_API_TOKEN` is not set
+(a token present with no valid session stops rather than silently switching
+identity). It then fixes a Cloudflare account id into the project's
+`wrangler.toml`, reuses or creates any KV namespace the template declares,
+generates or collects any Worker secret the template declares that does not
+already exist, and finally deploys and probes the result. **An existing
+Cloudflare Worker secret is never overwritten** by this command.
+
+A secret value never touches a file, an argument list, or an error message: it
+is generated in memory, piped to `wrangler secret put` on stdin, and the buffer
+used to generate it is zeroed immediately afterward.
+
+CI re-deploys of an already-provisioned application should use:
+
+```bash
+erpc deploy --no-provision --yes
+```
+
+which never generates a wallet or a new secret and never opens an interactive
+prompt.
+
+**Required Cloudflare API token permissions**: creating a new Worker needs
+`Workers Scripts:Edit` (Workers Admin); binding a route or a custom domain
+additionally needs `Zone:Workers Routes:Edit`.
+
+**Trust boundary**: a template's `[build].command`, `cloudflare.preflight`
+commands, a `secret-pipe` prompt's `command`, and `wrangler` itself (invoked as
+`pnpm exec wrangler`) are template-authored scripts. This command does not
+sandbox them: they run with your permissions. Pin verification (`--sha256` or a
+CLI-bundled pin) is the only control on that content.
+
+**Known limitation (Windows)**: `erpc deploy --target cloudflare` requires
+resolving `pnpm.cmd` the same way the Node.js SSH deploy path does, and is not
+supported on Windows in this release; use macOS or Linux.
+
 ## Cloud login and read-only commands
 
 ```bash

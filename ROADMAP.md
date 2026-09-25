@@ -12,12 +12,19 @@ ready for public use.
 - `erpc app init` templates for Node.js with pnpm and Deno
 - private `~/.erpc` configuration and application discovery
 - local Linux build-gated SSH deployment with systemd activation and rollback
+- `erpc deploy --target cloudflare` for a `cloudflare-worker` application
+  (project-local `wrangler`, KV/secret provisioning that never overwrites an
+  existing secret, and post-deploy health/OAuth verification), Linux and macOS
+  only
 - standalone Deno-compiled CLI binaries for Linux, macOS, and Windows on x86-64
   and ARM64
 - checksum-verified installation from ERPC object storage
 
 ## Planned
 
+- `erpc deploy --target cloudflare` on Windows
+- a `workers.dev`-only Cloudflare deployment target for a project without a
+  custom domain
 - inspect and validate `erpc.toml` without deploying
 - resolve owned Cloud compute resources into deployment targets without exposing
   infrastructure credentials

@@ -14,6 +14,15 @@
   have a bundled checksum for yet. See
   [`docs/TEMPLATES.md`](./docs/TEMPLATES.md) for the manifest contract and
   [the README](./README.md#create-an-application-from-a-template) for usage.
+- Add `erpc deploy --target cloudflare` for a `cloudflare-worker` application:
+  authenticate and fix a Cloudflare account through project-local `wrangler`,
+  reuse-or-create KV namespaces, generate or collect Worker secrets without ever
+  overwriting an existing one, run a read-only preflight, deploy, and verify the
+  result with `/health` and OAuth-authorize-redirect probes. `--no-provision`,
+  `--dry-run`, `--verify-only`, and `--ack-backup <KEY>` are new flags. Linux
+  and macOS only in this release; see
+  [the README](./README.md#deploy-to-cloudflare) for usage and the required
+  Cloudflare API token permissions.
 
 ## 0.2.2 — 2026-08-29
 
