@@ -8,7 +8,12 @@
   `--set`/`--domain`/`--email` or interactively, and generate a
   `cloudflare-worker` application. Broker (OAuth client) registration is not yet
   implemented in this release; pass `--set APP_OIDC_CLIENT_ID=<id>` for
-  templates that declare a `broker-register` prompt.
+  templates that declare a `broker-register` prompt. This release ships with no
+  templates registered (`TEMPLATE_REGISTRY` is empty); once a name is
+  registered, `--sha256 <hex64>` can still fetch a tag that release does not
+  have a bundled checksum for yet. See
+  [`docs/TEMPLATES.md`](./docs/TEMPLATES.md) for the manifest contract and
+  [the README](./README.md#create-an-application-from-a-template) for usage.
 
 ## 0.2.2 — 2026-08-29
 

@@ -23,16 +23,21 @@ ships in a later release.
   git archive --format=tar.gz --output=erpc-template.tar.gz <tag>
   ```
 
-  Run from inside the template's git repository at the tag being released. **Do
-  not use `tar czf out.tar.gz -C dir .`** — the leading `.` produces
-  `./`-prefixed entries (`./erpc-template.json`, `./wrangler.toml`, ...), and
-  every one of them is rejected as a path that escapes the extraction root
-  〔verified: `tar czf` with `-C dir .` produces `./` entries; this CLI's own
-  `extractTemplateArchive` rejects the first one it sees〕. If you package
-  without git for some reason, name the actual directory instead of `.` (for
-  example `tar czf out.tar.gz -C <parent> <template-dir>`, run one level above
-  `<template-dir>`) so the archive gets a single real top-level directory rather
-  than `./`-prefixed entries.
+  Run from inside the template's git repository at the tag being released. This
+  is the only packaging command this contract recommends — every `tar`
+  invocation we tried has a way to produce an archive this CLI rejects:
+  **`tar czf out.tar.gz -C dir .`** produces `./`-prefixed entries
+  (`./erpc-template.json`, `./wrangler.toml`, ...), every one of which is
+  rejected as a path that escapes the extraction root 〔verified: `tar czf` with
+  `-C dir .` produces `./` entries; `extractTemplateArchive` rejects the first
+  one it sees〕, and naming the real directory instead of `.`
+  (`tar czf
+  out.tar.gz -C <parent> <template-dir>`) only moves the problem:
+  GNU tar falls back to its `@LongLink` extension (typeflag `L`) for any path
+  over 100 bytes, and that typeflag is rejected too 〔verified: a nested path of
+  ~119 bytes packaged this way produces a `./@LongLink` entry;
+  `extractTemplateArchive` rejects it as an unsupported entry type〕. Use
+  `git archive`.
 - **No symlinks, hard links, device files, or FIFOs.** The CLI rejects every
   entry that is not a plain file or a directory.
 - **No pax `path`/`linkpath`/`size` header overrides.** This CLI's tar reader
@@ -124,14 +129,18 @@ custom_domain = true
 ```
 
 No other route form is accepted: no top-level `route`, no string `routes`
-entries, no `zone_id`/`zone_name`, and no `[env.*]` tables. `domain` must come
-from a `prompts[]` entry with `target: "var"` and `flag: "domain"` — a `derived`
-key or a flag-less `var` named `domain` is rejected even though it would
-otherwise resolve, because neither one is guaranteed to hold a value the user
-actually typed (a `derived` expression can be a fixed string; a flag-less `var`
-never gets the `--domain` treatment). This keeps a template from routing traffic
-to a zone in the user's Cloudflare account that the user never typed in. It is a
-declared-shape check, not a sandbox — see "Trust boundary" below.
+entries, no `zone_id`/`zone_name`, and no `[env.*]` tables. `domain` may come
+only from a value the user actually typed: the `prompts[]` entry whose `key` is
+`"domain"` must itself be `{ target: "var", flag: "domain" }`, that entry must
+not declare a `default` (a default would let a non-interactive `--yes` run route
+to it with no value the user ever supplied), and at most one `var` in the whole
+manifest may declare `flag: "domain"` in the first place. A `derived` `domain`
+key, a flag-less `var` named `domain`, a `domain` with a default, a second
+`flag: "domain"` prompt under a different key, or any combination of these is
+rejected even though `{{domain}}` would otherwise still resolve. This keeps a
+template from routing traffic to a zone in the user's Cloudflare account that
+the user never typed in. It is a declared-shape check, not a sandbox — see
+"Trust boundary" below.
 
 ### `[secrets]` in `wrangler.toml`
 
@@ -190,8 +199,15 @@ repository can do on its own — there is intentionally no way for a template to
 make this CLI trust an arbitrary `owner/repo` at runtime (a remote, mutable
 index would let whoever controls that index point `name@tag` at a different
 repository without the user noticing). Once a name is registered, adding a
-`pins` entry for a new tag is the follow-up commit; until a tag has one,
-`--sha256 <hex64>` lets a user fetch it anyway (Decision
+`pins` entry for a new tag is the follow-up commit that lets users skip
+`--sha256`; a tag with no `pins` entry yet still works with an explicit
+`--sha256 <hex64>`, but that flag only unlocks a tag of an _already-registered_
+name — it cannot register a new one.
 
-1. — that flag only pins a tag of an already-registered name, it cannot register
-   a new name.
+To compute the sha256 to put in a `pins` entry (or to pass as `--sha256`
+yourself while a tag is still unpinned), hash the exact release asset bytes:
+
+```bash
+sha256sum erpc-template.tar.gz          # Linux
+shasum -a 256 erpc-template.tar.gz      # macOS
+```
