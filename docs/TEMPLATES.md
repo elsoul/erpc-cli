@@ -106,12 +106,14 @@ there is no expression language and no arbitrary code evaluation.
 
 `cloudflare.kv[].title` is narrower still: it may reference **only**
 `{{app.name}}`. Unlike `derived.expr`, a kv title is interpolated at
-`erpc deploy` time, not `erpc app init` time, and that deploy-time interpolation
-only ever fills in `{{app.name}}` — `{{broker.issuer}}` and every prompt key
-(including a `broker-register` key, which cannot resolve until after deploy-time
-interpolation would already need it) are left unresolved in a real deploy. The
-lint rejects any other reference here rather than accepting a title that could
-only ever fail at deploy time.
+`erpc deploy` time, not `erpc app init` time — and by then, no answer from
+`init` (including a `broker-register` key, which does resolve during `init`, in
+the single pass described above, well before any `erpc deploy` ever runs) is
+available any more: `erpc.toml` only carries `app.name` forward, plus
+`broker.issuer` and any OIDC values already baked into `wrangler.toml`'s
+`[vars]`. So `{{broker.issuer}}` and every prompt key are left unresolved in a
+real deploy. The lint rejects any other reference here rather than accepting a
+title that could only ever fail at deploy time.
 
 ### `render[]` and placeholders
 

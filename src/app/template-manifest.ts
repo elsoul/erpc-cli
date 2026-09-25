@@ -312,7 +312,7 @@ const lintTemplateManifest = (manifest: TemplateManifest): void => {
       // to interpolate a value that does not exist yet, regardless of
       // manifest order or whether `--set` supplied it. Rejecting this at
       // lint time (rather than leaving it to fail at answer-collection time)
-      // is packet Decision 5(b).
+      // is packet Decision 5(ii).
       if (prompt.target === 'derived' && brokerRegisterKeys.has(name)) {
         violations.push(
           `L2: "${prompt.key}" references broker-register key "${name}" in a derived expression (broker registration resolves after every other answer, so no derived value may depend on it)`,
@@ -327,20 +327,20 @@ const lintTemplateManifest = (manifest: TemplateManifest): void => {
     }
     if (!isSecretPromptTarget(prompt.target)) nonSecretKeysSoFar.add(prompt.key)
   }
-  // `cloudflare.kv[].title` is only ever interpolated at deploy time (PR-B),
-  // and only with `{{app.name}}` - `{{broker.issuer}}` and every prompt key
+  // `cloudflare.kv[].title` is only ever interpolated at deploy time, and
+  // only with `{{app.name}}` - `{{broker.issuer}}` and every prompt key
   // (including a non-secret one that a template author might expect, and a
   // `broker-register` key in particular, which cannot resolve until *after*
   // deploy-time interpolation would already need it) are all left literally
   // unresolved in the title a template author would see. Restricting this to
-  // `app.name` alone (packet Decision 5(c)) keeps the lint's accepted shape
+  // `app.name` alone (packet Decision 5(iii)) keeps the lint's accepted shape
   // matching what the deploy step can actually fill in, instead of accepting
   // references that can only ever fail later.
   for (const kv of manifest.cloudflare.kv ?? []) {
     for (const name of extractPlaceholderNames(kv.title)) {
       if (name === 'app.name') continue
       violations.push(
-        `L2: cloudflare.kv title references "${name}", but only {{app.name}} is interpolated for a kv title (PR-B interpolates nothing else there)`,
+        `L2: cloudflare.kv title references "${name}", but only {{app.name}} is interpolated for a kv title`,
       )
     }
   }
@@ -437,7 +437,7 @@ const lintTemplateManifest = (manifest: TemplateManifest): void => {
   // file). A manifest whose `default` already contains one would always fail
   // at answer-collection time with no way for a template author to fix it
   // short of removing the default - reject it here instead, with a message
-  // that names the actual problem.
+  // that names the actual problem (packet Decision 5(iv)).
   for (const prompt of manifest.prompts) {
     if (
       prompt.target === 'var' && prompt.default !== undefined &&
@@ -605,7 +605,7 @@ const lintCloudflareWorkerConfig = (
           // carries flag "domain" while a `derived` (or flag-less `var`)
           // "domain" key supplies a fixed/attacker-chosen value would
           // otherwise pass, since `{{domain}}` still resolves and *some*
-          // prompt still has flag "domain" (packet Decision 5(c)).
+          // prompt still has flag "domain" (packet Decision 5(i)).
           const domainPrompt = manifest.prompts.find((prompt) =>
             prompt.key === 'domain'
           )
@@ -620,7 +620,7 @@ const lintCloudflareWorkerConfig = (
           ) {
             // A `default` would let `--yes` route to that zone with no value
             // the user actually typed - the "domain" prompt must require a
-            // real answer (packet Decision 5(a)).
+            // real answer (packet Decision 5(i)).
             violations.push(
               `L12: ${configPath} [[routes]] binds to {{domain}}, but the "domain" prompt declares a default (it must require a typed answer)`,
             )
