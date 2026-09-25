@@ -312,8 +312,7 @@ const lintTemplateManifest = (manifest: TemplateManifest): void => {
       // to interpolate a value that does not exist yet, regardless of
       // manifest order or whether `--set` supplied it. Rejecting this at
       // lint time (rather than leaving it to fail at answer-collection time)
-      // is el 裁定 ② (exec plan `2026-09-25-app-auth-broker-and-erpc-cli-template.md`,
-      // the "14:5xZ el" entry).
+      // is packet Decision 5(b).
       if (prompt.target === 'derived' && brokerRegisterKeys.has(name)) {
         violations.push(
           `L2: "${prompt.key}" references broker-register key "${name}" in a derived expression (broker registration resolves after every other answer, so no derived value may depend on it)`,
@@ -334,10 +333,9 @@ const lintTemplateManifest = (manifest: TemplateManifest): void => {
   // `broker-register` key in particular, which cannot resolve until *after*
   // deploy-time interpolation would already need it) are all left literally
   // unresolved in the title a template author would see. Restricting this to
-  // `app.name` alone (el ruling, recorded alongside the exec plan's other
-  // numbered rulings) keeps the lint's accepted shape matching what the
-  // deploy step can actually fill in, instead of accepting references that
-  // can only ever fail later.
+  // `app.name` alone (packet Decision 5(c)) keeps the lint's accepted shape
+  // matching what the deploy step can actually fill in, instead of accepting
+  // references that can only ever fail later.
   for (const kv of manifest.cloudflare.kv ?? []) {
     for (const name of extractPlaceholderNames(kv.title)) {
       if (name === 'app.name') continue
@@ -622,10 +620,7 @@ const lintCloudflareWorkerConfig = (
           ) {
             // A `default` would let `--yes` route to that zone with no value
             // the user actually typed - the "domain" prompt must require a
-            // real answer. This specific prohibition is el 裁定 ① (exec plan
-            // `2026-09-25-app-auth-broker-and-erpc-cli-template.md`, the
-            // "14:5xZ el" entry); packet Decision 5(c) covers the flag
-            // requirement above but not this one.
+            // real answer (packet Decision 5(a)).
             violations.push(
               `L12: ${configPath} [[routes]] binds to {{domain}}, but the "domain" prompt declares a default (it must require a typed answer)`,
             )
