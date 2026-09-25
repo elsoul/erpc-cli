@@ -396,7 +396,7 @@ describe('extractTemplateArchive', () => {
     )
   })
 
-  // steiner r1 B3: the disallowed-name checks must be case-insensitive.
+  // The disallowed-name checks must be case-insensitive.
   it.each(
     [
       ['.GIT/config', '.git'],
@@ -418,7 +418,7 @@ describe('extractTemplateArchive', () => {
     },
   )
 
-  it('rejects a file path that collides with a needed directory (cyan r1 N1)', async () => {
+  it('rejects a file path that collides with a needed directory', async () => {
     const archive = await tarGzFromInputs([
       fileInput('erpc-template.json', MANIFEST_CONTENT),
       fileInput('a', 'file content'),

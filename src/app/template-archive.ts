@@ -188,7 +188,7 @@ const splitAndValidateRawPath = (
 }
 
 /** Case-insensitive: `.GIT`, `ERPC.toml`, `Node_Modules/`, `.ENV` must be
- * rejected exactly like their lowercase forms (steiner r1 B3). */
+ * rejected exactly like their lowercase forms. */
 const rejectDisallowedFinalPath = (
   segments: readonly string[],
   displayPath: string,
@@ -402,7 +402,7 @@ export const extractTemplateArchive = async (
 
   // A path used as a file must not also be needed as a directory prefix of
   // another path (e.g. both "a" and "a/b"): writing "a" first, then trying to
-  // mkdir "a" for "a/b", would partially write the archive (cyan r1 N1).
+  // mkdir "a" for "a/b", would partially write the archive.
   const neededDirectories = new Set<string>()
   for (const path of seen) {
     const pathSegments = path.split('/')

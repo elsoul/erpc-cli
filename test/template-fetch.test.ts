@@ -157,7 +157,7 @@ describe('obtainVerifiedTemplateArchive', () => {
     ).rejects.toThrow('404')
   })
 
-  it('re-verifies a cache entry on every read and heals a corrupted one (steiner r1 N3/N4)', async () => {
+  it('re-verifies a cache entry on every read and heals a corrupted one', async () => {
     const erpcHome = await temporaryErpcHome()
     const goodBody = new TextEncoder().encode('correct archive bytes')
     const expected = await sha256Hex(goodBody)

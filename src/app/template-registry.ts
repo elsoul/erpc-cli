@@ -33,7 +33,7 @@ export const resolveTemplateRegistryEntry = (
   name: string,
 ): TemplateRegistryEntry => {
   // `Object.hasOwn` (not bracket access) so a template named e.g.
-  // "constructor" can't resolve through the prototype chain (steiner r1 N7).
+  // "constructor" can't resolve through the prototype chain.
   const entry = Object.hasOwn(registry, name) ? registry[name] : undefined
   if (!entry) {
     const known = Object.keys(registry)

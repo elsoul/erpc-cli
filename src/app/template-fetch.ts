@@ -46,9 +46,9 @@ const downloadTemplateArchive = async (
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), timeoutMs)
   // The whole body lives in one try/finally so the timer is cleared on every
-  // exit path, including a rejected `fetch()` call itself (steiner r1 N12 -
-  // the previous split try blocks left the timer running when `fetcher()`
-  // threw, since that path never reached the second block's `finally`).
+  // exit path, including a rejected `fetch()` call itself (a split into two
+  // try blocks would leave the timer running when `fetcher()` threw, since
+  // that path never reaches the second block's `finally`).
   try {
     let response: Response
     try {
@@ -165,8 +165,7 @@ export const obtainVerifiedTemplateArchive = async (
     // We only reach `EEXIST` after the cache-read above rejected the existing
     // file's content (it didn't hash to `expectedSha256`) - it is corrupt or
     // stale, not merely "already cached". Replace it with the bytes this call
-    // just verified instead of silently leaving the bad entry in place
-    // (steiner r1 N4).
+    // just verified instead of silently leaving the bad entry in place.
     await unlink(cachePath).catch(() => undefined)
     await writeFile(cachePath, bytes, {
       encoding: undefined,

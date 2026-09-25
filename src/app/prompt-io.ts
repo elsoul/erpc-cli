@@ -27,8 +27,7 @@ export interface PromptIO {
   /**
    * Displays an informational message (a summary, a notice) with no answer
    * to collect. Optional so an existing `PromptIO` implementation or test
-   * double built against Decision 13's original export shape keeps compiling
-   * (steiner r2 N-5).
+   * double built against Decision 13's original export shape keeps compiling.
    */
   readonly inform?: (message: string) => void
   readonly isInteractive: () => boolean
