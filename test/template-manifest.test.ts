@@ -101,6 +101,49 @@ describe('parseTemplateManifest', () => {
     expect(() => parseTemplateManifest(manifest)).toThrow('L2')
   })
 
+  it('L2: rejects a derived expr referencing a broker-register key, declared before or after it (packet Decision 6)', () => {
+    // Broker registration always resolves in a single pass after every
+    // `var`/`derived` prompt (design §2.6 order), so a `derived` value -
+    // computed in that earlier pass - can never actually observe the
+    // registered client_id no matter where either key sits in the manifest.
+    // A retry via `--set APP_OIDC_CLIENT_ID=<id>` does not help either: the
+    // `derived` prompt has already failed to resolve by the time `--set` is
+    // even consulted for the broker-register key. This must be rejected at
+    // lint time rather than surfacing as "Unresolved template placeholder"
+    // after every other answer already validated fine.
+    const declaredAfter = baseManifest()
+    declaredAfter.prompts = [
+      {
+        key: 'APP_OIDC_CLIENT_ID',
+        target: 'broker-register',
+        redirectUris: ['https://example.com/callback'],
+        clientName: '{{app.name}}',
+      },
+      {
+        key: 'DERIVED_FROM_CLIENT',
+        target: 'derived',
+        expr: 'prefix-{{APP_OIDC_CLIENT_ID}}',
+      },
+    ]
+    expect(() => parseTemplateManifest(declaredAfter)).toThrow('L2')
+
+    const declaredBefore = baseManifest()
+    declaredBefore.prompts = [
+      {
+        key: 'DERIVED_FROM_CLIENT',
+        target: 'derived',
+        expr: 'prefix-{{APP_OIDC_CLIENT_ID}}',
+      },
+      {
+        key: 'APP_OIDC_CLIENT_ID',
+        target: 'broker-register',
+        redirectUris: ['https://example.com/callback'],
+        clientName: '{{app.name}}',
+      },
+    ]
+    expect(() => parseTemplateManifest(declaredBefore)).toThrow('L2')
+  })
+
   it('L3: rejects a placeholder referencing a secret key', () => {
     const manifest = baseManifest()
     manifest.prompts = [
@@ -202,7 +245,7 @@ describe('parseTemplateManifest', () => {
     expect(() => parseTemplateManifest(manifest)).toThrow('L2')
   })
 
-  it('rejects an invalid validate.pattern regex at lint time (cyan r1 N5)', () => {
+  it('rejects an invalid validate.pattern regex at lint time', () => {
     const manifest = baseManifest()
     manifest.prompts = manifest.prompts.map((prompt) =>
       prompt.key === 'domain'
@@ -214,7 +257,7 @@ describe('parseTemplateManifest', () => {
     )
   })
 
-  it('L12: rejects more than one var prompt declaring flag "domain" (steiner r2 N-9)', () => {
+  it('L12: rejects more than one var prompt declaring flag "domain"', () => {
     const manifest = baseManifest()
     manifest.prompts = [
       ...manifest.prompts,
@@ -228,7 +271,7 @@ describe('parseTemplateManifest', () => {
     expect(() => parseTemplateManifest(manifest)).toThrow('L12')
   })
 
-  it('L12: rejects cloudflare.config when it is not listed in render[] (steiner r2 N-4)', () => {
+  it('L12: rejects cloudflare.config when it is not listed in render[]', () => {
     const manifest = baseManifest()
     manifest.render = []
     expect(() => parseTemplateManifest(manifest)).toThrow('L12')
@@ -323,7 +366,7 @@ describe('lintTemplateFiles', () => {
     ).toThrow('L12')
   })
 
-  // steiner r1 B2 / cyan r1 B2: {{domain}} in a [[routes]] entry must trace
+  // {{domain}} in a [[routes]] entry must trace
   // back to a `var` prompt flagged "domain" - not a `derived` key or a
   // flag-less `var`, either of which could route to a domain the user never
   // actually supplied.
@@ -358,7 +401,30 @@ describe('lintTemplateFiles', () => {
     ).toThrow('L12')
   })
 
-  it('L12: rejects a decoy where a different key carries flag "domain" while "domain" itself is a fixed derived value (steiner r2 B-1)', () => {
+  it('L12: rejects a "domain" var with no flag at all and no default either (packet Decision 5(c), mutant MR15)', () => {
+    // Isolates the missing-flag condition from every other way this prompt
+    // could be wrong: no `default`, a `validate` pattern, otherwise a
+    // perfectly ordinary `var` prompt - only `flag` itself is absent. A
+    // mutant that only rejects on "has a default" (ignoring whether `flag`
+    // is actually "domain") would wrongly accept this manifest.
+    const source = baseManifest()
+    source.prompts = source.prompts.map((prompt) =>
+      prompt.key === 'domain'
+        ? {
+          key: 'domain',
+          target: 'var',
+          question: 'Custom domain',
+          validate: { pattern: '[a-z.]+' },
+        }
+        : prompt
+    ) as TemplatePrompt[]
+    const manifest = parseTemplateManifest(source)
+    expect(() =>
+      lintTemplateFiles(manifest, files({ 'wrangler.toml': wranglerToml }))
+    ).toThrow('L12')
+  })
+
+  it('L12: rejects a decoy where a different key carries flag "domain" while "domain" itself is a fixed derived value', () => {
     const source = baseManifest()
     source.prompts = [
       {
@@ -377,7 +443,7 @@ describe('lintTemplateFiles', () => {
     ).toThrow('L12')
   })
 
-  it('L12: rejects a "domain" var flagged "domain" that also declares a default (cyan r2 B2-P2)', () => {
+  it('L12: rejects a "domain" var flagged "domain" that also declares a default', () => {
     const source = baseManifest()
     source.prompts = source.prompts.map((prompt) =>
       prompt.key === 'domain'
@@ -390,7 +456,7 @@ describe('lintTemplateFiles', () => {
     ).toThrow('L12')
   })
 
-  it('does not misread a double quote embedded in a single-quoted literal on the same line (steiner r1 N5)', () => {
+  it('does not misread a double quote embedded in a single-quoted literal on the same line', () => {
     const manifest = parseTemplateManifest(baseManifest())
     const trickyLine =
       `weird = { note = 'contains a bare " character', real = "{{app.name}}" }`

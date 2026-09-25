@@ -275,6 +275,7 @@ const lintTemplateManifest = (manifest: TemplateManifest): void => {
   const seenKeys = new Set<string>()
   const nonSecretKeysSoFar = new Set<string>()
   const secretKeys = new Set<string>()
+  const brokerRegisterKeys = new Set<string>()
 
   for (const prompt of manifest.prompts) {
     if (RESERVED_KEYS.has(prompt.key)) {
@@ -287,10 +288,11 @@ const lintTemplateManifest = (manifest: TemplateManifest): void => {
     }
     seenKeys.add(prompt.key)
     if (isSecretPromptTarget(prompt.target)) secretKeys.add(prompt.key)
+    if (prompt.target === 'broker-register') brokerRegisterKeys.add(prompt.key)
   }
 
-  // `{{broker.issuer}}` only resolves when a `broker` section exists
-  // (steiner r1 N6); referencing it otherwise is an undefined-key reference.
+  // `{{broker.issuer}}` only resolves when a `broker` section exists;
+  // referencing it otherwise is an undefined-key reference.
   const isBuiltIn = (name: string): boolean =>
     name === 'app.name' ||
     (name === 'broker.issuer' && manifest.broker !== undefined)
@@ -300,6 +302,19 @@ const lintTemplateManifest = (manifest: TemplateManifest): void => {
       if (secretKeys.has(name)) {
         violations.push(
           `L3: "${prompt.key}" references secret key "${name}" in a placeholder`,
+        )
+        continue
+      }
+      // A `derived` value is computed in the same pass as every other
+      // `var`/`derived` prompt, before broker-register is resolved (it
+      // always runs once, last) - referencing the broker-register key from a
+      // `derived` expr would try to interpolate a value that does not exist
+      // yet, regardless of manifest order or whether `--set` supplied it
+      // (packet Decision 6: broker-register resolves in its own single pass
+      // after every `var`/`derived` prompt).
+      if (prompt.target === 'derived' && brokerRegisterKeys.has(name)) {
+        violations.push(
+          `L2: "${prompt.key}" references broker-register key "${name}" in a derived expression (broker registration resolves after every other answer, so no derived value may depend on it)`,
         )
         continue
       }
@@ -348,7 +363,7 @@ const lintTemplateManifest = (manifest: TemplateManifest): void => {
 
   // At most one `var` may claim flag "domain": the --domain shorthand and the
   // L12 route-origin check both assume that flag uniquely identifies one
-  // prompt (steiner r2 N-9).
+  // prompt.
   const domainFlaggedVarCount =
     manifest.prompts.filter((prompt) =>
       prompt.target === 'var' && prompt.flag === 'domain'
@@ -358,7 +373,7 @@ const lintTemplateManifest = (manifest: TemplateManifest): void => {
   }
 
   // `cloudflare.config` must itself be a render[] target, or any `{{...}}` it
-  // contains is written to the generated app unresolved (steiner r2 N-4).
+  // contains is written to the generated app unresolved.
   if (
     !manifest.render.some((entry) => entry.path === manifest.cloudflare.config)
   ) {
@@ -415,7 +430,7 @@ const lintTemplateManifest = (manifest: TemplateManifest): void => {
 
   // Compile every `validate.pattern` at lint time so a malformed regex fails
   // here, not with a confusing runtime error during answer collection or
-  // rendering (cyan r1 N5).
+  // rendering.
   for (const prompt of manifest.prompts) {
     if (prompt.target === 'derived' || prompt.target === 'secret-generate') {
       continue // these targets have no `validate` field
@@ -459,7 +474,7 @@ export const parseTemplateManifest = (json: unknown): TemplateManifest => {
 /**
  * Whether `index` sits inside a double-quoted ("basic") TOML string on
  * `line`, tracking single-quoted ("literal") regions so a `'` inside one
- * doesn't get mistaken for the start of a double-quoted string (steiner r1 N5).
+ * doesn't get mistaken for the start of a double-quoted string.
  * This is a line-local heuristic, not a full TOML parser.
  */
 const isWithinDoubleQuotedString = (line: string, index: number): boolean => {
@@ -569,8 +584,7 @@ const lintCloudflareWorkerConfig = (
           // carries flag "domain" while a `derived` (or flag-less `var`)
           // "domain" key supplies a fixed/attacker-chosen value would
           // otherwise pass, since `{{domain}}` still resolves and *some*
-          // prompt still has flag "domain" (steiner r2 B-1, closing the gap
-          // left by steiner r1 B2 / cyan r1 B2).
+          // prompt still has flag "domain" (packet Decision 5(c)).
           const domainPrompt = manifest.prompts.find((prompt) =>
             prompt.key === 'domain'
           )
@@ -584,7 +598,7 @@ const lintCloudflareWorkerConfig = (
             domainPrompt.target === 'var' && domainPrompt.default !== undefined
           ) {
             // A `default` would let `--yes` route to that zone with no value
-            // the user actually typed (el ruling, cyan r2 B2-P2): the
+            // the user actually typed (packet Decision 5(c)): the
             // "domain" prompt must require a real answer.
             violations.push(
               `L12: ${configPath} [[routes]] binds to {{domain}}, but the "domain" prompt declares a default (it must require a typed answer)`,
