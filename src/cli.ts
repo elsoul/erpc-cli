@@ -575,6 +575,9 @@ const executeCliCommand = async (
           : { fetch: dependencies.fetch }),
         ...(parsed.name === undefined ? {} : { name: parsed.name }),
         oidcRegistrar: dependencies.oidcRegistrar ?? defaultOidcClientRegistrar,
+        ...(dependencies.openExternal === undefined
+          ? {}
+          : { openExternal: dependencies.openExternal }),
         output,
         promptIO,
         setValues: parsed.setValues,

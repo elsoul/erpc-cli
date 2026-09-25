@@ -24,7 +24,10 @@ import {
 } from './template-manifest.ts'
 import type { PromptIO } from './prompt-io.ts'
 import { defaultPromptIO } from './prompt-io.ts'
-import { renderTemplateFiles, tomlBasicString } from './template-render.ts'
+import {
+  renderTemplateFiles as defaultRenderTemplateFiles,
+  tomlBasicString,
+} from './template-render.ts'
 import {
   resolveExpectedSha256,
   resolveTemplateRegistryEntry,
@@ -89,11 +92,18 @@ const originsMatch = (a: string, b: string): boolean => {
   }
 }
 
-/** Platform-safe "is `child` inside (or equal to) `parent`" check (steiner r1 N1). */
+/**
+ * Platform-safe "is `child` inside (or equal to) `parent`" check. Compares
+ * the relative path's first segment to `..` exactly, rather than a string
+ * prefix - `..startsWith` would misfire on a legitimately named entry such
+ * as `..hidden` (steiner r2 N-2).
+ */
 const isInsideDirectory = (parent: string, child: string): boolean => {
   const relativePath = relative(parent, child)
-  return relativePath === '' ||
-    (!relativePath.startsWith('..') && !isAbsolute(relativePath))
+  if (relativePath === '') return true
+  if (isAbsolute(relativePath)) return false
+  const [firstSegment] = relativePath.split(/[\\/]/)
+  return firstSegment !== '..'
 }
 
 const tomlString = (value: string): string => `"${tomlBasicString(value)}"`
@@ -112,6 +122,8 @@ export interface InitializeTemplateAppOptions {
   readonly openExternal?: (url: string) => void
   readonly output: (message: string) => void
   readonly promptIO?: PromptIO
+  /** Overrides step ⑧'s renderer. Defaults to the real `renderTemplateFiles`; tests use this to force a deterministic render failure (steiner r2 B-1/B-3). */
+  readonly renderTemplateFiles?: typeof defaultRenderTemplateFiles
   readonly setValues: ReadonlyMap<string, string>
   readonly sha256?: string
   /** Forwarded to the OIDC registrar's io (steiner/cyan N10); PR-A never creates one itself. */
@@ -120,8 +132,25 @@ export interface InitializeTemplateAppOptions {
   readonly templateName: string
   readonly templateRegistry: TemplateRegistry
   readonly trustIssuer?: string
+  /**
+   * Overrides the primitive used for every file write in step ⑨ (and the
+   * `erpc.toml` write). Defaults to `node:fs/promises`'s `writeFile`; tests
+   * use this to force a deterministic, root-safe write failure instead of
+   * relying on filesystem permissions (steiner r2 N-8).
+   */
+  readonly writeFile?: WriteFileFunction
   readonly yes: boolean
 }
+
+export type WriteFileFunction = (
+  path: string,
+  data: Uint8Array | string,
+  options: {
+    readonly encoding?: 'utf8'
+    readonly flag: 'wx'
+    readonly mode: number
+  },
+) => Promise<void>
 
 export interface InitializedTemplateApp {
   readonly directory: string
@@ -229,16 +258,39 @@ const summaryText = (
     .map((prompt) =>
       `  ${prompt.key} = ${values.get(prompt.key) ?? '(unresolved)'}`
     )
-  const secretKeys = manifest.prompts
-    .filter((prompt) => isSecretPromptTarget(prompt.target))
+  // `secret-generate`/`secret-pipe` produce a value with no user input;
+  // `secret-input` asks the user for one (or reads an env var) - list them
+  // separately so the summary doesn't call a prompt "generated" when it will
+  // actually ask (steiner r2 N-3).
+  const generatedSecretKeys = manifest.prompts
+    .filter((prompt) =>
+      prompt.target === 'secret-generate' || prompt.target === 'secret-pipe'
+    )
+    .map((prompt) => prompt.key)
+  const promptedSecretKeys = manifest.prompts
+    .filter((prompt) => prompt.target === 'secret-input')
     .map((prompt) => prompt.key)
   const lines = ['Summary:']
   if (derivedLines.length > 0) lines.push(...derivedLines)
-  lines.push(
-    secretKeys.length > 0
-      ? `  Secrets generated during 'erpc deploy': ${secretKeys.join(', ')}`
-      : "  No secrets are generated during 'erpc deploy' for this template.",
-  )
+  if (generatedSecretKeys.length > 0) {
+    lines.push(
+      `  Secrets generated during 'erpc deploy': ${
+        generatedSecretKeys.join(', ')
+      }`,
+    )
+  }
+  if (promptedSecretKeys.length > 0) {
+    lines.push(
+      `  Secrets prompted for during 'erpc deploy': ${
+        promptedSecretKeys.join(', ')
+      }`,
+    )
+  }
+  if (generatedSecretKeys.length === 0 && promptedSecretKeys.length === 0) {
+    lines.push(
+      "  No secrets are generated or prompted for during 'erpc deploy' for this template.",
+    )
+  }
   return lines.join('\n')
 }
 
@@ -374,18 +426,13 @@ export const initializeTemplateApp = async (
     redirectUris: readonly string[],
     clientName: string,
   ): Promise<string> => {
+    // A `--set`-provided value is returned as-is: `collectTemplateAnswers`
+    // checks it against `prompt.validate` right after this call returns, the
+    // same way it checks a value the registrar itself returned, so a bad
+    // `--set` value joins the same aggregated error instead of throwing here
+    // on its own (steiner r2 B-3, cyan r2 B3).
     const setValue = options.setValues.get(prompt.key)
-    if (setValue !== undefined) {
-      if (
-        prompt.validate &&
-        !new RegExp(`^(?:${prompt.validate.pattern})$`).test(setValue)
-      ) {
-        throw new Error(
-          `${prompt.key}: value does not match the required pattern`,
-        )
-      }
-      return setValue
-    }
+    if (setValue !== undefined) return setValue
     const result = await oidcRegistrar.register(
       { issuer: brokerIssuer ?? '', clientName, redirectUris },
       {
@@ -399,7 +446,10 @@ export const initializeTemplateApp = async (
     return result.clientId
   }
 
-  // ⑥/⑦ Collect var + derived + broker-register answers.
+  // ⑥/⑦ Collect var + derived answers, show the interactive summary once
+  // every one of them is ready, then - only after that - resolve broker
+  // registration (design §2.5 order: var → summary → registrar; steiner r2
+  // N-3, cyan r2 P7).
   const { values, brokerRegistration } = await collectTemplateAnswers(
     manifest,
     {
@@ -415,25 +465,19 @@ export const initializeTemplateApp = async (
         ? {}
         : { emailValue: options.emailValue }),
       interactive,
+      onAnswersReady: (resolvedValues) => {
+        if (interactive) {
+          promptIO.inform?.(summaryText(manifest, resolvedValues))
+        }
+      },
       promptIO,
       resolveBrokerRegister,
       setValues: options.setValues,
     },
   )
 
-  // Decision 6: interactive summary (derived values + the deploy-time secret
-  // list). Never shown non-interactively.
-  if (interactive) {
-    promptIO.inform(summaryText(manifest, values))
-  }
-
   // ⑧ Render declared files.
-  const rendered = renderTemplateFiles(manifest, files, values, {
-    appName,
-    ...(brokerIssuer === undefined ? {} : { brokerIssuer }),
-  })
-
-  const entrypoint = detectEntrypoint(rendered, manifest.cloudflare.config)
+  const write = options.writeFile ?? writeFile
   const oidc: {
     readonly clientId: string
     readonly issuer: string
@@ -445,25 +489,32 @@ export const initializeTemplateApp = async (
       redirectUris: brokerRegistration.redirectUris,
     }
     : undefined
-  const erpcToml = renderErpcToml({
-    appName,
-    ...(manifest.build ? { build: manifest.build } : {}),
-    cloudflare: manifest.cloudflare,
-    entrypoint,
-    ...(oidc ? { oidc } : {}),
-    sha256: expectedSha256,
-    source: entry.source,
-    tag: options.tag,
-    templateName: options.templateName,
-  })
 
-  // ⑨ Write every file, then erpc.toml. `wx` refuses to clobber (defense in
-  // depth on top of the earlier empty-directory check). If broker
-  // registration already succeeded (a real client was created upstream) and
-  // writing then fails, the client_id is public information the user needs
-  // to avoid registering a second client on retry (Decision 10 / design
-  // §2.6: "⑦〜⑨ 間の失敗は client_id を表示し --set APP_OIDC_CLIENT_ID=<id> で再実行").
+  // Steps ⑧ (render) and ⑨ (write) share one try/catch: a real, newly
+  // registered OAuth client (never a `--set`-provided one - cyan r2 P8) is
+  // public information the user needs to avoid registering a second client
+  // on retry, and a render failure is just as much "after registration
+  // succeeded" as a write failure is (steiner r2 B-1/B-3; design §2.6:
+  // "⑦〜⑨ 間の失敗は client_id を表示し --set APP_OIDC_CLIENT_ID=<id> で再実行").
   try {
+    const render = options.renderTemplateFiles ?? defaultRenderTemplateFiles
+    const rendered = render(manifest, files, values, {
+      appName,
+      ...(brokerIssuer === undefined ? {} : { brokerIssuer }),
+    })
+    const entrypoint = detectEntrypoint(rendered, manifest.cloudflare.config)
+    const erpcToml = renderErpcToml({
+      appName,
+      ...(manifest.build ? { build: manifest.build } : {}),
+      cloudflare: manifest.cloudflare,
+      entrypoint,
+      ...(oidc ? { oidc } : {}),
+      sha256: expectedSha256,
+      source: entry.source,
+      tag: options.tag,
+      templateName: options.templateName,
+    })
+
     await mkdir(directory, { recursive: true })
     for (const file of rendered) {
       const destination = resolve(directory, file.path)
@@ -471,30 +522,30 @@ export const initializeTemplateApp = async (
         throw new Error('Template path escaped the application directory')
       }
       await mkdir(dirname(destination), { recursive: true })
-      await writeFile(destination, file.content, {
+      await write(destination, file.content, {
         flag: 'wx',
         mode: file.executable ? 0o755 : 0o644,
       })
     }
-    await writeFile(resolve(directory, 'erpc.toml'), erpcToml, {
+    await write(resolve(directory, 'erpc.toml'), erpcToml, {
       encoding: 'utf8',
       flag: 'wx',
       mode: 0o644,
     })
+
+    return {
+      directory,
+      files: [...rendered.map((file) => file.path), 'erpc.toml'].sort(),
+      name: appName,
+    }
   } catch (error) {
-    if (brokerRegistration) {
+    if (brokerRegistration?.registered) {
       options.output(
         `Broker registration already succeeded (client_id: ${brokerRegistration.clientId}) before this failure. ` +
           `Re-run with --set APP_OIDC_CLIENT_ID=${brokerRegistration.clientId} instead of registering a new client.`,
       )
     }
     throw error
-  }
-
-  return {
-    directory,
-    files: [...rendered.map((file) => file.path), 'erpc.toml'].sort(),
-    name: appName,
   }
 }
 

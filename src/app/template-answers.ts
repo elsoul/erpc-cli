@@ -5,6 +5,12 @@
 // deploy time (PR-B), not here (design §2.2: their "confirmed" column is
 // "deploy"). Callers must reject `--set` for those keys before this module
 // runs (Decision 6: "`--set` で secret target のキーを渡したらエラー").
+//
+// Broker registration is resolved once, after every `var`/`derived` prompt in
+// the manifest has been processed (not inline, mid-loop): a var declared
+// *after* the broker-register prompt must still block the registrar call,
+// and issuer trust must be checked (and reported) independently of whether
+// other answers are missing (steiner r2 B-2/B-3, cyan r2 B3/B8).
 
 import type { PromptIO } from './prompt-io.ts'
 import type {
@@ -95,6 +101,13 @@ export interface TemplateAnswerInputs {
   readonly domainValue?: string
   readonly emailValue?: string
   readonly interactive: boolean
+  /**
+   * Called once, with every `var`/`derived` answer resolved, before broker
+   * registration is attempted - the hook the interactive summary uses so it
+   * always prints before the registrar runs (design §2.5; steiner r2 N-3,
+   * cyan r2 P7).
+   */
+  readonly onAnswersReady?: (values: ReadonlyMap<string, string>) => void
   readonly promptIO: PromptIO
   readonly resolveBrokerRegister: (
     prompt: BrokerRegisterPrompt,
@@ -108,6 +121,8 @@ export interface CollectedBrokerRegistration {
   readonly clientId: string
   readonly key: string
   readonly redirectUris: readonly string[]
+  /** False when `clientId` came from `--set` rather than an actual registrar call (cyan r2 P8). */
+  readonly registered: boolean
 }
 
 export interface CollectedTemplateAnswers {
@@ -116,13 +131,17 @@ export interface CollectedTemplateAnswers {
 }
 
 /**
- * Resolves every `var`, `derived`, and `broker-register` prompt in manifest
- * order. Non-interactively, every `var` is checked independently so all
- * missing keys and validation failures are reported together in a single
- * thrown error (Acceptance A8); `PromptIO` is never called in that path. A
- * `broker-register` failure (for example, this release's registrar stub)
- * propagates as its own error rather than joining that list, since it is not
- * a missing-answer problem.
+ * Resolves every `var` and `derived` prompt in manifest order (non-
+ * interactively, every `var` is checked independently so all missing keys
+ * and validation failures are reported together - Acceptance A8; `PromptIO`
+ * is never called in that path), then - once, after the full manifest has
+ * been walked - resolves at most one `broker-register` prompt (L6 caps the
+ * manifest at one). Issuer trust is always checked and always contributes to
+ * the same aggregated error; the registrar itself is only actually called
+ * once every other answer in the manifest (declared before *or* after the
+ * broker-register prompt) is known to be valid, unless `--set` already
+ * supplied the value, in which case only that value's own shape/pattern is
+ * checked and the registrar is never called.
  */
 export const collectTemplateAnswers = async (
   manifest: TemplateManifest,
@@ -130,7 +149,7 @@ export const collectTemplateAnswers = async (
 ): Promise<CollectedTemplateAnswers> => {
   const values = new Map<string, string>()
   const issues: string[] = []
-  let brokerRegistration: CollectedBrokerRegistration | undefined
+  let brokerPrompt: BrokerRegisterPrompt | undefined
 
   for (const prompt of manifest.prompts) {
     if (prompt.target === 'var') {
@@ -205,21 +224,16 @@ export const collectTemplateAnswers = async (
       continue // resolved at deploy time (PR-B), not during init
     }
 
-    // prompt.target === 'broker-register'
-    let redirectUris: readonly string[]
-    let clientName: string
-    try {
-      redirectUris = prompt.redirectUris.map((uri) =>
-        interpolate(uri, values, inputs.builtIns)
-      )
-      clientName = interpolate(prompt.clientName, values, inputs.builtIns)
-    } catch {
-      continue // an upstream dependency already failed and was reported above
-    }
-    // Trust is checked unconditionally (even if other answers are still
-    // missing) so an untrusted issuer always joins the same aggregated error
-    // list (Acceptance A8 / Decision 6; steiner r1 B4, cyan r1 B3). Only the
-    // actual registration call is skipped while other answers are missing.
+    // prompt.target === 'broker-register': defer to a single pass below, so
+    // registration only happens after the entire manifest is known-good.
+    brokerPrompt = prompt
+  }
+
+  inputs.onAnswersReady?.(values)
+
+  let brokerRegistration: CollectedBrokerRegistration | undefined
+  if (brokerPrompt) {
+    const prompt = brokerPrompt
     const trusted = await inputs.confirmIssuerTrust(
       inputs.builtIns.brokerIssuer ?? '',
     )
@@ -227,30 +241,54 @@ export const collectTemplateAnswers = async (
       issues.push(
         `${prompt.key}: the broker issuer is not trusted (pass --trust-issuer <origin>, or confirm interactively)`,
       )
-      continue
+    } else {
+      const setValue = inputs.setValues.get(prompt.key)
+      let redirectUris: readonly string[] = []
+      let clientName = ''
+      let interpolationFailed = false
+      try {
+        redirectUris = prompt.redirectUris.map((uri) =>
+          interpolate(uri, values, inputs.builtIns)
+        )
+        clientName = interpolate(prompt.clientName, values, inputs.builtIns)
+      } catch {
+        interpolationFailed = true
+      }
+
+      // `--set` needs neither of the above (its branch never touches the
+      // registrar), so it may proceed even if another answer is missing or
+      // interpolation failed on account of that missing answer - its own
+      // format is still worth checking and reporting alongside that other
+      // issue (steiner r1/r2 B-2, cyan r1/r2 B3).
+      const canAttempt = setValue !== undefined ||
+        (!interpolationFailed && issues.length === 0)
+      if (canAttempt) {
+        const clientId = await inputs.resolveBrokerRegister(
+          prompt,
+          redirectUris,
+          clientName,
+        )
+        const shapeIssue = answerShapeIssue(prompt.key, clientId)
+        if (shapeIssue) {
+          issues.push(shapeIssue)
+        } else if (
+          prompt.validate &&
+          !anchoredPattern(prompt.validate.pattern).test(clientId)
+        ) {
+          issues.push(
+            `${prompt.key}: value does not match the required pattern`,
+          )
+        } else {
+          values.set(prompt.key, clientId)
+          brokerRegistration = {
+            clientId,
+            key: prompt.key,
+            redirectUris,
+            registered: setValue === undefined,
+          }
+        }
+      }
     }
-    if (issues.length > 0) continue // do not register while other answers are missing
-    const clientId = await inputs.resolveBrokerRegister(
-      prompt,
-      redirectUris,
-      clientName,
-    )
-    const shapeIssue = answerShapeIssue(prompt.key, clientId)
-    if (shapeIssue) {
-      issues.push(shapeIssue)
-      continue
-    }
-    if (
-      prompt.validate &&
-      !anchoredPattern(prompt.validate.pattern).test(clientId)
-    ) {
-      issues.push(
-        `${prompt.key}: the registrar returned a value that does not match the required pattern`,
-      )
-      continue
-    }
-    values.set(prompt.key, clientId)
-    brokerRegistration = { clientId, key: prompt.key, redirectUris }
   }
 
   if (issues.length > 0) throw new TemplateAnswersError(issues)
