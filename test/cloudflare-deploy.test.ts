@@ -183,14 +183,23 @@ required = [${requiredLine}]
 `
 }
 
-const erpcTomlText = (sha256: string): string =>
+const erpcTomlText = (
+  sha256: string,
+  options: { readonly build?: readonly string[] } = {},
+): string =>
   `schema_version = 1
 name = "test-app"
 
 [app]
 runtime = "cloudflare-worker"
 entrypoint = "src/index.ts"
-
+${
+    options.build
+      ? `\n[build]\ncommand = [${
+        options.build.map((value) => `"${value}"`).join(', ')
+      }]\n`
+      : ''
+  }
 [deploy]
 target = "cloudflare"
 
@@ -218,7 +227,10 @@ interface Project {
 }
 
 const setupProject = async (
-  options: TemplateManifestOptions & WranglerTomlOptions = {},
+  options:
+    & TemplateManifestOptions
+    & WranglerTomlOptions
+    & { readonly build?: readonly string[] } = {},
 ): Promise<Project> => {
   const parent = await temporaryDirectory('erpc-cf-deploy-')
   const root = join(parent, 'app')
@@ -239,7 +251,11 @@ const setupProject = async (
     ),
   ])
   const sha256 = await sha256Hex(archive)
-  await writeFile(join(root, 'erpc.toml'), erpcTomlText(sha256), 'utf8')
+  await writeFile(
+    join(root, 'erpc.toml'),
+    erpcTomlText(sha256, { build: options.build }),
+    'utf8',
+  )
   return {
     archive,
     configPath: join(root, 'erpc.toml'),
@@ -268,11 +284,16 @@ interface FakeWranglerOptions {
   readonly workerExists?: boolean
 }
 
+/** Every wrangler call now carries a leading `--config <path>` (packet review N1); strip it before reading the subcommand. */
+const withoutConfigFlag = (args: readonly string[]): readonly string[] =>
+  args[0] === '--config' ? args.slice(2) : args
+
 const createFakeWrangler = (options: FakeWranglerOptions = {}) => {
   const calls: ProcessRequest[] = []
   const kvNamespaces: { id: string; title: string }[] = []
   const secrets = new Set(options.existingSecrets ?? [])
-  const accounts = options.accounts ?? [{ id: 'acct-1', name: 'Test Account' }]
+  const accounts = options.accounts ??
+    [{ id: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', name: 'Test Account' }]
   let whoamiOk = options.whoamiOk ?? true
   let workerExists = options.workerExists ?? secrets.size > 0
   let nextKvId = 1
@@ -282,7 +303,7 @@ const createFakeWrangler = (options: FakeWranglerOptions = {}) => {
     if (request.command !== 'fake-wrangler') {
       return { code: 0, stderr: '', stdout: '' }
     }
-    const [sub1, sub2, sub3, sub4] = request.args
+    const [sub1, sub2, sub3, sub4] = withoutConfigFlag(request.args)
     if (sub1 === '--version') {
       return { code: 0, stderr: '', stdout: '4.104.0\n' }
     }
@@ -357,7 +378,9 @@ const createFakeWrangler = (options: FakeWranglerOptions = {}) => {
 
 const commandNames = (calls: readonly ProcessRequest[]): readonly string[] =>
   calls.map((call) =>
-    call.command === 'fake-wrangler' ? call.args[0]! : call.command
+    call.command === 'fake-wrangler'
+      ? withoutConfigFlag(call.args)[0]!
+      : call.command
   )
 
 // ---- fetch stubs ----
@@ -439,6 +462,31 @@ const nonInteractivePromptIO = (): PromptIO => ({
   },
 })
 
+/**
+ * A TTY is present but every prompt is a hard failure - used only to prove a
+ * negative (e.g. that the CLOUDFLARE_API_TOKEN check stops the run *before*
+ * any prompt or `wrangler login` would otherwise happen for an interactive
+ * session). `isInteractive` must be `true` here: a `false` value would make
+ * the CLOUDFLARE_API_TOKEN-specific stop indistinguishable from the separate
+ * "no terminal" stop, since both produce a rejection and 0 `login` calls
+ * (packet review B5).
+ */
+const interactivePromptIOThatMustNotBeUsed = (): PromptIO => ({
+  isInteractive: () => true,
+  confirm: () => {
+    throw new Error('confirm() should not have been called')
+  },
+  text: () => {
+    throw new Error('text() should not have been called')
+  },
+  secret: () => {
+    throw new Error('secret() should not have been called')
+  },
+  select: () => {
+    throw new Error('select() should not have been called')
+  },
+})
+
 const fixedRandom =
   (byte: number) => (bytes: Uint8Array<ArrayBuffer>): void => {
     bytes.fill(byte)
@@ -481,8 +529,13 @@ describe('erpc deploy --target cloudflare', () => {
     })).rejects.toThrow('JWT_SECRET')
 
     expect(commandNames(fake.calls)).toEqual(['--version', 'whoami', 'secret'])
-    expect(fake.calls.some((call) => call.args.includes('deploy'))).toBe(false)
-    expect(fake.calls.some((call) => call.args[1] === 'put')).toBe(false)
+    expect(
+      fake.calls.some((call) =>
+        withoutConfigFlag(call.args).includes('deploy')
+      ),
+    ).toBe(false)
+    expect(fake.calls.some((call) => withoutConfigFlag(call.args)[1] === 'put'))
+      .toBe(false)
     // N11: the fixture template is unpinned in `emptyRegistry`.
     expect(
       output.filter((line) => line.includes('will run with your permissions'))
@@ -555,9 +608,14 @@ describe('erpc deploy --target cloudflare', () => {
     ])
     // whoami -> kv list -> kv create -> secret list -> secret put -> secret list (recheck)
     const secretCalls = fake.calls.filter((call) =>
-      call.command === 'fake-wrangler' && call.args[0] === 'secret'
+      call.command === 'fake-wrangler' &&
+      withoutConfigFlag(call.args)[0] === 'secret'
     )
-    expect(secretCalls[1]?.args).toEqual(['secret', 'put', 'JWT_SECRET'])
+    expect(withoutConfigFlag(secretCalls[1]?.args ?? [])).toEqual([
+      'secret',
+      'put',
+      'JWT_SECRET',
+    ])
     expect(secretCalls[1]?.input).toBeDefined()
     expect(secretCalls[1]?.display).toBe(false)
     // Probe never fetches consent or Google.
@@ -590,8 +648,10 @@ describe('erpc deploy --target cloudflare', () => {
       'fake-preflight',
       'deploy',
     ])
-    expect(fake.calls.some((call) => call.args[0] === 'kv')).toBe(false)
-    expect(fake.calls.some((call) => call.args[1] === 'put')).toBe(false)
+    expect(fake.calls.some((call) => withoutConfigFlag(call.args)[0] === 'kv'))
+      .toBe(false)
+    expect(fake.calls.some((call) => withoutConfigFlag(call.args)[1] === 'put'))
+      .toBe(false)
   })
 
   it('A12: a non-interactive secret-pipe backup with no --ack-backup runs nothing', async () => {
@@ -623,7 +683,8 @@ describe('erpc deploy --target cloudflare', () => {
     })).rejects.toThrow('--ack-backup')
 
     expect(fake.calls.some((call) => call.command === 'fake-pipe')).toBe(false)
-    expect(fake.calls.some((call) => call.args[1] === 'put')).toBe(false)
+    expect(fake.calls.some((call) => withoutConfigFlag(call.args)[1] === 'put'))
+      .toBe(false)
 
     // With the ack, the same fixture proceeds (pipe runs, put runs).
     const fake2 = createFakeWrangler()
@@ -640,8 +701,9 @@ describe('erpc deploy --target cloudflare', () => {
     expect(fake2.calls.some((call) => call.command === 'fake-pipe')).toBe(true)
     expect(
       fake2.calls.some((call) =>
-        call.args[0] === 'secret' && call.args[1] === 'put' &&
-        call.args[2] === 'WALLET_MNEMONIC'
+        withoutConfigFlag(call.args)[0] === 'secret' &&
+        withoutConfigFlag(call.args)[1] === 'put' &&
+        withoutConfigFlag(call.args)[2] === 'WALLET_MNEMONIC'
       ),
     ).toBe(true)
   })
@@ -670,7 +732,8 @@ describe('erpc deploy --target cloudflare', () => {
       templateRegistry: pinnedRegistryFor(project.sha256),
     })
 
-    expect(fake.calls.some((call) => call.args[1] === 'put')).toBe(false)
+    expect(fake.calls.some((call) => withoutConfigFlag(call.args)[1] === 'put'))
+      .toBe(false)
     expect(output.some((line) => line.includes('OPTIONAL_TOKEN'))).toBe(true)
   })
 
@@ -684,17 +747,26 @@ describe('erpc deploy --target cloudflare', () => {
     const manifest = await loadManifest(project)
     const fake = createFakeWrangler({ whoamiOk: false })
 
+    // Interactive on purpose (see interactivePromptIOThatMustNotBeUsed): if
+    // the CLOUDFLARE_API_TOKEN check were removed, execution would fall
+    // through to the interactive branch and call `wrangler login` - only an
+    // interactive session makes "0 login calls" a real discriminator here.
+    // The assertion also pins a phrase ("CLOUDFLARE_API_TOKEN is set") that
+    // is unique to this branch, not the shared "no terminal" message, which
+    // also happens to mention CLOUDFLARE_API_TOKEN as a remedy.
     await expect(deployToCloudflare(manifest, {
       erpcHome: project.erpcHome,
       output: () => undefined,
-      promptIO: nonInteractivePromptIO(),
+      promptIO: interactivePromptIOThatMustNotBeUsed(),
       random: fixedRandom(1),
       run: fake.run,
       fetch: buildFetchStub(project.archive, successProbeFetch),
       templateRegistry: pinnedRegistryFor(project.sha256),
-    })).rejects.toThrow('CLOUDFLARE_API_TOKEN')
+    })).rejects.toThrow('CLOUDFLARE_API_TOKEN is set')
 
-    expect(fake.calls.some((call) => call.args[0] === 'login')).toBe(false)
+    expect(
+      fake.calls.some((call) => withoutConfigFlag(call.args)[0] === 'login'),
+    ).toBe(false)
   })
 
   it('D3: non-interactive with no token and no session stops without logging in', async () => {
@@ -717,7 +789,9 @@ describe('erpc deploy --target cloudflare', () => {
       templateRegistry: pinnedRegistryFor(project.sha256),
     })).rejects.toThrow('wrangler login')
 
-    expect(fake.calls.some((call) => call.args[0] === 'login')).toBe(false)
+    expect(
+      fake.calls.some((call) => withoutConfigFlag(call.args)[0] === 'login'),
+    ).toBe(false)
   })
 
   it('D3: CLOUDFLARE_ACCOUNT_ID disagreeing with an already-resolved wrangler.toml stops', async () => {
@@ -774,6 +848,38 @@ describe('erpc deploy --target cloudflare', () => {
     )).rejects.toThrow('--node')
   })
 
+  it('B1: every cloudflare-only deploy option is rejected on a node/deno app before any subprocess runs', async () => {
+    const parent = await temporaryDirectory('erpc-cf-deploy-b1-')
+    const nodeApp = join(parent, 'node-app')
+    await initializeApp({
+      directory: nodeApp,
+      runtime: 'node',
+      name: 'node-app',
+    })
+    const erpcHome = join(parent, '.erpc')
+
+    for (
+      const args of [
+        ['--dry-run'],
+        ['--verify-only'],
+        ['--no-provision'],
+        ['--yes'],
+        ['--ack-backup', 'SOME_KEY'],
+      ]
+    ) {
+      const calls: ProcessRequest[] = []
+      const run: ProcessRunner = async (request) => {
+        calls.push(request)
+        return { code: 0, stderr: '', stdout: '' }
+      }
+      await expect(runCli(
+        ['deploy', '--config', join(nodeApp, 'erpc.toml'), ...args],
+        { erpcHome, output: () => undefined, runProcess: run },
+      )).rejects.toThrow('only supported for the cloudflare-worker runtime')
+      expect(calls).toHaveLength(0)
+    }
+  })
+
   it('N12: WRANGLER_LOG_SANITIZE is forced true on every wrangler call even when the parent env disagrees', async () => {
     setEnv('WRANGLER_LOG_SANITIZE', 'false')
     const project = await setupProject()
@@ -797,7 +903,9 @@ describe('erpc deploy --target cloudflare', () => {
     for (const call of wranglerCalls) {
       expect(call.env?.WRANGLER_LOG_SANITIZE).toBe('true')
     }
-    const putCall = wranglerCalls.find((call) => call.args[1] === 'put')
+    const putCall = wranglerCalls.find((call) =>
+      withoutConfigFlag(call.args)[1] === 'put'
+    )
     expect(putCall?.env?.WRANGLER_LOG_SANITIZE).toBe('true')
   })
 
@@ -909,7 +1017,174 @@ describe('erpc deploy --target cloudflare', () => {
       'secret',
       'deploy',
     ])
-    expect(fake.calls.at(-1)?.args).toEqual(['deploy', '--dry-run'])
+    expect(withoutConfigFlag(fake.calls.at(-1)?.args ?? [])).toEqual([
+      'deploy',
+      '--dry-run',
+    ])
     expect(output.some((line) => line.includes('Missing required'))).toBe(true)
+  })
+
+  it('mutant M8 (2nd Location-origin check): the worker redirecting outside the issuer origin fails verification', async () => {
+    const project = await setupProject({
+      includeKv: false,
+      includePreflight: false,
+    })
+    const manifest = await loadManifest(project)
+    const workerRedirectsElsewhereProbeFetch: typeof fetch = (async (
+      input,
+      init,
+    ) => {
+      const url = new URL(
+        input instanceof Request ? input.url : String(input),
+      )
+      if (url.origin === WORKER_BASE && url.pathname === '/oauth/authorize') {
+        return new Response(null, {
+          status: 302,
+          headers: {
+            location: 'https://not-the-issuer.example.test/oauth/authorize',
+          },
+        })
+      }
+      return await successProbeFetch(input, init)
+    }) as typeof fetch
+
+    await expect(deployToCloudflare(manifest, {
+      erpcHome: project.erpcHome,
+      output: () => undefined,
+      promptIO: nonInteractivePromptIO(),
+      random: fixedRandom(1),
+      verifyOnly: true,
+      fetch: buildFetchStub(
+        project.archive,
+        workerRedirectsElsewhereProbeFetch,
+      ),
+      templateRegistry: pinnedRegistryFor(project.sha256),
+    })).rejects.toThrow('verification failed')
+  })
+
+  it('mutant M10 (D2 build failure): a failing [build].command stops before any Cloudflare command runs', async () => {
+    const project = await setupProject({
+      includeKv: false,
+      includePreflight: false,
+      includePostDeploy: false,
+      build: ['fake-build'],
+    })
+    const manifest = await loadManifest(project)
+    const fake = createFakeWrangler()
+    const output: string[] = []
+    const run: ProcessRunner = async (request) => {
+      if (request.command === 'fake-build') {
+        return { code: 1, stderr: 'build blew up', stdout: '' }
+      }
+      return await fake.run(request)
+    }
+
+    await expect(deployToCloudflare(manifest, {
+      erpcHome: project.erpcHome,
+      output: (message) => output.push(message),
+      promptIO: nonInteractivePromptIO(),
+      random: fixedRandom(1),
+      run,
+      fetch: buildFetchStub(project.archive, successProbeFetch),
+      templateRegistry: pinnedRegistryFor(project.sha256),
+    })).rejects.toThrow('Build failed')
+
+    expect(fake.calls).toHaveLength(0)
+    expect(output.some((line) => line.includes('build blew up'))).toBe(true)
+  })
+
+  it('mutant M11 (D5(c) preflight failure): a failing preflight command stops before deploy', async () => {
+    const project = await setupProject({
+      includeKv: false,
+      includePostDeploy: false,
+    })
+    const manifest = await loadManifest(project)
+    const fake = createFakeWrangler()
+    const output: string[] = []
+    const run: ProcessRunner = async (request) => {
+      if (request.command === 'fake-preflight') {
+        return { code: 1, stderr: 'preflight failed loudly', stdout: '' }
+      }
+      return await fake.run(request)
+    }
+
+    await expect(deployToCloudflare(manifest, {
+      erpcHome: project.erpcHome,
+      output: (message) => output.push(message),
+      promptIO: nonInteractivePromptIO(),
+      random: fixedRandom(1),
+      run,
+      fetch: buildFetchStub(project.archive, successProbeFetch),
+      templateRegistry: pinnedRegistryFor(project.sha256),
+    })).rejects.toThrow('Preflight command failed')
+
+    expect(commandNames(fake.calls).includes('deploy')).toBe(false)
+    expect(output.some((line) => line.includes('preflight failed loudly')))
+      .toBe(true)
+  })
+
+  it('mutant M12 (minimum wrangler version): an old wrangler stops before any Cloudflare command runs', async () => {
+    const project = await setupProject({
+      includeKv: false,
+      includePreflight: false,
+      includePostDeploy: false,
+      minWranglerVersion: '4.104.0',
+    })
+    const manifest = await loadManifest(project)
+    const calls: ProcessRequest[] = []
+    const run: ProcessRunner = async (request) => {
+      calls.push(request)
+      if (withoutConfigFlag(request.args)[0] === '--version') {
+        return { code: 0, stderr: '', stdout: '4.0.0\n' }
+      }
+      return { code: 1, stderr: '', stdout: '' }
+    }
+
+    await expect(deployToCloudflare(manifest, {
+      erpcHome: project.erpcHome,
+      output: () => undefined,
+      promptIO: nonInteractivePromptIO(),
+      random: fixedRandom(1),
+      run,
+      fetch: buildFetchStub(project.archive, successProbeFetch),
+      templateRegistry: pinnedRegistryFor(project.sha256),
+    })).rejects.toThrow('4.104.0 or newer is required')
+
+    expect(calls).toHaveLength(1)
+  })
+
+  it('mutant M13 (KV title reuse): an existing namespace with a matching title is reused, not recreated', async () => {
+    const project = await setupProject({
+      includePreflight: false,
+      includePostDeploy: false,
+    })
+    const manifest = await loadManifest(project)
+    const fake = createFakeWrangler()
+    fake.kvNamespaces.push({
+      id: 'pre-existing-kv-id',
+      title: 'test-app-mcp-kv',
+    })
+
+    await deployToCloudflare(manifest, {
+      erpcHome: project.erpcHome,
+      output: () => undefined,
+      promptIO: nonInteractivePromptIO(),
+      random: fixedRandom(1),
+      run: fake.run,
+      fetch: buildFetchStub(project.archive, successProbeFetch),
+      templateRegistry: pinnedRegistryFor(project.sha256),
+    })
+
+    expect(commandNames(fake.calls).includes('kv')).toBe(true)
+    expect(
+      fake.calls.some((call) =>
+        withoutConfigFlag(call.args)[0] === 'kv' &&
+        withoutConfigFlag(call.args)[2] === 'create'
+      ),
+    ).toBe(false)
+    const wranglerTomlAfter = await Deno.readTextFile(
+      join(project.root, 'wrangler.toml'),
+    )
+    expect(wranglerTomlAfter).toContain('pre-existing-kv-id')
   })
 })

@@ -195,6 +195,10 @@ const loadManifest = async (
   return manifest as CloudflareWorkerManifest
 }
 
+/** Every wrangler call now carries a leading `--config <path>` (packet review N1); strip it before reading the subcommand. */
+const withoutConfigFlag = (args: readonly string[]): readonly string[] =>
+  args[0] === '--config' ? args.slice(2) : args
+
 const createFakeWrangler = () => {
   const calls: ProcessRequest[] = []
   const secrets = new Set<string>()
@@ -215,7 +219,7 @@ const createFakeWrangler = () => {
     if (request.command !== 'fake-wrangler') {
       return { code: 0, stderr: '', stdout: '' }
     }
-    const [sub1, sub2] = request.args
+    const [sub1, sub2, sub3] = withoutConfigFlag(request.args)
     if (sub1 === '--version') {
       return { code: 0, stderr: '', stdout: '4.104.0\n' }
     }
@@ -225,7 +229,10 @@ const createFakeWrangler = () => {
         stderr: '',
         stdout: JSON.stringify({
           loggedIn: true,
-          accounts: [{ id: 'acct-1', name: 'Test Account' }],
+          accounts: [{
+            id: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            name: 'Test Account',
+          }],
         }),
       }
     }
@@ -240,7 +247,7 @@ const createFakeWrangler = () => {
       }
     }
     if (sub1 === 'secret' && sub2 === 'put') {
-      secrets.add(request.args[2] ?? '')
+      secrets.add(sub3 ?? '')
       workerExists = true
       return { code: 0, stderr: '', stdout: 'Success!' }
     }
@@ -332,12 +339,13 @@ describe('A11: secret values never leak outside the recorded `secret put` stdin'
 
     // Both secrets were actually generated and put.
     const putCalls = fake.calls.filter((call) =>
-      call.command === 'fake-wrangler' && call.args[0] === 'secret' &&
-      call.args[1] === 'put'
+      call.command === 'fake-wrangler' &&
+      withoutConfigFlag(call.args)[0] === 'secret' &&
+      withoutConfigFlag(call.args)[1] === 'put'
     )
     expect(putCalls).toHaveLength(2)
     const putByName = new Map(
-      putCalls.map((call) => [call.args[2], call.input]),
+      putCalls.map((call) => [withoutConfigFlag(call.args)[2], call.input]),
     )
     expect(putByName.get('JWT_SECRET')).toContain(GENERATED_CANARY)
     expect(putByName.get('WALLET_MNEMONIC')).toBe(PIPE_CANARY)
@@ -370,7 +378,8 @@ describe('A11: secret values never leak outside the recorded `secret put` stdin'
     for (const call of fake.calls) {
       if (call.input === undefined) continue
       const isKnownPut = call.command === 'fake-wrangler' &&
-        call.args[0] === 'secret' && call.args[1] === 'put' &&
+        withoutConfigFlag(call.args)[0] === 'secret' &&
+        withoutConfigFlag(call.args)[1] === 'put' &&
         (call.input.includes(GENERATED_CANARY) ||
           call.input === PIPE_CANARY)
       expect(isKnownPut).toBe(true)
@@ -462,5 +471,90 @@ account_id = "{{erpc:cloudflare-account-id}}"
     expect(caught).toBeInstanceOf(Error)
     expect((caught as Error).message).not.toContain(PIPE_CANARY)
     expect(fake.calls.some((call) => call.command === 'fake-pipe')).toBe(false)
+  })
+
+  it('A11(2): a thrown error never carries a secret value the pipe command already produced', async () => {
+    // No `backup` this time: the pipe command runs, obtains PIPE_CANARY, and
+    // only *then* fails validation - the value is briefly in memory before
+    // the throw, which is exactly the case a leak in the error message would
+    // hide.
+    const parent = await temporaryDirectory('erpc-secrets-leak-validate-')
+    const root = join(parent, 'app')
+    const erpcHome = join(parent, '.erpc')
+    await mkdir(root, { recursive: true })
+    const wranglerToml = `name = "test-app"
+main = "src/index.ts"
+compatibility_date = "2026-01-01"
+account_id = "{{erpc:cloudflare-account-id}}"
+`
+    await writeFile(join(root, 'wrangler.toml'), wranglerToml, 'utf8')
+    const manifestJson = JSON.stringify({
+      schemaVersion: 1,
+      name: 'fixture-template',
+      runtime: 'cloudflare-worker',
+      minCliVersion: '0.1.0',
+      cloudflare: {
+        config: 'wrangler.toml',
+        wrangler: ['fake-wrangler'],
+        minWranglerVersion: '4.0.0',
+      },
+      render: [{ path: 'wrangler.toml', format: 'toml' }],
+      prompts: [
+        {
+          key: 'WALLET_MNEMONIC',
+          target: 'secret-pipe',
+          command: ['fake-pipe'],
+          validate: { pattern: 'NEVER_MATCHES_ANYTHING_XYZ' },
+        },
+      ],
+    })
+    const archive = await tarGzFromInputs([
+      fileInput('erpc-template.json', manifestJson),
+      fileInput('wrangler.toml', wranglerToml),
+      fileInput(
+        'src/index.ts',
+        'export default { fetch: () => new Response("ok") }\n',
+      ),
+    ])
+    const sha256 = await sha256Hex(archive)
+    await writeFile(join(root, 'erpc.toml'), erpcTomlText(sha256), 'utf8')
+
+    const manifest = await loadManifest({
+      archive,
+      configPath: join(root, 'erpc.toml'),
+      erpcHome,
+      root,
+    })
+    const fake = createFakeWrangler()
+    const output: string[] = []
+    const fetchStub: typeof fetch = (async (input) => {
+      const url = new URL(input instanceof Request ? input.url : String(input))
+      if (url.hostname === 'github.com') {
+        return new Response(archive as unknown as BodyInit, { status: 200 })
+      }
+      throw new Error(`unexpected fetch: ${url}`)
+    }) as typeof fetch
+
+    let caught: unknown
+    try {
+      await deployToCloudflare(manifest, {
+        erpcHome,
+        output: (message) => output.push(message),
+        promptIO: nonInteractivePromptIO(),
+        random: (bytes) => {
+          bytes.set(sentinelRandomBytes.subarray(0, bytes.length))
+        },
+        run: fake.run,
+        fetch: fetchStub,
+        templateRegistry: {},
+      })
+    } catch (error) {
+      caught = error
+    }
+    expect(caught).toBeInstanceOf(Error)
+    expect((caught as Error).message).not.toContain(PIPE_CANARY)
+    expect(output.every((line) => !line.includes(PIPE_CANARY))).toBe(true)
+    expect(fake.calls.some((call) => withoutConfigFlag(call.args)[1] === 'put'))
+      .toBe(false)
   })
 })
