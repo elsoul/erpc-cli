@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from './testing.ts'
 import { initializeTemplateApp } from '../src/app/template-init.ts'
 import { sha256Hex } from '../src/app/template-fetch.ts'
 import { tomlBasicString } from '../src/app/template-render.ts'
-import { runCli } from '../src/cli.ts'
+import { defaultOpenExternal, runCli } from '../src/cli.ts'
 import type { PromptIO } from '../src/app/prompt-io.ts'
 import type { TemplateRegistry } from '../src/app/template-registry.ts'
 import type {
@@ -1805,7 +1805,7 @@ describe('CLI wiring', () => {
       ),
     ).resolves.toBe(0)
 
-    expect(typeof capturedOpenExternal).toBe('function')
+    expect(capturedOpenExternal).toBe(defaultOpenExternal)
   })
 
   it('forwards an injected signal through to the registrar (packet Decision 8)', async () => {
