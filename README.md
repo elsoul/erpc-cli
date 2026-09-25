@@ -112,6 +112,44 @@ deno task dev
 Runnable versions are kept in [`examples/node-hono`](./examples/node-hono) and
 [`examples/deno-hono`](./examples/deno-hono).
 
+## Create an application from a template
+
+`erpc app init --template` fetches a registered template's GitHub release asset,
+verifies it against a checksum, validates its `erpc-template.json` manifest,
+collects answers, and generates a `cloudflare-worker` application:
+
+```bash
+erpc app init my-wallet --template stablecoin-manager@v0.1.0
+```
+
+A tag this CLI release does not have a bundled checksum for requires an explicit
+`--sha256`:
+
+```bash
+erpc app init my-wallet --template stablecoin-manager@v0.2.0 \
+  --sha256 <64 lowercase hex characters>
+```
+
+Answer template prompts non-interactively with `--set KEY=VALUE` (repeatable),
+or with the `--domain`/`--email` shorthands for prompts that declare those
+flags. Non-interactive runs (no terminal, or `--yes`) require every prompt to
+have a `--set`/shorthand value or a manifest default; a run with missing or
+invalid answers fails once, listing every problem together. `--set` never
+accepts a value for a secret prompt (`secret-generate`, `secret-pipe`,
+`secret-input`) — those are generated during a later `erpc deploy`, never during
+`init`.
+
+**This CLI does not sandbox a template.** Once its checksum is verified, a
+template's `[build].command`, Cloudflare preflight checks, and secret generation
+scripts run with your permissions. A tag this CLI release does not already pin
+prints a one-time warning before collecting any answer; only proceed with
+`--sha256` for a template and tag you trust. `docs/TEMPLATES.md` documents the
+manifest contract for template authors, including this trust boundary in full.
+
+Templates that register an OAuth client (a `broker-register` prompt) are not yet
+supported end-to-end in this release: pass
+`--set APP_OIDC_CLIENT_ID=<client id>` for a template that declares one.
+
 ## `erpc.toml`
 
 Every generated application includes its portable ERPC manifest:

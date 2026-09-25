@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Add `erpc app init --template <name>@<tag>`: fetch a registered template's
+  GitHub release asset, verify it against a pinned or explicitly supplied
+  `--sha256`, validate its `erpc-template.json` manifest, collect answers from
+  `--set`/`--domain`/`--email` or interactively, and generate a
+  `cloudflare-worker` application. Broker (OAuth client) registration is not yet
+  implemented in this release; pass `--set APP_OIDC_CLIENT_ID=<id>` for
+  templates that declare a `broker-register` prompt.
+
 ## 0.2.2 — 2026-08-29
 
 - Make `erpc login` discover the authorization server's supported scopes and

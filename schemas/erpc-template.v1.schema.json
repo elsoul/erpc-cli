@@ -1,0 +1,492 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "schemaVersion": {
+      "type": "number",
+      "const": 1
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$"
+    },
+    "runtime": {
+      "type": "string",
+      "const": "cloudflare-worker"
+    },
+    "minCliVersion": {
+      "type": "string",
+      "minLength": 1
+    },
+    "cloudflare": {
+      "type": "object",
+      "properties": {
+        "config": {
+          "type": "string",
+          "minLength": 1
+        },
+        "wrangler": {
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "minWranglerVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kv": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "binding": {
+                "type": "string",
+                "pattern": "^[A-Z][A-Z0-9_]*$"
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              }
+            },
+            "required": [
+              "binding",
+              "title"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "preflight": {
+          "type": "array",
+          "items": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      },
+      "required": [
+        "config",
+        "wrangler"
+      ],
+      "additionalProperties": false
+    },
+    "build": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "additionalProperties": false
+    },
+    "broker": {
+      "type": "object",
+      "properties": {
+        "issuer": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "issuer"
+      ],
+      "additionalProperties": false
+    },
+    "render": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "toml",
+              "text"
+            ]
+          }
+        },
+        "required": [
+          "path",
+          "format"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "prompts": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "key": {
+                "type": "string",
+                "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$"
+              },
+              "target": {
+                "type": "string",
+                "const": "var"
+              },
+              "question": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              "default": {
+                "type": "string",
+                "maxLength": 512
+              },
+              "validate": {
+                "type": "object",
+                "properties": {
+                  "pattern": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512
+                  }
+                },
+                "required": [
+                  "pattern"
+                ],
+                "additionalProperties": false
+              },
+              "flag": {
+                "type": "string",
+                "enum": [
+                  "domain",
+                  "email"
+                ]
+              }
+            },
+            "required": [
+              "key",
+              "target",
+              "question"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "key": {
+                "type": "string",
+                "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$"
+              },
+              "target": {
+                "type": "string",
+                "const": "derived"
+              },
+              "expr": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              }
+            },
+            "required": [
+              "key",
+              "target",
+              "expr"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "key": {
+                "type": "string",
+                "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$"
+              },
+              "target": {
+                "type": "string",
+                "const": "broker-register"
+              },
+              "redirectUris": {
+                "minItems": 1,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512
+                }
+              },
+              "clientName": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              "validate": {
+                "type": "object",
+                "properties": {
+                  "pattern": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512
+                  }
+                },
+                "required": [
+                  "pattern"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "key",
+              "target",
+              "redirectUris",
+              "clientName"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "key": {
+                "type": "string",
+                "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$"
+              },
+              "target": {
+                "type": "string",
+                "const": "secret-generate"
+              },
+              "bytes": {
+                "type": "integer",
+                "minimum": 32,
+                "maximum": 128
+              },
+              "encoding": {
+                "type": "string",
+                "enum": [
+                  "base64url",
+                  "base64",
+                  "hex"
+                ]
+              },
+              "required": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "key",
+              "target",
+              "bytes",
+              "encoding"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "key": {
+                "type": "string",
+                "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$"
+              },
+              "target": {
+                "type": "string",
+                "const": "secret-pipe"
+              },
+              "command": {
+                "minItems": 1,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "validate": {
+                "type": "object",
+                "properties": {
+                  "pattern": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512
+                  }
+                },
+                "required": [
+                  "pattern"
+                ],
+                "additionalProperties": false
+              },
+              "backup": {
+                "type": "object",
+                "properties": {
+                  "message": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2000
+                  },
+                  "confirm": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  }
+                },
+                "required": [
+                  "message",
+                  "confirm"
+                ],
+                "additionalProperties": false
+              },
+              "required": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "key",
+              "target",
+              "command"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "key": {
+                "type": "string",
+                "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$"
+              },
+              "target": {
+                "type": "string",
+                "const": "secret-input"
+              },
+              "question": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              "env": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "validate": {
+                "type": "object",
+                "properties": {
+                  "pattern": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512
+                  }
+                },
+                "required": [
+                  "pattern"
+                ],
+                "additionalProperties": false
+              },
+              "required": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "key",
+              "target"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      }
+    },
+    "postDeploy": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "http"
+              },
+              "baseUrlFromVar": {
+                "type": "string",
+                "minLength": 1
+              },
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "expectStatus": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "expectJson": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {}
+              }
+            },
+            "required": [
+              "kind",
+              "baseUrlFromVar",
+              "path",
+              "expectStatus"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "oauth-authorize-redirect"
+              },
+              "baseUrlFromVar": {
+                "type": "string",
+                "minLength": 1
+              },
+              "issuerFromVar": {
+                "type": "string",
+                "minLength": 1
+              },
+              "followIssuer": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "kind",
+              "baseUrlFromVar",
+              "issuerFromVar"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "name",
+    "runtime",
+    "minCliVersion",
+    "cloudflare",
+    "render",
+    "prompts"
+  ],
+  "additionalProperties": false,
+  "$id": "https://storage.erpc.global/schemas/erpc-template/v1.json",
+  "title": "erpc-template.json v1"
+}
