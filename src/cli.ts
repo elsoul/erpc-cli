@@ -582,9 +582,11 @@ const executeCliCommand = async (
           : { fetch: dependencies.fetch }),
         ...(parsed.name === undefined ? {} : { name: parsed.name }),
         oidcRegistrar: dependencies.oidcRegistrar ?? defaultOidcClientRegistrar,
-        ...(dependencies.openExternal === undefined
-          ? {}
-          : { openExternal: dependencies.openExternal }),
+        // Falls back to the real `xdg-open`/`open`/`start` launcher outside
+        // tests, the same way `oidcRegistrar` falls back above - without
+        // this, a production run never actually opens the broker's
+        // verification URL in a browser (packet Decision 6).
+        openExternal: dependencies.openExternal ?? defaultOpenExternal,
         output,
         promptIO,
         setValues: parsed.setValues,

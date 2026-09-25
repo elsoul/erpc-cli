@@ -35,9 +35,10 @@ ships in a later release.
   out.tar.gz -C <parent> <template-dir>`) only moves the problem:
   GNU tar falls back to its `@LongLink` extension (typeflag `L`) for any path
   over 100 bytes, and that typeflag is rejected too 〔verified: a nested path of
-  ~119 bytes packaged this way produces a `./@LongLink` entry;
-  `extractTemplateArchive` rejects it as an unsupported entry type〕. Use
-  `git archive`.
+  ~119 bytes packaged this way produces a `././@LongLink` entry (GNU tar's
+  longname header always names itself `././@LongLink`, with two leading `./`
+  segments, not one); `extractTemplateArchive` rejects it as an unsupported
+  entry type〕. Use `git archive`.
 - **No symlinks, hard links, device files, or FIFOs.** The CLI rejects every
   entry that is not a plain file or a directory.
 - **No pax `path`/`linkpath`/`size` header overrides.** This CLI's tar reader
@@ -97,13 +98,21 @@ name.
 `derived.expr`, `broker-register.redirectUris`/`clientName`, and
 `cloudflare.kv[].title` may reference `{{app.name}}`, `{{broker.issuer}}`, and
 any **earlier, non-secret** prompt key — never a `secret-*` key, and never a key
-declared later in `prompts`. Interpolation is plain string substitution; there
-is no expression language and no arbitrary code evaluation.
+declared later in `prompts`. **`derived.expr` may not reference the
+`broker-register` key either way (earlier or later in `prompts`)**: broker
+registration always resolves in a single pass after every other answer, so a
+`derived` value (computed in the same pass as `var`) can never actually see it.
+Interpolation is plain string substitution; there is no expression language and
+no arbitrary code evaluation.
 
 ### `render[]` and placeholders
 
 Only files listed in `render[]` are substituted; everything else in the archive
-is copied byte-for-byte. Inside a `render[]` file:
+is copied byte-for-byte. `cloudflare.config` (the `wrangler.toml` path) must
+itself be one of the paths listed in `render[]` (L12) — the route-rule check
+below parses that file's rendered content, so a `cloudflare.config` never listed
+in `render[]` is rejected outright rather than silently skipping the route
+check. Inside a `render[]` file:
 
 - Every `{{name}}` must resolve to `app.name`, `broker.issuer`, a non-secret
   prompt key, or one of the two deploy-time sentinels `{{erpc:kv-id:<BINDING>}}`
