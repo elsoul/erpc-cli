@@ -96,7 +96,7 @@ export const renderTemplateFiles = (
         if (value === undefined) {
           throw new Error(`Unresolved template placeholder: {{${name}}}`)
         }
-        if (format === 'text' && value.includes('\n')) {
+        if (format === 'text' && /[\n\r]/.test(value)) {
           throw new Error(
             `The value for "${name}" contains a newline and cannot be rendered into a text file`,
           )

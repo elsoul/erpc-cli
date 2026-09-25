@@ -1,8 +1,9 @@
 // Orchestrates `erpc app init --template <name>@<tag>`.
 // See design doc §1/§2.6 and Task Brief Decisions 1-16.
+// Hardened per steiner r1 (PR #1 review) and cyan r1 (PR #1 review).
 
 import { mkdir, readdir, writeFile } from 'node:fs/promises'
-import { dirname, resolve } from 'node:path'
+import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import {
   type CollectedBrokerRegistration,
   collectTemplateAnswers,
@@ -23,7 +24,7 @@ import {
 } from './template-manifest.ts'
 import type { PromptIO } from './prompt-io.ts'
 import { defaultPromptIO } from './prompt-io.ts'
-import { renderTemplateFiles } from './template-render.ts'
+import { renderTemplateFiles, tomlBasicString } from './template-render.ts'
 import {
   resolveExpectedSha256,
   resolveTemplateRegistryEntry,
@@ -69,7 +70,11 @@ export const unsupportedOidcClientRegistrar: OidcClientRegistrar = {
 export const defaultOidcClientRegistrar: OidcClientRegistrar =
   unsupportedOidcClientRegistrar
 
-const UNPINNED_TEMPLATE_WARNING = (
+/**
+ * The Decision 16 trust-boundary warning text, exported so PR-B/PR-C can
+ * reuse the exact wording instead of duplicating it (steiner r1 N11).
+ */
+export const unpinnedTemplateWarning = (
   owner: string,
   repo: string,
   tag: string,
@@ -84,6 +89,17 @@ const originsMatch = (a: string, b: string): boolean => {
   }
 }
 
+/** Platform-safe "is `child` inside (or equal to) `parent`" check (steiner r1 N1). */
+const isInsideDirectory = (parent: string, child: string): boolean => {
+  const relativePath = relative(parent, child)
+  return relativePath === '' ||
+    (!relativePath.startsWith('..') && !isAbsolute(relativePath))
+}
+
+const tomlString = (value: string): string => `"${tomlBasicString(value)}"`
+const tomlStringArray = (values: readonly string[]): string =>
+  `[${values.map((value) => tomlString(value)).join(', ')}]`
+
 export interface InitializeTemplateAppOptions {
   readonly directory: string
   readonly domainValue?: string
@@ -92,10 +108,14 @@ export interface InitializeTemplateAppOptions {
   readonly fetch?: typeof globalThis.fetch
   readonly name?: string
   readonly oidcRegistrar?: OidcClientRegistrar
+  /** Forwarded to the OIDC registrar's io (steiner/cyan N10); PR-A never sets this itself. */
+  readonly openExternal?: (url: string) => void
   readonly output: (message: string) => void
   readonly promptIO?: PromptIO
   readonly setValues: ReadonlyMap<string, string>
   readonly sha256?: string
+  /** Forwarded to the OIDC registrar's io (steiner/cyan N10); PR-A never creates one itself. */
+  readonly signal?: AbortSignal
   readonly tag: string
   readonly templateName: string
   readonly templateRegistry: TemplateRegistry
@@ -141,17 +161,17 @@ const renderErpcToml = (options: {
 }): string => {
   const lines: string[] = [
     'schema_version = 1',
-    `name = ${JSON.stringify(options.appName)}`,
+    `name = ${tomlString(options.appName)}`,
     '',
     '[app]',
     'runtime = "cloudflare-worker"',
-    `entrypoint = ${JSON.stringify(options.entrypoint)}`,
+    `entrypoint = ${tomlString(options.entrypoint)}`,
   ]
   if (options.build) {
     lines.push(
       '',
       '[build]',
-      `command = ${JSON.stringify(options.build.command)}`,
+      `command = ${tomlStringArray(options.build.command)}`,
     )
   }
   lines.push(
@@ -160,43 +180,66 @@ const renderErpcToml = (options: {
     'target = "cloudflare"',
     '',
     '[cloudflare]',
-    `config = ${JSON.stringify(options.cloudflare.config)}`,
-    `wrangler = ${JSON.stringify(options.cloudflare.wrangler)}`,
+    `config = ${tomlString(options.cloudflare.config)}`,
+    `wrangler = ${tomlStringArray(options.cloudflare.wrangler)}`,
     '',
     '[template]',
-    `name = ${JSON.stringify(options.templateName)}`,
+    `name = ${tomlString(options.templateName)}`,
     `source = ${
-      JSON.stringify(`github:${options.source.owner}/${options.source.repo}`)
+      tomlString(`github:${options.source.owner}/${options.source.repo}`)
     }`,
-    `ref = ${JSON.stringify(options.tag)}`,
-    `asset = ${JSON.stringify(options.source.asset)}`,
-    `sha256 = ${JSON.stringify(options.sha256)}`,
+    `ref = ${tomlString(options.tag)}`,
+    `asset = ${tomlString(options.source.asset)}`,
+    `sha256 = ${tomlString(options.sha256)}`,
   )
   if (options.oidc) {
     lines.push(
       '',
       '[oidc]',
-      `issuer = ${JSON.stringify(options.oidc.issuer)}`,
-      `client_id = ${JSON.stringify(options.oidc.clientId)}`,
-      `redirect_uris = ${JSON.stringify(options.oidc.redirectUris)}`,
+      `issuer = ${tomlString(options.oidc.issuer)}`,
+      `client_id = ${tomlString(options.oidc.clientId)}`,
+      `redirect_uris = ${tomlStringArray(options.oidc.redirectUris)}`,
     )
   }
   lines.push('', '[health]', 'timeout_seconds = 120', '')
   return lines.join('\n')
 }
 
-/** Reads `main = "..."` from a rendered wrangler.toml, defaulting to `src/index.ts`. */
+/** Reads `main = "..."` from the rendered `cloudflare.config` file, defaulting to `src/index.ts`. */
 const detectEntrypoint = (
   files: readonly { path: string; content: Uint8Array }[],
+  configPath: string,
 ): string => {
-  const wrangler = files.find((file) => file.path === 'wrangler.toml')
-  if (wrangler) {
+  const config = files.find((file) => file.path === configPath)
+  if (config) {
     const match = /(?:^|\n)\s*main\s*=\s*"([^"]+)"/.exec(
-      new TextDecoder().decode(wrangler.content),
+      new TextDecoder().decode(config.content),
     )
     if (match?.[1]) return match[1]
   }
   return 'src/index.ts'
+}
+
+const summaryText = (
+  manifest: TemplateManifest,
+  values: ReadonlyMap<string, string>,
+): string => {
+  const derivedLines = manifest.prompts
+    .filter((prompt) => prompt.target === 'derived')
+    .map((prompt) =>
+      `  ${prompt.key} = ${values.get(prompt.key) ?? '(unresolved)'}`
+    )
+  const secretKeys = manifest.prompts
+    .filter((prompt) => isSecretPromptTarget(prompt.target))
+    .map((prompt) => prompt.key)
+  const lines = ['Summary:']
+  if (derivedLines.length > 0) lines.push(...derivedLines)
+  lines.push(
+    secretKeys.length > 0
+      ? `  Secrets generated during 'erpc deploy': ${secretKeys.join(', ')}`
+      : "  No secrets are generated during 'erpc deploy' for this template.",
+  )
+  return lines.join('\n')
 }
 
 export const initializeTemplateApp = async (
@@ -218,9 +261,17 @@ export const initializeTemplateApp = async (
   }
 
   // ① Target directory must not already contain files. Checked before any
-  // network access (design §2.6 step 1).
-  await mkdir(directory, { recursive: true })
-  const existing = await readdir(directory)
+  // network access (design §2.6 step 1) and without creating the directory
+  // (steiner/cyan N3/N9): a later failure must not leave an empty directory.
+  const existing = await readdir(directory).catch((error) => {
+    if (
+      error && typeof error === 'object' && 'code' in error &&
+      (error as { code?: unknown }).code === 'ENOENT'
+    ) {
+      return [] as string[]
+    }
+    throw error
+  })
   if (existing.length > 0) {
     throw new Error(`Refusing to overwrite non-empty directory: ${directory}`)
   }
@@ -249,7 +300,7 @@ export const initializeTemplateApp = async (
   // fetch+checksum succeed and before any prompting.
   if (!pinned) {
     options.output(
-      UNPINNED_TEMPLATE_WARNING(
+      unpinnedTemplateWarning(
         entry.source.owner,
         entry.source.repo,
         options.tag,
@@ -337,7 +388,13 @@ export const initializeTemplateApp = async (
     }
     const result = await oidcRegistrar.register(
       { issuer: brokerIssuer ?? '', clientName, redirectUris },
-      { output: options.output },
+      {
+        output: options.output,
+        ...(options.openExternal === undefined
+          ? {}
+          : { openExternal: options.openExternal }),
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+      },
     )
     return result.clientId
   }
@@ -364,13 +421,19 @@ export const initializeTemplateApp = async (
     },
   )
 
+  // Decision 6: interactive summary (derived values + the deploy-time secret
+  // list). Never shown non-interactively.
+  if (interactive) {
+    promptIO.inform(summaryText(manifest, values))
+  }
+
   // ⑧ Render declared files.
   const rendered = renderTemplateFiles(manifest, files, values, {
     appName,
     ...(brokerIssuer === undefined ? {} : { brokerIssuer }),
   })
 
-  const entrypoint = detectEntrypoint(rendered)
+  const entrypoint = detectEntrypoint(rendered, manifest.cloudflare.config)
   const oidc: {
     readonly clientId: string
     readonly issuer: string
@@ -395,23 +458,38 @@ export const initializeTemplateApp = async (
   })
 
   // ⑨ Write every file, then erpc.toml. `wx` refuses to clobber (defense in
-  // depth on top of the earlier empty-directory check).
-  for (const file of rendered) {
-    const destination = resolve(directory, file.path)
-    if (!destination.startsWith(`${directory}/`)) {
-      throw new Error('Template path escaped the application directory')
+  // depth on top of the earlier empty-directory check). If broker
+  // registration already succeeded (a real client was created upstream) and
+  // writing then fails, the client_id is public information the user needs
+  // to avoid registering a second client on retry (Decision 10 / design
+  // §2.6: "⑦〜⑨ 間の失敗は client_id を表示し --set APP_OIDC_CLIENT_ID=<id> で再実行").
+  try {
+    await mkdir(directory, { recursive: true })
+    for (const file of rendered) {
+      const destination = resolve(directory, file.path)
+      if (!isInsideDirectory(directory, destination)) {
+        throw new Error('Template path escaped the application directory')
+      }
+      await mkdir(dirname(destination), { recursive: true })
+      await writeFile(destination, file.content, {
+        flag: 'wx',
+        mode: file.executable ? 0o755 : 0o644,
+      })
     }
-    await mkdir(dirname(destination), { recursive: true })
-    await writeFile(destination, file.content, {
+    await writeFile(resolve(directory, 'erpc.toml'), erpcToml, {
+      encoding: 'utf8',
       flag: 'wx',
-      mode: file.executable ? 0o755 : 0o644,
+      mode: 0o644,
     })
+  } catch (error) {
+    if (brokerRegistration) {
+      options.output(
+        `Broker registration already succeeded (client_id: ${brokerRegistration.clientId}) before this failure. ` +
+          `Re-run with --set APP_OIDC_CLIENT_ID=${brokerRegistration.clientId} instead of registering a new client.`,
+      )
+    }
+    throw error
   }
-  await writeFile(resolve(directory, 'erpc.toml'), erpcToml, {
-    encoding: 'utf8',
-    flag: 'wx',
-    mode: 0o644,
-  })
 
   return {
     directory,

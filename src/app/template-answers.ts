@@ -14,8 +14,10 @@ import type {
 } from './template-manifest.ts'
 
 const MAX_ANSWER_LENGTH = 512
+// Every control character, including tab/newline/carriage-return: Decision 6
+// requires "no control characters" unconditionally (steiner r1 N2 / cyan r1 B4).
 // deno-lint-ignore no-control-regex
-const CONTROL_CHARACTER_PATTERN = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/
+const CONTROL_CHARACTER_PATTERN = /[\x00-\x1f\x7f]/
 const PLACEHOLDER_PATTERN = /\{\{([^{}]+)\}\}/g
 
 export class TemplateAnswersError extends Error {
@@ -46,6 +48,12 @@ const answerShapeIssue = (key: string, value: string): string | undefined => {
   }
   if (CONTROL_CHARACTER_PATTERN.test(value)) {
     return `${key}: answer contains a control character`
+  }
+  if (value.includes('{{')) {
+    // Prevents an answer from smuggling a fake `{{erpc:...}}` sentinel into a
+    // rendered file, where a later deploy step would treat it as genuine
+    // (cyan r1 N12).
+    return `${key}: answer must not contain "{{" (reserved for template placeholders)`
   }
   return undefined
 }
@@ -208,7 +216,10 @@ export const collectTemplateAnswers = async (
     } catch {
       continue // an upstream dependency already failed and was reported above
     }
-    if (issues.length > 0) continue // do not register while other answers are missing
+    // Trust is checked unconditionally (even if other answers are still
+    // missing) so an untrusted issuer always joins the same aggregated error
+    // list (Acceptance A8 / Decision 6; steiner r1 B4, cyan r1 B3). Only the
+    // actual registration call is skipped while other answers are missing.
     const trusted = await inputs.confirmIssuerTrust(
       inputs.builtIns.brokerIssuer ?? '',
     )
@@ -218,6 +229,7 @@ export const collectTemplateAnswers = async (
       )
       continue
     }
+    if (issues.length > 0) continue // do not register while other answers are missing
     const clientId = await inputs.resolveBrokerRegister(
       prompt,
       redirectUris,

@@ -24,6 +24,8 @@ export interface PromptIO {
     question: string,
     options?: PromptConfirmOptions,
   ) => Promise<boolean>
+  /** Displays an informational message (a summary, a notice) with no answer to collect. */
+  readonly inform: (message: string) => void
   readonly isInteractive: () => boolean
   readonly secret: (question: string) => Promise<string>
   readonly select: (
@@ -42,6 +44,7 @@ export const defaultPromptIO: PromptIO = {
       message: question,
       default: options?.default ?? false,
     }),
+  inform: (message) => console.log(message),
   isInteractive: () => Deno.stdin.isTerminal() && Deno.stdout.isTerminal(),
   secret: async (question) => await Secret.prompt({ message: question }),
   select: async (question, choices) =>

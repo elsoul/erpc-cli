@@ -187,21 +187,24 @@ const splitAndValidateRawPath = (
   return segments
 }
 
+/** Case-insensitive: `.GIT`, `ERPC.toml`, `Node_Modules/`, `.ENV` must be
+ * rejected exactly like their lowercase forms (steiner r1 B3). */
 const rejectDisallowedFinalPath = (
   segments: readonly string[],
   displayPath: string,
 ): void => {
-  if (segments.includes('node_modules')) {
+  const lowerSegments = segments.map((segment) => segment.toLowerCase())
+  if (lowerSegments.includes('node_modules')) {
     throw new TemplateArchivePolicyError(
       `contains a disallowed node_modules entry: ${displayPath}`,
     )
   }
-  if (segments.includes('.git')) {
+  if (lowerSegments.includes('.git')) {
     throw new TemplateArchivePolicyError(
       `contains a disallowed .git entry: ${displayPath}`,
     )
   }
-  const basename = segments[segments.length - 1] ?? ''
+  const basename = lowerSegments[lowerSegments.length - 1] ?? ''
   if (basename === 'erpc.toml') {
     throw new TemplateArchivePolicyError(
       `contains a disallowed erpc.toml entry: ${displayPath}`,
@@ -394,6 +397,24 @@ export const extractTemplateArchive = async (
         executable: entry.executable,
         path: finalPath,
       })
+    }
+  }
+
+  // A path used as a file must not also be needed as a directory prefix of
+  // another path (e.g. both "a" and "a/b"): writing "a" first, then trying to
+  // mkdir "a" for "a/b", would partially write the archive (cyan r1 N1).
+  const neededDirectories = new Set<string>()
+  for (const path of seen) {
+    const pathSegments = path.split('/')
+    for (let index = 1; index < pathSegments.length; index++) {
+      neededDirectories.add(pathSegments.slice(0, index).join('/'))
+    }
+  }
+  for (const file of files) {
+    if (neededDirectories.has(file.path.toLowerCase())) {
+      throw new TemplateArchivePolicyError(
+        `contains a path used as both a file and a directory: ${file.path}`,
+      )
     }
   }
 

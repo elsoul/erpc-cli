@@ -289,10 +289,14 @@ const lintTemplateManifest = (manifest: TemplateManifest): void => {
     if (isSecretPromptTarget(prompt.target)) secretKeys.add(prompt.key)
   }
 
-  const builtIns = new Set(['app.name', 'broker.issuer'])
+  // `{{broker.issuer}}` only resolves when a `broker` section exists
+  // (steiner r1 N6); referencing it otherwise is an undefined-key reference.
+  const isBuiltIn = (name: string): boolean =>
+    name === 'app.name' ||
+    (name === 'broker.issuer' && manifest.broker !== undefined)
   for (const prompt of manifest.prompts) {
     for (const name of referencedPlaceholders(prompt)) {
-      if (builtIns.has(name)) continue
+      if (isBuiltIn(name)) continue
       if (secretKeys.has(name)) {
         violations.push(
           `L3: "${prompt.key}" references secret key "${name}" in a placeholder`,
@@ -309,7 +313,7 @@ const lintTemplateManifest = (manifest: TemplateManifest): void => {
   }
   for (const kv of manifest.cloudflare.kv ?? []) {
     for (const name of extractPlaceholderNames(kv.title)) {
-      if (builtIns.has(name)) continue
+      if (isBuiltIn(name)) continue
       if (secretKeys.has(name)) {
         violations.push(
           `L3: cloudflare.kv title references secret key "${name}"`,
@@ -388,6 +392,25 @@ const lintTemplateManifest = (manifest: TemplateManifest): void => {
     }
   }
 
+  // Compile every `validate.pattern` at lint time so a malformed regex fails
+  // here, not with a confusing runtime error during answer collection or
+  // rendering (cyan r1 N5).
+  for (const prompt of manifest.prompts) {
+    if (prompt.target === 'derived' || prompt.target === 'secret-generate') {
+      continue // these targets have no `validate` field
+    }
+    if (prompt.validate === undefined) continue
+    try {
+      new RegExp(`^(?:${prompt.validate.pattern})$`)
+    } catch (error) {
+      violations.push(
+        `L10: "${prompt.key}" has an invalid validate.pattern: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      )
+    }
+  }
+
   if (!satisfiesMinCliVersion(CLI_VERSION, manifest.minCliVersion)) {
     violations.push(
       `L11: this template requires erpc-cli ${manifest.minCliVersion} or newer (running ${CLI_VERSION})`,
@@ -412,14 +435,24 @@ export const parseTemplateManifest = (json: unknown): TemplateManifest => {
   return result.data
 }
 
+/**
+ * Whether `index` sits inside a double-quoted ("basic") TOML string on
+ * `line`, tracking single-quoted ("literal") regions so a `'` inside one
+ * doesn't get mistaken for the start of a double-quoted string (steiner r1 N5).
+ * This is a line-local heuristic, not a full TOML parser.
+ */
 const isWithinDoubleQuotedString = (line: string, index: number): boolean => {
-  let inString = false
+  let inDouble = false
+  let inSingle = false
   for (let position = 0; position < index; position++) {
-    if (line[position] === '"' && line[position - 1] !== '\\') {
-      inString = !inString
+    const character = line[position]
+    if (!inSingle && character === '"' && line[position - 1] !== '\\') {
+      inDouble = !inDouble
+    } else if (!inDouble && character === "'") {
+      inSingle = !inSingle
     }
   }
-  return inString
+  return inDouble
 }
 
 export const isKnownTemplateSentinel = (
@@ -508,6 +541,19 @@ const lintCloudflareWorkerConfig = (
           violations.push(
             `L12: ${configPath} [[routes]] entry must be exactly { pattern = "{{domain}}", custom_domain = true }`,
           )
+        } else if (
+          !manifest.prompts.some((prompt) =>
+            prompt.target === 'var' && prompt.flag === 'domain'
+          )
+        ) {
+          // {{domain}} could otherwise be a `derived` key (a fixed or
+          // attacker-chosen expression) or a flag-less `var` (never surfaced
+          // by --domain / the interactive domain question), letting a
+          // template route to a domain the user never actually supplied
+          // (steiner r1 B2 / cyan r1 B2).
+          violations.push(
+            `L12: ${configPath} [[routes]] binds to {{domain}}, but no \`var\` prompt with flag "domain" declares that key`,
+          )
         }
       }
     }
@@ -566,7 +612,9 @@ export const lintTemplateFiles = (
       .filter((prompt) => isSecretPromptTarget(prompt.target))
       .map((prompt) => prompt.key),
   )
-  const builtIns = new Set(['app.name', 'broker.issuer'])
+  const isBuiltIn = (name: string): boolean =>
+    name === 'app.name' ||
+    (name === 'broker.issuer' && manifest.broker !== undefined)
   const kvBindings = (manifest.cloudflare.kv ?? []).map((kv) => kv.binding)
 
   for (const render of manifest.render) {
@@ -588,7 +636,7 @@ export const lintTemplateFiles = (
           )
           continue
         }
-        const resolved = builtIns.has(name) || nonSecretKeys.has(name) ||
+        const resolved = isBuiltIn(name) || nonSecretKeys.has(name) ||
           isKnownTemplateSentinel(name, kvBindings)
         if (!resolved) {
           violations.push(

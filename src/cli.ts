@@ -18,7 +18,12 @@ import { promptForRuntime, promptForTemplateOrRuntime } from './app/prompt.ts'
 import { defaultPromptIO, type PromptIO } from './app/prompt-io.ts'
 import { listErpcApplications } from './app/registry.ts'
 import { APP_RUNTIMES, type AppRuntime } from './app/templates.ts'
-import { isValidSha256Hex, parseTemplateRef } from './app/template-ref.ts'
+import {
+  isValidSha256Hex,
+  isValidTemplateTag,
+  parseTemplateRef,
+  TEMPLATE_TAG_PATTERN,
+} from './app/template-ref.ts'
 import {
   defaultOidcClientRegistrar,
   initializeTemplateApp,
@@ -128,22 +133,45 @@ const parseRuntime = (value: string | undefined): AppRuntime | undefined => {
   throw new Error('Runtime must be node or deno')
 }
 
+/** Parses the leading `vMAJOR.MINOR.PATCH` for ordering tags; unparsable tags sort first. */
+const semverSortKey = (value: string): readonly [number, number, number] => {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(value)
+  if (!match) return [-1, -1, -1]
+  return [Number(match[1]), Number(match[2]), Number(match[3])]
+}
+
+const compareSemver = (a: string, b: string): number => {
+  const [aMajor, aMinor, aPatch] = semverSortKey(a)
+  const [bMajor, bMinor, bPatch] = semverSortKey(b)
+  return (aMajor - bMajor) || (aMinor - bMinor) || (aPatch - bPatch)
+}
+
 /** Interactively asks for a tag (and, when unpinned, a sha256) after the user picks a template by name. */
 const promptForTemplateTagAndSha256 = async (
   promptIO: PromptIO,
   registry: TemplateRegistry,
   name: string,
 ): Promise<{ readonly sha256?: string; readonly tag: string }> => {
-  const entry = registry[name]
-  const pinnedTags = entry ? Object.keys(entry.pins).sort() : []
-  const suggestion = pinnedTags.at(-1)
+  // `Object.hasOwn` (not bracket access) so a template named e.g.
+  // "constructor" can't resolve through the prototype chain (steiner r1 N7).
+  const entry = Object.hasOwn(registry, name) ? registry[name] : undefined
+  const pinnedTags = entry ? Object.keys(entry.pins).sort(compareSemver) : []
+  const suggestion = pinnedTags.at(-1) // highest semver, not lexicographically last (cyan r1 N9)
   const tag = await promptIO.text(
     pinnedTags.length > 0
       ? `Tag for ${name} (pinned: ${pinnedTags.join(', ')})`
       : `Tag for ${name} (for example v0.1.0)`,
-    suggestion === undefined ? {} : { default: suggestion },
+    {
+      ...(suggestion === undefined ? {} : { default: suggestion }),
+      validate: (value) =>
+        isValidTemplateTag(value) ||
+        `Must match ${TEMPLATE_TAG_PATTERN} (for example v0.1.0)`,
+    },
   )
-  if (entry?.pins[tag] !== undefined) return { tag }
+  const pinnedSha256 = entry && Object.hasOwn(entry.pins, tag)
+    ? entry.pins[tag]
+    : undefined
+  if (pinnedSha256 !== undefined) return { tag }
   const sha256 = await promptIO.text(
     `sha256 for ${name}@${tag} (this tag is not pinned by this CLI; 64 hex characters)`,
     {

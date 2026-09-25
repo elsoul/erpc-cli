@@ -32,7 +32,9 @@ export const resolveTemplateRegistryEntry = (
   registry: TemplateRegistry,
   name: string,
 ): TemplateRegistryEntry => {
-  const entry = registry[name]
+  // `Object.hasOwn` (not bracket access) so a template named e.g.
+  // "constructor" can't resolve through the prototype chain (steiner r1 N7).
+  const entry = Object.hasOwn(registry, name) ? registry[name] : undefined
   if (!entry) {
     const known = Object.keys(registry)
     throw new Error(
@@ -56,7 +58,7 @@ export const resolveExpectedSha256 = (
   tag: string,
   explicitSha256: string | undefined,
 ): { readonly pinned: boolean; readonly sha256: string } => {
-  const pinned = entry.pins[tag]
+  const pinned = Object.hasOwn(entry.pins, tag) ? entry.pins[tag] : undefined
   if (pinned !== undefined) {
     if (explicitSha256 !== undefined && explicitSha256 !== pinned) {
       throw new Error(

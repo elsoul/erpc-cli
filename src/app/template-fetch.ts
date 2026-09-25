@@ -1,7 +1,7 @@
 // Release-asset fetch, checksum verification, and the on-disk template cache.
 // See design doc §1.2 and Task Brief Decision 3.
 
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { TemplateSource } from './template-registry.ts'
 
@@ -45,20 +45,24 @@ const downloadTemplateArchive = async (
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), timeoutMs)
-  let response: Response
+  // The whole body lives in one try/finally so the timer is cleared on every
+  // exit path, including a rejected `fetch()` call itself (steiner r1 N12 -
+  // the previous split try blocks left the timer running when `fetcher()`
+  // threw, since that path never reached the second block's `finally`).
   try {
-    response = await fetcher(url, { signal: controller.signal })
-  } catch (error) {
-    if (controller.signal.aborted) {
-      throw new Error('Timed out downloading the template archive')
+    let response: Response
+    try {
+      response = await fetcher(url, { signal: controller.signal })
+    } catch (error) {
+      if (controller.signal.aborted) {
+        throw new Error('Timed out downloading the template archive')
+      }
+      throw new Error(
+        `Unable to download the template archive: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      )
     }
-    throw new Error(
-      `Unable to download the template archive: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    )
-  }
-  try {
     if (!response.ok) {
       throw new Error(
         `Unable to download the template archive: HTTP ${response.status}`,
@@ -158,6 +162,17 @@ export const obtainVerifiedTemplateArchive = async (
     ) {
       throw error
     }
+    // We only reach `EEXIST` after the cache-read above rejected the existing
+    // file's content (it didn't hash to `expectedSha256`) - it is corrupt or
+    // stale, not merely "already cached". Replace it with the bytes this call
+    // just verified instead of silently leaving the bad entry in place
+    // (steiner r1 N4).
+    await unlink(cachePath).catch(() => undefined)
+    await writeFile(cachePath, bytes, {
+      encoding: undefined,
+      flag: 'wx',
+      mode: 0o600,
+    }).catch(() => undefined)
   }
   return bytes
 }
