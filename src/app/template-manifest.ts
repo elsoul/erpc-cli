@@ -307,11 +307,13 @@ const lintTemplateManifest = (manifest: TemplateManifest): void => {
       }
       // A `derived` value is computed in the same pass as every other
       // `var`/`derived` prompt, before broker-register is resolved (it
-      // always runs once, last) - referencing the broker-register key from a
-      // `derived` expr would try to interpolate a value that does not exist
-      // yet, regardless of manifest order or whether `--set` supplied it
-      // (packet Decision 6: broker-register resolves in its own single pass
-      // after every `var`/`derived` prompt).
+      // always runs once, last, per packet Decision 10's ordering) -
+      // referencing the broker-register key from a `derived` expr would try
+      // to interpolate a value that does not exist yet, regardless of
+      // manifest order or whether `--set` supplied it. Rejecting this at
+      // lint time (rather than leaving it to fail at answer-collection time)
+      // is el 裁定 ② (exec plan `2026-09-25-app-auth-broker-and-erpc-cli-template.md`,
+      // the "14:5xZ el" entry).
       if (prompt.target === 'derived' && brokerRegisterKeys.has(name)) {
         violations.push(
           `L2: "${prompt.key}" references broker-register key "${name}" in a derived expression (broker registration resolves after every other answer, so no derived value may depend on it)`,
@@ -326,20 +328,22 @@ const lintTemplateManifest = (manifest: TemplateManifest): void => {
     }
     if (!isSecretPromptTarget(prompt.target)) nonSecretKeysSoFar.add(prompt.key)
   }
+  // `cloudflare.kv[].title` is only ever interpolated at deploy time (PR-B),
+  // and only with `{{app.name}}` - `{{broker.issuer}}` and every prompt key
+  // (including a non-secret one that a template author might expect, and a
+  // `broker-register` key in particular, which cannot resolve until *after*
+  // deploy-time interpolation would already need it) are all left literally
+  // unresolved in the title a template author would see. Restricting this to
+  // `app.name` alone (el ruling, recorded alongside the exec plan's other
+  // numbered rulings) keeps the lint's accepted shape matching what the
+  // deploy step can actually fill in, instead of accepting references that
+  // can only ever fail later.
   for (const kv of manifest.cloudflare.kv ?? []) {
     for (const name of extractPlaceholderNames(kv.title)) {
-      if (isBuiltIn(name)) continue
-      if (secretKeys.has(name)) {
-        violations.push(
-          `L3: cloudflare.kv title references secret key "${name}"`,
-        )
-        continue
-      }
-      if (!nonSecretKeysSoFar.has(name)) {
-        violations.push(
-          `L2: cloudflare.kv title references an undefined key "${name}"`,
-        )
-      }
+      if (name === 'app.name') continue
+      violations.push(
+        `L2: cloudflare.kv title references "${name}", but only {{app.name}} is interpolated for a kv title (PR-B interpolates nothing else there)`,
+      )
     }
   }
 
@@ -424,6 +428,25 @@ const lintTemplateManifest = (manifest: TemplateManifest): void => {
         `L10: a manifest string contains a control character: ${
           truncate(value)
         }`,
+      )
+    }
+  }
+
+  // A `var` prompt's `default` becomes the answer whenever nothing else
+  // supplies one (interactively confirmed, or used as-is non-interactively);
+  // every answer is checked against the same rule that rejects a literal
+  // "{{" (it would otherwise let a fake placeholder survive into a rendered
+  // file). A manifest whose `default` already contains one would always fail
+  // at answer-collection time with no way for a template author to fix it
+  // short of removing the default - reject it here instead, with a message
+  // that names the actual problem.
+  for (const prompt of manifest.prompts) {
+    if (
+      prompt.target === 'var' && prompt.default !== undefined &&
+      prompt.default.includes('{{')
+    ) {
+      violations.push(
+        `L10: "${prompt.key}" declares a default containing "{{" (an answer may never contain one, so this default could never actually be used)`,
       )
     }
   }
@@ -598,8 +621,11 @@ const lintCloudflareWorkerConfig = (
             domainPrompt.target === 'var' && domainPrompt.default !== undefined
           ) {
             // A `default` would let `--yes` route to that zone with no value
-            // the user actually typed (packet Decision 5(c)): the
-            // "domain" prompt must require a real answer.
+            // the user actually typed - the "domain" prompt must require a
+            // real answer. This specific prohibition is el 裁定 ① (exec plan
+            // `2026-09-25-app-auth-broker-and-erpc-cli-template.md`, the
+            // "14:5xZ el" entry); packet Decision 5(c) covers the flag
+            // requirement above but not this one.
             violations.push(
               `L12: ${configPath} [[routes]] binds to {{domain}}, but the "domain" prompt declares a default (it must require a typed answer)`,
             )
