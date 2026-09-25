@@ -19,6 +19,13 @@ const WRANGLER_LOG_SANITIZE_ENV = { WRANGLER_LOG_SANITIZE: 'true' } as const
 export const DEFAULT_MIN_WRANGLER_VERSION = '4.104.0'
 
 export interface WranglerCallOptions {
+  /**
+   * Absolute path to the `[cloudflare].config` file. Always passed as
+   * `--config <path>` so wrangler's own json/jsonc/toml auto-discovery can
+   * never pick a different file than the one this deploy actually read and
+   * patched (packet review N1).
+   */
+  readonly configPath: string
   readonly cwd: string
   readonly display?: boolean
   readonly env?: Readonly<Record<string, string>>
@@ -26,7 +33,7 @@ export interface WranglerCallOptions {
   readonly stdio?: 'inherit' | 'piped'
 }
 
-/** Runs `[...wrangler, ...args]` through `run`, always forcing `WRANGLER_LOG_SANITIZE=true`. */
+/** Runs `[...wrangler, ...args]` through `run`, always forcing `WRANGLER_LOG_SANITIZE=true` and pinning `--config`. */
 export const runWrangler = async (
   run: ProcessRunner,
   wrangler: readonly string[],
@@ -36,7 +43,7 @@ export const runWrangler = async (
   const [command, ...prefixArgs] = wrangler
   if (!command) throw new Error('cloudflare.wrangler must not be empty')
   const request: ProcessRequest = {
-    args: [...prefixArgs, ...args],
+    args: [...prefixArgs, '--config', options.configPath, ...args],
     command,
     cwd: options.cwd,
     env: { ...options.env, ...WRANGLER_LOG_SANITIZE_ENV },
@@ -73,6 +80,7 @@ export const checkWranglerToolchain = async (
   run: ProcessRunner,
   wrangler: readonly string[],
   cwd: string,
+  configPath: string,
   minVersion: string,
 ): Promise<void> => {
   const cannotRun = new Error(
@@ -80,7 +88,10 @@ export const checkWranglerToolchain = async (
   )
   let result: ProcessResult
   try {
-    result = await runWrangler(run, wrangler, ['--version'], { cwd })
+    result = await runWrangler(run, wrangler, ['--version'], {
+      configPath,
+      cwd,
+    })
   } catch {
     throw cannotRun
   }
@@ -111,8 +122,12 @@ export const wranglerWhoami = async (
   run: ProcessRunner,
   wrangler: readonly string[],
   cwd: string,
+  configPath: string,
 ): Promise<WranglerWhoami | null> => {
-  const result = await runWrangler(run, wrangler, ['whoami', '--json'], { cwd })
+  const result = await runWrangler(run, wrangler, ['whoami', '--json'], {
+    configPath,
+    cwd,
+  })
   if (result.code !== 0) return null
   try {
     const parsed = JSON.parse(result.stdout) as {
@@ -131,8 +146,10 @@ export const wranglerLogin = async (
   run: ProcessRunner,
   wrangler: readonly string[],
   cwd: string,
+  configPath: string,
 ): Promise<void> => {
   const result = await runWrangler(run, wrangler, ['login'], {
+    configPath,
     cwd,
     stdio: 'inherit',
   })
@@ -149,9 +166,11 @@ export const wranglerKvNamespaceList = async (
   run: ProcessRunner,
   wrangler: readonly string[],
   cwd: string,
+  configPath: string,
   env: Readonly<Record<string, string>>,
 ): Promise<readonly WranglerKvNamespace[]> => {
   const result = await runWrangler(run, wrangler, ['kv', 'namespace', 'list'], {
+    configPath,
     cwd,
     env,
   })
@@ -185,6 +204,7 @@ export const wranglerKvNamespaceCreate = async (
   run: ProcessRunner,
   wrangler: readonly string[],
   cwd: string,
+  configPath: string,
   env: Readonly<Record<string, string>>,
   title: string,
 ): Promise<string> => {
@@ -192,7 +212,7 @@ export const wranglerKvNamespaceCreate = async (
     run,
     wrangler,
     ['kv', 'namespace', 'create', title],
-    { cwd, env },
+    { configPath, cwd, env },
   )
   if (result.code !== 0) {
     throw new Error(
@@ -217,13 +237,14 @@ export const wranglerSecretList = async (
   run: ProcessRunner,
   wrangler: readonly string[],
   cwd: string,
+  configPath: string,
   env: Readonly<Record<string, string>>,
 ): Promise<ReadonlySet<string>> => {
   const result = await runWrangler(
     run,
     wrangler,
     ['secret', 'list', '--format', 'json'],
-    { cwd, env },
+    { configPath, cwd, env },
   )
   if (result.code !== 0) {
     if (WORKER_NOT_FOUND.test(`${result.stdout}\n${result.stderr}`)) {
@@ -259,11 +280,13 @@ export const wranglerSecretPut = async (
   run: ProcessRunner,
   wrangler: readonly string[],
   cwd: string,
+  configPath: string,
   env: Readonly<Record<string, string>>,
   name: string,
   value: string,
 ): Promise<void> => {
   const result = await runWrangler(run, wrangler, ['secret', 'put', name], {
+    configPath,
     cwd,
     display: false,
     env,
@@ -279,6 +302,7 @@ export const wranglerDeploy = async (
   run: ProcessRunner,
   wrangler: readonly string[],
   cwd: string,
+  configPath: string,
   env: Readonly<Record<string, string>>,
   options: { readonly dryRun?: boolean } = {},
 ): Promise<ProcessResult> =>
@@ -286,5 +310,5 @@ export const wranglerDeploy = async (
     run,
     wrangler,
     options.dryRun ? ['deploy', '--dry-run'] : ['deploy'],
-    { cwd, env, stdio: 'inherit' },
+    { configPath, cwd, env, stdio: 'inherit' },
   )

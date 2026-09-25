@@ -43,25 +43,40 @@ export const atomicWriteWranglerConfig = async (
 export const hasUnresolvedPlaceholders = (text: string): boolean =>
   text.includes('{{')
 
+/** A Cloudflare account id is 32 lowercase hex characters. */
+const ACCOUNT_ID_PATTERN = /^[0-9a-f]{32}$/
+
 /**
  * D3: fills in `account_id`. Replaces the sentinel in place if present;
  * otherwise inserts a fresh top-level `account_id = "..."` line before the
- * first table header (or appends one, for a file with no tables at all).
- * A file that already carries a resolved (non-sentinel) `account_id` is
- * returned unchanged - the caller is responsible for stopping when that
- * value disagrees with the newly resolved account (Decision 4).
+ * first table header (an indented one included - `/^\s*\[/m`, packet review
+ * N3) or appends one, for a file with no tables at all. A file that already
+ * carries a resolved (non-sentinel) `account_id` is returned unchanged - the
+ * caller is responsible for stopping when that value disagrees with the
+ * newly resolved account (Decision 4).
+ *
+ * `accountId` must already look like a Cloudflare account id (packet review
+ * N2): this value came from `wrangler whoami --json` or the
+ * `CLOUDFLARE_ACCOUNT_ID` environment variable, and writing an unvalidated
+ * string into TOML text (even one built with `tomlBasicString`) is not a
+ * risk worth taking for a value this shape-constrained.
  */
 export const applyAccountIdSentinel = (
   text: string,
   accountId: string,
 ): string => {
+  if (!ACCOUNT_ID_PATTERN.test(accountId)) {
+    throw new Error(
+      `Resolved Cloudflare account id does not look like an account id: ${accountId}`,
+    )
+  }
   if (text.includes(WRANGLER_ACCOUNT_ID_SENTINEL)) {
     return text.replaceAll(WRANGLER_ACCOUNT_ID_SENTINEL, accountId)
   }
   const parsed = parseWranglerConfig(text)
   if (typeof parsed.account_id === 'string') return text
   const line = `account_id = "${tomlBasicString(accountId)}"\n`
-  const match = /^\[/m.exec(text)
+  const match = /^\s*\[/m.exec(text)
   if (!match) {
     if (text.length === 0) return line
     return text.endsWith('\n') ? `${text}${line}` : `${text}\n${line}`

@@ -178,12 +178,26 @@ export const resolveSecretValue = async (
     const value = await deps.promptIO.secret(
       prompt.question ?? `Enter a value for ${prompt.key}`,
     )
+    if (value.length === 0) {
+      throw new Error(`${prompt.key} may not be an empty value`)
+    }
+    validateOrThrow(prompt.validate, value, prompt.key)
     return { kind: 'value', value }
   }
   const envValue = prompt.env === undefined
     ? undefined
     : Deno.env.get(prompt.env)
-  if (envValue !== undefined) return { kind: 'value', value: envValue }
+  if (envValue !== undefined) {
+    if (envValue.length === 0) {
+      throw new Error(
+        prompt.env === undefined
+          ? `${prompt.key} may not be an empty value`
+          : `${prompt.key}: environment variable ${prompt.env} may not be an empty value`,
+      )
+    }
+    validateOrThrow(prompt.validate, envValue, prompt.key)
+    return { kind: 'value', value: envValue }
+  }
   if (prompt.required ?? false) {
     // blockingSecretIssues() must have already caught this - defensive.
     throw new Error(`${prompt.key} is required and no value is available`)

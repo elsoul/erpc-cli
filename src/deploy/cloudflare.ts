@@ -151,8 +151,14 @@ interface AccountResolution {
   readonly accountId: string
 }
 
-/** D3: authenticate, then fix an account_id, writing it into wrangler.toml (Decision 4). */
+/**
+ * D3: authenticate, then fix an account_id, writing it into wrangler.toml
+ * (Decision 4). Under `--dry-run` the account is still resolved (D5(b)'s
+ * report needs the right `CLOUDFLARE_ACCOUNT_ID`) but never written back
+ * (packet review N5) - a dry run must not mutate the project.
+ */
 const resolveCloudflareAccount = async (params: {
+  readonly dryRun: boolean
   readonly isInteractive: boolean
   readonly promptIO: PromptIO
   readonly root: string
@@ -161,7 +167,12 @@ const resolveCloudflareAccount = async (params: {
   readonly wranglerConfigPath: string
 }): Promise<AccountResolution> => {
   const cloudflareApiToken = Deno.env.get('CLOUDFLARE_API_TOKEN')
-  let whoami = await wranglerWhoami(params.run, params.wrangler, params.root)
+  let whoami = await wranglerWhoami(
+    params.run,
+    params.wrangler,
+    params.root,
+    params.wranglerConfigPath,
+  )
   if (!whoami) {
     if (cloudflareApiToken !== undefined) {
       throw new Error(
@@ -175,8 +186,18 @@ const resolveCloudflareAccount = async (params: {
           'Set CLOUDFLARE_API_TOKEN, or run `wrangler login` first.',
       )
     }
-    await wranglerLogin(params.run, params.wrangler, params.root)
-    whoami = await wranglerWhoami(params.run, params.wrangler, params.root)
+    await wranglerLogin(
+      params.run,
+      params.wrangler,
+      params.root,
+      params.wranglerConfigPath,
+    )
+    whoami = await wranglerWhoami(
+      params.run,
+      params.wrangler,
+      params.root,
+      params.wranglerConfigPath,
+    )
     if (!whoami) {
       throw new Error(
         '`wrangler login` did not result in an authenticated session',
@@ -201,6 +222,14 @@ const resolveCloudflareAccount = async (params: {
         `CLOUDFLARE_ACCOUNT_ID (${envAccountId}) does not match the Cloudflare account already resolved in wrangler.toml (${configAccountId})`,
       )
     }
+    // packet review N11: a pinned account that this login can no longer see
+    // (revoked membership, wrong login) must stop here, not surface as a
+    // confusing 403 several steps later.
+    if (!whoami.accounts.some((account) => account.id === configAccountId)) {
+      throw new Error(
+        `wrangler.toml account_id (${configAccountId}) is not one of the accounts this wrangler login can see`,
+      )
+    }
     accountId = configAccountId
   } else if (envAccountId !== undefined) {
     accountId = envAccountId
@@ -222,9 +251,19 @@ const resolveCloudflareAccount = async (params: {
     )
   }
 
-  const updated = applyAccountIdSentinel(text, accountId)
-  if (updated !== text) {
-    await atomicWriteWranglerConfig(params.wranglerConfigPath, updated)
+  if (!params.dryRun) {
+    const updated = applyAccountIdSentinel(text, accountId)
+    if (updated !== text) {
+      await atomicWriteWranglerConfig(params.wranglerConfigPath, updated)
+      // packet review N3: confirm the write actually landed before trusting
+      // it for the rest of the run.
+      const readBack = await readWranglerConfigText(params.wranglerConfigPath)
+      if (resolvedAccountId(parseWranglerConfig(readBack)) !== accountId) {
+        throw new Error(
+          `${params.wranglerConfigPath} does not show account_id ${accountId} after writing it`,
+        )
+      }
+    }
   }
 
   return { accountEnv: { CLOUDFLARE_ACCOUNT_ID: accountId }, accountId }
@@ -234,12 +273,17 @@ const resolveCloudflareAccount = async (params: {
  * `cloudflare.kv[].title` is only ever interpolated with `{{app.name}}` -
  * `erpc-template.json`'s own lint (`template-manifest.ts` L2) rejects any
  * other placeholder in a kv title precisely because nothing else is
- * resolvable at this point (packet Decision 5(c)), so an unresolved `{{`
+ * resolvable at this point (packet Decision 5(iii)), so an unresolved `{{`
  * remaining here means the archive re-fetched in D0 disagrees with what
- * passed lint at init time.
+ * passed lint at init time. The lint trims whitespace inside `{{ }}` when it
+ * compares names (`extractPlaceholderNames`), so `{{ app.name }}` passes
+ * lint too - this matches that with the same tolerance instead of only
+ * accepting the exact byte sequence `{{app.name}}` (cyan r1 N5).
  */
+const APP_NAME_PLACEHOLDER = /\{\{\s*app\.name\s*\}\}/g
+
 const interpolateKvTitle = (title: string, appName: string): string => {
-  const resolved = title.replaceAll('{{app.name}}', appName)
+  const resolved = title.replace(APP_NAME_PLACEHOLDER, appName)
   if (resolved.includes('{{')) {
     throw new Error(
       `Unable to resolve the Cloudflare KV namespace title "${title}" at deploy time`,
@@ -274,6 +318,7 @@ const provisionKvNamespaces = async (params: {
         params.run,
         params.wrangler,
         params.root,
+        params.wranglerConfigPath,
         params.accountEnv,
       )
     }
@@ -282,6 +327,7 @@ const provisionKvNamespaces = async (params: {
       params.run,
       params.wrangler,
       params.root,
+      params.wranglerConfigPath,
       params.accountEnv,
       title,
     )
@@ -303,6 +349,7 @@ const provisionSecrets = async (params: {
   readonly run: ProcessRunner
   readonly templateManifest: TemplateManifest
   readonly wrangler: readonly string[]
+  readonly wranglerConfigPath: string
 }): Promise<void> => {
   const secretPrompts = secretPromptsOf(params.templateManifest.prompts)
   if (secretPrompts.length === 0) return
@@ -310,6 +357,7 @@ const provisionSecrets = async (params: {
     params.run,
     params.wrangler,
     params.root,
+    params.wranglerConfigPath,
     params.accountEnv,
   )
   const toProcess = secretPrompts.filter((prompt) => !existing.has(prompt.key))
@@ -331,6 +379,7 @@ const provisionSecrets = async (params: {
       params.run,
       params.wrangler,
       params.root,
+      params.wranglerConfigPath,
       params.accountEnv,
       prompt.key,
       resolution.value,
@@ -351,9 +400,16 @@ const runPreflight = async (params: {
 }): Promise<void> => {
   const text = await readWranglerConfigText(params.wranglerConfigPath)
   if (hasUnresolvedPlaceholders(text)) {
-    throw new Error(
-      `${params.wranglerConfigPath} still has an unresolved {{...}} placeholder`,
-    )
+    // D5(a): under `--dry-run`, D4 never ran, so a fresh project's KV/account
+    // sentinels are still there - report instead of stopping, the same
+    // relaxation `--dry-run` already gets for D5(b) (packet review N5).
+    const message =
+      `${params.wranglerConfigPath} still has an unresolved {{...}} placeholder`
+    if (params.reportMissingOnly) {
+      params.output(message)
+    } else {
+      throw new Error(message)
+    }
   }
   const parsed = parseWranglerConfig(text)
   const required = new Set([
@@ -365,6 +421,7 @@ const runPreflight = async (params: {
       params.run,
       params.wrangler,
       params.root,
+      params.wranglerConfigPath,
       params.accountEnv,
     )
     const missing = [...required].filter((name) => !existing.has(name)).sort()
@@ -388,6 +445,9 @@ const runPreflight = async (params: {
       cwd: params.root,
     })
     if (result.code !== 0) {
+      // packet review N10: surface stderr (a preflight command is
+      // template-authored, not a secret-value source like secret-pipe).
+      if (result.stderr) params.output(result.stderr)
       throw new Error(`Preflight command failed: ${command.join(' ')}`)
     }
   }
@@ -403,7 +463,10 @@ export const deployToCloudflare = async (
   const random = options.random ?? defaultRandom
   const fetcher = options.fetch ?? globalThis.fetch
   const templateRegistry = options.templateRegistry ?? TEMPLATE_REGISTRY
-  const isInteractive = promptIO.isInteractive()
+  // `--yes` forces the non-interactive path even with a TTY attached - the
+  // same contract `initializeTemplateApp` uses for `erpc app init --template`
+  // (Decision Q2/6; packet review B2/cyan B2).
+  const isInteractive = !(options.yes ?? false) && promptIO.isInteractive()
   const root = manifest.projectRoot
   const wrangler = manifest.cloudflare.wrangler
   const wranglerConfigPath = resolve(root, manifest.cloudflare.config)
@@ -440,22 +503,35 @@ export const deployToCloudflare = async (
     return
   }
 
-  // D1
-  const minVersion = templateManifest.cloudflare.minWranglerVersion ??
-    DEFAULT_MIN_WRANGLER_VERSION
-  await checkWranglerToolchain(run, wrangler, root, minVersion)
-
-  // D2
+  // D2 before D1 (packet review N7): a freshly-initialized project has not
+  // run its own install yet, so `[build].command` (typically
+  // `pnpm install --frozen-lockfile`) must run before `wrangler --version`
+  // has any chance of finding wrangler at all.
   if (manifest.build) {
     const [command, ...rest] = manifest.build.command
     const result = await run({ args: rest, command: command!, cwd: root })
     if (result.code !== 0) {
+      // packet review N10: a build command is template-authored, not a
+      // secret-value source, so its stderr is safe to show.
+      if (result.stderr) output(result.stderr)
       throw new Error('Build failed; no Cloudflare command was run')
     }
   }
 
+  // D1
+  const minVersion = templateManifest.cloudflare.minWranglerVersion ??
+    DEFAULT_MIN_WRANGLER_VERSION
+  await checkWranglerToolchain(
+    run,
+    wrangler,
+    root,
+    wranglerConfigPath,
+    minVersion,
+  )
+
   // D3
   const { accountEnv } = await resolveCloudflareAccount({
+    dryRun: options.dryRun ?? false,
     isInteractive,
     promptIO,
     root,
@@ -487,6 +563,7 @@ export const deployToCloudflare = async (
       run,
       templateManifest,
       wrangler,
+      wranglerConfigPath,
     })
   }
 
@@ -503,9 +580,14 @@ export const deployToCloudflare = async (
   })
 
   // D6
-  const deployResult = await wranglerDeploy(run, wrangler, root, accountEnv, {
-    dryRun: options.dryRun,
-  })
+  const deployResult = await wranglerDeploy(
+    run,
+    wrangler,
+    root,
+    wranglerConfigPath,
+    accountEnv,
+    { dryRun: options.dryRun },
+  )
   if (deployResult.code !== 0) {
     throw new Error(
       options.dryRun
