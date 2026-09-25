@@ -404,7 +404,7 @@ describe('initializeTemplateApp', () => {
     expect(message).toContain('--set')
     // The `derived` key that depends on the missing `domain` fails to
     // interpolate too - it must add its own issue instead of resolving
-    // silently (packet Decision 6; cyan r3 catch-block note).
+    // silently (packet Decision 6).
     expect(message).toContain('MCP_SERVER_BASE_URL')
     expect(message).toContain('could not be derived')
     expect(promptIO.callCount).toBe(0)
