@@ -441,7 +441,7 @@ describe('lintTemplateFiles', () => {
     ).toThrow('L12')
   })
 
-  it('L12: rejects a "domain" var with no flag at all and no default either (packet Decision 5(c))', () => {
+  it('L12: rejects a "domain" var with no flag at all and no default either (packet Decision 5(i))', () => {
     // Isolates the missing-flag condition from every other way this prompt
     // could be wrong: no `default`, a `validate` pattern, otherwise a
     // perfectly ordinary `var` prompt - only `flag` itself is absent. A

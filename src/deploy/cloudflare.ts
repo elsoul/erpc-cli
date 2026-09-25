@@ -278,7 +278,7 @@ const resolveCloudflareAccount = async (params: {
  * passed lint at init time. The lint trims whitespace inside `{{ }}` when it
  * compares names (`extractPlaceholderNames`), so `{{ app.name }}` passes
  * lint too - this matches that with the same tolerance instead of only
- * accepting the exact byte sequence `{{app.name}}` (cyan r1 N5).
+ * accepting the exact byte sequence `{{app.name}}`.
  */
 const APP_NAME_PLACEHOLDER = /\{\{\s*app\.name\s*\}\}/g
 

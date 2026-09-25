@@ -73,8 +73,9 @@ export const defaultOidcClientRegistrar: OidcClientRegistrar =
   unsupportedOidcClientRegistrar
 
 /**
- * The Decision 16 trust-boundary warning text, exported so PR-B/PR-C can
- * reuse the exact wording instead of duplicating it.
+ * The Decision 16 trust-boundary warning text, exported so the deploy
+ * command and the broker registration step can reuse the exact wording
+ * instead of duplicating it.
  */
 export const unpinnedTemplateWarning = (
   owner: string,
@@ -375,7 +376,7 @@ export const initializeTemplateApp = async (
   lintTemplateFiles(manifest, filesByPath)
 
   // Decision 6: `--set` may never provide a secret target's value; those are
-  // generated during `erpc deploy` (PR-B), never during `init`.
+  // generated during the deploy command (`erpc deploy`), never during `init`.
   const secretPromptKeys = new Set(
     manifest.prompts
       .filter((prompt) => isSecretPromptTarget(prompt.target))

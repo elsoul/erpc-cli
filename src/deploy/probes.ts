@@ -9,8 +9,8 @@
 // DCR registration (`POST /oauth/register`) happens at most once per probe
 // run, even across retries: the worker persists one client row per
 // registration, and retrying the whole chain on every backoff attempt would
-// leave one new row per attempt (cyan r1 N12) - only the PKCE
-// authorize/follow step is retried once a client id is in hand.
+// leave one new row per attempt - only the PKCE authorize/follow step is
+// retried once a client id is in hand.
 
 import { encodeBase64 } from '@std/encoding/base64'
 import type { TemplateManifest } from '../app/template-manifest.ts'

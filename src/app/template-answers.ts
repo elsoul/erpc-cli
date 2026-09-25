@@ -1,8 +1,8 @@
 // Collects answers for `var`, `derived`, and `broker-register` prompts.
 // See design doc §2.5/§2.6 and Task Brief Decision 6.
 //
-// `secret-generate` / `secret-pipe` / `secret-input` prompts are resolved at
-// deploy time (PR-B), not here (design §2.2: their "confirmed" column is
+// `secret-generate` / `secret-pipe` / `secret-input` prompts are resolved by
+// the deploy command, not here (design §2.2: their "confirmed" column is
 // "deploy"). Callers must reject `--set` for those keys before this module
 // runs (Decision 6: "`--set` で secret target のキーを渡したらエラー").
 //
@@ -283,7 +283,7 @@ export const collectTemplateAnswers = async (
       prompt.target === 'secret-pipe' ||
       prompt.target === 'secret-input'
     ) {
-      continue // resolved at deploy time (PR-B), not during init
+      continue // resolved by the deploy command, not during init
     }
 
     // prompt.target === 'broker-register': defer to a single pass below, so
