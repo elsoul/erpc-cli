@@ -84,12 +84,33 @@ export const applyAccountIdSentinel = (
   return `${text.slice(0, match.index)}${line}${text.slice(match.index)}`
 }
 
-/** D4a: replaces a single `{{erpc:kv-id:<BINDING>}}` sentinel with the resolved namespace id. No-op if the sentinel is already gone (a prior run resolved it). */
+/**
+ * A Cloudflare KV namespace id is 32 lowercase hex characters (Cloudflare's
+ * KV binding docs use `06779da6940b431db6e566b4846d64db` as the example).
+ */
+const KV_NAMESPACE_ID_PATTERN = /^[0-9a-f]{32}$/
+
+/**
+ * D4a: replaces a single `{{erpc:kv-id:<BINDING>}}` sentinel with the
+ * resolved namespace id. No-op if the sentinel is already gone (a prior run
+ * resolved it). The id comes from parsing wrangler's own output (`kv
+ * namespace list` JSON or the `kv namespace create` config snippet), so it is
+ * checked against the namespace-id shape before it is written into TOML
+ * text: a quote or a newline in it would otherwise change the file's
+ * structure.
+ */
 export const applyKvIdSentinel = (
   text: string,
   binding: string,
   id: string,
 ): string => {
+  if (!KV_NAMESPACE_ID_PATTERN.test(id)) {
+    throw new Error(
+      `The KV namespace id wrangler reported for ${binding} does not look like a KV namespace id: ${
+        JSON.stringify(id)
+      }`,
+    )
+  }
   const sentinel = kvIdSentinel(binding)
   return text.includes(sentinel) ? text.replaceAll(sentinel, id) : text
 }

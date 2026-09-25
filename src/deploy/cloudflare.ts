@@ -256,6 +256,15 @@ const resolveCloudflareAccount = async (params: {
   if (!params.dryRun) {
     const updated = applyAccountIdSentinel(text, accountId)
     if (updated !== text) {
+      // The insertion is textual, so a line inside a top-level multi-line
+      // string that starts with `[` can be mistaken for the first table
+      // header. Checking the edited text before writing it means such a file
+      // is reported and left untouched, never left half-edited on disk.
+      if (resolvedAccountId(parseWranglerConfig(updated)) !== accountId) {
+        throw new Error(
+          `Unable to add account_id ${accountId} to ${params.wranglerConfigPath} as a top-level key; add \`account_id = "${accountId}"\` above the first table yourself, then retry`,
+        )
+      }
       await atomicWriteWranglerConfig(params.wranglerConfigPath, updated)
       // packet review N3: confirm the write actually landed before trusting
       // it for the rest of the run.

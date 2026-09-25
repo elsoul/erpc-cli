@@ -325,7 +325,7 @@ const createFakeWrangler = (options: FakeWranglerOptions = {}) => {
     }
     if (sub1 === 'kv' && sub2 === 'namespace' && sub3 === 'create') {
       const title = sub4 ?? ''
-      const id = `kv-id-${nextKvId++}`
+      const id = (nextKvId++).toString(16).padStart(32, '0')
       kvNamespaces.push({ id, title })
       return {
         code: 0,
@@ -1212,7 +1212,7 @@ describe('erpc deploy --target cloudflare', () => {
     const manifest = await loadManifest(project)
     const fake = createFakeWrangler()
     fake.kvNamespaces.push({
-      id: 'pre-existing-kv-id',
+      id: 'cccccccccccccccccccccccccccccccc',
       title: 'test-app-mcp-kv',
     })
 
@@ -1236,7 +1236,7 @@ describe('erpc deploy --target cloudflare', () => {
     const wranglerTomlAfter = await Deno.readTextFile(
       join(project.root, 'wrangler.toml'),
     )
-    expect(wranglerTomlAfter).toContain('pre-existing-kv-id')
+    expect(wranglerTomlAfter).toContain('cccccccccccccccccccccccccccccccc')
   })
 })
 
@@ -1698,5 +1698,76 @@ describe('erpc deploy --target cloudflare: --yes, probe timeouts, and redirect o
     })).rejects.toThrow('redirected outside the issuer origin')
 
     expect(otherOriginRequests).toEqual([])
+  })
+})
+
+describe('erpc deploy --target cloudflare: wrangler.toml edits', () => {
+  it('a KV namespace id that is not 32 hex characters is never written into wrangler.toml', async () => {
+    const project = await setupProject({
+      includePreflight: false,
+      includePostDeploy: false,
+    })
+    const manifest = await loadManifest(project)
+    const fake = createFakeWrangler()
+    fake.kvNamespaces.push({
+      id: 'not-a-kv-id"\n[vars]\nINJECTED = "1',
+      title: 'test-app-mcp-kv',
+    })
+    const wranglerTomlPath = join(project.root, 'wrangler.toml')
+
+    await expect(deployToCloudflare(manifest, {
+      erpcHome: project.erpcHome,
+      output: () => undefined,
+      promptIO: nonInteractivePromptIO(),
+      random: fixedRandom(1),
+      run: fake.run,
+      fetch: buildFetchStub(project.archive, successProbeFetch),
+      templateRegistry: pinnedRegistryFor(project.sha256),
+    })).rejects.toThrow('does not look like a KV namespace id')
+
+    const after = await Deno.readTextFile(wranglerTomlPath)
+    expect(after).toContain('{{erpc:kv-id:MCP_KV}}')
+    expect(after).not.toContain('INJECTED')
+    expect(putSecretNames(fake.calls)).toEqual([])
+    expect(commandNames(fake.calls)).not.toContain('deploy')
+  })
+
+  it('an account_id that would land inside a multi-line string stops before wrangler.toml is written', async () => {
+    const project = await setupProject({
+      includeKv: false,
+      includePreflight: false,
+      includePostDeploy: false,
+    })
+    const manifest = await loadManifest(project)
+    const wranglerTomlPath = join(project.root, 'wrangler.toml')
+    const original = `name = "test-app"
+main = "src/index.ts"
+compatibility_date = "2026-01-01"
+notes = """
+[this line is inside a string, not a table header]
+"""
+
+[vars]
+MCP_SERVER_BASE_URL = "${WORKER_BASE}"
+APP_OIDC_ISSUER = "${ISSUER}"
+
+[secrets]
+required = ["JWT_SECRET"]
+`
+    await writeFile(wranglerTomlPath, original, 'utf8')
+    const fake = createFakeWrangler()
+
+    await expect(deployToCloudflare(manifest, {
+      erpcHome: project.erpcHome,
+      output: () => undefined,
+      promptIO: nonInteractivePromptIO(),
+      random: fixedRandom(1),
+      run: fake.run,
+      fetch: buildFetchStub(project.archive, successProbeFetch),
+      templateRegistry: pinnedRegistryFor(project.sha256),
+    })).rejects.toThrow('Unable to add account_id')
+
+    expect(await Deno.readTextFile(wranglerTomlPath)).toBe(original)
+    expect(commandNames(fake.calls)).toEqual(['--version', 'whoami'])
   })
 })
