@@ -524,7 +524,7 @@ describe('initializeTemplateApp', () => {
     expect(result.name).toBe('app')
   })
 
-  it('N11: prints the unpinned-template warning exactly once', async () => {
+  it('prints the unpinned-template warning exactly once', async () => {
     const archive = await buildFixtureArchive()
     const sha256 = await sha256Hex(archive)
     const parent = await temporaryDirectory('erpc-template-init-n11-unpinned-')
@@ -549,7 +549,7 @@ describe('initializeTemplateApp', () => {
     expect(warnings).toHaveLength(1)
   })
 
-  it('N11: does not print the warning for a pinned template', async () => {
+  it('does not print the warning for a pinned template', async () => {
     const archive = await buildFixtureArchive()
     const sha256 = await sha256Hex(archive)
     const parent = await temporaryDirectory('erpc-template-init-n11-pinned-')
@@ -597,7 +597,7 @@ describe('initializeTemplateApp', () => {
     expect(await readFile(join(directory, 'keep.txt'), 'utf8')).toBe('keep me')
   })
 
-  it('B1: shows the client_id if writing fails after broker registration already succeeded', async () => {
+  it('shows the client_id if writing fails after broker registration already succeeded', async () => {
     const archive = await buildFixtureArchive({ withBroker: true })
     const sha256 = await sha256Hex(archive)
     const parent = await temporaryDirectory('erpc-template-init-b1-')
@@ -641,7 +641,71 @@ describe('initializeTemplateApp', () => {
     expect(clientIdMessages[0]).toContain('--set APP_OIDC_CLIENT_ID=')
   })
 
-  it('B-3: shows the client_id if *rendering* fails after broker registration already succeeded', async () => {
+  it('names the actual broker-register key (not a hardcoded one) in the recovery guidance', async () => {
+    // A manifest is free to name its broker-register prompt anything that
+    // matches the key pattern (L1); the recovery guidance after a later
+    // write failure must use that same name, not assume it is always
+    // "APP_OIDC_CLIENT_ID".
+    const manifestJsonText = JSON.stringify({
+      schemaVersion: 1,
+      name: 'fixture-template',
+      runtime: 'cloudflare-worker',
+      minCliVersion: '0.1.0',
+      cloudflare: {
+        config: 'wrangler.toml',
+        wrangler: ['pnpm', 'exec', 'wrangler'],
+      },
+      broker: { issuer: 'https://broker.example.com' },
+      render: [{ path: 'wrangler.toml', format: 'text' }],
+      prompts: [{
+        key: 'OIDC_ID',
+        target: 'broker-register',
+        redirectUris: ['https://example.com/callback'],
+        clientName: '{{app.name}}',
+      }],
+    })
+    const archive = await tarGzFromInputs([
+      fileInput('erpc-template.json', manifestJsonText),
+      fileInput('wrangler.toml', 'name = "{{app.name}}"\n'),
+    ])
+    const sha256 = await sha256Hex(archive)
+    const parent = await temporaryDirectory(
+      'erpc-template-init-recovery-key-',
+    )
+    const output: string[] = []
+    const registrar: OidcClientRegistrar = {
+      register: () =>
+        Promise.resolve({ clientId: 'app_1234567890123456789012' }),
+    }
+    const failingWriteFile: WriteFileFunction = () => {
+      throw new Error('injected write failure')
+    }
+
+    await expect(
+      initializeTemplateApp({
+        directory: join(parent, 'app'),
+        erpcHome: join(parent, '.erpc'),
+        templateName: 'fixture-template',
+        templateRegistry: registryWith(sha256),
+        tag: 'v0.1.0',
+        setValues: new Map(),
+        yes: true,
+        output: (message) => output.push(message),
+        fetch: fetchStubFor(archive).fetch,
+        oidcRegistrar: registrar,
+        writeFile: failingWriteFile,
+      }),
+    ).rejects.toThrow('injected write failure')
+
+    const clientIdMessages = output.filter((message) =>
+      message.includes('app_1234567890123456789012')
+    )
+    expect(clientIdMessages).toHaveLength(1)
+    expect(clientIdMessages[0]).toContain('--set OIDC_ID=')
+    expect(clientIdMessages[0]).not.toContain('APP_OIDC_CLIENT_ID')
+  })
+
+  it('shows the client_id if *rendering* fails after broker registration already succeeded', async () => {
     const archive = await buildFixtureArchive({ withBroker: true })
     const sha256 = await sha256Hex(archive)
     const parent = await temporaryDirectory('erpc-template-init-b3-render-')
@@ -679,7 +743,7 @@ describe('initializeTemplateApp', () => {
     expect(clientIdMessages).toHaveLength(1)
   })
 
-  it('B-3: does not call the registrar when a var declared after broker-register is missing', async () => {
+  it('does not call the registrar when a var declared after broker-register is missing', async () => {
     const manifestJsonText = JSON.stringify({
       schemaVersion: 1,
       name: 'fixture-template',
@@ -742,7 +806,82 @@ describe('initializeTemplateApp', () => {
     expect(registrarCalls).toBe(0)
   })
 
-  it('B4: lists a missing var alongside an untrusted broker issuer in the same error', async () => {
+  it('lists only the missing var, not a raw interpolation error, when a valid --set redirectUris-dependent var is missing', async () => {
+    // A minimal manifest (no `derived` prompt) so the only possible issue is
+    // the missing `domain` var itself: `redirectUris` depends on `{{domain}}`,
+    // but `--set` never needs `redirectUris` to resolve, so a valid --set
+    // value must not surface `Cannot resolve {{domain}}` as a second, raw
+    // error alongside the clean "missing value" one.
+    const manifestJsonText = JSON.stringify({
+      schemaVersion: 1,
+      name: 'fixture-template',
+      runtime: 'cloudflare-worker',
+      minCliVersion: '0.1.0',
+      cloudflare: {
+        config: 'wrangler.toml',
+        wrangler: ['pnpm', 'exec', 'wrangler'],
+      },
+      broker: { issuer: 'https://broker.example.com' },
+      render: [{ path: 'wrangler.toml', format: 'text' }],
+      prompts: [
+        {
+          key: 'domain',
+          target: 'var',
+          flag: 'domain',
+          question: 'Custom domain',
+        },
+        {
+          key: 'APP_OIDC_CLIENT_ID',
+          target: 'broker-register',
+          redirectUris: ['https://{{domain}}/oauth/callback'],
+          clientName: '{{app.name}}',
+          validate: { pattern: 'app_[A-Za-z0-9_-]{22}' },
+        },
+      ],
+    })
+    const archive = await tarGzFromInputs([
+      fileInput('erpc-template.json', manifestJsonText),
+      fileInput('wrangler.toml', 'name = "{{app.name}}"\n'),
+    ])
+    const sha256 = await sha256Hex(archive)
+    const parent = await temporaryDirectory('erpc-template-init-mx9-')
+    let registrarCalls = 0
+    const registrar: OidcClientRegistrar = {
+      register: () => {
+        registrarCalls++
+        return Promise.resolve({ clientId: 'app_1234567890123456789012' })
+      },
+    }
+
+    let observed: unknown
+    try {
+      await initializeTemplateApp({
+        directory: join(parent, 'app'),
+        erpcHome: join(parent, '.erpc'),
+        templateName: 'fixture-template',
+        templateRegistry: registryWith(sha256), // pinned: trust is automatic
+        tag: 'v0.1.0',
+        setValues: new Map([[
+          'APP_OIDC_CLIENT_ID',
+          'app_1234567890123456789012',
+        ]]), // domain missing; --set is correctly formatted
+        yes: true,
+        output: () => {},
+        fetch: fetchStubFor(archive).fetch,
+        oidcRegistrar: registrar,
+      })
+    } catch (error) {
+      observed = error
+    }
+    const message = observed instanceof Error
+      ? observed.message
+      : String(observed)
+    expect(message).toContain('domain: missing value')
+    expect(message).not.toContain('Cannot resolve')
+    expect(registrarCalls).toBe(0)
+  })
+
+  it('lists a missing var alongside an untrusted broker issuer in the same error', async () => {
     // A broker-register prompt whose redirectUris/clientName do not depend on
     // the missing var, so it reaches the trust check regardless of that
     // var's status (Decision 6 / Acceptance A8).
@@ -798,10 +937,12 @@ describe('initializeTemplateApp', () => {
     expect(message).toContain('not trusted')
   })
 
-  it('B2: shows the registrar-returned value when it does not match the required pattern', async () => {
+  it('shows the registrar-returned value when it does not match the required pattern, with an upstream-creation note', async () => {
     const archive = await buildFixtureArchive({ withBroker: true })
     const sha256 = await sha256Hex(archive)
-    const parent = await temporaryDirectory('erpc-template-init-cyanb2-')
+    const parent = await temporaryDirectory(
+      'erpc-template-init-registrar-invalid-',
+    )
     let registrarCalls = 0
     const registrar: OidcClientRegistrar = {
       register: () => {
@@ -831,19 +972,52 @@ describe('initializeTemplateApp', () => {
       ? observed.message
       : String(observed)
     // The registrar *was* called - show the value it returned rather than
-    // only saying "invalid" (packet Decision 6), and distinguish this
+    // only saying "invalid" (packet Decision 10), and distinguish this
     // wording from the --set path's own message.
     expect(registrarCalls).toBe(1)
-    expect(message).toContain('not-app-format')
+    expect(message).toContain('"not-app-format"')
     expect(message).toContain("registrar's response")
     expect(message).toContain('does not match the required pattern')
     expect(message).toContain('--set APP_OIDC_CLIENT_ID=')
+    // A client may already exist upstream even though this response is
+    // unusable, and retrying with the same value via --set will not help.
+    expect(message).toContain('already have been created upstream')
+    expect(message).toContain('will not help')
   })
 
-  it('B2: redacts a control character in a registrar-returned value instead of echoing it', async () => {
+  it('shows a shape-violation wording, not a pattern-mismatch wording, for a too-long registrar response', async () => {
     const archive = await buildFixtureArchive({ withBroker: true })
     const sha256 = await sha256Hex(archive)
-    const parent = await temporaryDirectory('erpc-template-init-cyanb2redact-')
+    const parent = await temporaryDirectory(
+      'erpc-template-init-registrar-shape-',
+    )
+    const tooLong = 'a'.repeat(600)
+    const registrar: OidcClientRegistrar = {
+      register: () => Promise.resolve({ clientId: tooLong }),
+    }
+
+    await expect(
+      initializeTemplateApp({
+        directory: join(parent, 'app'),
+        erpcHome: join(parent, '.erpc'),
+        templateName: 'fixture-template',
+        templateRegistry: registryWith(sha256),
+        tag: 'v0.1.0',
+        setValues: new Map([['domain', 'example.com'], ['LABEL', 'x']]),
+        yes: true,
+        output: () => {},
+        fetch: fetchStubFor(archive).fetch,
+        oidcRegistrar: registrar,
+      }),
+    ).rejects.toThrow('exceeds 512 characters')
+  })
+
+  it('escapes a control character in a registrar-returned value instead of showing it raw or fully hiding it', async () => {
+    const archive = await buildFixtureArchive({ withBroker: true })
+    const sha256 = await sha256Hex(archive)
+    const parent = await temporaryDirectory(
+      'erpc-template-init-registrar-escape-',
+    )
     const badValue = 'app_bad\x01value1234567890'
     const registrar: OidcClientRegistrar = {
       register: () => Promise.resolve({ clientId: badValue }),
@@ -869,12 +1043,134 @@ describe('initializeTemplateApp', () => {
     const message = observed instanceof Error
       ? observed.message
       : String(observed)
+    // No longer redacted wholesale: the readable part stays visible and only
+    // the control character itself is escaped.
     expect(message).not.toContain(badValue)
-    expect(message).toContain('redacted')
-    expect(message).toContain(`${badValue.length} characters`)
+    expect(message).not.toContain('redacted')
+    expect(message).toContain('app_bad')
+    expect(message).toContain('value1234567890')
+    expect(message).toContain('\\u0001')
   })
 
-  it('B5: shows an interactive summary of derived values and deploy-time secrets', async () => {
+  it('escapes a C1 control character and a bidi override in a registrar-returned value', async () => {
+    const archive = await buildFixtureArchive({ withBroker: true })
+    const sha256 = await sha256Hex(archive)
+    const parent = await temporaryDirectory(
+      'erpc-template-init-registrar-c1bidi-',
+    )
+    // U+009B (a C1 control) and U+202E (right-to-left override): neither is
+    // matched by the answer-side `CONTROL_CHARACTER_PATTERN` (C0 + DEL
+    // only), so a plain `JSON.stringify` would print both of these raw.
+    const badValue = `app_\u009b‮value1234567890`
+    const registrar: OidcClientRegistrar = {
+      register: () => Promise.resolve({ clientId: badValue }),
+    }
+
+    let observed: unknown
+    try {
+      await initializeTemplateApp({
+        directory: join(parent, 'app'),
+        erpcHome: join(parent, '.erpc'),
+        templateName: 'fixture-template',
+        templateRegistry: registryWith(sha256),
+        tag: 'v0.1.0',
+        setValues: new Map([['domain', 'example.com'], ['LABEL', 'x']]),
+        yes: true,
+        output: () => {},
+        fetch: fetchStubFor(archive).fetch,
+        oidcRegistrar: registrar,
+      })
+    } catch (error) {
+      observed = error
+    }
+    const message = observed instanceof Error
+      ? observed.message
+      : String(observed)
+    expect(message).not.toContain(badValue)
+    expect(message).not.toContain('\u009b')
+    expect(message).not.toContain('‮')
+    expect(message).toContain('\\u009b')
+    expect(message).toContain('\\u202e')
+  })
+
+  it('trims a trailing newline from a registrar-returned value before displaying it', async () => {
+    const archive = await buildFixtureArchive({ withBroker: true })
+    const sha256 = await sha256Hex(archive)
+    const parent = await temporaryDirectory(
+      'erpc-template-init-registrar-trailing-newline-',
+    )
+    // Otherwise a valid-looking id, plus wire noise many APIs/CLIs emit.
+    const withTrailingNewline = 'app_1234567890123456789012\n'
+    const registrar: OidcClientRegistrar = {
+      register: () => Promise.resolve({ clientId: withTrailingNewline }),
+    }
+
+    let observed: unknown
+    try {
+      await initializeTemplateApp({
+        directory: join(parent, 'app'),
+        erpcHome: join(parent, '.erpc'),
+        templateName: 'fixture-template',
+        templateRegistry: registryWith(sha256),
+        tag: 'v0.1.0',
+        setValues: new Map([['domain', 'example.com'], ['LABEL', 'x']]),
+        yes: true,
+        output: () => {},
+        fetch: fetchStubFor(archive).fetch,
+        oidcRegistrar: registrar,
+      })
+    } catch (error) {
+      observed = error
+    }
+    const message = observed instanceof Error
+      ? observed.message
+      : String(observed)
+    // The trailing newline is what made this a control-character shape
+    // issue in the first place; once trimmed for display, the id itself
+    // reads cleanly with no `\n` escape cluttering it.
+    expect(message).toContain('"app_1234567890123456789012"')
+    expect(message).not.toContain('\\n')
+  })
+
+  it('truncates a very long registrar-returned value in the error message', async () => {
+    const archive = await buildFixtureArchive({ withBroker: true })
+    const sha256 = await sha256Hex(archive)
+    const parent = await temporaryDirectory(
+      'erpc-template-init-registrar-truncate-',
+    )
+    const veryLong = 'a'.repeat(2000)
+    const registrar: OidcClientRegistrar = {
+      register: () => Promise.resolve({ clientId: veryLong }),
+    }
+
+    let observed: unknown
+    try {
+      await initializeTemplateApp({
+        directory: join(parent, 'app'),
+        erpcHome: join(parent, '.erpc'),
+        templateName: 'fixture-template',
+        templateRegistry: registryWith(sha256),
+        tag: 'v0.1.0',
+        setValues: new Map([['domain', 'example.com'], ['LABEL', 'x']]),
+        yes: true,
+        output: () => {},
+        fetch: fetchStubFor(archive).fetch,
+        oidcRegistrar: registrar,
+      })
+    } catch (error) {
+      observed = error
+    }
+    const message = observed instanceof Error
+      ? observed.message
+      : String(observed)
+    // A 2000-character value must not appear in full: this is the shape
+    // path (exceeds 512 characters), so the display cap matters for the
+    // "registrar response: ..." fragment specifically, not the whole error.
+    expect(message).toContain('exceeds 512 characters')
+    expect(message.length < 2000).toBe(true)
+  })
+
+  it('shows an interactive summary of derived values and deploy-time secrets', async () => {
     const archive = await buildFixtureArchive()
     const sha256 = await sha256Hex(archive)
     const parent = await temporaryDirectory('erpc-template-init-b5-')
@@ -898,7 +1194,7 @@ describe('initializeTemplateApp', () => {
     expect(promptIO.informed[0]).toContain('JWT_SECRET')
   })
 
-  it('B5: distinguishes a secret-input prompt from a generated secret in the interactive summary (packet Decision 6, mutant MR12)', async () => {
+  it('distinguishes a secret-input prompt from a generated secret in the interactive summary', async () => {
     // `buildFixtureArchive` has no `secret-input` prompt (only
     // `secret-generate`), so its summary never exercises the "prompted for"
     // branch of `summaryText` - a bespoke manifest is needed to reach it.
@@ -964,7 +1260,7 @@ describe('initializeTemplateApp', () => {
     expect(promptedLine).not.toContain('JWT_SECRET')
   })
 
-  it('shows the interactive summary before calling the registrar, not after (packet Decision 6)', async () => {
+  it('shows the interactive summary before calling the registrar, not after (packet Decision 10)', async () => {
     const archive = await buildFixtureArchive({ withBroker: true })
     const sha256 = await sha256Hex(archive)
     const parent = await temporaryDirectory('erpc-template-init-order-')
@@ -1030,7 +1326,7 @@ describe('initializeTemplateApp', () => {
     expect(promptIO.informed).toHaveLength(0)
   })
 
-  it('B-2: lists a missing domain alongside an untrusted broker issuer when redirectUris depends on {{domain}}', async () => {
+  it('lists a missing domain alongside an untrusted broker issuer when redirectUris depends on {{domain}}', async () => {
     // Unlike the B4 fixture above, this uses the real shape (redirectUris:
     // ["https://{{domain}}/oauth/callback"]) so the trust check must run
     // even though interpolating redirectUris would otherwise fail for the
@@ -1063,7 +1359,7 @@ describe('initializeTemplateApp', () => {
     expect(message).toContain('not trusted')
   })
 
-  it('B-2: lists an invalid --set client_id alongside a missing key in the same error', async () => {
+  it('lists an invalid --set client_id alongside a missing key in the same error', async () => {
     const archive = await buildFixtureArchive({ withBroker: true })
     const sha256 = await sha256Hex(archive)
     const parent = await temporaryDirectory('erpc-template-init-b2-2-')
@@ -1095,7 +1391,7 @@ describe('initializeTemplateApp', () => {
     expect(message).toContain('APP_OIDC_CLIENT_ID')
   })
 
-  it('X1b: lists an untrusted issuer alongside an invalid --set client_id in the same error', async () => {
+  it('lists an untrusted issuer alongside an invalid --set client_id in the same error', async () => {
     const archive = await buildFixtureArchive({ withBroker: true })
     const sha256 = await sha256Hex(archive)
     const parent = await temporaryDirectory('erpc-template-init-x1b-')
@@ -1133,7 +1429,59 @@ describe('initializeTemplateApp', () => {
     expect(message).toContain('does not match the required pattern')
   })
 
-  it('P8: does not claim registration "already succeeded" when the client_id came from --set', async () => {
+  it('does not prompt for issuer trust interactively when --set is already invalid', async () => {
+    const archive = await buildFixtureArchive({ withBroker: true })
+    const sha256 = await sha256Hex(archive)
+    const parent = await temporaryDirectory('erpc-template-init-x1k-')
+    let confirmCalls = 0
+    const promptIO: PromptIO = {
+      isInteractive: () => true,
+      text: () => {
+        throw new Error('text should not be called: every var is set')
+      },
+      confirm: () => {
+        confirmCalls++
+        return Promise.resolve(true)
+      },
+      select: () => Promise.resolve(''),
+      secret: () => Promise.resolve(''),
+      inform: () => {},
+    }
+
+    let observed: unknown
+    try {
+      await initializeTemplateApp({
+        directory: join(parent, 'app'),
+        erpcHome: join(parent, '.erpc'),
+        templateName: 'fixture-template',
+        // Unpinned and no --trust-issuer: this would otherwise prompt
+        // interactively for issuer trust.
+        templateRegistry: registryWith(sha256, { pinned: false }),
+        tag: 'v0.1.0',
+        sha256,
+        setValues: new Map([
+          ['domain', 'example.com'],
+          ['LABEL', 'x'],
+          ['APP_OIDC_CLIENT_ID', 'not-a-valid-client-id'],
+        ]),
+        yes: false,
+        output: () => {},
+        fetch: fetchStubFor(archive).fetch,
+        promptIO,
+      })
+    } catch (error) {
+      observed = error
+    }
+    const message = observed instanceof Error
+      ? observed.message
+      : String(observed)
+    // The run is doomed by the invalid --set regardless of the trust
+    // answer, so the (interactive) trust confirm must never fire.
+    expect(confirmCalls).toBe(0)
+    expect(message).toContain('does not match the required pattern')
+  })
+
+  it('does not claim registration "already succeeded" when the client_id came from --set', async () => {
     const archive = await buildFixtureArchive({ withBroker: true })
     const sha256 = await sha256Hex(archive)
     const parent = await temporaryDirectory('erpc-template-init-p8-')
@@ -1293,7 +1641,7 @@ describe('initializeTemplateApp', () => {
     )
   })
 
-  it('escapes DEL (U+007F) in erpc.toml through tomlBasicString, not JSON.stringify (mutant M10)', async () => {
+  it('escapes DEL (U+007F) in erpc.toml through tomlBasicString, not JSON.stringify', async () => {
     const archive = await buildFixtureArchive()
     // A registry-controlled field (not user input) carrying a byte
     // JSON.stringify would leave unescaped, to prove erpc.toml's [template]
@@ -1414,7 +1762,7 @@ describe('CLI wiring', () => {
     expect(opened).toEqual(['https://broker.example.com/verify'])
   })
 
-  it('wires a default openExternal through to the registrar when none is injected (packet Decision 6)', async () => {
+  it('wires a default openExternal through to the registrar when none is injected (packet Decision 8)', async () => {
     const archive = await buildFixtureArchive({ withBroker: true })
     const sha256 = await sha256Hex(archive)
     const parent = await temporaryDirectory(
@@ -1460,7 +1808,7 @@ describe('CLI wiring', () => {
     expect(typeof capturedOpenExternal).toBe('function')
   })
 
-  it('forwards an injected signal through to the registrar (packet Decision 6)', async () => {
+  it('forwards an injected signal through to the registrar (packet Decision 8)', async () => {
     const archive = await buildFixtureArchive({ withBroker: true })
     const sha256 = await sha256Hex(archive)
     const parent = await temporaryDirectory('erpc-template-cli-signal-')

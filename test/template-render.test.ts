@@ -29,7 +29,7 @@ const manifestWith = (renderPath: string, format: 'text' | 'toml') =>
   })
 
 describe('renderTemplateFiles: format "text" newline guard', () => {
-  it('rejects a value containing a carriage return with no line feed (mutant MN2c)', () => {
+  it('rejects a value containing a carriage return with no line feed', () => {
     const manifest = manifestWith('notes.txt', 'text')
     const files = [fileInput('notes.txt', 'note: {{LABEL}}\n')]
     const answers = new Map([['LABEL', 'a\rb']])

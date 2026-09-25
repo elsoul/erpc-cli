@@ -417,21 +417,15 @@ export const initializeTemplateApp = async (
   }
 
   const oidcRegistrar = options.oidcRegistrar ?? defaultOidcClientRegistrar
+  // `collectTemplateAnswers` only ever calls this when `--set` did *not*
+  // supply the broker-register key's value - a `--set` value is checked
+  // against `prompt.validate` and recorded entirely within that module,
+  // without ever reaching this function (see the `setValue` branch in
+  // `collectTemplateAnswers`).
   const resolveBrokerRegister = async (
-    prompt: {
-      readonly key: string
-      readonly validate?: { readonly pattern: string }
-    },
     redirectUris: readonly string[],
     clientName: string,
   ): Promise<string> => {
-    // A `--set`-provided value is returned as-is: `collectTemplateAnswers`
-    // checks it against `prompt.validate` right after this call returns, the
-    // same way it checks a value the registrar itself returned, so a bad
-    // `--set` value joins the same aggregated error instead of throwing here
-    // on its own.
-    const setValue = options.setValues.get(prompt.key)
-    if (setValue !== undefined) return setValue
     const result = await oidcRegistrar.register(
       { issuer: brokerIssuer ?? '', clientName, redirectUris },
       {
@@ -498,7 +492,7 @@ export const initializeTemplateApp = async (
   // 失敗は client_id を表示し --set APP_OIDC_CLIENT_ID=<id> で再実行" contract,
   // even though registration itself now runs inside the combined answer-
   // collection call above rather than as its own separately numbered step
-  // here (packet Decision 6).
+  // here (packet Decision 10).
   try {
     const render = options.renderTemplateFiles ?? defaultRenderTemplateFiles
     const rendered = render(manifest, files, values, {
@@ -545,7 +539,7 @@ export const initializeTemplateApp = async (
     if (brokerRegistration?.registered) {
       options.output(
         `Broker registration already succeeded (client_id: ${brokerRegistration.clientId}) before this failure. ` +
-          `Re-run with --set APP_OIDC_CLIENT_ID=${brokerRegistration.clientId} instead of registering a new client.`,
+          `Re-run with --set ${brokerRegistration.key}=${brokerRegistration.clientId} instead of registering a new client.`,
       )
     }
     throw error
