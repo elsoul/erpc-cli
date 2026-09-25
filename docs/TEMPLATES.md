@@ -95,24 +95,39 @@ Every prompt has a `key` matching `^[A-Za-z][A-Za-z0-9_]{0,63}$`; `app`,
 `^[A-Z][A-Z0-9_]*$` (upper snake case) — it becomes a Cloudflare Worker secret
 name.
 
-`derived.expr`, `broker-register.redirectUris`/`clientName`, and
-`cloudflare.kv[].title` may reference `{{app.name}}`, `{{broker.issuer}}`, and
-any **earlier, non-secret** prompt key — never a `secret-*` key, and never a key
-declared later in `prompts`. **`derived.expr` may not reference the
-`broker-register` key either way (earlier or later in `prompts`)**: broker
-registration always resolves in a single pass after every other answer, so a
-`derived` value (computed in the same pass as `var`) can never actually see it.
-Interpolation is plain string substitution; there is no expression language and
-no arbitrary code evaluation.
+`derived.expr` and `broker-register.redirectUris`/`clientName` may reference
+`{{app.name}}`, `{{broker.issuer}}`, and any **earlier, non-secret** prompt key
+— never a `secret-*` key, and never a key declared later in `prompts`.
+**`derived.expr` may not reference the `broker-register` key either way (earlier
+or later in `prompts`)**: broker registration always resolves in a single pass
+after every other answer, so a `derived` value (computed in the same pass as
+`var`) can never actually see it. Interpolation is plain string substitution;
+there is no expression language and no arbitrary code evaluation.
+
+`cloudflare.kv[].title` is narrower still: it may reference **only**
+`{{app.name}}`. Unlike `derived.expr`, a kv title is interpolated by
+`erpc deploy`, not by `erpc app init`, and `erpc deploy` substitutes only
+`{{app.name}}` in it. Other `init` answers do reach `erpc deploy`: `erpc.toml`
+keeps the application name and, for a template with a `broker-register` prompt,
+the `[oidc]` issuer, client id, and redirect URIs, and rendered files such as
+`wrangler.toml` keep the values substituted into them. The kv title step simply
+does not look any of them up, so the lint rejects every other reference here
+rather than accepting a title that would keep a literal `{{...}}` at deploy
+time.
 
 ### `render[]` and placeholders
 
 Only files listed in `render[]` are substituted; everything else in the archive
 is copied byte-for-byte. `cloudflare.config` (the `wrangler.toml` path) must
-itself be one of the paths listed in `render[]` (L12) — the route-rule check
-below parses that file's rendered content, so a `cloudflare.config` never listed
-in `render[]` is rejected outright rather than silently skipping the route
-check. Inside a `render[]` file:
+itself be one of the paths listed in `render[]` (L12) — a file left out of
+`render[]` never gets its `{{name}}` placeholders substituted at all (they are
+copied through literally, byte-for-byte, like the rest of that file), so a
+`cloudflare.config` such as `[[routes]]\npattern = "{{domain}}"` would ship with
+the literal, unresolved text `{{domain}}` in the generated app instead of an
+actual domain. The route-rule check itself (below) reads the archive's raw
+`cloudflare.config` bytes directly, independent of `render[]` membership — it is
+`render[]` omission specifically that this L12 clause guards against. Inside a
+`render[]` file:
 
 - Every `{{name}}` must resolve to `app.name`, `broker.issuer`, a non-secret
   prompt key, or one of the two deploy-time sentinels `{{erpc:kv-id:<BINDING>}}`
@@ -160,6 +175,16 @@ default to required). The manifest's required-secret set may be a **superset**
 of what `wrangler.toml` lists — some secrets (for example a wallet mnemonic) are
 deliberately kept out of `wrangler.toml`'s own declaration and are guarded
 elsewhere in the deploy path instead.
+
+### `secret-input` values
+
+At deploy time a `secret-input` value comes from its hidden prompt (interactive)
+or from its `env` variable (non-interactive, including `--yes`). An empty answer
+and an empty environment variable both count as "not provided": an optional
+prompt is then left unset and reported as such, and a required one stops the
+deploy (non-interactively, before any secret is put). A provided value that does
+not match `validate.pattern` always stops the deploy; the message never includes
+the value.
 
 ### `secret-pipe` stdout contract
 

@@ -145,6 +145,55 @@ export {
   resolveVerifiedNodeRuntime,
 } from './deploy/node-runtime.ts'
 export {
+  type CloudflareDeployOptions,
+  deployToCloudflare,
+} from './deploy/cloudflare.ts'
+export {
+  checkWranglerToolchain,
+  DEFAULT_MIN_WRANGLER_VERSION,
+  meetsMinimumVersion,
+  parseWranglerVersion,
+  runWrangler,
+  type SemverTriple,
+  type WranglerAccount,
+  type WranglerCallOptions,
+  wranglerDeploy,
+  type WranglerKvNamespace,
+  wranglerKvNamespaceCreate,
+  wranglerKvNamespaceList,
+  wranglerLogin,
+  wranglerSecretList,
+  wranglerSecretPut,
+  type WranglerWhoami,
+  wranglerWhoami,
+} from './deploy/wrangler.ts'
+export {
+  applyAccountIdSentinel,
+  applyKvIdSentinel,
+  atomicWriteWranglerConfig,
+  hasUnresolvedPlaceholders,
+  kvIdSentinel,
+  parseWranglerConfig,
+  readWranglerConfigText,
+  readWranglerRequiredSecrets,
+  readWranglerVars,
+  resolvedAccountId,
+  WRANGLER_ACCOUNT_ID_SENTINEL,
+} from './deploy/wrangler-config.ts'
+export {
+  blockingSecretIssues,
+  encodeGeneratedSecret,
+  resolveSecretValue,
+  type SecretPrompt,
+  secretPromptsOf,
+  type SecretResolution,
+  type SecretResolutionDeps,
+} from './deploy/secrets.ts'
+export {
+  type PostDeployProbeOptions,
+  runPostDeployProbes,
+} from './deploy/probes.ts'
+export {
   type ProcessRequest,
   type ProcessResult,
   type ProcessRunner,

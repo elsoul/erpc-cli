@@ -22,9 +22,8 @@ export type TemplateOrRuntimeChoice =
 
 /**
  * The `erpc app init` menu shown when neither `--runtime` nor `--template`
- * is given interactively (Decision 6 / design §2.5). Choosing 1 or 2
- * produces the exact same result as `promptForRuntime`, which this function
- * leaves untouched (Task Brief Decision 6).
+ * is given interactively. Choosing 1 or 2 produces the exact same result as
+ * `promptForRuntime`, which this function leaves untouched.
  */
 export const promptForTemplateOrRuntime = async (
   registry: TemplateRegistry,

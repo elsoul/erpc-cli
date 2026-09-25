@@ -1,16 +1,15 @@
 // Collects answers for `var`, `derived`, and `broker-register` prompts.
-// See design doc §2.5/§2.6 and Task Brief Decision 6.
 //
-// `secret-generate` / `secret-pipe` / `secret-input` prompts are resolved at
-// deploy time (PR-B), not here (design §2.2: their "confirmed" column is
-// "deploy"). Callers must reject `--set` for those keys before this module
-// runs (Decision 6: "`--set` で secret target のキーを渡したらエラー").
+// `secret-generate` / `secret-pipe` / `secret-input` prompts are resolved by
+// the deploy command, not here: their values only ever exist at deploy time.
+// Callers must reject `--set` for those keys before this module runs, so a
+// secret value never travels through the command line.
 //
 // Broker registration is resolved once, after every `var`/`derived` prompt in
 // the manifest has been processed (not inline, mid-loop): a var declared
 // *after* the broker-register prompt must still block the registrar call,
 // and issuer trust must be checked (and reported) independently of whether
-// other answers are missing (packet Decision 6).
+// other answers are missing.
 
 import type { PromptIO } from './prompt-io.ts'
 import type {
@@ -20,11 +19,67 @@ import type {
 } from './template-manifest.ts'
 
 const MAX_ANSWER_LENGTH = 512
-// Every control character, including tab/newline/carriage-return: Decision 6
-// requires "no control characters" unconditionally.
+// Every control character, including tab/newline/carriage-return: an answer
+// may not contain any control character at all.
 // deno-lint-ignore no-control-regex
 const CONTROL_CHARACTER_PATTERN = /[\x00-\x1f\x7f]/
 const PLACEHOLDER_PATTERN = /\{\{([^{}]+)\}\}/g
+
+// C0 controls, DEL, C1 controls, and the bidi-override/embedding/isolate
+// characters - every one of these can do something to a terminal (or to how
+// surrounding text renders) beyond just "print an invisible character", so a
+// value containing one is escaped rather than shown raw when it turns up in
+// an error message. Plain `CONTROL_CHARACTER_PATTERN` only covers C0/DEL,
+// and plain `JSON.stringify` leaves C1 and bidi controls unescaped, so
+// neither alone is enough here.
+const DISPLAY_ESCAPE_PATTERN =
+  // deno-lint-ignore no-control-regex
+  /[\x00-\x1f\x7f-\x9f\u200e\u200f\u202a-\u202e\u2066-\u2069"\\]/g
+const MAX_DISPLAY_LENGTH = 256
+
+/**
+ * Renders `value` the way a JSON string literal would (quoted, with the
+ * usual short escapes for `\n`/`\r`/`\t`/`"`/`\\` and a `\uXXXX` escape for
+ * everything else this pattern matches), instead of delegating to
+ * `JSON.stringify` - `JSON.stringify` does not escape DEL, C1 controls, or
+ * bidi control characters, which is exactly the range this needs to cover.
+ */
+const escapeForDisplay = (value: string): string => {
+  const escaped = value.replace(DISPLAY_ESCAPE_PATTERN, (character) => {
+    switch (character) {
+      case '"':
+        return '\\"'
+      case '\\':
+        return '\\\\'
+      case '\n':
+        return '\\n'
+      case '\r':
+        return '\\r'
+      case '\t':
+        return '\\t'
+      default:
+        return `\\u${character.codePointAt(0)!.toString(16).padStart(4, '0')}`
+    }
+  })
+  return `"${escaped}"`
+}
+
+/**
+ * Formats an untrusted value (a registrar response that failed validation)
+ * for inclusion in an error message: a trailing newline - common wire noise
+ * from many APIs/CLIs - is trimmed first so it does not swallow an
+ * otherwise-legible id behind a `\n` escape, then the result is capped at
+ * `MAX_DISPLAY_LENGTH` characters (an unbounded value could otherwise fill
+ * the whole error message) before being escaped for display.
+ */
+const displayUntrustedValue = (value: string): string => {
+  const trimmed = value.replace(/[\r\n]+$/, '')
+  if (trimmed.length <= MAX_DISPLAY_LENGTH) return escapeForDisplay(trimmed)
+  const shown = trimmed.slice(0, MAX_DISPLAY_LENGTH)
+  return `${
+    escapeForDisplay(shown)
+  } (first ${MAX_DISPLAY_LENGTH} of ${trimmed.length} characters)`
+}
 
 export class TemplateAnswersError extends Error {
   readonly issues: readonly string[]
@@ -95,7 +150,7 @@ export interface TemplateAnswerBuiltIns {
 
 export interface TemplateAnswerInputs {
   readonly builtIns: TemplateAnswerBuiltIns
-  /** Resolves whether the (unpinned) broker issuer should be trusted for this run (Decision 7). */
+  /** Resolves whether the (unpinned) broker issuer should be trusted for this run. */
   readonly confirmIssuerTrust: (issuer: string) => Promise<boolean>
   readonly domainValue?: string
   readonly emailValue?: string
@@ -103,12 +158,11 @@ export interface TemplateAnswerInputs {
   /**
    * Called once, with every `var`/`derived` answer resolved, before broker
    * registration is attempted - the hook the interactive summary uses so it
-   * always prints before the registrar runs (design §2.5).
+   * always prints before the registrar runs.
    */
   readonly onAnswersReady?: (values: ReadonlyMap<string, string>) => void
   readonly promptIO: PromptIO
   readonly resolveBrokerRegister: (
-    prompt: BrokerRegisterPrompt,
     redirectUris: readonly string[],
     clientName: string,
   ) => Promise<string>
@@ -131,7 +185,7 @@ export interface CollectedTemplateAnswers {
 /**
  * Resolves every `var` and `derived` prompt in manifest order (non-
  * interactively, every `var` is checked independently so all missing keys
- * and validation failures are reported together - Acceptance A8; `PromptIO`
+ * and validation failures are reported together; `PromptIO`
  * is never called in that path), then - once, after the full manifest has
  * been walked - resolves at most one `broker-register` prompt (L6 caps the
  * manifest at one). Issuer trust is always checked and always contributes to
@@ -212,8 +266,7 @@ export const collectTemplateAnswers = async (
         // same loop (that failure already has its own issue above) - still
         // enumerate this derived key's own failure explicitly rather than
         // resolving it silently, so the aggregated error names every key
-        // that came out unresolved, not just the root cause (packet
-        // Decision 6).
+        // that came out unresolved, not just the root cause.
         issues.push(
           `${prompt.key}: could not be derived (${
             error instanceof Error ? error.message : String(error)
@@ -228,7 +281,7 @@ export const collectTemplateAnswers = async (
       prompt.target === 'secret-pipe' ||
       prompt.target === 'secret-input'
     ) {
-      continue // resolved at deploy time (PR-B), not during init
+      continue // resolved by the deploy command, not during init
     }
 
     // prompt.target === 'broker-register': defer to a single pass below, so
@@ -247,7 +300,7 @@ export const collectTemplateAnswers = async (
     // dependency on issuer trust, so it is validated - and, if bad, reported
     // - regardless of whether the issuer turns out to be trusted: an
     // untrusted issuer must not swallow a genuinely malformed `--set` value
-    // out of the same aggregated error (packet Decision 6).
+    // out of the same aggregated error.
     let setValueValid = false
     if (setValue !== undefined) {
       const shapeIssue = answerShapeIssue(prompt.key, setValue)
@@ -265,10 +318,21 @@ export const collectTemplateAnswers = async (
       }
     }
 
-    const trusted = await inputs.confirmIssuerTrust(
-      inputs.builtIns.brokerIssuer ?? '',
-    )
-    if (!trusted) {
+    // In interactive mode, an already-invalid `--set` value means this run
+    // is going to fail no matter what the issuer-trust answer is, so skip
+    // the (potentially interactive) trust check entirely rather than making
+    // the user answer a confirm prompt for nothing. Non-interactive mode is
+    // unaffected: `confirmIssuerTrust` never performs I/O there, and the
+    // "not trusted" issue still needs to join the aggregated error alongside
+    // the `--set` format issue.
+    const skipTrustCheck = inputs.interactive && setValue !== undefined &&
+      !setValueValid
+    const trusted = skipTrustCheck
+      ? false
+      : await inputs.confirmIssuerTrust(inputs.builtIns.brokerIssuer ?? '')
+    if (skipTrustCheck) {
+      // The format issue was already pushed above; nothing more to add.
+    } else if (!trusted) {
       issues.push(
         `${prompt.key}: the broker issuer is not trusted (pass --trust-issuer <origin>, or confirm interactively)`,
       )
@@ -311,7 +375,6 @@ export const collectTemplateAnswers = async (
       }
       if (!interpolationFailed && issues.length === 0) {
         const clientId = await inputs.resolveBrokerRegister(
-          prompt,
           redirectUris,
           clientName,
         )
@@ -320,15 +383,29 @@ export const collectTemplateAnswers = async (
           anchoredPattern(prompt.validate.pattern).test(clientId)
         if (shapeIssue !== undefined || !patternOk) {
           // The registrar *was* called and returned this value - show it
-          // (redacted if it carries a control character) rather than only
-          // saying "invalid", so the user can tell the bad value came back
-          // from the network rather than from their own --set (packet
-          // Decision 6).
-          const shown = CONTROL_CHARACTER_PATTERN.test(clientId)
-            ? `<redacted, ${clientId.length} characters>`
-            : clientId
+          // (escaped, not redacted, so the user can actually read it; see
+          // `displayUntrustedValue`) rather than only saying "invalid", so
+          // the user can tell the bad value came back from the network
+          // rather than from their own --set.
+          const shown = displayUntrustedValue(clientId)
+          // A registrar call that returned *something* may well have
+          // created a client upstream even though that response is unusable
+          // here - and retrying with the same value via `--set` will not
+          // help, since `--set` is checked against this same rule.
+          const upstreamNote =
+            `a client may already have been created upstream even though ` +
+            `this response cannot be used; passing the same value via ` +
+            `--set ${prompt.key}=<value> will not help, since --set is ` +
+            `checked against the same rule`
           issues.push(
-            `${prompt.key}: the registrar's response does not match the required pattern (got ${shown}; pass --set ${prompt.key}=<value> to override)`,
+            shapeIssue !== undefined
+              // `shapeIssue` already names the actual problem (length,
+              // control character, literal "{{") - keep that wording
+              // instead of the generic "does not match the required
+              // pattern", which is only accurate for an actual pattern
+              // mismatch.
+              ? `${shapeIssue} (registrar response: ${shown}; ${upstreamNote})`
+              : `${prompt.key}: the registrar's response does not match the required pattern (got ${shown}; ${upstreamNote})`,
           )
         } else {
           values.set(prompt.key, clientId)

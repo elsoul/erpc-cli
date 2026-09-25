@@ -1,5 +1,4 @@
 // Release-asset fetch, checksum verification, and the on-disk template cache.
-// See design doc §1.2 and Task Brief Decision 3.
 
 import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -21,7 +20,7 @@ export const sha256Hex = async (bytes: Uint8Array): Promise<string> => {
   return hexadecimal(await crypto.subtle.digest('SHA-256', copy))
 }
 
-/** Builds the release-asset download URL. Only `tag` and `asset` are percent-encoded (Decision 3). */
+/** Builds the release-asset download URL. Only `tag` and `asset` are percent-encoded. */
 export const templateAssetUrl = (source: TemplateSource, tag: string): URL =>
   new URL(
     `https://github.com/${source.owner}/${source.repo}/releases/download/${
@@ -126,7 +125,7 @@ const regularFileBytes = async (
  * Fetches (or reuses a verified cache entry for) the release asset at `url`
  * and verifies it against `expectedSha256` *before* returning. On a checksum
  * mismatch, nothing is written to the cache and the caller has not yet
- * touched the target directory (Decision 3 / Acceptance A4).
+ * touched the target directory.
  */
 export const obtainVerifiedTemplateArchive = async (
   url: URL,

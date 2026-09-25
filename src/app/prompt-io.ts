@@ -1,5 +1,5 @@
-// The prompt surface used by template init/answers (Decision 13) and, in a
-// later PR, by deploy-time secret-input and backup-acknowledgement prompts.
+// The prompt surface used by template init/answers and by deploy-time
+// secret-input and backup-acknowledgement prompts.
 // Kept narrow and injectable so non-interactive and test code never touches
 // a real terminal.
 
@@ -27,7 +27,7 @@ export interface PromptIO {
   /**
    * Displays an informational message (a summary, a notice) with no answer
    * to collect. Optional so an existing `PromptIO` implementation or test
-   * double built against Decision 13's original export shape keeps compiling.
+   * double written before this member existed keeps compiling.
    */
   readonly inform?: (message: string) => void
   readonly isInteractive: () => boolean
