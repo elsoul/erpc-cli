@@ -395,4 +395,37 @@ describe('extractTemplateArchive', () => {
       'erpc-template.json',
     )
   })
+
+  // steiner r1 B3: the disallowed-name checks must be case-insensitive.
+  it.each(
+    [
+      ['.GIT/config', '.git'],
+      ['ERPC.toml', 'erpc.toml'],
+      ['Node_Modules/pkg/index.js', 'node_modules'],
+      ['.ENV', 'env file'],
+      ['.Dev.vars', '.dev.vars'],
+    ] as const,
+  )(
+    'rejects %s case-insensitively',
+    async (path, expectedFragment) => {
+      const archive = await tarGzFromInputs([
+        fileInput('erpc-template.json', MANIFEST_CONTENT),
+        fileInput(path, 'x'),
+      ])
+      await expect(extractTemplateArchive(archive)).rejects.toThrow(
+        expectedFragment,
+      )
+    },
+  )
+
+  it('rejects a file path that collides with a needed directory (cyan r1 N1)', async () => {
+    const archive = await tarGzFromInputs([
+      fileInput('erpc-template.json', MANIFEST_CONTENT),
+      fileInput('a', 'file content'),
+      fileInput('a/b', 'nested content'),
+    ])
+    await expect(extractTemplateArchive(archive)).rejects.toThrow(
+      'both a file and a directory',
+    )
+  })
 })

@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { TarStream, type TarStreamInput } from '@std/tar'
@@ -6,6 +6,8 @@ import { parse as parseToml } from '@std/toml'
 import { afterEach, describe, expect, it } from './testing.ts'
 import { initializeTemplateApp } from '../src/app/template-init.ts'
 import { sha256Hex } from '../src/app/template-fetch.ts'
+import { tomlBasicString } from '../src/app/template-render.ts'
+import { runCli } from '../src/cli.ts'
 import type { PromptIO } from '../src/app/prompt-io.ts'
 import type { TemplateRegistry } from '../src/app/template-registry.ts'
 import type { OidcClientRegistrar } from '../src/app/template-init.ts'
@@ -171,8 +173,12 @@ const fetchStubFor = (
 
 const spyPromptIO = (
   interactive: boolean,
-): PromptIO & { readonly callCount: number } => {
+): PromptIO & {
+  readonly callCount: number
+  readonly informed: readonly string[]
+} => {
   let calls = 0
+  const informed: string[] = []
   const count =
     <T extends unknown[], R>(fn: (...args: T) => R) => (...args: T): R => {
       calls++
@@ -182,11 +188,20 @@ const spyPromptIO = (
     get callCount() {
       return calls
     },
+    get informed() {
+      return informed
+    },
     isInteractive: () => interactive,
-    text: count(async () => ''),
-    confirm: count(async () => false),
+    // Valid-looking defaults: existing tests never reach a successful prompt
+    // (they assert callCount===0), and new interactive-path tests need a
+    // value that satisfies typical validate patterns without per-test setup.
+    text: count(async () => 'stub-value'),
+    confirm: count(async () => true),
     select: count(async () => ''),
     secret: count(async () => ''),
+    inform: count((message: string) => {
+      informed.push(message)
+    }),
   }
 }
 
@@ -572,5 +587,196 @@ describe('initializeTemplateApp', () => {
       }),
     ).rejects.toThrow('non-empty directory')
     expect(await readFile(join(directory, 'keep.txt'), 'utf8')).toBe('keep me')
+  })
+
+  it('B1: shows the client_id if writing fails after broker registration already succeeded', async () => {
+    const archive = await buildFixtureArchive({ withBroker: true })
+    const sha256 = await sha256Hex(archive)
+    const parent = await temporaryDirectory('erpc-template-init-b1-')
+    const unwritable = join(parent, 'unwritable')
+    await mkdir(unwritable, { recursive: true })
+    const directory = join(unwritable, 'app')
+    const output: string[] = []
+    let registrarCalls = 0
+    const registrar: OidcClientRegistrar = {
+      register: () => {
+        registrarCalls++
+        return Promise.resolve({ clientId: 'app_1234567890123456789012' })
+      },
+    }
+
+    await chmod(unwritable, 0o500) // read + execute only: mkdir(directory) will fail with EACCES
+    try {
+      await expect(
+        initializeTemplateApp({
+          directory,
+          erpcHome: join(parent, '.erpc'),
+          templateName: 'fixture-template',
+          templateRegistry: registryWith(sha256), // pinned: trust is automatic
+          tag: 'v0.1.0',
+          setValues: new Map([['domain', 'example.com'], ['LABEL', 'x']]),
+          yes: true,
+          output: (message) => output.push(message),
+          fetch: fetchStubFor(archive).fetch,
+          oidcRegistrar: registrar,
+        }),
+      ).rejects.toThrow()
+    } finally {
+      await chmod(unwritable, 0o700) // let afterEach's rm clean up
+    }
+
+    expect(registrarCalls).toBe(1)
+    const clientIdMessages = output.filter((message) =>
+      message.includes('app_1234567890123456789012')
+    )
+    expect(clientIdMessages).toHaveLength(1)
+    expect(clientIdMessages[0]).toContain('--set APP_OIDC_CLIENT_ID=')
+  })
+
+  it('B4: lists a missing var alongside an untrusted broker issuer in the same error', async () => {
+    // A broker-register prompt whose redirectUris/clientName do not depend on
+    // the missing var, so it reaches the trust check regardless of that
+    // var's status (Decision 6 / Acceptance A8; steiner r1 B4, cyan r1 B3).
+    const manifestJsonText = JSON.stringify({
+      schemaVersion: 1,
+      name: 'fixture-template',
+      runtime: 'cloudflare-worker',
+      minCliVersion: '0.1.0',
+      cloudflare: {
+        config: 'wrangler.toml',
+        wrangler: ['pnpm', 'exec', 'wrangler'],
+      },
+      broker: { issuer: 'https://broker.example.com' },
+      render: [],
+      prompts: [
+        { key: 'REQUIRED_LABEL', target: 'var', question: 'A label' },
+        {
+          key: 'APP_OIDC_CLIENT_ID',
+          target: 'broker-register',
+          redirectUris: ['https://example.com/callback'],
+          clientName: '{{app.name}}',
+        },
+      ],
+    })
+    const archive = await tarGzFromInputs([
+      fileInput('erpc-template.json', manifestJsonText),
+      fileInput('wrangler.toml', 'name = "{{app.name}}"\n'),
+    ])
+    const sha256 = await sha256Hex(archive)
+    const parent = await temporaryDirectory('erpc-template-init-b4-')
+
+    let observed: unknown
+    try {
+      await initializeTemplateApp({
+        directory: join(parent, 'app'),
+        erpcHome: join(parent, '.erpc'),
+        templateName: 'fixture-template',
+        templateRegistry: registryWith(sha256, { pinned: false }),
+        tag: 'v0.1.0',
+        sha256,
+        setValues: new Map(), // REQUIRED_LABEL missing; no --trust-issuer
+        yes: true,
+        output: () => {},
+        fetch: fetchStubFor(archive).fetch,
+      })
+    } catch (error) {
+      observed = error
+    }
+    const message = observed instanceof Error
+      ? observed.message
+      : String(observed)
+    expect(message).toContain('REQUIRED_LABEL')
+    expect(message).toContain('not trusted')
+  })
+
+  it('B5: shows an interactive summary of derived values and deploy-time secrets', async () => {
+    const archive = await buildFixtureArchive()
+    const sha256 = await sha256Hex(archive)
+    const parent = await temporaryDirectory('erpc-template-init-b5-')
+    const promptIO = spyPromptIO(true)
+
+    await initializeTemplateApp({
+      directory: join(parent, 'app'),
+      erpcHome: join(parent, '.erpc'),
+      templateName: 'fixture-template',
+      templateRegistry: registryWith(sha256),
+      tag: 'v0.1.0',
+      setValues: new Map(),
+      yes: false,
+      output: () => {},
+      fetch: fetchStubFor(archive).fetch,
+      promptIO,
+    })
+
+    expect(promptIO.informed).toHaveLength(1)
+    expect(promptIO.informed[0]).toContain('MCP_SERVER_BASE_URL')
+    expect(promptIO.informed[0]).toContain('JWT_SECRET')
+  })
+
+  it('does not show the summary non-interactively', async () => {
+    const archive = await buildFixtureArchive()
+    const sha256 = await sha256Hex(archive)
+    const parent = await temporaryDirectory(
+      'erpc-template-init-b5-noninteractive-',
+    )
+    const promptIO = spyPromptIO(false)
+
+    await initializeTemplateApp({
+      directory: join(parent, 'app'),
+      erpcHome: join(parent, '.erpc'),
+      templateName: 'fixture-template',
+      templateRegistry: registryWith(sha256),
+      tag: 'v0.1.0',
+      setValues: new Map([['domain', 'example.com'], ['LABEL', 'x']]),
+      yes: true,
+      output: () => {},
+      fetch: fetchStubFor(archive).fetch,
+      promptIO,
+    })
+
+    expect(promptIO.informed).toHaveLength(0)
+  })
+})
+
+describe('tomlBasicString', () => {
+  it('escapes DEL (U+007F) and a newline (steiner r1 N3/M5)', () => {
+    expect(tomlBasicString('a\u007fb\nc')).toBe('a\\u007fb\\nc')
+  })
+})
+
+describe('CLI wiring', () => {
+  it('forwards --template through cliffy to initializeTemplateApp (cyan r1 N13)', async () => {
+    const archive = await buildFixtureArchive()
+    const sha256 = await sha256Hex(archive)
+    const parent = await temporaryDirectory('erpc-template-cli-wiring-')
+    const directory = join(parent, 'app')
+    const output: string[] = []
+
+    await expect(
+      runCli(
+        [
+          'app',
+          'init',
+          directory,
+          '--template',
+          'fixture-template@v0.1.0',
+          '--set',
+          'domain=example.com',
+          '--set',
+          'LABEL=x',
+          '--yes',
+        ],
+        {
+          erpcHome: join(parent, '.erpc'),
+          templateRegistry: registryWith(sha256),
+          fetch: fetchStubFor(archive).fetch,
+          output: (message) => output.push(message),
+        },
+      ),
+    ).resolves.toBe(0)
+
+    expect(await readFile(join(directory, 'erpc.toml'), 'utf8')).toContain(
+      'runtime = "cloudflare-worker"',
+    )
   })
 })

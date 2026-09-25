@@ -1,4 +1,11 @@
-import { mkdtemp, readdir, rm } from 'node:fs/promises'
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  writeFile,
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from './testing.ts'
@@ -148,5 +155,42 @@ describe('obtainVerifiedTemplateArchive', () => {
         { fetch: fetchStub },
       ),
     ).rejects.toThrow('404')
+  })
+
+  it('re-verifies a cache entry on every read and heals a corrupted one (steiner r1 N3/N4)', async () => {
+    const erpcHome = await temporaryErpcHome()
+    const goodBody = new TextEncoder().encode('correct archive bytes')
+    const expected = await sha256Hex(goodBody)
+    const cachePath = join(
+      erpcHome,
+      'cache',
+      'templates',
+      `sha256-${expected}.tar.gz`,
+    )
+    await mkdir(join(erpcHome, 'cache', 'templates'), { recursive: true })
+    // Plant a file at the expected cache path whose content does NOT hash to
+    // `expected` (as if it were corrupted on disk), bypassing
+    // obtainVerifiedTemplateArchive entirely.
+    await writeFile(cachePath, new TextEncoder().encode('corrupted bytes'))
+
+    let calls = 0
+    const fetchStub = (async () => {
+      calls++
+      return jsonResponse(goodBody)
+    }) as typeof fetch
+
+    const result = await obtainVerifiedTemplateArchive(
+      new URL('https://github.com/o/r/releases/download/v0.1.0/a.tar.gz'),
+      erpcHome,
+      expected,
+      { fetch: fetchStub },
+    )
+
+    // The corrupted cache entry must not have been trusted: a real fetch had
+    // to happen, and the returned bytes are the freshly verified ones.
+    expect(calls).toBe(1)
+    expect(result).toEqual(goodBody)
+    // The cache entry is healed in place rather than left corrupted forever.
+    expect(new Uint8Array(await readFile(cachePath))).toEqual(goodBody)
   })
 })
