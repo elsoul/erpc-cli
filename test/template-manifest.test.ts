@@ -101,7 +101,7 @@ describe('parseTemplateManifest', () => {
     expect(() => parseTemplateManifest(manifest)).toThrow('L2')
   })
 
-  it('L2: rejects a derived expr referencing a broker-register key, declared before or after it (packet Decision 10)', () => {
+  it('L2: rejects a derived expr referencing a broker-register key, declared before or after it', () => {
     // Broker registration always resolves in a single pass after every
     // `var`/`derived` prompt (design §2.6 order), so a `derived` value -
     // computed in that earlier pass - can never actually observe the
@@ -441,7 +441,7 @@ describe('lintTemplateFiles', () => {
     ).toThrow('L12')
   })
 
-  it('L12: rejects a "domain" var with no flag at all and no default either (packet Decision 5(i))', () => {
+  it('L12: rejects a "domain" var with no flag at all and no default either', () => {
     // Isolates the missing-flag condition from every other way this prompt
     // could be wrong: no `default`, a `validate` pattern, otherwise a
     // perfectly ordinary `var` prompt - only `flag` itself is absent. A

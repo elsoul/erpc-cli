@@ -1,5 +1,4 @@
-// A11 (sentinel leak). See Task Brief `2026-09-25-packet-erpc-cli-pr-b.md`
-// Decision 10 / Acceptance A11: a secret value must never appear in
+// Sentinel leak checks: a secret value must never appear in
 // `output`, in a thrown error message, in any file under the project
 // directory or `ERPC_HOME`, or in any subprocess call's `args`/`env` - the
 // only place it may legitimately appear is the recorded `secret put` call's
@@ -10,7 +9,7 @@
 // `CliDependencies.random`, base64url-encoded) and `secret-pipe`
 // (`SENTINEL-PIPE-VALUE`, the fake generator script's own stdout). The pipe
 // generator also emits the value on stderr, exercising the `[REDACTED]`
-// substitution (Decision 6).
+// substitution.
 
 import {
   mkdir,
@@ -195,7 +194,7 @@ const loadManifest = async (
   return manifest as CloudflareWorkerManifest
 }
 
-/** Every wrangler call now carries a leading `--config <path>` (packet review N1); strip it before reading the subcommand. */
+/** Every wrangler call carries a leading `--config <path>`; strip it before reading the subcommand. */
 const withoutConfigFlag = (args: readonly string[]): readonly string[] =>
   args[0] === '--config' ? args.slice(2) : args
 
@@ -309,7 +308,7 @@ const filesContaining = async (
   return hits
 }
 
-describe('A11: secret values never leak outside the recorded `secret put` stdin', () => {
+describe('secret values never leak outside the recorded `secret put` stdin', () => {
   it('the generated secret and the piped secret reach stdin only, never args/env/output/files', async () => {
     const project = await setupProject()
     const manifest = await loadManifest(project)
@@ -386,7 +385,7 @@ describe('A11: secret values never leak outside the recorded `secret put` stdin'
     }
 
     // 5) The pipe generator's stderr, which echoed the raw value, was
-    // redacted before reaching `output` (Decision 6).
+    // redacted before reaching `output`.
     const stderrLine = output.find((line) =>
       line.includes('WALLET_MNEMONIC generator stderr')
     )
@@ -473,7 +472,7 @@ account_id = "{{erpc:cloudflare-account-id}}"
     expect(fake.calls.some((call) => call.command === 'fake-pipe')).toBe(false)
   })
 
-  it('A11(2): a thrown error never carries a secret value the pipe command already produced', async () => {
+  it('a thrown error never carries a secret value the pipe command already produced', async () => {
     // No `backup` this time: the pipe command runs, obtains PIPE_CANARY, and
     // only *then* fails validation - the value is briefly in memory before
     // the throw, which is exactly the case a leak in the error message would

@@ -1,10 +1,22 @@
-// `erpc deploy --target cloudflare`. See design doc §3/§4 and Task Brief
-// Decision 1-12 (`2026-09-25-packet-erpc-cli-pr-b.md`).
+// `erpc deploy --target cloudflare`.
 //
-// D0 read -> D1 toolchain -> D2 build -> D3 auth+account -> D4 provision
-// (KV, secrets) -> D5 preflight -> D6 `wrangler deploy` -> D7 post-deploy
-// probe. `--no-provision` skips D4; `--dry-run` skips D4 and the real D6
-// (running `wrangler deploy --dry-run` instead) and returns before D7;
+// Steps, in the order they run:
+//   D0  re-read and re-verify the template manifest
+//   D2  `[build].command`
+//   D1  `wrangler --version` against the template's minimum version
+//   D3  authenticate and resolve the Cloudflare account
+//   D4a reuse or create KV namespaces
+//   D4b put missing Worker secrets
+//   D5  read-only preflight
+//   D6  `wrangler deploy`
+//   D7  post-deploy probes
+// D2 runs before D1 because a freshly generated project gets wrangler from
+// its own build command (typically `pnpm install --frozen-lockfile`), so a
+// version check before the build would fail on every first deploy.
+//
+// `--no-provision` skips D4. `--dry-run` resolves the account without
+// writing it, skips D4, reports (instead of stopping on) what D5 finds,
+// runs `wrangler deploy --dry-run` in D6, and returns before D7.
 // `--verify-only` runs only D0 and D7.
 
 import { readFile } from 'node:fs/promises'
@@ -68,7 +80,7 @@ export interface CloudflareDeployOptions {
   readonly noProvision?: boolean
   readonly output: (message: string) => void
   readonly promptIO?: PromptIO
-  /** `crypto.getRandomValues`'s signature - tests inject a deterministic double (Acceptance A11). */
+  /** `crypto.getRandomValues`'s signature - tests inject a deterministic double. */
   readonly random?: (bytes: Uint8Array<ArrayBuffer>) => void
   readonly run?: ProcessRunner
   readonly templateRegistry?: TemplateRegistry
@@ -91,7 +103,7 @@ const parseTemplateSource = (source: string, asset: string): TemplateSource => {
 /**
  * D0: re-obtains (from the erpcHome cache, or re-fetching against the sha256
  * already pinned in erpc.toml) and re-verifies `erpc-template.json` exactly
- * the way `erpc app init --template` did (Decision 3), since only
+ * the way `erpc app init --template` did, since only
  * `app.name`/`cloudflare.{config,wrangler}` from `erpc.toml` are persisted -
  * `cloudflare.kv`/`preflight`/`minWranglerVersion` and `postDeploy` live in
  * the template manifest, not in `erpc.toml`.
@@ -152,10 +164,10 @@ interface AccountResolution {
 }
 
 /**
- * D3: authenticate, then fix an account_id, writing it into wrangler.toml
- * (Decision 4). Under `--dry-run` the account is still resolved (D5(b)'s
- * report needs the right `CLOUDFLARE_ACCOUNT_ID`) but never written back
- * (packet review N5) - a dry run must not mutate the project.
+ * D3: authenticate, then fix an account_id, writing it into wrangler.toml.
+ * Under `--dry-run` the account is still resolved (D5's secret check needs
+ * the right `CLOUDFLARE_ACCOUNT_ID`) but never written back: a dry run must
+ * not change the project.
  */
 const resolveCloudflareAccount = async (params: {
   readonly dryRun: boolean
@@ -212,8 +224,8 @@ const resolveCloudflareAccount = async (params: {
   const configAccountId = resolvedAccountId(parsed)
   const envAccountId = Deno.env.get('CLOUDFLARE_ACCOUNT_ID')
 
-  // Decision 4's rank order (env -> wrangler.toml's already-resolved value ->
-  // the single account -> a TTY choice -> stop) means a *resolved*
+  // The rank order (env -> wrangler.toml's already-resolved value -> the
+  // single account -> a TTY choice -> stop) means a *resolved*
   // wrangler.toml value wins over re-deriving from whoami's account list -
   // the only remaining conflict to catch is env disagreeing with a value a
   // previous run already fixed.
@@ -224,9 +236,9 @@ const resolveCloudflareAccount = async (params: {
         `CLOUDFLARE_ACCOUNT_ID (${envAccountId}) does not match the Cloudflare account already resolved in wrangler.toml (${configAccountId})`,
       )
     }
-    // packet review N11: a pinned account that this login can no longer see
-    // (revoked membership, wrong login) must stop here, not surface as a
-    // confusing 403 several steps later.
+    // A pinned account that this login can no longer see (revoked
+    // membership, wrong login) must stop here, not surface as a confusing
+    // 403 several steps later.
     if (!whoami.accounts.some((account) => account.id === configAccountId)) {
       throw new Error(
         `wrangler.toml account_id (${configAccountId}) is not one of the accounts this wrangler login can see`,
@@ -266,8 +278,8 @@ const resolveCloudflareAccount = async (params: {
         )
       }
       await atomicWriteWranglerConfig(params.wranglerConfigPath, updated)
-      // packet review N3: confirm the write actually landed before trusting
-      // it for the rest of the run.
+      // Confirm the write actually landed before trusting it for the rest of
+      // the run.
       const readBack = await readWranglerConfigText(params.wranglerConfigPath)
       if (resolvedAccountId(parseWranglerConfig(readBack)) !== accountId) {
         throw new Error(
@@ -285,10 +297,11 @@ const resolveCloudflareAccount = async (params: {
  * `erpc-template.json`'s own lint (`template-manifest.ts` L2) rejects any
  * other placeholder in a kv title because this step substitutes nothing
  * else, so an unresolved `{{` remaining here means the archive re-fetched in
- * D0 disagrees with what passed lint at init time. The lint trims whitespace inside `{{ }}` when it
- * compares names (`extractPlaceholderNames`), so `{{ app.name }}` passes
- * lint too - this matches that with the same tolerance instead of only
- * accepting the exact byte sequence `{{app.name}}`.
+ * D0 disagrees with what passed lint at init time. The lint trims
+ * whitespace inside `{{ }}` when it compares names
+ * (`extractPlaceholderNames`), so `{{ app.name }}` passes lint too - this
+ * matches that with the same tolerance instead of only accepting the exact
+ * byte sequence `{{app.name}}`.
  */
 const APP_NAME_PLACEHOLDER = /\{\{\s*app\.name\s*\}\}/g
 
@@ -347,7 +360,7 @@ const provisionKvNamespaces = async (params: {
   if (changed) await atomicWriteWranglerConfig(params.wranglerConfigPath, text)
 }
 
-/** D4b: put every required secret this Worker does not already have (Decision 6). */
+/** D4b: put every declared secret this Worker does not already have; an existing secret is never overwritten. */
 const provisionSecrets = async (params: {
   readonly ackBackup: ReadonlySet<string>
   readonly accountEnv: Readonly<Record<string, string>>
@@ -410,9 +423,12 @@ const runPreflight = async (params: {
 }): Promise<void> => {
   const text = await readWranglerConfigText(params.wranglerConfigPath)
   if (hasUnresolvedPlaceholders(text)) {
-    // D5(a): under `--dry-run`, D4 never ran, so a fresh project's KV/account
-    // sentinels are still there - report instead of stopping, the same
-    // relaxation `--dry-run` already gets for D5(b) (packet review N5).
+    // Under `--dry-run`, D3 wrote nothing and D4 never ran, so a fresh
+    // project's KV/account sentinels are still there. Report them instead of
+    // stopping, the same way a missing secret is reported below: wrangler
+    // 4.104.0's own `deploy --dry-run` accepts a config that still has them,
+    // so stopping here would make `--dry-run` unusable before the first real
+    // deploy.
     const message =
       `${params.wranglerConfigPath} still has an unresolved {{...}} placeholder`
     if (params.reportMissingOnly) {
@@ -455,8 +471,8 @@ const runPreflight = async (params: {
       cwd: params.root,
     })
     if (result.code !== 0) {
-      // packet review N10: surface stderr (a preflight command is
-      // template-authored, not a secret-value source like secret-pipe).
+      // Surface stderr: a preflight command is template-authored, not a
+      // secret-value source like secret-pipe.
       if (result.stderr) params.output(result.stderr)
       throw new Error(`Preflight command failed: ${command.join(' ')}`)
     }
@@ -474,8 +490,7 @@ export const deployToCloudflare = async (
   const fetcher = options.fetch ?? globalThis.fetch
   const templateRegistry = options.templateRegistry ?? TEMPLATE_REGISTRY
   // `--yes` forces the non-interactive path even with a TTY attached - the
-  // same contract `initializeTemplateApp` uses for `erpc app init --template`
-  // (Decision Q2/6; packet review B2/cyan B2).
+  // same contract `initializeTemplateApp` uses for `erpc app init --template`.
   const yes = options.yes ?? false
   const isInteractive = !yes && promptIO.isInteractive()
   const root = manifest.projectRoot
@@ -514,16 +529,16 @@ export const deployToCloudflare = async (
     return
   }
 
-  // D2 before D1 (packet review N7): a freshly-initialized project has not
-  // run its own install yet, so `[build].command` (typically
-  // `pnpm install --frozen-lockfile`) must run before `wrangler --version`
-  // has any chance of finding wrangler at all.
+  // D2 before D1: a freshly generated project has not run its own install
+  // yet, so `[build].command` (typically `pnpm install --frozen-lockfile`)
+  // must run before `wrangler --version` has any chance of finding wrangler
+  // at all.
   if (manifest.build) {
     const [command, ...rest] = manifest.build.command
     const result = await run({ args: rest, command: command!, cwd: root })
     if (result.code !== 0) {
-      // packet review N10: a build command is template-authored, not a
-      // secret-value source, so its stderr is safe to show.
+      // A build command is template-authored, not a secret-value source, so
+      // its stderr is safe to show.
       if (result.stderr) output(result.stderr)
       throw new Error('Build failed; no Cloudflare command was run')
     }

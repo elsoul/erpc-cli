@@ -176,6 +176,16 @@ of what `wrangler.toml` lists — some secrets (for example a wallet mnemonic) a
 deliberately kept out of `wrangler.toml`'s own declaration and are guarded
 elsewhere in the deploy path instead.
 
+### `secret-input` values
+
+At deploy time a `secret-input` value comes from its hidden prompt (interactive)
+or from its `env` variable (non-interactive, including `--yes`). An empty answer
+and an empty environment variable both count as "not provided": an optional
+prompt is then left unset and reported as such, and a required one stops the
+deploy (non-interactively, before any secret is put). A provided value that does
+not match `validate.pattern` always stops the deploy; the message never includes
+the value.
+
 ### `secret-pipe` stdout contract
 
 A `secret-pipe` prompt's `command` is executed with no shell, `cwd` at the

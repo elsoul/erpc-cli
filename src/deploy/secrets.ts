@@ -1,8 +1,7 @@
 // D4b: resolving `secret-generate`/`secret-pipe`/`secret-input` prompt
-// values and handing them to `wrangler secret put`. See design doc §4 and
-// Task Brief Decision 6/10.
+// values and handing them to `wrangler secret put`.
 //
-// Common rule (Decision 10): a secret value lives only in memory, travels
+// Common rule: a secret value lives only in memory, travels
 // only through stdin, and is zeroed (for the generated-bytes case) right
 // after use. Nothing here ever writes a secret value to `output`, to an
 // error message, or to a file.
@@ -101,10 +100,10 @@ export interface SecretResolutionDeps {
 
 /**
  * Every reason a prompt in `toProcess` cannot be resolved non-interactively,
- * collected up front (Decision 6's "非対話で不足は1回のエラーで全件列挙"
- * pattern from PR-A's `collectTemplateAnswers`) so nothing - no pipe
+ * collected up front and reported together (the same pattern
+ * `collectTemplateAnswers` uses for `erpc app init`) so nothing - no pipe
  * command, no `secret put` - runs until every one of them is either
- * resolvable or explicitly optional (Acceptance A12).
+ * resolvable or explicitly optional.
  */
 export const blockingSecretIssues = (
   toProcess: readonly SecretPrompt[],
@@ -188,9 +187,9 @@ export const resolveSecretValue = async (
     const value = result.stdout.endsWith('\n')
       ? result.stdout.slice(0, -1)
       : result.stdout
-    // Decision 6: the pipe command's stderr may echo the value it just
-    // generated (a diagnostic, a warning) - redact every occurrence before
-    // it ever reaches `output` (Acceptance A11).
+    // The pipe command's stderr may echo the value it just generated (a
+    // diagnostic, a warning) - redact every occurrence before it ever
+    // reaches `output`.
     if (result.stderr) {
       const redacted = value.length > 0
         ? result.stderr.split(value).join('[REDACTED]')

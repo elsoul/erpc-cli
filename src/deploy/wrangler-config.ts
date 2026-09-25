@@ -1,7 +1,7 @@
 // Reads and surgically patches the project's `wrangler.toml` (or whatever
 // `[cloudflare].config` points at). Sentinel replacement rewrites only the
 // placeholder substring in place (tmp + rename) so every other byte -
-// comments, key order, formatting - survives (design doc §3.3 Decision 4/5).
+// comments, key order, formatting - survives.
 
 import { readFile, rename, writeFile } from 'node:fs/promises'
 import { parse as parseToml } from '@std/toml'
@@ -49,14 +49,14 @@ const ACCOUNT_ID_PATTERN = /^[0-9a-f]{32}$/
 /**
  * D3: fills in `account_id`. Replaces the sentinel in place if present;
  * otherwise inserts a fresh top-level `account_id = "..."` line before the
- * first table header (an indented one included - `/^\s*\[/m`, packet review
- * N3) or appends one, for a file with no tables at all. A file that already
- * carries a resolved (non-sentinel) `account_id` is returned unchanged - the
- * caller is responsible for stopping when that value disagrees with the
- * newly resolved account (Decision 4).
+ * first table header (an indented one included - `/^\s*\[/m`) or appends
+ * one, for a file with no tables at all. A file that already carries a
+ * resolved (non-sentinel) `account_id` is returned unchanged - the caller is
+ * responsible for stopping when that value disagrees with the newly
+ * resolved account.
  *
- * `accountId` must already look like a Cloudflare account id (packet review
- * N2): this value came from `wrangler whoami --json` or the
+ * `accountId` must already look like a Cloudflare account id: this value
+ * came from `wrangler whoami --json` or the
  * `CLOUDFLARE_ACCOUNT_ID` environment variable, and writing an unvalidated
  * string into TOML text (even one built with `tomlBasicString`) is not a
  * risk worth taking for a value this shape-constrained.

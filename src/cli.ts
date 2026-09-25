@@ -59,7 +59,7 @@ export interface CliDependencies {
    * `crypto.getRandomValues`'s signature. Forwarded into
    * `erpc deploy --target cloudflare`'s secret generation and post-deploy
    * PKCE probe so a test can inject deterministic bytes instead of real
-   * entropy (packet Decision 10, Acceptance A11).
+   * entropy.
    */
   readonly random?: (bytes: Uint8Array<ArrayBuffer>) => void
   readonly runProcess?: ProcessRunner
@@ -67,7 +67,7 @@ export interface CliDependencies {
    * Forwarded into `initializeTemplateApp`'s broker-register call so a
    * caller wiring its own cancellation (for example an `AbortController`
    * tied to `SIGINT`) can cut short the device-flow poll instead of it
-   * running to its own timeout (packet Decision 8).
+   * running to its own timeout.
    */
   readonly signal?: AbortSignal
   readonly store?: RefreshTokenStore
@@ -655,8 +655,7 @@ const executeCliCommand = async (
         ...(parsed.name === undefined ? {} : { name: parsed.name }),
         oidcRegistrar: dependencies.oidcRegistrar ?? defaultOidcClientRegistrar,
         // Falls back to the real `xdg-open`/`open`/`start` launcher outside
-        // tests, the same way `oidcRegistrar` falls back above (packet
-        // Decision 8).
+        // tests, the same way `oidcRegistrar` falls back above.
         openExternal: dependencies.openExternal ?? defaultOpenExternal,
         output,
         promptIO,
@@ -776,7 +775,7 @@ const executeCliCommand = async (
     }
     // Every option below this point exists only for the cloudflare-worker
     // deploy path: silently accepting one here would run a real SSH deploy
-    // while ignoring what the caller asked for (Decision 1, non-goal).
+    // while ignoring what the caller asked for.
     const cloudflareOnlyOptions: ReadonlyArray<readonly [string, unknown]> = [
       ['--yes', parsed.yes],
       ['--no-provision', parsed.noProvision],

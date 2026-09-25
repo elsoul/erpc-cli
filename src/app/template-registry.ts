@@ -1,6 +1,4 @@
 // CLI-bundled template registry.
-// See design doc `2026-09-25-erpc-cli-template-cloudflare-gogo.md` §1.1 and
-// Task Brief `2026-09-25-packet-erpc-cli-pr-a.md` Decision 1.
 
 export interface TemplateSource {
   readonly asset: string
@@ -19,8 +17,7 @@ export type TemplateRegistry = Readonly<Record<string, TemplateRegistryEntry>>
 /**
  * The CLI-bundled name -> source/pin table. Left empty in this release: the
  * public template repository owner, repo, and asset name for
- * `stablecoin-manager` were not decided at dispatch time (packet Decision 1,
- * open question 1). Shipping a guessed repository name here would let
+ * `stablecoin-manager` have not been decided yet. Shipping a guessed repository name here would let
  * `erpc app init --template stablecoin-manager@<tag>` silently resolve to the
  * wrong GitHub repository, so this table stays empty until a future release
  * fills it in a single follow-up commit. Tests inject a registry through

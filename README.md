@@ -309,7 +309,7 @@ erpc deploy --config /path/to/app/erpc.toml
 erpc deploy --yes                      # non-interactive; fail on any missing answer
 erpc deploy --ack-backup WALLET_MNEMONIC # acknowledge a secret-pipe backup non-interactively
 erpc deploy --no-provision             # skip Cloudflare KV/secret provisioning
-erpc deploy --dry-run                  # `wrangler deploy --dry-run`; reports missing secrets instead of stopping
+erpc deploy --dry-run                  # `wrangler deploy --dry-run`; reports instead of stopping, changes no Cloudflare state
 erpc deploy --verify-only              # re-run only the post-deploy verification probes
 ```
 
@@ -320,7 +320,15 @@ identity). It then fixes a Cloudflare account id into the project's
 `wrangler.toml`, reuses or creates any KV namespace the template declares,
 generates or collects any Worker secret the template declares that does not
 already exist, and finally deploys and probes the result. **An existing
-Cloudflare Worker secret is never overwritten** by this command.
+Cloudflare Worker secret is never overwritten** by this command. An optional
+`secret-input` value that is left empty (an empty answer, or an empty
+environment variable) is skipped and reported as unset.
+
+`--dry-run` resolves the account without writing it: it leaves `wrangler.toml`
+unchanged (no account id is fixed into it), creates no KV namespace, and puts no
+secret. The template's `[build].command` still runs. It reports unresolved
+placeholders and missing secrets instead of stopping, then runs
+`wrangler deploy --dry-run`.
 
 A secret value never touches a file, an argument list, or an error message: it
 is generated in memory, piped to `wrangler secret put` on stdin, and the buffer
@@ -340,6 +348,17 @@ prompt.
 additionally needs `Workers KV Storage:Edit` to list and create namespaces;
 binding a route or a custom domain additionally needs
 `Zone:Workers Routes:Edit`.
+
+**Account list**: this command reads the account list printed by
+`wrangler whoami --json`, both to choose an account (when neither
+`CLOUDFLARE_ACCOUNT_ID` nor `wrangler.toml` names one) and to check that an
+`account_id` already in `wrangler.toml` is visible to the current login. Which
+API token permissions make an account appear in that list has not been verified
+with a minimal-permission token. Cloudflare's
+[Wrangler authorization guide](https://developers.cloudflare.com/workers/authorization/)
+recommends setting `CLOUDFLARE_ACCOUNT_ID` alongside an account-owned API token;
+if a deploy stops because the account is not in that list, check the token's
+account access first.
 
 **Trust boundary**: a template's `[build].command`, `cloudflare.preflight`
 commands, a `secret-pipe` prompt's `command`, and `wrangler` itself (invoked as

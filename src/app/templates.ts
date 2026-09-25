@@ -3,7 +3,7 @@ export type AppRuntime = (typeof APP_RUNTIMES)[number]
 
 /** All runtimes an `erpc.toml` `[app].runtime` may declare, including the
  * template-only `cloudflare-worker` runtime `erpc app init --template`
- * produces (design doc §3.2). `APP_RUNTIMES` stays scoped to the runtimes
+ * produces. `APP_RUNTIMES` stays scoped to the runtimes
  * `erpc app init [--runtime ...]` can scaffold from scratch. */
 export const MANIFEST_RUNTIMES = [...APP_RUNTIMES, 'cloudflare-worker'] as const
 export type ManifestRuntime = (typeof MANIFEST_RUNTIMES)[number]

@@ -1,5 +1,5 @@
-// Thin wrapper around `[cloudflare].wrangler` subprocess calls.
-// See design doc §3.1/§3.3/§3.4 and Task Brief Decision 2/4/5/7/8/10.
+// Thin wrapper around `[cloudflare].wrangler` subprocess calls. The output
+// shapes parsed here are the ones wrangler 4.104.0 prints.
 
 import type {
   ProcessRequest,
@@ -8,7 +8,7 @@ import type {
 } from '../process.ts'
 
 /**
- * Forced on every wrangler child process (Decision 10/N12): wrangler
+ * Forced on every wrangler child process: wrangler
  * 4.104.0 only writes unsanitized request bodies (which can contain a
  * secret value) to its debug log when this is `false` and debug logging is
  * on. This always wins over whatever the parent environment set, because it
@@ -23,7 +23,7 @@ export interface WranglerCallOptions {
    * Absolute path to the `[cloudflare].config` file. Always passed as
    * `--config <path>` so wrangler's own json/jsonc/toml auto-discovery can
    * never pick a different file than the one this deploy actually read and
-   * patched (packet review N1).
+   * patched.
    */
   readonly configPath: string
   readonly cwd: string
@@ -75,7 +75,7 @@ export const meetsMinimumVersion = (
   return true
 }
 
-/** D1: `wrangler --version` must run and meet `minVersion`, or deploy stops before touching Cloudflare (Decision 2). */
+/** D1: `wrangler --version` must run and meet `minVersion`, or deploy stops before touching Cloudflare. */
 export const checkWranglerToolchain = async (
   run: ProcessRunner,
   wrangler: readonly string[],
@@ -117,7 +117,7 @@ export interface WranglerWhoami {
   readonly loggedIn: true
 }
 
-/** D3: `wrangler whoami --json` (R6). Returns `null` on any non-authenticated/non-zero outcome - the caller decides what to do next. */
+/** D3: `wrangler whoami --json`. Returns `null` on any non-authenticated/non-zero outcome - the caller decides what to do next. */
 export const wranglerWhoami = async (
   run: ProcessRunner,
   wrangler: readonly string[],
@@ -141,7 +141,7 @@ export const wranglerWhoami = async (
   }
 }
 
-/** D3: interactive-only `wrangler login`, run with the terminal shared directly (Decision 4). */
+/** D3: interactive-only `wrangler login`, run with the terminal shared directly. */
 export const wranglerLogin = async (
   run: ProcessRunner,
   wrangler: readonly string[],
@@ -161,7 +161,7 @@ export interface WranglerKvNamespace {
   readonly title: string
 }
 
-/** D4a: `wrangler kv namespace list` always prints a JSON array (R7). */
+/** D4a: `wrangler kv namespace list` always prints a JSON array. */
 export const wranglerKvNamespaceList = async (
   run: ProcessRunner,
   wrangler: readonly string[],
@@ -199,7 +199,7 @@ export const wranglerKvNamespaceList = async (
 
 const KV_ID_LINE = /\bid\s*=\s*"([^"]+)"/
 
-/** D4a: `wrangler kv namespace create <title>` prints the new id in a config snippet (Decision 5). */
+/** D4a: `wrangler kv namespace create <title>` prints the new id in a config snippet. */
 export const wranglerKvNamespaceCreate = async (
   run: ProcessRunner,
   wrangler: readonly string[],
@@ -232,7 +232,7 @@ export const wranglerKvNamespaceCreate = async (
 
 const WORKER_NOT_FOUND = /Worker "[^"]*" not found\./
 
-/** D4b/D5: `wrangler secret list` - a "Worker not found" failure means an empty secret set (R2), any other failure stops the deploy. */
+/** D4b/D5: `wrangler secret list` - a "Worker not found" failure means an empty secret set (the Worker does not exist yet), any other failure stops the deploy. */
 export const wranglerSecretList = async (
   run: ProcessRunner,
   wrangler: readonly string[],
@@ -275,7 +275,7 @@ export const wranglerSecretList = async (
   )
 }
 
-/** D4b: `wrangler secret put <NAME>` - the value travels only through stdin, never argv (Decision 10). */
+/** D4b: `wrangler secret put <NAME>` - the value travels only through stdin, never argv. */
 export const wranglerSecretPut = async (
   run: ProcessRunner,
   wrangler: readonly string[],
@@ -297,7 +297,7 @@ export const wranglerSecretPut = async (
   }
 }
 
-/** D6: `wrangler deploy` (or `--dry-run`), streamed straight to the terminal (Decision 8). */
+/** D6: `wrangler deploy` (or `--dry-run`), streamed straight to the terminal. */
 export const wranglerDeploy = async (
   run: ProcessRunner,
   wrangler: readonly string[],

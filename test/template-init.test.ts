@@ -227,7 +227,7 @@ const directoryIsMissingOrEmpty = async (
 }
 
 describe('initializeTemplateApp', () => {
-  it('A5: generates a cloudflare-worker app from a pinned template', async () => {
+  it('generates a cloudflare-worker app from a pinned template', async () => {
     const archive = await buildFixtureArchive()
     const sha256 = await sha256Hex(archive)
     const parent = await temporaryDirectory('erpc-template-init-a5-')
@@ -272,7 +272,7 @@ describe('initializeTemplateApp', () => {
     expect(parsed.name).toBe('app')
   })
 
-  it('A4: rejects a checksum mismatch without touching disk or the cache', async () => {
+  it('rejects a checksum mismatch without touching disk or the cache', async () => {
     const archive = await buildFixtureArchive()
     const wrongSha256 = '0'.repeat(64)
     const parent = await temporaryDirectory('erpc-template-init-a4-')
@@ -298,7 +298,7 @@ describe('initializeTemplateApp', () => {
     expect(await cacheEntries(erpcHome)).toEqual([])
   })
 
-  it('A6: rejects a path-traversal archive and writes nothing', async () => {
+  it('rejects a path-traversal archive and writes nothing', async () => {
     const archive = await tarGzFromInputs([
       fileInput('erpc-template.json', manifestJson()),
       fileInput('wrangler.toml', WRANGLER_TOML),
@@ -325,7 +325,7 @@ describe('initializeTemplateApp', () => {
     expect(await directoryIsMissingOrEmpty(directory)).toBe(true)
   })
 
-  it('A7: rejects an unresolved-placeholder manifest before prompting', async () => {
+  it('rejects an unresolved-placeholder manifest before prompting', async () => {
     const brokenWrangler = WRANGLER_TOML.replace(
       '{{app.name}}',
       '{{totally_unknown}}',
@@ -358,7 +358,7 @@ describe('initializeTemplateApp', () => {
     expect(await directoryIsMissingOrEmpty(directory)).toBe(true)
   })
 
-  it('A8: lists every missing non-interactive answer in one error and never prompts', async () => {
+  it('lists every missing non-interactive answer in one error and never prompts', async () => {
     const archive = await buildFixtureArchive()
     const sha256 = await sha256Hex(archive)
     const parent = await temporaryDirectory('erpc-template-init-a8-')
@@ -404,13 +404,13 @@ describe('initializeTemplateApp', () => {
     expect(message).toContain('--set')
     // The `derived` key that depends on the missing `domain` fails to
     // interpolate too - it must add its own issue instead of resolving
-    // silently (packet Decision 6).
+    // silently.
     expect(message).toContain('MCP_SERVER_BASE_URL')
     expect(message).toContain('could not be derived')
     expect(promptIO.callCount).toBe(0)
   })
 
-  it('A8: rejects --set for a secret target key without prompting', async () => {
+  it('rejects --set for a secret target key without prompting', async () => {
     const archive = await buildFixtureArchive()
     const sha256 = await sha256Hex(archive)
     const parent = await temporaryDirectory('erpc-template-init-a8-secret-')
@@ -437,7 +437,7 @@ describe('initializeTemplateApp', () => {
     expect(promptIO.callCount).toBe(0)
   })
 
-  it('A8: requires --trust-issuer for an unpinned template with a broker-register prompt', async () => {
+  it('requires --trust-issuer for an unpinned template with a broker-register prompt', async () => {
     const archive = await buildFixtureArchive({ withBroker: true })
     const sha256 = await sha256Hex(archive)
     const parent = await temporaryDirectory('erpc-template-init-a8-trust-')
@@ -884,7 +884,7 @@ describe('initializeTemplateApp', () => {
   it('lists a missing var alongside an untrusted broker issuer in the same error', async () => {
     // A broker-register prompt whose redirectUris/clientName do not depend on
     // the missing var, so it reaches the trust check regardless of that
-    // var's status (Decision 6 / Acceptance A8).
+    // var's status.
     const manifestJsonText = JSON.stringify({
       schemaVersion: 1,
       name: 'fixture-template',
@@ -972,7 +972,7 @@ describe('initializeTemplateApp', () => {
       ? observed.message
       : String(observed)
     // The registrar *was* called - show the value it returned rather than
-    // only saying "invalid" (packet Decision 10), and distinguish this
+    // only saying "invalid", and distinguish this
     // wording from the --set path's own message.
     expect(registrarCalls).toBe(1)
     expect(message).toContain('"not-app-format"')
@@ -1260,7 +1260,7 @@ describe('initializeTemplateApp', () => {
     expect(promptedLine).not.toContain('JWT_SECRET')
   })
 
-  it('shows the interactive summary before calling the registrar, not after (packet Decision 10)', async () => {
+  it('shows the interactive summary before calling the registrar, not after', async () => {
     const archive = await buildFixtureArchive({ withBroker: true })
     const sha256 = await sha256Hex(archive)
     const parent = await temporaryDirectory('erpc-template-init-order-')
@@ -1327,7 +1327,8 @@ describe('initializeTemplateApp', () => {
   })
 
   it('lists a missing domain alongside an untrusted broker issuer when redirectUris depends on {{domain}}', async () => {
-    // Unlike the B4 fixture above, this uses the real shape (redirectUris:
+    // Unlike the "lists a missing var alongside an untrusted broker issuer"
+    // fixture above, this uses the real shape (redirectUris:
     // ["https://{{domain}}/oauth/callback"]) so the trust check must run
     // even though interpolating redirectUris would otherwise fail for the
     // same reason domain is missing.
@@ -1423,7 +1424,7 @@ describe('initializeTemplateApp', () => {
       : String(observed)
     // Both issues must land in the same aggregated error: an untrusted
     // issuer must not suppress the independent --set format check, and vice
-    // versa (packet Decision 6).
+    // versa.
     expect(message).toContain('not trusted')
     expect(message).toContain('--set APP_OIDC_CLIENT_ID=')
     expect(message).toContain('does not match the required pattern')
@@ -1762,7 +1763,7 @@ describe('CLI wiring', () => {
     expect(opened).toEqual(['https://broker.example.com/verify'])
   })
 
-  it('wires a default openExternal through to the registrar when none is injected (packet Decision 8)', async () => {
+  it('wires a default openExternal through to the registrar when none is injected', async () => {
     const archive = await buildFixtureArchive({ withBroker: true })
     const sha256 = await sha256Hex(archive)
     const parent = await temporaryDirectory(
@@ -1808,7 +1809,7 @@ describe('CLI wiring', () => {
     expect(capturedOpenExternal).toBe(defaultOpenExternal)
   })
 
-  it('forwards an injected signal through to the registrar (packet Decision 8)', async () => {
+  it('forwards an injected signal through to the registrar', async () => {
     const archive = await buildFixtureArchive({ withBroker: true })
     const sha256 = await sha256Hex(archive)
     const parent = await temporaryDirectory('erpc-template-cli-signal-')

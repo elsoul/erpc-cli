@@ -1,8 +1,7 @@
 // `erpc-template.json` v1: Zod schema (source of truth) + semantic lint L1-L12.
-// See design doc §2.1-§2.3 and Task Brief Decision 5.
 //
 // Validation happens in two stages, both of which run before any prompt is
-// shown to the user (Acceptance A7/A8):
+// shown to the user:
 //   1. `parseTemplateManifest` - Zod structural validation, then the lint
 //      rules that only need the manifest object (L1, L2, L3, L6, L8's naming
 //      half, L9, L10, L11).
@@ -179,7 +178,7 @@ export const isSecretPromptTarget = (
 ): target is SecretPromptTarget =>
   (SECRET_PROMPT_TARGETS as readonly string[]).includes(target)
 
-/** Whether a prompt must have a value before deploy (Decision 5b / design §2.2). */
+/** Whether a prompt must have a value before deploy (`secret-input` defaults to optional, every other secret target to required). */
 export const isPromptRequired = (prompt: TemplatePrompt): boolean => {
   if (prompt.target === 'secret-input') return prompt.required ?? false
   if (prompt.target === 'secret-generate' || prompt.target === 'secret-pipe') {
@@ -307,12 +306,11 @@ const lintTemplateManifest = (manifest: TemplateManifest): void => {
       }
       // A `derived` value is computed in the same pass as every other
       // `var`/`derived` prompt, before broker-register is resolved (it
-      // always runs once, last, per packet Decision 10's ordering) -
-      // referencing the broker-register key from a `derived` expr would try
-      // to interpolate a value that does not exist yet, regardless of
-      // manifest order or whether `--set` supplied it. Rejecting this at
-      // lint time (rather than leaving it to fail at answer-collection time)
-      // is packet Decision 5(ii).
+      // always runs once, last) - referencing the broker-register key from a
+      // `derived` expr would try to interpolate a value that does not exist
+      // yet, regardless of manifest order or whether `--set` supplied it.
+      // Rejecting this at lint time, rather than leaving it to fail at
+      // answer-collection time, names the problem before any prompt runs.
       if (prompt.target === 'derived' && brokerRegisterKeys.has(name)) {
         violations.push(
           `L2: "${prompt.key}" references broker-register key "${name}" in a derived expression (broker registration resolves after every other answer, so no derived value may depend on it)`,
@@ -435,7 +433,7 @@ const lintTemplateManifest = (manifest: TemplateManifest): void => {
   // file). A manifest whose `default` already contains one would always fail
   // at answer-collection time with no way for a template author to fix it
   // short of removing the default - reject it here instead, with a message
-  // that names the actual problem (packet Decision 5(iv)).
+  // that names the actual problem.
   for (const prompt of manifest.prompts) {
     if (
       prompt.target === 'var' && prompt.default !== undefined &&
@@ -603,7 +601,7 @@ const lintCloudflareWorkerConfig = (
           // carries flag "domain" while a `derived` (or flag-less `var`)
           // "domain" key supplies a fixed/attacker-chosen value would
           // otherwise pass, since `{{domain}}` still resolves and *some*
-          // prompt still has flag "domain" (packet Decision 5(i)).
+          // prompt still has flag "domain".
           const domainPrompt = manifest.prompts.find((prompt) =>
             prompt.key === 'domain'
           )
@@ -618,7 +616,7 @@ const lintCloudflareWorkerConfig = (
           ) {
             // A `default` would let `--yes` route to that zone with no value
             // the user actually typed - the "domain" prompt must require a
-            // real answer (packet Decision 5(i)).
+            // real answer.
             violations.push(
               `L12: ${configPath} [[routes]] binds to {{domain}}, but the "domain" prompt declares a default (it must require a typed answer)`,
             )

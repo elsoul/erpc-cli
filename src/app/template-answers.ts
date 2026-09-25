@@ -1,16 +1,15 @@
 // Collects answers for `var`, `derived`, and `broker-register` prompts.
-// See design doc §2.5/§2.6 and Task Brief Decision 6.
 //
 // `secret-generate` / `secret-pipe` / `secret-input` prompts are resolved by
-// the deploy command, not here (design §2.2: their "confirmed" column is
-// "deploy"). Callers must reject `--set` for those keys before this module
-// runs (Decision 6: "`--set` で secret target のキーを渡したらエラー").
+// the deploy command, not here: their values only ever exist at deploy time.
+// Callers must reject `--set` for those keys before this module runs, so a
+// secret value never travels through the command line.
 //
 // Broker registration is resolved once, after every `var`/`derived` prompt in
 // the manifest has been processed (not inline, mid-loop): a var declared
 // *after* the broker-register prompt must still block the registrar call,
 // and issuer trust must be checked (and reported) independently of whether
-// other answers are missing (packet Decision 6).
+// other answers are missing.
 
 import type { PromptIO } from './prompt-io.ts'
 import type {
@@ -20,8 +19,8 @@ import type {
 } from './template-manifest.ts'
 
 const MAX_ANSWER_LENGTH = 512
-// Every control character, including tab/newline/carriage-return: Decision 6
-// requires "no control characters" unconditionally.
+// Every control character, including tab/newline/carriage-return: an answer
+// may not contain any control character at all.
 // deno-lint-ignore no-control-regex
 const CONTROL_CHARACTER_PATTERN = /[\x00-\x1f\x7f]/
 const PLACEHOLDER_PATTERN = /\{\{([^{}]+)\}\}/g
@@ -151,7 +150,7 @@ export interface TemplateAnswerBuiltIns {
 
 export interface TemplateAnswerInputs {
   readonly builtIns: TemplateAnswerBuiltIns
-  /** Resolves whether the (unpinned) broker issuer should be trusted for this run (Decision 7). */
+  /** Resolves whether the (unpinned) broker issuer should be trusted for this run. */
   readonly confirmIssuerTrust: (issuer: string) => Promise<boolean>
   readonly domainValue?: string
   readonly emailValue?: string
@@ -159,7 +158,7 @@ export interface TemplateAnswerInputs {
   /**
    * Called once, with every `var`/`derived` answer resolved, before broker
    * registration is attempted - the hook the interactive summary uses so it
-   * always prints before the registrar runs (design §2.5).
+   * always prints before the registrar runs.
    */
   readonly onAnswersReady?: (values: ReadonlyMap<string, string>) => void
   readonly promptIO: PromptIO
@@ -186,7 +185,7 @@ export interface CollectedTemplateAnswers {
 /**
  * Resolves every `var` and `derived` prompt in manifest order (non-
  * interactively, every `var` is checked independently so all missing keys
- * and validation failures are reported together - Acceptance A8; `PromptIO`
+ * and validation failures are reported together; `PromptIO`
  * is never called in that path), then - once, after the full manifest has
  * been walked - resolves at most one `broker-register` prompt (L6 caps the
  * manifest at one). Issuer trust is always checked and always contributes to
@@ -267,8 +266,7 @@ export const collectTemplateAnswers = async (
         // same loop (that failure already has its own issue above) - still
         // enumerate this derived key's own failure explicitly rather than
         // resolving it silently, so the aggregated error names every key
-        // that came out unresolved, not just the root cause (packet
-        // Decision 6).
+        // that came out unresolved, not just the root cause.
         issues.push(
           `${prompt.key}: could not be derived (${
             error instanceof Error ? error.message : String(error)
@@ -302,7 +300,7 @@ export const collectTemplateAnswers = async (
     // dependency on issuer trust, so it is validated - and, if bad, reported
     // - regardless of whether the issuer turns out to be trusted: an
     // untrusted issuer must not swallow a genuinely malformed `--set` value
-    // out of the same aggregated error (packet Decision 6).
+    // out of the same aggregated error.
     let setValueValid = false
     if (setValue !== undefined) {
       const shapeIssue = answerShapeIssue(prompt.key, setValue)
@@ -388,7 +386,7 @@ export const collectTemplateAnswers = async (
           // (escaped, not redacted, so the user can actually read it; see
           // `displayUntrustedValue`) rather than only saying "invalid", so
           // the user can tell the bad value came back from the network
-          // rather than from their own --set (packet Decision 10).
+          // rather than from their own --set.
           const shown = displayUntrustedValue(clientId)
           // A registrar call that returned *something* may well have
           // created a client upstream even though that response is unusable

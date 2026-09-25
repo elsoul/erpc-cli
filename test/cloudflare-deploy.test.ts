@@ -1,12 +1,10 @@
-// `erpc deploy --target cloudflare`. See Task Brief
-// `2026-09-25-packet-erpc-cli-pr-b.md` Acceptance A9/A10/A12 and the
-// "追加" bullets, plus N11/N12. A11 (sentinel leak) lives in
+// `erpc deploy --target cloudflare`. The secret-value leak checks live in
 // `secrets-leak.test.ts`.
 //
 // wrangler is never real here: every scenario runs against a fake
 // `ProcessRunner` (`command === 'fake-wrangler'`) that records every call and
-// answers exactly the way wrangler 4.104.0 does for the subcommands this
-// deploy path uses (design doc R1/R2/R6/R7).
+// answers the way wrangler 4.104.0 does for the subcommands this deploy path
+// uses.
 
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -290,7 +288,7 @@ interface FakeWranglerOptions {
   readonly workerExists?: boolean
 }
 
-/** Every wrangler call now carries a leading `--config <path>` (packet review N1); strip it before reading the subcommand. */
+/** Every wrangler call carries a leading `--config <path>`; strip it before reading the subcommand. */
 const withoutConfigFlag = (args: readonly string[]): readonly string[] =>
   args[0] === '--config' ? args.slice(2) : args
 
@@ -474,8 +472,7 @@ const nonInteractivePromptIO = (): PromptIO => ({
  * any prompt or `wrangler login` would otherwise happen for an interactive
  * session). `isInteractive` must be `true` here: a `false` value would make
  * the CLOUDFLARE_API_TOKEN-specific stop indistinguishable from the separate
- * "no terminal" stop, since both produce a rejection and 0 `login` calls
- * (packet review B5).
+ * "no terminal" stop, since both produce a rejection and 0 `login` calls.
  */
 const interactivePromptIOThatMustNotBeUsed = (): PromptIO => ({
   isInteractive: () => true,
@@ -601,7 +598,7 @@ const pinnedRegistryFor = (sha256: string): TemplateRegistry => ({
 // ---- tests ----
 
 describe('erpc deploy --target cloudflare', () => {
-  it('A9: --no-provision stops on a missing required secret without ever deploying', async () => {
+  it('--no-provision stops on a missing required secret without ever deploying', async () => {
     const project = await setupProject({
       includeKv: false,
       includePreflight: false,
@@ -630,14 +627,14 @@ describe('erpc deploy --target cloudflare', () => {
     ).toBe(false)
     expect(fake.calls.some((call) => withoutConfigFlag(call.args)[1] === 'put'))
       .toBe(false)
-    // N11: the fixture template is unpinned in `emptyRegistry`.
+    // The fixture template is unpinned in `emptyRegistry`.
     expect(
       output.filter((line) => line.includes('will run with your permissions'))
         .length,
     ).toBe(1)
   })
 
-  it('N11: a pinned template prints no trust warning', async () => {
+  it('a pinned template prints no trust warning', async () => {
     const project = await setupProject({
       includeKv: false,
       includePreflight: false,
@@ -664,7 +661,7 @@ describe('erpc deploy --target cloudflare', () => {
     ).toBe(0)
   })
 
-  it('A10: full provision -> deploy -> probe in order, then a second run is a no-op for KV/secret', async () => {
+  it('full provision -> deploy -> probe in order, then a second run is a no-op for KV/secret', async () => {
     const project = await setupProject()
     const manifest = await loadManifest(project)
     const fake = createFakeWrangler()
@@ -748,7 +745,7 @@ describe('erpc deploy --target cloudflare', () => {
       .toBe(false)
   })
 
-  it('A12: a non-interactive secret-pipe backup with no --ack-backup runs nothing', async () => {
+  it('a non-interactive secret-pipe backup with no --ack-backup runs nothing', async () => {
     const project = await setupProject({
       includeKv: false,
       includePreflight: false,
@@ -942,7 +939,7 @@ describe('erpc deploy --target cloudflare', () => {
     )).rejects.toThrow('--node')
   })
 
-  it('B1: every cloudflare-only deploy option is rejected on a node/deno app before any subprocess runs', async () => {
+  it('every cloudflare-only deploy option is rejected on a node/deno app before any subprocess runs', async () => {
     const parent = await temporaryDirectory('erpc-cf-deploy-b1-')
     const nodeApp = join(parent, 'node-app')
     await initializeApp({
@@ -974,7 +971,7 @@ describe('erpc deploy --target cloudflare', () => {
     }
   })
 
-  it('N12: WRANGLER_LOG_SANITIZE is forced true on every wrangler call even when the parent env disagrees', async () => {
+  it('WRANGLER_LOG_SANITIZE is forced true on every wrangler call even when the parent env disagrees', async () => {
     setEnv('WRANGLER_LOG_SANITIZE', 'false')
     const project = await setupProject()
     const manifest = await loadManifest(project)
@@ -1118,7 +1115,7 @@ describe('erpc deploy --target cloudflare', () => {
     expect(output.some((line) => line.includes('Missing required'))).toBe(true)
   })
 
-  it('mutant M10 (D2 build failure): a failing [build].command stops before any Cloudflare command runs', async () => {
+  it('a failing [build].command stops before any Cloudflare command runs', async () => {
     const project = await setupProject({
       includeKv: false,
       includePreflight: false,
@@ -1149,7 +1146,7 @@ describe('erpc deploy --target cloudflare', () => {
     expect(output.some((line) => line.includes('build blew up'))).toBe(true)
   })
 
-  it('mutant M11 (D5(c) preflight failure): a failing preflight command stops before deploy', async () => {
+  it('a failing preflight command stops before deploy', async () => {
     const project = await setupProject({
       includeKv: false,
       includePostDeploy: false,
@@ -1179,7 +1176,7 @@ describe('erpc deploy --target cloudflare', () => {
       .toBe(true)
   })
 
-  it('mutant M12 (minimum wrangler version): an old wrangler stops before any Cloudflare command runs', async () => {
+  it('an old wrangler stops before any Cloudflare command runs', async () => {
     const project = await setupProject({
       includeKv: false,
       includePreflight: false,
@@ -1209,7 +1206,7 @@ describe('erpc deploy --target cloudflare', () => {
     expect(calls).toHaveLength(1)
   })
 
-  it('mutant M13 (KV title reuse): an existing namespace with a matching title is reused, not recreated', async () => {
+  it('an existing KV namespace with a matching title is reused, not recreated', async () => {
     const project = await setupProject({
       includePreflight: false,
       includePostDeploy: false,

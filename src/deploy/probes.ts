@@ -1,10 +1,10 @@
-// D7: post-deploy verification. See design doc §3.3 Decision 9.
+// D7: post-deploy verification.
 //
 // `oauth-authorize-redirect` never renders the broker's consent screen and
 // never reaches Google: a same-origin 302 chain worker -> issuer ->
 // `<issuer>/oauth/consent...` is the positive signal (an unregistered client
-// or a redirect_uri mismatch gets a 400 with no Location instead - contract
-// D-2 3.), so the probe stops the instant it has observed that chain.
+// or a redirect_uri mismatch gets a 400 with no Location instead), so the
+// probe stops the instant it has observed that chain.
 //
 // Once a DCR registration (`POST /oauth/register`) succeeds, its client id is
 // reused for every later attempt in the same probe run: the worker persists
@@ -308,8 +308,7 @@ const sleep = (ms: number): Promise<void> =>
 /**
  * Retries `attempt` with backoff up to `timeoutSeconds`. Each call is bounded
  * by an `AbortSignal` tied to the remaining time in the deadline, so a
- * single hung request can never outlive the overall timeout (packet review
- * B4).
+ * single hung request can never outlive the overall timeout.
  */
 const withBackoff = async (
   attempt: (signal: AbortSignal) => Promise<ProbeAttempt>,
@@ -331,7 +330,7 @@ const withBackoff = async (
 /**
  * Runs every `postDeploy[]` probe in order, retrying each with backoff up to
  * `timeoutSeconds`. Throws `${failurePrefix}: <reason>` for the first probe
- * that never succeeds (Decision 9).
+ * that never succeeds.
  */
 export const runPostDeployProbes = async (
   postDeploy: TemplateManifest['postDeploy'],

@@ -7,7 +7,7 @@ export interface ProcessRequest {
    * Extra environment variables for the child process. Merged on top of the
    * parent's inherited environment (Deno.Command's default `clearEnv: false`
    * behavior), so a caller-supplied value always wins over whatever the
-   * parent shell happened to export (Task Brief Decision 10/N12).
+   * parent shell happened to export.
    */
   readonly env?: Readonly<Record<string, string>>
   readonly input?: string
@@ -16,8 +16,8 @@ export interface ProcessRequest {
    * pipes `input` to stdin when present. `'inherit'` shares the parent's
    * stdin/stdout/stderr directly - used for an interactive child (`wrangler
    * login`) or one whose own streamed output should reach the terminal
-   * as-is (`wrangler deploy`); its result always reports empty stdout/stderr
-   * (design doc §3.4).
+   * as-is (`wrangler deploy`); its result always reports empty
+   * stdout/stderr.
    */
   readonly stdio?: 'inherit' | 'piped'
 }

@@ -1,9 +1,8 @@
 #!/usr/bin/env -S deno run --allow-read --allow-write=schemas
 // Generates schemas/erpc-template.v1.schema.json from the Zod schema in
-// src/app/template-manifest.ts, which remains the source of truth (Decision
-// 5). `--check` verifies the committed file matches without writing to it;
-// `deno task schema:check` runs that mode so drift fails release:check
-// (Acceptance A1/A7).
+// src/app/template-manifest.ts, which remains the source of truth.
+// `--check` verifies the committed file matches without writing to it;
+// `deno task schema:check` runs that mode so drift fails release:check.
 
 import { z } from '@zod/zod'
 import { templateManifestSchema } from '../src/app/template-manifest.ts'

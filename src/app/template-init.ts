@@ -1,5 +1,4 @@
 // Orchestrates `erpc app init --template <name>@<tag>`.
-// See design doc §1/§2.6 and Task Brief Decisions 1-16.
 
 import { mkdir, readdir, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
@@ -56,8 +55,8 @@ export interface OidcClientRegistrar {
 }
 
 /**
- * The stub broker-register target for this release (Decision 8 / packet
- * scope: broker registration ships in PR-C). `--set APP_OIDC_CLIENT_ID=<id>`
+ * The stub broker-register target for this release: automatic broker
+ * registration is not available yet. `--set APP_OIDC_CLIENT_ID=<id>`
  * bypasses this entirely; see `collectTemplateAnswers`.
  */
 export const unsupportedOidcClientRegistrar: OidcClientRegistrar = {
@@ -73,7 +72,7 @@ export const defaultOidcClientRegistrar: OidcClientRegistrar =
   unsupportedOidcClientRegistrar
 
 /**
- * The Decision 16 trust-boundary warning text, exported so the deploy
+ * The trust-boundary warning text, exported so the deploy
  * command and the broker registration step can reuse the exact wording
  * instead of duplicating it.
  */
@@ -118,7 +117,7 @@ export interface InitializeTemplateAppOptions {
   readonly fetch?: typeof globalThis.fetch
   readonly name?: string
   readonly oidcRegistrar?: OidcClientRegistrar
-  /** Forwarded to the OIDC registrar's io; PR-A never sets this itself. */
+  /** Forwarded to the OIDC registrar's io; template init never sets this itself. */
   readonly openExternal?: (url: string) => void
   readonly output: (message: string) => void
   readonly promptIO?: PromptIO
@@ -126,7 +125,7 @@ export interface InitializeTemplateAppOptions {
   readonly renderTemplateFiles?: typeof defaultRenderTemplateFiles
   readonly setValues: ReadonlyMap<string, string>
   readonly sha256?: string
-  /** Forwarded to the OIDC registrar's io; PR-A never creates one itself. */
+  /** Forwarded to the OIDC registrar's io; template init never creates one itself. */
   readonly signal?: AbortSignal
   readonly tag: string
   readonly templateName: string
@@ -313,7 +312,7 @@ export const initializeTemplateApp = async (
   }
 
   // ① Target directory must not already contain files. Checked before any
-  // network access (design §2.6 step 1) and without creating the directory
+  // network access and without creating the directory
   // a later failure must not leave an empty directory.
   const existing = await readdir(directory).catch((error) => {
     if (
@@ -348,7 +347,7 @@ export const initializeTemplateApp = async (
     { ...(options.fetch === undefined ? {} : { fetch: options.fetch }) },
   )
 
-  // Decision 16: the trust-boundary warning, exactly once, immediately after
+  // The trust-boundary warning, exactly once, immediately after
   // fetch+checksum succeed and before any prompting.
   if (!pinned) {
     options.output(
@@ -375,7 +374,7 @@ export const initializeTemplateApp = async (
   const filesByPath = new Map(files.map((file) => [file.path, file.content]))
   lintTemplateFiles(manifest, filesByPath)
 
-  // Decision 6: `--set` may never provide a secret target's value; those are
+  // `--set` may never provide a secret target's value; those are
   // generated during the deploy command (`erpc deploy`), never during `init`.
   const secretPromptKeys = new Set(
     manifest.prompts
@@ -442,7 +441,7 @@ export const initializeTemplateApp = async (
 
   // ⑥/⑦ Collect var + derived answers, show the interactive summary once
   // every one of them is ready, then - only after that - resolve broker
-  // registration (design §2.5 order: var → summary → registrar).
+  // registration (order: var → summary → registrar).
   const { values, brokerRegistration } = await collectTemplateAnswers(
     manifest,
     {
@@ -488,12 +487,12 @@ export const initializeTemplateApp = async (
   // `registered` on `CollectedBrokerRegistration`) is public information the
   // user needs in order to avoid registering a second client on retry, and a
   // render failure is exactly as much "after registration already
-  // succeeded" as a write failure is. This mirrors design §2.6's ordering
-  // (registration resolves, then rendering, then writing) and its "⑦〜⑨ 間の
-  // 失敗は client_id を表示し --set APP_OIDC_CLIENT_ID=<id> で再実行" contract,
-  // even though registration itself now runs inside the combined answer-
-  // collection call above rather than as its own separately numbered step
-  // here (packet Decision 10).
+  // succeeded" as a write failure is. The order is: registration resolves,
+  // then rendering, then writing, and any failure after registration shows
+  // the client_id so the user can re-run with
+  // `--set APP_OIDC_CLIENT_ID=<id>` - even though registration itself runs
+  // inside the combined answer-collection call above rather than as its own
+  // separately numbered step here.
   try {
     const render = options.renderTemplateFiles ?? defaultRenderTemplateFiles
     const rendered = render(manifest, files, values, {
