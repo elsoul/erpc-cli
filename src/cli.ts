@@ -50,6 +50,13 @@ export interface CliDependencies {
   readonly output?: (message: string) => void
   readonly promptIO?: PromptIO
   readonly runProcess?: ProcessRunner
+  /**
+   * Forwarded into `initializeTemplateApp`'s broker-register call so a
+   * caller wiring its own cancellation (for example an `AbortController`
+   * tied to `SIGINT`) can cut short the device-flow poll instead of it
+   * running to its own timeout (packet Decision 6).
+   */
+  readonly signal?: AbortSignal
   readonly store?: RefreshTokenStore
   readonly templateRegistry?: TemplateRegistry
 }
@@ -153,10 +160,10 @@ const promptForTemplateTagAndSha256 = async (
   name: string,
 ): Promise<{ readonly sha256?: string; readonly tag: string }> => {
   // `Object.hasOwn` (not bracket access) so a template named e.g.
-  // "constructor" can't resolve through the prototype chain (steiner r1 N7).
+  // "constructor" can't resolve through the prototype chain.
   const entry = Object.hasOwn(registry, name) ? registry[name] : undefined
   const pinnedTags = entry ? Object.keys(entry.pins).sort(compareSemver) : []
-  const suggestion = pinnedTags.at(-1) // highest semver, not lexicographically last (cyan r1 N9)
+  const suggestion = pinnedTags.at(-1) // highest semver, not lexicographically last
   const tag = await promptIO.text(
     pinnedTags.length > 0
       ? `Tag for ${name} (pinned: ${pinnedTags.join(', ')})`
@@ -581,6 +588,9 @@ const executeCliCommand = async (
         output,
         promptIO,
         setValues: parsed.setValues,
+        ...(dependencies.signal === undefined
+          ? {}
+          : { signal: dependencies.signal }),
         ...(parsed.sha256 ?? interactiveSha256) === undefined
           ? {}
           : { sha256: (parsed.sha256 ?? interactiveSha256)! },
