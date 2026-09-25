@@ -95,24 +95,37 @@ Every prompt has a `key` matching `^[A-Za-z][A-Za-z0-9_]{0,63}$`; `app`,
 `^[A-Z][A-Z0-9_]*$` (upper snake case) — it becomes a Cloudflare Worker secret
 name.
 
-`derived.expr`, `broker-register.redirectUris`/`clientName`, and
-`cloudflare.kv[].title` may reference `{{app.name}}`, `{{broker.issuer}}`, and
-any **earlier, non-secret** prompt key — never a `secret-*` key, and never a key
-declared later in `prompts`. **`derived.expr` may not reference the
-`broker-register` key either way (earlier or later in `prompts`)**: broker
-registration always resolves in a single pass after every other answer, so a
-`derived` value (computed in the same pass as `var`) can never actually see it.
-Interpolation is plain string substitution; there is no expression language and
-no arbitrary code evaluation.
+`derived.expr` and `broker-register.redirectUris`/`clientName` may reference
+`{{app.name}}`, `{{broker.issuer}}`, and any **earlier, non-secret** prompt key
+— never a `secret-*` key, and never a key declared later in `prompts`.
+**`derived.expr` may not reference the `broker-register` key either way (earlier
+or later in `prompts`)**: broker registration always resolves in a single pass
+after every other answer, so a `derived` value (computed in the same pass as
+`var`) can never actually see it. Interpolation is plain string substitution;
+there is no expression language and no arbitrary code evaluation.
+
+`cloudflare.kv[].title` is narrower still: it may reference **only**
+`{{app.name}}`. Unlike `derived.expr`, a kv title is interpolated at
+`erpc deploy` time, not `erpc app init` time, and that deploy-time interpolation
+only ever fills in `{{app.name}}` — `{{broker.issuer}}` and every prompt key
+(including a `broker-register` key, which cannot resolve until after deploy-time
+interpolation would already need it) are left unresolved in a real deploy. The
+lint rejects any other reference here rather than accepting a title that could
+only ever fail at deploy time.
 
 ### `render[]` and placeholders
 
 Only files listed in `render[]` are substituted; everything else in the archive
 is copied byte-for-byte. `cloudflare.config` (the `wrangler.toml` path) must
-itself be one of the paths listed in `render[]` (L12) — the route-rule check
-below parses that file's rendered content, so a `cloudflare.config` never listed
-in `render[]` is rejected outright rather than silently skipping the route
-check. Inside a `render[]` file:
+itself be one of the paths listed in `render[]` (L12) — a file left out of
+`render[]` never gets its `{{name}}` placeholders substituted at all (they are
+copied through literally, byte-for-byte, like the rest of that file), so a
+`cloudflare.config` such as `[[routes]]\npattern = "{{domain}}"` would ship with
+the literal, unresolved text `{{domain}}` in the generated app instead of an
+actual domain. The route-rule check itself (below) reads the archive's raw
+`cloudflare.config` bytes directly, independent of `render[]` membership — it is
+`render[]` omission specifically that this L12 clause guards against. Inside a
+`render[]` file:
 
 - Every `{{name}}` must resolve to `app.name`, `broker.issuer`, a non-secret
   prompt key, or one of the two deploy-time sentinels `{{erpc:kv-id:<BINDING>}}`
