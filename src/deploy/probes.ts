@@ -79,7 +79,11 @@ const attemptHttp = async (
     try {
       body = await response.json()
     } catch {
-      return fail(`GET ${probe.path} did not return valid JSON`)
+      return fail(
+        signal.aborted
+          ? `GET ${probe.path} timed out while reading the response body`
+          : `GET ${probe.path} did not return valid JSON`,
+      )
     }
     for (const [key, expected] of Object.entries(probe.expectJson)) {
       const actual = body !== null && typeof body === 'object'
@@ -141,7 +145,9 @@ const registerOauthClient = async (
     registered = await registerResponse.json()
   } catch {
     return {
-      message: 'POST /oauth/register did not return valid JSON',
+      message: signal.aborted
+        ? 'POST /oauth/register timed out while reading the response body'
+        : 'POST /oauth/register did not return valid JSON',
       ok: false,
     }
   }

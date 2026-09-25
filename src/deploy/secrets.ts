@@ -48,17 +48,41 @@ export const encodeGeneratedSecret = (
   return toBase64Url(bytes)
 }
 
+const matchesValidate = (
+  validate: { readonly pattern: string } | undefined,
+  value: string,
+): boolean =>
+  validate === undefined ||
+  new RegExp(`^(?:${validate.pattern})$`).test(value)
+
+/**
+ * `origin` says where the value came from ("generated", "entered",
+ * "provided in ERPC_API_KEY") so the message describes what actually
+ * happened. The value itself is never part of the message.
+ */
 const validateOrThrow = (
   validate: { readonly pattern: string } | undefined,
   value: string,
   key: string,
+  origin: string,
 ): void => {
-  if (!validate) return
-  if (!new RegExp(`^(?:${validate.pattern})$`).test(value)) {
+  if (!matchesValidate(validate, value)) {
     throw new Error(
-      `The value generated for secret ${key} does not match its validate.pattern`,
+      `The value ${origin} for secret ${key} does not match its validate.pattern`,
     )
   }
+}
+
+/**
+ * A `secret-input` prompt's environment value, or `undefined` when no
+ * variable is configured, the variable is unset, or it is empty. An empty
+ * value means "not provided", never "store an empty secret": CI systems
+ * commonly expand an unregistered secret to an empty string.
+ */
+const secretInputEnvValue = (prompt: SecretInputPrompt): string | undefined => {
+  if (prompt.env === undefined) return undefined
+  const value = Deno.env.get(prompt.env)
+  return value === undefined || value.length === 0 ? undefined : value
 }
 
 export type SecretResolution =
@@ -98,14 +122,21 @@ export const blockingSecretIssues = (
       )
       continue
     }
-    if (prompt.target === 'secret-input' && (prompt.required ?? false)) {
-      const hasEnv = prompt.env !== undefined &&
-        Deno.env.get(prompt.env) !== undefined
-      if (!hasEnv) {
+    if (prompt.target === 'secret-input') {
+      const envValue = secretInputEnvValue(prompt)
+      if (envValue !== undefined) {
+        if (!matchesValidate(prompt.validate, envValue)) {
+          issues.push(
+            `${prompt.key}: the value provided in ${prompt.env} does not match its validate.pattern`,
+          )
+        }
+        continue
+      }
+      if (prompt.required ?? false) {
         issues.push(
           prompt.env === undefined
             ? `${prompt.key} is required and has no non-interactive input configured`
-            : `${prompt.key} is required; set the ${prompt.env} environment variable`,
+            : `${prompt.key} is required; set the ${prompt.env} environment variable to a non-empty value`,
         )
       }
     }
@@ -169,38 +200,36 @@ export const resolveSecretValue = async (
     if (result.code !== 0) {
       throw new Error(`The command that generates ${prompt.key} failed`)
     }
-    validateOrThrow(prompt.validate, value, prompt.key)
+    validateOrThrow(prompt.validate, value, prompt.key, 'generated')
     return { kind: 'value', value }
   }
 
-  // secret-input
+  // secret-input: an empty answer and an empty environment variable both
+  // mean "no value was provided", so an optional prompt is skipped rather
+  // than stored as an empty secret or treated as an error.
+  let value: string | undefined
+  let origin: string
   if (deps.isInteractive) {
-    const value = await deps.promptIO.secret(
+    const answer = await deps.promptIO.secret(
       prompt.question ?? `Enter a value for ${prompt.key}`,
     )
-    if (value.length === 0) {
-      throw new Error(`${prompt.key} may not be an empty value`)
-    }
-    validateOrThrow(prompt.validate, value, prompt.key)
+    value = answer.length === 0 ? undefined : answer
+    origin = 'entered'
+  } else {
+    value = secretInputEnvValue(prompt)
+    origin = prompt.env === undefined ? 'provided' : `provided in ${prompt.env}`
+  }
+  if (value !== undefined) {
+    validateOrThrow(prompt.validate, value, prompt.key, origin)
     return { kind: 'value', value }
   }
-  const envValue = prompt.env === undefined
-    ? undefined
-    : Deno.env.get(prompt.env)
-  if (envValue !== undefined) {
-    if (envValue.length === 0) {
-      throw new Error(
-        prompt.env === undefined
-          ? `${prompt.key} may not be an empty value`
-          : `${prompt.key}: environment variable ${prompt.env} may not be an empty value`,
-      )
-    }
-    validateOrThrow(prompt.validate, envValue, prompt.key)
-    return { kind: 'value', value: envValue }
-  }
   if (prompt.required ?? false) {
-    // blockingSecretIssues() must have already caught this - defensive.
-    throw new Error(`${prompt.key} is required and no value is available`)
+    // Non-interactive: blockingSecretIssues() must have already caught this.
+    throw new Error(
+      deps.isInteractive
+        ? `${prompt.key} is required; an empty value was entered`
+        : `${prompt.key} is required and no value is available`,
+    )
   }
   deps.output(
     `${prompt.key} was left unset (not required, and no value was provided).`,

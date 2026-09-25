@@ -107,6 +107,7 @@ interface TemplateManifestOptions {
   readonly includePostDeploy?: boolean
   readonly includePreflight?: boolean
   readonly minWranglerVersion?: string
+  readonly postDeploy?: readonly Record<string, unknown>[]
   readonly secretPrompts?: readonly Record<string, unknown>[]
 }
 
@@ -137,7 +138,7 @@ const templateManifestJson = (options: TemplateManifestOptions = {}): string =>
       },
     ],
     ...(options.includePostDeploy === false ? {} : {
-      postDeploy: [
+      postDeploy: options.postDeploy ?? [
         {
           kind: 'http',
           baseUrlFromVar: 'MCP_SERVER_BASE_URL',
@@ -486,6 +487,94 @@ const interactivePromptIOThatMustNotBeUsed = (): PromptIO => ({
     throw new Error('select() should not have been called')
   },
 })
+
+/**
+ * An interactive `PromptIO` that records every `secret`/`select` question
+ * and answers `secret` from `secretAnswers` in order. `select` answers with
+ * `selectAnswer` when one is given and throws otherwise; `confirm`/`text`
+ * always throw.
+ */
+const interactivePromptSpy = (
+  options: {
+    readonly secretAnswers?: readonly string[]
+    readonly selectAnswer?: string
+  } = {},
+) => {
+  const secretQuestions: string[] = []
+  const selectQuestions: string[] = []
+  const secretAnswers = [...(options.secretAnswers ?? [])]
+  const io: PromptIO = {
+    isInteractive: () => true,
+    confirm: () => {
+      throw new Error('confirm() should not have been called')
+    },
+    text: () => {
+      throw new Error('text() should not have been called')
+    },
+    secret: (question) => {
+      secretQuestions.push(question)
+      const answer = secretAnswers.shift()
+      if (answer === undefined) {
+        throw new Error(`no scripted answer for secret(): ${question}`)
+      }
+      return Promise.resolve(answer)
+    },
+    select: (question) => {
+      selectQuestions.push(question)
+      if (options.selectAnswer === undefined) {
+        throw new Error('select() should not have been called')
+      }
+      return Promise.resolve(options.selectAnswer)
+    },
+  }
+  return { io, secretQuestions, selectQuestions }
+}
+
+/** The secret names passed to `wrangler secret put`, in call order. */
+const putSecretNames = (calls: readonly ProcessRequest[]): readonly string[] =>
+  calls
+    .filter((call) =>
+      call.command === 'fake-wrangler' &&
+      withoutConfigFlag(call.args)[0] === 'secret' &&
+      withoutConfigFlag(call.args)[1] === 'put'
+    )
+    .map((call) => withoutConfigFlag(call.args)[2] ?? '')
+
+/**
+ * Rejects if `promise` has not settled within `ms`, so a regression that
+ * makes a deploy hang fails the test instead of hanging the whole run.
+ */
+const settlesWithin = async <T>(
+  promise: Promise<T>,
+  ms: number,
+): Promise<T> => {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const guard = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`did not settle within ${ms}ms`)),
+      ms,
+    )
+  })
+  try {
+    return await Promise.race([promise, guard])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/** A fetch that never answers, but rejects as soon as its signal aborts. */
+const hangUntilAborted = (init?: RequestInit): Promise<Response> =>
+  new Promise((_, reject) => {
+    const signal = init?.signal
+    if (!signal) return
+    if (signal.aborted) {
+      reject(signal.reason)
+      return
+    }
+    signal.addEventListener('abort', () => reject(signal.reason), {
+      once: true,
+    })
+  })
 
 const fixedRandom =
   (byte: number) => (bytes: Uint8Array<ArrayBuffer>): void => {
@@ -1024,44 +1113,6 @@ describe('erpc deploy --target cloudflare', () => {
     expect(output.some((line) => line.includes('Missing required'))).toBe(true)
   })
 
-  it('mutant M8 (2nd Location-origin check): the worker redirecting outside the issuer origin fails verification', async () => {
-    const project = await setupProject({
-      includeKv: false,
-      includePreflight: false,
-    })
-    const manifest = await loadManifest(project)
-    const workerRedirectsElsewhereProbeFetch: typeof fetch = (async (
-      input,
-      init,
-    ) => {
-      const url = new URL(
-        input instanceof Request ? input.url : String(input),
-      )
-      if (url.origin === WORKER_BASE && url.pathname === '/oauth/authorize') {
-        return new Response(null, {
-          status: 302,
-          headers: {
-            location: 'https://not-the-issuer.example.test/oauth/authorize',
-          },
-        })
-      }
-      return await successProbeFetch(input, init)
-    }) as typeof fetch
-
-    await expect(deployToCloudflare(manifest, {
-      erpcHome: project.erpcHome,
-      output: () => undefined,
-      promptIO: nonInteractivePromptIO(),
-      random: fixedRandom(1),
-      verifyOnly: true,
-      fetch: buildFetchStub(
-        project.archive,
-        workerRedirectsElsewhereProbeFetch,
-      ),
-      templateRegistry: pinnedRegistryFor(project.sha256),
-    })).rejects.toThrow('verification failed')
-  })
-
   it('mutant M10 (D2 build failure): a failing [build].command stops before any Cloudflare command runs', async () => {
     const project = await setupProject({
       includeKv: false,
@@ -1186,5 +1237,466 @@ describe('erpc deploy --target cloudflare', () => {
       join(project.root, 'wrangler.toml'),
     )
     expect(wranglerTomlAfter).toContain('pre-existing-kv-id')
+  })
+})
+
+describe('erpc deploy --target cloudflare: secret-input values', () => {
+  const OPTIONAL_ENV = 'ERPC_CLI_TEST_OPTIONAL_INPUT'
+  const REQUIRED_ENV = 'ERPC_CLI_TEST_REQUIRED_INPUT'
+
+  const generatedJwtSecret = {
+    key: 'JWT_SECRET',
+    target: 'secret-generate',
+    bytes: 32,
+    encoding: 'hex',
+  }
+
+  const deployWith = async (
+    project: Project,
+    fake: ReturnType<typeof createFakeWrangler>,
+    promptIO: PromptIO,
+    output: string[],
+  ): Promise<void> =>
+    await deployToCloudflare(await loadManifest(project), {
+      erpcHome: project.erpcHome,
+      output: (message) => output.push(message),
+      promptIO,
+      random: fixedRandom(1),
+      run: fake.run,
+      fetch: buildFetchStub(project.archive, successProbeFetch),
+      templateRegistry: pinnedRegistryFor(project.sha256),
+    })
+
+  const setupSecretInputProject = async (
+    input: Record<string, unknown>,
+  ): Promise<Project> =>
+    await setupProject({
+      includeKv: false,
+      includePreflight: false,
+      includePostDeploy: false,
+      requiredSecrets: input.required === true
+        ? ['JWT_SECRET', String(input.key)]
+        : ['JWT_SECRET'],
+      secretPrompts: [generatedJwtSecret, input],
+    })
+
+  it('an empty interactive answer to an optional prompt leaves the secret unset and still deploys', async () => {
+    const project = await setupSecretInputProject({
+      key: 'OPTIONAL_API_KEY',
+      target: 'secret-input',
+      required: false,
+      question: 'API key (optional)',
+    })
+    const fake = createFakeWrangler()
+    const spy = interactivePromptSpy({ secretAnswers: [''] })
+    const output: string[] = []
+
+    await deployWith(project, fake, spy.io, output)
+
+    expect(spy.secretQuestions).toEqual(['API key (optional)'])
+    expect(putSecretNames(fake.calls)).toEqual(['JWT_SECRET'])
+    expect(commandNames(fake.calls)).toContain('deploy')
+    expect(
+      output.some((line) => line.includes('OPTIONAL_API_KEY was left unset')),
+    ).toBe(true)
+  })
+
+  it('an empty environment variable for an optional prompt leaves the secret unset and still deploys', async () => {
+    setEnv(OPTIONAL_ENV, '')
+    const project = await setupSecretInputProject({
+      key: 'OPTIONAL_API_KEY',
+      target: 'secret-input',
+      required: false,
+      env: OPTIONAL_ENV,
+    })
+    const fake = createFakeWrangler()
+    const output: string[] = []
+
+    await deployWith(project, fake, nonInteractivePromptIO(), output)
+
+    expect(putSecretNames(fake.calls)).toEqual(['JWT_SECRET'])
+    expect(commandNames(fake.calls)).toContain('deploy')
+    expect(
+      output.some((line) => line.includes('OPTIONAL_API_KEY was left unset')),
+    ).toBe(true)
+  })
+
+  it('an empty environment variable for a required prompt stops before any secret is put', async () => {
+    setEnv(REQUIRED_ENV, '')
+    const project = await setupSecretInputProject({
+      key: 'REQUIRED_API_KEY',
+      target: 'secret-input',
+      required: true,
+      env: REQUIRED_ENV,
+    })
+    const fake = createFakeWrangler()
+
+    await expect(
+      deployWith(project, fake, nonInteractivePromptIO(), []),
+    ).rejects.toThrow(
+      `REQUIRED_API_KEY is required; set the ${REQUIRED_ENV} environment variable`,
+    )
+
+    expect(putSecretNames(fake.calls)).toEqual([])
+    expect(commandNames(fake.calls)).not.toContain('deploy')
+  })
+
+  it('an empty interactive answer to a required prompt stops without putting that secret', async () => {
+    const project = await setupSecretInputProject({
+      key: 'REQUIRED_API_KEY',
+      target: 'secret-input',
+      required: true,
+    })
+    const fake = createFakeWrangler()
+    const spy = interactivePromptSpy({ secretAnswers: [''] })
+
+    await expect(deployWith(project, fake, spy.io, [])).rejects.toThrow(
+      'REQUIRED_API_KEY is required',
+    )
+
+    expect(putSecretNames(fake.calls)).not.toContain('REQUIRED_API_KEY')
+    expect(commandNames(fake.calls)).not.toContain('deploy')
+  })
+
+  it('an interactive answer that does not match validate.pattern stops without putting that secret', async () => {
+    const project = await setupSecretInputProject({
+      key: 'OPTIONAL_API_KEY',
+      target: 'secret-input',
+      required: false,
+      validate: { pattern: '[a-z]{8}' },
+    })
+    const fake = createFakeWrangler()
+    const spy = interactivePromptSpy({ secretAnswers: ['NOT-VALID-VALUE'] })
+
+    let caught: unknown
+    try {
+      await deployWith(project, fake, spy.io, [])
+    } catch (error) {
+      caught = error
+    }
+
+    expect(caught).toBeInstanceOf(Error)
+    expect((caught as Error).message).toContain(
+      'The value entered for secret OPTIONAL_API_KEY does not match its validate.pattern',
+    )
+    expect((caught as Error).message).not.toContain('NOT-VALID-VALUE')
+    expect(putSecretNames(fake.calls)).not.toContain('OPTIONAL_API_KEY')
+    expect(commandNames(fake.calls)).not.toContain('deploy')
+  })
+
+  it('an environment value that does not match validate.pattern stops before any secret is put', async () => {
+    setEnv(OPTIONAL_ENV, 'NOT-VALID-VALUE')
+    const project = await setupSecretInputProject({
+      key: 'OPTIONAL_API_KEY',
+      target: 'secret-input',
+      required: false,
+      env: OPTIONAL_ENV,
+      validate: { pattern: '[a-z]{8}' },
+    })
+    const fake = createFakeWrangler()
+
+    let caught: unknown
+    try {
+      await deployWith(project, fake, nonInteractivePromptIO(), [])
+    } catch (error) {
+      caught = error
+    }
+
+    expect(caught).toBeInstanceOf(Error)
+    expect((caught as Error).message).toContain(
+      `OPTIONAL_API_KEY: the value provided in ${OPTIONAL_ENV} does not match its validate.pattern`,
+    )
+    expect((caught as Error).message).not.toContain('NOT-VALID-VALUE')
+    expect(putSecretNames(fake.calls)).toEqual([])
+    expect(commandNames(fake.calls)).not.toContain('deploy')
+  })
+
+  it('a non-empty environment value that matches validate.pattern is put through stdin', async () => {
+    setEnv(OPTIONAL_ENV, 'abcdefgh')
+    const project = await setupSecretInputProject({
+      key: 'OPTIONAL_API_KEY',
+      target: 'secret-input',
+      required: false,
+      env: OPTIONAL_ENV,
+      validate: { pattern: '[a-z]{8}' },
+    })
+    const fake = createFakeWrangler()
+
+    await deployWith(project, fake, nonInteractivePromptIO(), [])
+
+    expect(putSecretNames(fake.calls)).toEqual([
+      'JWT_SECRET',
+      'OPTIONAL_API_KEY',
+    ])
+    const put = fake.calls.find((call) =>
+      withoutConfigFlag(call.args)[2] === 'OPTIONAL_API_KEY'
+    )
+    expect(put?.input).toBe('abcdefgh')
+    expect(put?.args.includes('abcdefgh')).toBe(false)
+  })
+})
+
+describe('erpc deploy --target cloudflare: --yes, probe timeouts, and redirect origins', () => {
+  const TWO_ACCOUNTS = [
+    { id: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', name: 'First Account' },
+    { id: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', name: 'Second Account' },
+  ] as const
+
+  it('--yes with a terminal attached never asks which account to use', async () => {
+    setEnv('CLOUDFLARE_ACCOUNT_ID', undefined)
+    const project = await setupProject({
+      includeKv: false,
+      includePreflight: false,
+      includePostDeploy: false,
+    })
+    const manifest = await loadManifest(project)
+    const fake = createFakeWrangler({ accounts: TWO_ACCOUNTS })
+    const spy = interactivePromptSpy({ selectAnswer: TWO_ACCOUNTS[0].id })
+
+    await expect(deployToCloudflare(manifest, {
+      erpcHome: project.erpcHome,
+      noProvision: true,
+      output: () => undefined,
+      promptIO: spy.io,
+      random: fixedRandom(1),
+      run: fake.run,
+      fetch: buildFetchStub(project.archive, successProbeFetch),
+      templateRegistry: pinnedRegistryFor(project.sha256),
+      yes: true,
+    })).rejects.toThrow('Multiple Cloudflare accounts are available')
+
+    expect(spy.selectQuestions).toEqual([])
+  })
+
+  it('without --yes, the same terminal session asks which account to use', async () => {
+    setEnv('CLOUDFLARE_ACCOUNT_ID', undefined)
+    const project = await setupProject({
+      includeKv: false,
+      includePreflight: false,
+      includePostDeploy: false,
+    })
+    const manifest = await loadManifest(project)
+    const fake = createFakeWrangler({ accounts: TWO_ACCOUNTS })
+    const spy = interactivePromptSpy({ selectAnswer: TWO_ACCOUNTS[1].id })
+
+    // --no-provision then stops at the missing required JWT_SECRET, after
+    // the account choice has already been made and written.
+    await expect(deployToCloudflare(manifest, {
+      erpcHome: project.erpcHome,
+      noProvision: true,
+      output: () => undefined,
+      promptIO: spy.io,
+      random: fixedRandom(1),
+      run: fake.run,
+      fetch: buildFetchStub(project.archive, successProbeFetch),
+      templateRegistry: pinnedRegistryFor(project.sha256),
+    })).rejects.toThrow('JWT_SECRET')
+
+    expect(spy.selectQuestions).toHaveLength(1)
+    expect(await Deno.readTextFile(join(project.root, 'wrangler.toml')))
+      .toContain(`account_id = "${TWO_ACCOUNTS[1].id}"`)
+  })
+
+  it('--yes with a terminal attached and no wrangler session stops without running wrangler login', async () => {
+    setEnv('CLOUDFLARE_API_TOKEN', undefined)
+    const project = await setupProject({
+      includeKv: false,
+      includePreflight: false,
+      includePostDeploy: false,
+    })
+    const manifest = await loadManifest(project)
+    const fake = createFakeWrangler({ whoamiOk: false })
+
+    await expect(deployToCloudflare(manifest, {
+      erpcHome: project.erpcHome,
+      noProvision: true,
+      output: () => undefined,
+      promptIO: interactivePromptIOThatMustNotBeUsed(),
+      random: fixedRandom(1),
+      run: fake.run,
+      fetch: buildFetchStub(project.archive, successProbeFetch),
+      templateRegistry: pinnedRegistryFor(project.sha256),
+      yes: true,
+    })).rejects.toThrow('--yes turns off interactive prompts')
+
+    expect(
+      fake.calls.some((call) => withoutConfigFlag(call.args)[0] === 'login'),
+    ).toBe(false)
+  })
+
+  it('an http probe whose request never answers fails once [health].timeout_seconds has passed', async () => {
+    const project = await setupProject({
+      includeKv: false,
+      includePreflight: false,
+    })
+    const manifest = await loadManifest(project)
+    const probeFetch: typeof fetch = (async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input))
+      if (url.origin === WORKER_BASE && url.pathname === '/health') {
+        return await hangUntilAborted(init)
+      }
+      return await successProbeFetch(input, init)
+    }) as typeof fetch
+
+    const startedAt = Date.now()
+    await expect(settlesWithin(
+      deployToCloudflare(manifest, {
+        erpcHome: project.erpcHome,
+        output: () => undefined,
+        promptIO: nonInteractivePromptIO(),
+        random: fixedRandom(1),
+        verifyOnly: true,
+        fetch: buildFetchStub(project.archive, probeFetch),
+        templateRegistry: pinnedRegistryFor(project.sha256),
+      }),
+      5000,
+    )).rejects.toThrow('GET /health failed')
+    expect(Date.now() - startedAt < 4000).toBe(true)
+  })
+
+  it('an OAuth client registration request that never answers fails once [health].timeout_seconds has passed', async () => {
+    const project = await setupProject({
+      includeKv: false,
+      includePreflight: false,
+    })
+    const manifest = await loadManifest(project)
+    let registerCalls = 0
+    const probeFetch: typeof fetch = (async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input))
+      if (url.origin === WORKER_BASE && url.pathname === '/oauth/register') {
+        registerCalls++
+        return await hangUntilAborted(init)
+      }
+      return await successProbeFetch(input, init)
+    }) as typeof fetch
+
+    const startedAt = Date.now()
+    await expect(settlesWithin(
+      deployToCloudflare(manifest, {
+        erpcHome: project.erpcHome,
+        output: () => undefined,
+        promptIO: nonInteractivePromptIO(),
+        random: fixedRandom(1),
+        verifyOnly: true,
+        fetch: buildFetchStub(project.archive, probeFetch),
+        templateRegistry: pinnedRegistryFor(project.sha256),
+      }),
+      5000,
+    )).rejects.toThrow('POST /oauth/register failed')
+    expect(Date.now() - startedAt < 4000).toBe(true)
+    expect(registerCalls).toBe(1)
+  })
+
+  it('a response body that stops arriving is reported as a timeout, not as invalid JSON', async () => {
+    const project = await setupProject({
+      includeKv: false,
+      includePreflight: false,
+      postDeploy: [
+        {
+          kind: 'http',
+          baseUrlFromVar: 'MCP_SERVER_BASE_URL',
+          path: '/health',
+          expectStatus: 200,
+          expectJson: { ok: true },
+        },
+      ],
+    })
+    const manifest = await loadManifest(project)
+    const probeFetch: typeof fetch = (async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input))
+      if (url.origin === WORKER_BASE && url.pathname === '/health') {
+        const signal = init?.signal
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(textEncoder.encode('{"ok":'))
+            signal?.addEventListener(
+              'abort',
+              () => controller.error(signal.reason),
+              { once: true },
+            )
+          },
+        })
+        return new Response(body, { status: 200 })
+      }
+      return await successProbeFetch(input, init)
+    }) as typeof fetch
+
+    await expect(settlesWithin(
+      deployToCloudflare(manifest, {
+        erpcHome: project.erpcHome,
+        output: () => undefined,
+        promptIO: nonInteractivePromptIO(),
+        random: fixedRandom(1),
+        verifyOnly: true,
+        fetch: buildFetchStub(project.archive, probeFetch),
+        templateRegistry: pinnedRegistryFor(project.sha256),
+      }),
+      5000,
+    )).rejects.toThrow('GET /health timed out while reading the response body')
+  })
+
+  it('the issuer redirecting to /oauth/consent on a different origin fails verification', async () => {
+    const project = await setupProject({
+      includeKv: false,
+      includePreflight: false,
+    })
+    const manifest = await loadManifest(project)
+
+    await expect(deployToCloudflare(manifest, {
+      erpcHome: project.erpcHome,
+      output: () => undefined,
+      promptIO: nonInteractivePromptIO(),
+      random: fixedRandom(1),
+      verifyOnly: true,
+      fetch: buildFetchStub(
+        project.archive,
+        brokerBadRedirectProbeFetch(
+          'https://not-the-issuer.example.test/oauth/consent?txn=abc123',
+        ),
+      ),
+      templateRegistry: pinnedRegistryFor(project.sha256),
+    })).rejects.toThrow('the issuer redirected somewhere unexpected')
+  })
+
+  it('the worker redirecting outside the issuer origin fails verification without requesting that origin', async () => {
+    const project = await setupProject({
+      includeKv: false,
+      includePreflight: false,
+    })
+    const manifest = await loadManifest(project)
+    const OTHER_ORIGIN = 'https://not-the-issuer.example.test'
+    const otherOriginRequests: string[] = []
+    const probeFetch: typeof fetch = (async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input))
+      if (url.origin === WORKER_BASE && url.pathname === '/oauth/authorize') {
+        return new Response(null, {
+          status: 302,
+          headers: { location: `${OTHER_ORIGIN}/oauth/authorize` },
+        })
+      }
+      if (url.origin === OTHER_ORIGIN) {
+        // If it were ever requested, this host would bounce straight to the
+        // issuer's consent page, so only the worker-side origin check can
+        // catch the redirect.
+        otherOriginRequests.push(url.toString())
+        return new Response(null, {
+          status: 302,
+          headers: { location: `${ISSUER}/oauth/consent?txn=abc123` },
+        })
+      }
+      return await successProbeFetch(input, init)
+    }) as typeof fetch
+
+    await expect(deployToCloudflare(manifest, {
+      erpcHome: project.erpcHome,
+      output: () => undefined,
+      promptIO: nonInteractivePromptIO(),
+      random: fixedRandom(1),
+      verifyOnly: true,
+      fetch: buildFetchStub(project.archive, probeFetch),
+      templateRegistry: pinnedRegistryFor(project.sha256),
+    })).rejects.toThrow('redirected outside the issuer origin')
+
+    expect(otherOriginRequests).toEqual([])
   })
 })

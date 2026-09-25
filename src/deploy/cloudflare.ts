@@ -160,6 +160,8 @@ interface AccountResolution {
 const resolveCloudflareAccount = async (params: {
   readonly dryRun: boolean
   readonly isInteractive: boolean
+  /** Why prompts are off when `isInteractive` is false, for the error text. */
+  readonly nonInteractiveReason: string
   readonly promptIO: PromptIO
   readonly root: string
   readonly run: ProcessRunner
@@ -182,7 +184,7 @@ const resolveCloudflareAccount = async (params: {
     }
     if (!params.isInteractive) {
       throw new Error(
-        'wrangler is not authenticated and no terminal is available for `wrangler login`. ' +
+        `wrangler is not authenticated and \`wrangler login\` cannot run here (${params.nonInteractiveReason}). ` +
           'Set CLOUDFLARE_API_TOKEN, or run `wrangler login` first.',
       )
     }
@@ -466,7 +468,8 @@ export const deployToCloudflare = async (
   // `--yes` forces the non-interactive path even with a TTY attached - the
   // same contract `initializeTemplateApp` uses for `erpc app init --template`
   // (Decision Q2/6; packet review B2/cyan B2).
-  const isInteractive = !(options.yes ?? false) && promptIO.isInteractive()
+  const yes = options.yes ?? false
+  const isInteractive = !yes && promptIO.isInteractive()
   const root = manifest.projectRoot
   const wrangler = manifest.cloudflare.wrangler
   const wranglerConfigPath = resolve(root, manifest.cloudflare.config)
@@ -533,6 +536,9 @@ export const deployToCloudflare = async (
   const { accountEnv } = await resolveCloudflareAccount({
     dryRun: options.dryRun ?? false,
     isInteractive,
+    nonInteractiveReason: yes
+      ? '--yes turns off interactive prompts'
+      : 'no terminal is available',
     promptIO,
     root,
     run,
