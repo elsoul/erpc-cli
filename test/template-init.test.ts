@@ -893,6 +893,72 @@ describe('initializeTemplateApp', () => {
     expect(promptIO.informed[0]).toContain('JWT_SECRET')
   })
 
+  it('B5: distinguishes a secret-input prompt from a generated secret in the interactive summary (packet Decision 6, mutant MR12)', async () => {
+    // `buildFixtureArchive` has no `secret-input` prompt (only
+    // `secret-generate`), so its summary never exercises the "prompted for"
+    // branch of `summaryText` - a bespoke manifest is needed to reach it.
+    const manifestJsonText = JSON.stringify({
+      schemaVersion: 1,
+      name: 'fixture-template',
+      runtime: 'cloudflare-worker',
+      minCliVersion: '0.1.0',
+      cloudflare: {
+        config: 'wrangler.toml',
+        wrangler: ['pnpm', 'exec', 'wrangler'],
+      },
+      render: [{ path: 'wrangler.toml', format: 'text' }],
+      prompts: [
+        {
+          key: 'JWT_SECRET',
+          target: 'secret-generate',
+          bytes: 32,
+          encoding: 'base64url',
+        },
+        {
+          key: 'THIRD_PARTY_API_KEY',
+          target: 'secret-input',
+          question: 'Third-party API key',
+        },
+      ],
+    })
+    const archive = await tarGzFromInputs([
+      fileInput('erpc-template.json', manifestJsonText),
+      fileInput('wrangler.toml', 'name = "{{app.name}}"\n'),
+    ])
+    const sha256 = await sha256Hex(archive)
+    const parent = await temporaryDirectory('erpc-template-init-b5-input-')
+    const promptIO = spyPromptIO(true)
+
+    await initializeTemplateApp({
+      directory: join(parent, 'app'),
+      erpcHome: join(parent, '.erpc'),
+      templateName: 'fixture-template',
+      templateRegistry: registryWith(sha256),
+      tag: 'v0.1.0',
+      setValues: new Map(),
+      yes: false,
+      output: () => {},
+      fetch: fetchStubFor(archive).fetch,
+      promptIO,
+    })
+
+    expect(promptIO.informed).toHaveLength(1)
+    const summary = promptIO.informed[0]!
+    expect(summary).toContain("Secrets generated during 'erpc deploy'")
+    expect(summary).toContain('JWT_SECRET')
+    expect(summary).toContain("Secrets prompted for during 'erpc deploy'")
+    expect(summary).toContain('THIRD_PARTY_API_KEY')
+    // Each key must appear only under its own heading, not both.
+    const generatedLine = summary.split('\n').find((line) =>
+      line.includes("generated during 'erpc deploy'")
+    )!
+    const promptedLine = summary.split('\n').find((line) =>
+      line.includes("prompted for during 'erpc deploy'")
+    )!
+    expect(generatedLine).not.toContain('THIRD_PARTY_API_KEY')
+    expect(promptedLine).not.toContain('JWT_SECRET')
+  })
+
   it('shows the interactive summary before calling the registrar, not after (packet Decision 6)', async () => {
     const archive = await buildFixtureArchive({ withBroker: true })
     const sha256 = await sha256Hex(archive)
