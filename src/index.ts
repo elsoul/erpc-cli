@@ -44,8 +44,10 @@ export {
   type InitializedApp,
 } from './app/init.ts'
 export {
+  type CloudflareWorkerManifest,
   type ErpcManifest,
   findErpcManifest,
+  loadAnyErpcManifest,
   loadErpcManifest,
 } from './app/manifest.ts'
 export {
@@ -57,7 +59,75 @@ export {
   type AppRuntime,
   type AppTemplate,
   createAppTemplate,
+  MANIFEST_RUNTIMES,
+  type ManifestRuntime,
 } from './app/templates.ts'
+export {
+  isValidSha256Hex,
+  isValidTemplateName,
+  isValidTemplateTag,
+  parseTemplateRef,
+  type TemplateRef,
+} from './app/template-ref.ts'
+export {
+  resolveExpectedSha256,
+  resolveTemplateRegistryEntry,
+  TEMPLATE_REGISTRY,
+  type TemplateRegistry,
+  type TemplateRegistryEntry,
+  type TemplateSource,
+} from './app/template-registry.ts'
+export {
+  obtainVerifiedTemplateArchive,
+  sha256Hex,
+  TEMPLATE_ARCHIVE_MAX_BYTES,
+  templateAssetUrl,
+} from './app/template-fetch.ts'
+export {
+  type ExtractedTemplateArchive,
+  type ExtractedTemplateFile,
+  extractTemplateArchive,
+  TEMPLATE_ARCHIVE_MAX_ENTRIES,
+  TEMPLATE_ARCHIVE_MAX_EXTRACTED_BYTES,
+} from './app/template-archive.ts'
+export {
+  isKnownTemplateSentinel,
+  isPromptRequired,
+  isSecretPromptTarget,
+  lintTemplateFiles,
+  parseTemplateManifest,
+  requiredSecretKeys,
+  SECRET_PROMPT_TARGETS,
+  type SecretPromptTarget,
+  type TemplateManifest,
+  TemplateManifestError,
+  templateManifestSchema,
+  type TemplatePrompt,
+} from './app/template-manifest.ts'
+export {
+  type CollectedTemplateAnswers,
+  collectTemplateAnswers,
+  TemplateAnswersError,
+} from './app/template-answers.ts'
+export {
+  type RenderedTemplateFile,
+  renderTemplateFiles,
+  tomlBasicString,
+} from './app/template-render.ts'
+export { defaultPromptIO, type PromptIO } from './app/prompt-io.ts'
+export {
+  promptForRuntime,
+  promptForTemplateOrRuntime,
+  type TemplateOrRuntimeChoice,
+} from './app/prompt.ts'
+export {
+  defaultOidcClientRegistrar,
+  type InitializedTemplateApp,
+  initializeTemplateApp,
+  type InitializeTemplateAppOptions,
+  type OidcClientRegistrar,
+  unsupportedOidcClientRegistrar,
+} from './app/template-init.ts'
 export {
   type BuildArtifact,
   buildForDeployment,
