@@ -6,11 +6,14 @@
 // or a redirect_uri mismatch gets a 400 with no Location instead - contract
 // D-2 3.), so the probe stops the instant it has observed that chain.
 //
-// DCR registration (`POST /oauth/register`) happens at most once per probe
-// run, even across retries: the worker persists one client row per
-// registration, and retrying the whole chain on every backoff attempt would
-// leave one new row per attempt - only the PKCE authorize/follow step is
-// retried once a client id is in hand.
+// Once a DCR registration (`POST /oauth/register`) succeeds, its client id is
+// reused for every later attempt in the same probe run: the worker persists
+// one client row per successful registration, and repeating it on every
+// backoff attempt would leave one new row per attempt - only the PKCE
+// authorize/follow step is retried once a client id is in hand. A
+// registration that fails (a 503, say) is retried on the next attempt, so one
+// probe run can POST more than once, but no more than one of those POSTs
+// succeeds.
 
 import { encodeBase64 } from '@std/encoding/base64'
 import type { TemplateManifest } from '../app/template-manifest.ts'
@@ -110,7 +113,7 @@ type RegisterResult =
   | { readonly clientId: string; readonly ok: true }
   | { readonly message: string; readonly ok: false }
 
-/** `POST /oauth/register` - called at most once per probe run (see file header). */
+/** `POST /oauth/register` - repeated on later attempts only until one succeeds (see file header). */
 const registerOauthClient = async (
   base: string,
   options: PostDeployProbeOptions,
@@ -261,7 +264,8 @@ const attemptAuthorize = async (
 /**
  * Builds one retryable attempt function for an `oauth-authorize-redirect`
  * probe. The returned closure remembers a successful `clientId` across
- * calls, so `withBackoff` retrying it never re-registers (file header).
+ * calls, so `withBackoff` retrying it never registers again after a
+ * registration has succeeded (file header).
  */
 const oauthAuthorizeRedirectAttempt = (
   probe: OauthProbe,

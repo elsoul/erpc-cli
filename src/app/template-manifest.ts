@@ -327,15 +327,13 @@ const lintTemplateManifest = (manifest: TemplateManifest): void => {
     }
     if (!isSecretPromptTarget(prompt.target)) nonSecretKeysSoFar.add(prompt.key)
   }
-  // `cloudflare.kv[].title` is only ever interpolated at deploy time, and
-  // only with `{{app.name}}` - `{{broker.issuer}}` and every prompt key
-  // (including a non-secret one that a template author might expect, and a
-  // `broker-register` key in particular, which cannot resolve until *after*
-  // deploy-time interpolation would already need it) are all left literally
-  // unresolved in the title a template author would see. Restricting this to
-  // `app.name` alone (packet Decision 5(iii)) keeps the lint's accepted shape
-  // matching what the deploy step can actually fill in, instead of accepting
-  // references that can only ever fail later.
+  // `cloudflare.kv[].title` is interpolated by `erpc deploy`, not by
+  // `erpc app init`, and the deploy step substitutes only `{{app.name}}` in
+  // it. Other init answers do reach deploy (through `erpc.toml` and the
+  // rendered files), but the kv title step does not look them up, so any
+  // other reference would stay a literal `{{...}}` in the namespace title.
+  // Restricting the lint to `app.name` keeps what it accepts matching what
+  // the deploy step can fill in.
   for (const kv of manifest.cloudflare.kv ?? []) {
     for (const name of extractPlaceholderNames(kv.title)) {
       if (name === 'app.name') continue

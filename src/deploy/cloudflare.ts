@@ -281,12 +281,11 @@ const resolveCloudflareAccount = async (params: {
 }
 
 /**
- * `cloudflare.kv[].title` is only ever interpolated with `{{app.name}}` -
+ * `cloudflare.kv[].title` is only ever interpolated with `{{app.name}}`, and
  * `erpc-template.json`'s own lint (`template-manifest.ts` L2) rejects any
- * other placeholder in a kv title precisely because nothing else is
- * resolvable at this point (packet Decision 5(iii)), so an unresolved `{{`
- * remaining here means the archive re-fetched in D0 disagrees with what
- * passed lint at init time. The lint trims whitespace inside `{{ }}` when it
+ * other placeholder in a kv title because this step substitutes nothing
+ * else, so an unresolved `{{` remaining here means the archive re-fetched in
+ * D0 disagrees with what passed lint at init time. The lint trims whitespace inside `{{ }}` when it
  * compares names (`extractPlaceholderNames`), so `{{ app.name }}` passes
  * lint too - this matches that with the same tolerance instead of only
  * accepting the exact byte sequence `{{app.name}}`.
