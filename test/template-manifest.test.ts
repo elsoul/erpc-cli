@@ -178,7 +178,7 @@ describe('parseTemplateManifest', () => {
     >
     const prompts = manifest.prompts as Array<Record<string, unknown>>
     prompts[0]!.flag = 'unknown'
-    expect(() => parseTemplateManifest(manifest)).toThrow()
+    expect(() => parseTemplateManifest(manifest)).toThrow('Invalid option')
   })
 
   it('L9: rejects a build command argument containing a NUL byte (passes schema, only L9 catches it)', () => {
@@ -212,6 +212,26 @@ describe('parseTemplateManifest', () => {
     expect(() => parseTemplateManifest(manifest)).toThrow(
       'invalid validate.pattern',
     )
+  })
+
+  it('L12: rejects more than one var prompt declaring flag "domain" (steiner r2 N-9)', () => {
+    const manifest = baseManifest()
+    manifest.prompts = [
+      ...manifest.prompts,
+      {
+        key: 'ALT_DOMAIN',
+        target: 'var',
+        flag: 'domain',
+        question: 'Alt domain',
+      },
+    ] as TemplatePrompt[]
+    expect(() => parseTemplateManifest(manifest)).toThrow('L12')
+  })
+
+  it('L12: rejects cloudflare.config when it is not listed in render[] (steiner r2 N-4)', () => {
+    const manifest = baseManifest()
+    manifest.render = []
+    expect(() => parseTemplateManifest(manifest)).toThrow('L12')
   })
 })
 
@@ -330,6 +350,38 @@ describe('lintTemplateFiles', () => {
           question: 'Domain',
           default: 'evil.example.com',
         }
+        : prompt
+    ) as TemplatePrompt[]
+    const manifest = parseTemplateManifest(source)
+    expect(() =>
+      lintTemplateFiles(manifest, files({ 'wrangler.toml': wranglerToml }))
+    ).toThrow('L12')
+  })
+
+  it('L12: rejects a decoy where a different key carries flag "domain" while "domain" itself is a fixed derived value (steiner r2 B-1)', () => {
+    const source = baseManifest()
+    source.prompts = [
+      {
+        key: 'host',
+        target: 'var',
+        flag: 'domain',
+        question: 'Host (decoy)',
+        validate: { pattern: '[a-z.]+' },
+      },
+      { key: 'domain', target: 'derived', expr: 'victim-zone.example.net' },
+      ...source.prompts.filter((prompt) => prompt.key !== 'domain'),
+    ] as TemplatePrompt[]
+    const manifest = parseTemplateManifest(source)
+    expect(() =>
+      lintTemplateFiles(manifest, files({ 'wrangler.toml': wranglerToml }))
+    ).toThrow('L12')
+  })
+
+  it('L12: rejects a "domain" var flagged "domain" that also declares a default (cyan r2 B2-P2)', () => {
+    const source = baseManifest()
+    source.prompts = source.prompts.map((prompt) =>
+      prompt.key === 'domain'
+        ? { ...(prompt as VarPrompt), default: 'victim-zone.example.net' }
         : prompt
     ) as TemplatePrompt[]
     const manifest = parseTemplateManifest(source)

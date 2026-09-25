@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { TarStream, type TarStreamInput } from '@std/tar'
@@ -10,7 +10,10 @@ import { tomlBasicString } from '../src/app/template-render.ts'
 import { runCli } from '../src/cli.ts'
 import type { PromptIO } from '../src/app/prompt-io.ts'
 import type { TemplateRegistry } from '../src/app/template-registry.ts'
-import type { OidcClientRegistrar } from '../src/app/template-init.ts'
+import type {
+  OidcClientRegistrar,
+  WriteFileFunction,
+} from '../src/app/template-init.ts'
 
 const textEncoder = new TextEncoder()
 
@@ -593,9 +596,50 @@ describe('initializeTemplateApp', () => {
     const archive = await buildFixtureArchive({ withBroker: true })
     const sha256 = await sha256Hex(archive)
     const parent = await temporaryDirectory('erpc-template-init-b1-')
-    const unwritable = join(parent, 'unwritable')
-    await mkdir(unwritable, { recursive: true })
-    const directory = join(unwritable, 'app')
+    const directory = join(parent, 'app')
+    const output: string[] = []
+    let registrarCalls = 0
+    const registrar: OidcClientRegistrar = {
+      register: () => {
+        registrarCalls++
+        return Promise.resolve({ clientId: 'app_1234567890123456789012' })
+      },
+    }
+    // An injected write failure rather than a chmod'd read-only directory:
+    // running as root (which ignores permission bits) would otherwise make
+    // this test flaky (steiner r2 N-8).
+    const failingWriteFile: WriteFileFunction = () => {
+      throw new Error('injected write failure')
+    }
+
+    await expect(
+      initializeTemplateApp({
+        directory,
+        erpcHome: join(parent, '.erpc'),
+        templateName: 'fixture-template',
+        templateRegistry: registryWith(sha256), // pinned: trust is automatic
+        tag: 'v0.1.0',
+        setValues: new Map([['domain', 'example.com'], ['LABEL', 'x']]),
+        yes: true,
+        output: (message) => output.push(message),
+        fetch: fetchStubFor(archive).fetch,
+        oidcRegistrar: registrar,
+        writeFile: failingWriteFile,
+      }),
+    ).rejects.toThrow('injected write failure')
+
+    expect(registrarCalls).toBe(1)
+    const clientIdMessages = output.filter((message) =>
+      message.includes('app_1234567890123456789012')
+    )
+    expect(clientIdMessages).toHaveLength(1)
+    expect(clientIdMessages[0]).toContain('--set APP_OIDC_CLIENT_ID=')
+  })
+
+  it('B-3: shows the client_id if *rendering* fails after broker registration already succeeded', async () => {
+    const archive = await buildFixtureArchive({ withBroker: true })
+    const sha256 = await sha256Hex(archive)
+    const parent = await temporaryDirectory('erpc-template-init-b3-render-')
     const output: string[] = []
     let registrarCalls = 0
     const registrar: OidcClientRegistrar = {
@@ -605,32 +649,93 @@ describe('initializeTemplateApp', () => {
       },
     }
 
-    await chmod(unwritable, 0o500) // read + execute only: mkdir(directory) will fail with EACCES
-    try {
-      await expect(
-        initializeTemplateApp({
-          directory,
-          erpcHome: join(parent, '.erpc'),
-          templateName: 'fixture-template',
-          templateRegistry: registryWith(sha256), // pinned: trust is automatic
-          tag: 'v0.1.0',
-          setValues: new Map([['domain', 'example.com'], ['LABEL', 'x']]),
-          yes: true,
-          output: (message) => output.push(message),
-          fetch: fetchStubFor(archive).fetch,
-          oidcRegistrar: registrar,
-        }),
-      ).rejects.toThrow()
-    } finally {
-      await chmod(unwritable, 0o700) // let afterEach's rm clean up
-    }
+    await expect(
+      initializeTemplateApp({
+        directory: join(parent, 'app'),
+        erpcHome: join(parent, '.erpc'),
+        templateName: 'fixture-template',
+        templateRegistry: registryWith(sha256),
+        tag: 'v0.1.0',
+        setValues: new Map([['domain', 'example.com'], ['LABEL', 'x']]),
+        yes: true,
+        output: (message) => output.push(message),
+        fetch: fetchStubFor(archive).fetch,
+        oidcRegistrar: registrar,
+        renderTemplateFiles: () => {
+          throw new Error('injected render failure')
+        },
+      }),
+    ).rejects.toThrow('injected render failure')
 
     expect(registrarCalls).toBe(1)
     const clientIdMessages = output.filter((message) =>
       message.includes('app_1234567890123456789012')
     )
     expect(clientIdMessages).toHaveLength(1)
-    expect(clientIdMessages[0]).toContain('--set APP_OIDC_CLIENT_ID=')
+  })
+
+  it('B-3: does not call the registrar when a var declared after broker-register is missing', async () => {
+    const manifestJsonText = JSON.stringify({
+      schemaVersion: 1,
+      name: 'fixture-template',
+      runtime: 'cloudflare-worker',
+      minCliVersion: '0.1.0',
+      cloudflare: {
+        config: 'wrangler.toml',
+        wrangler: ['pnpm', 'exec', 'wrangler'],
+      },
+      broker: { issuer: 'https://broker.example.com' },
+      render: [{ path: 'wrangler.toml', format: 'text' }],
+      prompts: [
+        {
+          key: 'APP_OIDC_CLIENT_ID',
+          target: 'broker-register',
+          redirectUris: ['https://example.com/callback'],
+          clientName: '{{app.name}}',
+        },
+        // Declared AFTER broker-register: with the registration call
+        // deferred to a single pass over the whole manifest, this missing
+        // answer must still prevent the registrar from ever being called
+        // (steiner r2 B-3).
+        { key: 'LATER_REQUIRED', target: 'var', question: 'A later value' },
+      ],
+    })
+    const archive = await tarGzFromInputs([
+      fileInput('erpc-template.json', manifestJsonText),
+      fileInput('wrangler.toml', 'name = "{{app.name}}"\n'),
+    ])
+    const sha256 = await sha256Hex(archive)
+    const parent = await temporaryDirectory('erpc-template-init-b3-later-')
+    let registrarCalls = 0
+    const registrar: OidcClientRegistrar = {
+      register: () => {
+        registrarCalls++
+        return Promise.resolve({ clientId: 'app_1234567890123456789012' })
+      },
+    }
+
+    let observed: unknown
+    try {
+      await initializeTemplateApp({
+        directory: join(parent, 'app'),
+        erpcHome: join(parent, '.erpc'),
+        templateName: 'fixture-template',
+        templateRegistry: registryWith(sha256), // pinned: trust is automatic
+        tag: 'v0.1.0',
+        setValues: new Map(), // LATER_REQUIRED missing
+        yes: true,
+        output: () => {},
+        fetch: fetchStubFor(archive).fetch,
+        oidcRegistrar: registrar,
+      })
+    } catch (error) {
+      observed = error
+    }
+    const message = observed instanceof Error
+      ? observed.message
+      : String(observed)
+    expect(message).toContain('LATER_REQUIRED')
+    expect(registrarCalls).toBe(0)
   })
 
   it('B4: lists a missing var alongside an untrusted broker issuer in the same error', async () => {
@@ -647,7 +752,7 @@ describe('initializeTemplateApp', () => {
         wrangler: ['pnpm', 'exec', 'wrangler'],
       },
       broker: { issuer: 'https://broker.example.com' },
-      render: [],
+      render: [{ path: 'wrangler.toml', format: 'text' }],
       prompts: [
         { key: 'REQUIRED_LABEL', target: 'var', question: 'A label' },
         {
@@ -735,6 +840,268 @@ describe('initializeTemplateApp', () => {
     })
 
     expect(promptIO.informed).toHaveLength(0)
+  })
+
+  it('B-2: lists a missing domain alongside an untrusted broker issuer when redirectUris depends on {{domain}}', async () => {
+    // Unlike the B4 fixture above, this uses the real shape (redirectUris:
+    // ["https://{{domain}}/oauth/callback"]) so the trust check must run
+    // even though interpolating redirectUris would otherwise fail for the
+    // same reason domain is missing (steiner r2 B-2, cyan r2 B3).
+    const archive = await buildFixtureArchive({ withBroker: true })
+    const sha256 = await sha256Hex(archive)
+    const parent = await temporaryDirectory('erpc-template-init-b2-1-')
+
+    let observed: unknown
+    try {
+      await initializeTemplateApp({
+        directory: join(parent, 'app'),
+        erpcHome: join(parent, '.erpc'),
+        templateName: 'fixture-template',
+        templateRegistry: registryWith(sha256, { pinned: false }),
+        tag: 'v0.1.0',
+        sha256,
+        setValues: new Map([['LABEL', 'x']]), // domain missing; no --trust-issuer
+        yes: true,
+        output: () => {},
+        fetch: fetchStubFor(archive).fetch,
+      })
+    } catch (error) {
+      observed = error
+    }
+    const message = observed instanceof Error
+      ? observed.message
+      : String(observed)
+    expect(message).toContain('domain')
+    expect(message).toContain('not trusted')
+  })
+
+  it('B-2: lists an invalid --set client_id alongside a missing key in the same error', async () => {
+    const archive = await buildFixtureArchive({ withBroker: true })
+    const sha256 = await sha256Hex(archive)
+    const parent = await temporaryDirectory('erpc-template-init-b2-2-')
+
+    let observed: unknown
+    try {
+      await initializeTemplateApp({
+        directory: join(parent, 'app'),
+        erpcHome: join(parent, '.erpc'),
+        templateName: 'fixture-template',
+        templateRegistry: registryWith(sha256), // pinned: trust is automatic
+        tag: 'v0.1.0',
+        setValues: new Map([
+          ['domain', 'example.com'],
+          // LABEL intentionally omitted -> missing.
+          ['APP_OIDC_CLIENT_ID', 'not-a-valid-client-id'],
+        ]),
+        yes: true,
+        output: () => {},
+        fetch: fetchStubFor(archive).fetch,
+      })
+    } catch (error) {
+      observed = error
+    }
+    const message = observed instanceof Error
+      ? observed.message
+      : String(observed)
+    expect(message).toContain('LABEL')
+    expect(message).toContain('APP_OIDC_CLIENT_ID')
+  })
+
+  it('P8: does not claim registration "already succeeded" when the client_id came from --set', async () => {
+    const archive = await buildFixtureArchive({ withBroker: true })
+    const sha256 = await sha256Hex(archive)
+    const parent = await temporaryDirectory('erpc-template-init-p8-')
+    const output: string[] = []
+    const failingWriteFile: WriteFileFunction = () => {
+      throw new Error('injected write failure')
+    }
+
+    await expect(
+      initializeTemplateApp({
+        directory: join(parent, 'app'),
+        erpcHome: join(parent, '.erpc'),
+        templateName: 'fixture-template',
+        templateRegistry: registryWith(sha256),
+        tag: 'v0.1.0',
+        setValues: new Map([
+          ['domain', 'example.com'],
+          ['LABEL', 'x'],
+          ['APP_OIDC_CLIENT_ID', 'app_1234567890123456789012'],
+        ]),
+        yes: true,
+        output: (message) => output.push(message),
+        fetch: fetchStubFor(archive).fetch,
+        writeFile: failingWriteFile,
+      }),
+    ).rejects.toThrow('injected write failure')
+
+    expect(output.some((message) => message.includes('already succeeded')))
+      .toBe(
+        false,
+      )
+  })
+
+  it('rejects an answer containing a line feed', async () => {
+    const archive = await buildFixtureArchive()
+    const sha256 = await sha256Hex(archive)
+    const parent = await temporaryDirectory('erpc-template-init-lf-')
+    await expect(
+      initializeTemplateApp({
+        directory: join(parent, 'app'),
+        erpcHome: join(parent, '.erpc'),
+        templateName: 'fixture-template',
+        templateRegistry: registryWith(sha256),
+        tag: 'v0.1.0',
+        setValues: new Map([['domain', 'example.com'], ['LABEL', 'a\nb']]),
+        yes: true,
+        output: () => {},
+        fetch: fetchStubFor(archive).fetch,
+      }),
+    ).rejects.toThrow('control character')
+  })
+
+  it('rejects an answer containing a carriage return', async () => {
+    const archive = await buildFixtureArchive()
+    const sha256 = await sha256Hex(archive)
+    const parent = await temporaryDirectory('erpc-template-init-cr-')
+    await expect(
+      initializeTemplateApp({
+        directory: join(parent, 'app'),
+        erpcHome: join(parent, '.erpc'),
+        templateName: 'fixture-template',
+        templateRegistry: registryWith(sha256),
+        tag: 'v0.1.0',
+        setValues: new Map([['domain', 'example.com'], ['LABEL', 'a\rb']]),
+        yes: true,
+        output: () => {},
+        fetch: fetchStubFor(archive).fetch,
+      }),
+    ).rejects.toThrow('control character')
+  })
+
+  it('rejects an answer containing a tab', async () => {
+    const archive = await buildFixtureArchive()
+    const sha256 = await sha256Hex(archive)
+    const parent = await temporaryDirectory('erpc-template-init-tab-')
+    await expect(
+      initializeTemplateApp({
+        directory: join(parent, 'app'),
+        erpcHome: join(parent, '.erpc'),
+        templateName: 'fixture-template',
+        templateRegistry: registryWith(sha256),
+        tag: 'v0.1.0',
+        setValues: new Map([['domain', 'example.com'], ['LABEL', 'a\tb']]),
+        yes: true,
+        output: () => {},
+        fetch: fetchStubFor(archive).fetch,
+      }),
+    ).rejects.toThrow('control character')
+  })
+
+  it('rejects an answer containing DEL (U+007F)', async () => {
+    const archive = await buildFixtureArchive()
+    const sha256 = await sha256Hex(archive)
+    const parent = await temporaryDirectory('erpc-template-init-del-')
+    await expect(
+      initializeTemplateApp({
+        directory: join(parent, 'app'),
+        erpcHome: join(parent, '.erpc'),
+        templateName: 'fixture-template',
+        templateRegistry: registryWith(sha256),
+        tag: 'v0.1.0',
+        setValues: new Map([['domain', 'example.com'], ['LABEL', 'a\u007fb']]),
+        yes: true,
+        output: () => {},
+        fetch: fetchStubFor(archive).fetch,
+      }),
+    ).rejects.toThrow('control character')
+  })
+
+  it('rejects an answer containing "{{"', async () => {
+    const archive = await buildFixtureArchive()
+    const sha256 = await sha256Hex(archive)
+    const parent = await temporaryDirectory('erpc-template-init-brace-')
+    await expect(
+      initializeTemplateApp({
+        directory: join(parent, 'app'),
+        erpcHome: join(parent, '.erpc'),
+        templateName: 'fixture-template',
+        templateRegistry: registryWith(sha256),
+        tag: 'v0.1.0',
+        setValues: new Map([
+          ['domain', 'example.com'],
+          ['LABEL', 'a {{erpc:kv-id:MCP_KV}} b'],
+        ]),
+        yes: true,
+        output: () => {},
+        fetch: fetchStubFor(archive).fetch,
+      }),
+    ).rejects.toThrow('{{')
+  })
+
+  it('does not misinterpret a literal ".." at the start of a filename as a path escape (steiner r2 N-2)', async () => {
+    const archive = await tarGzFromInputs([
+      fileInput('erpc-template.json', manifestJson()),
+      fileInput('wrangler.toml', WRANGLER_TOML),
+      fileInput('..hidden', 'not a traversal, just an odd filename\n'),
+    ])
+    const sha256 = await sha256Hex(archive)
+    const parent = await temporaryDirectory('erpc-template-init-dotdot-name-')
+    const directory = join(parent, 'app')
+
+    const result = await initializeTemplateApp({
+      directory,
+      erpcHome: join(parent, '.erpc'),
+      templateName: 'fixture-template',
+      templateRegistry: registryWith(sha256),
+      tag: 'v0.1.0',
+      setValues: new Map([['domain', 'example.com'], ['LABEL', 'x']]),
+      yes: true,
+      output: () => {},
+      fetch: fetchStubFor(archive).fetch,
+    })
+
+    expect(result.files).toContain('..hidden')
+    expect(await readFile(join(directory, '..hidden'), 'utf8')).toBe(
+      'not a traversal, just an odd filename\n',
+    )
+  })
+
+  it('escapes DEL (U+007F) in erpc.toml through tomlBasicString, not JSON.stringify (cyan r2 B5/N3, mutant M10)', async () => {
+    const archive = await buildFixtureArchive()
+    // A registry-controlled field (not user input) carrying a byte
+    // JSON.stringify would leave unescaped, to prove erpc.toml's [template]
+    // fields go through tomlBasicString rather than JSON.stringify.
+    const oddAsset = 'erpc-template\u007f.tar.gz'
+    const sha256 = await sha256Hex(archive)
+    const parent = await temporaryDirectory('erpc-template-init-del-asset-')
+    const directory = join(parent, 'app')
+    const registry: TemplateRegistry = {
+      'fixture-template': {
+        source: {
+          owner: 'elsoul',
+          repo: 'fixture-template-repo',
+          asset: oddAsset,
+        },
+        pins: { 'v0.1.0': sha256 },
+      },
+    }
+
+    await initializeTemplateApp({
+      directory,
+      erpcHome: join(parent, '.erpc'),
+      templateName: 'fixture-template',
+      templateRegistry: registry,
+      tag: 'v0.1.0',
+      setValues: new Map([['domain', 'example.com'], ['LABEL', 'x']]),
+      yes: true,
+      output: () => {},
+      fetch: fetchStubFor(archive).fetch,
+    })
+
+    const erpcToml = await readFile(join(directory, 'erpc.toml'), 'utf8')
+    expect(erpcToml).toContain('asset = "erpc-template\\u007f.tar.gz"')
+    expect(erpcToml.includes('\u007f')).toBe(false) // the raw byte must not appear unescaped
   })
 })
 
