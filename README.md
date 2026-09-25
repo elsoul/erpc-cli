@@ -336,8 +336,10 @@ which never generates a wallet or a new secret and never opens an interactive
 prompt.
 
 **Required Cloudflare API token permissions**: creating a new Worker needs
-`Workers Scripts:Edit` (Workers Admin); binding a route or a custom domain
-additionally needs `Zone:Workers Routes:Edit`.
+`Workers Scripts:Edit` (Workers Admin); a template that declares `cloudflare.kv`
+additionally needs `Workers KV Storage:Edit` to list and create namespaces;
+binding a route or a custom domain additionally needs
+`Zone:Workers Routes:Edit`.
 
 **Trust boundary**: a template's `[build].command`, `cloudflare.preflight`
 commands, a `secret-pipe` prompt's `command`, and `wrangler` itself (invoked as

@@ -18,9 +18,9 @@
   authenticate and fix a Cloudflare account through project-local `wrangler`,
   reuse-or-create KV namespaces, generate or collect Worker secrets without ever
   overwriting an existing one, run a read-only preflight, deploy, and verify the
-  result with `/health` and OAuth-authorize-redirect probes. `--no-provision`,
-  `--dry-run`, `--verify-only`, and `--ack-backup <KEY>` are new flags. Linux
-  and macOS only in this release; see
+  result with `/health` and OAuth-authorize-redirect probes. `--target`,
+  `--yes`, `--no-provision`, `--dry-run`, `--verify-only`, and
+  `--ack-backup <KEY>` are new flags. Linux and macOS only in this release; see
   [the README](./README.md#deploy-to-cloudflare) for usage and the required
   Cloudflare API token permissions.
 
