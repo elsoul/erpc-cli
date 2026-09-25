@@ -10,7 +10,7 @@
 // the manifest has been processed (not inline, mid-loop): a var declared
 // *after* the broker-register prompt must still block the registrar call,
 // and issuer trust must be checked (and reported) independently of whether
-// other answers are missing (steiner r2 B-2/B-3, cyan r2 B3/B8).
+// other answers are missing (packet Decision 6).
 
 import type { PromptIO } from './prompt-io.ts'
 import type {
@@ -21,7 +21,7 @@ import type {
 
 const MAX_ANSWER_LENGTH = 512
 // Every control character, including tab/newline/carriage-return: Decision 6
-// requires "no control characters" unconditionally (steiner r1 N2 / cyan r1 B4).
+// requires "no control characters" unconditionally.
 // deno-lint-ignore no-control-regex
 const CONTROL_CHARACTER_PATTERN = /[\x00-\x1f\x7f]/
 const PLACEHOLDER_PATTERN = /\{\{([^{}]+)\}\}/g
@@ -57,8 +57,7 @@ const answerShapeIssue = (key: string, value: string): string | undefined => {
   }
   if (value.includes('{{')) {
     // Prevents an answer from smuggling a fake `{{erpc:...}}` sentinel into a
-    // rendered file, where a later deploy step would treat it as genuine
-    // (cyan r1 N12).
+    // rendered file, where a later deploy step would treat it as genuine.
     return `${key}: answer must not contain "{{" (reserved for template placeholders)`
   }
   return undefined
@@ -104,8 +103,7 @@ export interface TemplateAnswerInputs {
   /**
    * Called once, with every `var`/`derived` answer resolved, before broker
    * registration is attempted - the hook the interactive summary uses so it
-   * always prints before the registrar runs (design §2.5; steiner r2 N-3,
-   * cyan r2 P7).
+   * always prints before the registrar runs (design §2.5).
    */
   readonly onAnswersReady?: (values: ReadonlyMap<string, string>) => void
   readonly promptIO: PromptIO
@@ -121,7 +119,7 @@ export interface CollectedBrokerRegistration {
   readonly clientId: string
   readonly key: string
   readonly redirectUris: readonly string[]
-  /** False when `clientId` came from `--set` rather than an actual registrar call (cyan r2 P8). */
+  /** False when `clientId` came from `--set` rather than an actual registrar call. */
   readonly registered: boolean
 }
 
@@ -209,9 +207,18 @@ export const collectTemplateAnswers = async (
           prompt.key,
           interpolate(prompt.expr, values, inputs.builtIns),
         )
-      } catch {
-        // An upstream dependency already failed to resolve and was reported
-        // above; nothing further to add for this derived key.
+      } catch (error) {
+        // The reference this expression depends on failed earlier in this
+        // same loop (that failure already has its own issue above) - still
+        // enumerate this derived key's own failure explicitly rather than
+        // resolving it silently, so the aggregated error names every key
+        // that came out unresolved, not just the root cause (packet
+        // Decision 6).
+        issues.push(
+          `${prompt.key}: could not be derived (${
+            error instanceof Error ? error.message : String(error)
+          })`,
+        )
       }
       continue
     }
@@ -234,6 +241,30 @@ export const collectTemplateAnswers = async (
   let brokerRegistration: CollectedBrokerRegistration | undefined
   if (brokerPrompt) {
     const prompt = brokerPrompt
+    const setValue = inputs.setValues.get(prompt.key)
+
+    // `--set`'s own shape/pattern is a local, side-effect-free check with no
+    // dependency on issuer trust, so it is validated - and, if bad, reported
+    // - regardless of whether the issuer turns out to be trusted: an
+    // untrusted issuer must not swallow a genuinely malformed `--set` value
+    // out of the same aggregated error (packet Decision 6).
+    let setValueValid = false
+    if (setValue !== undefined) {
+      const shapeIssue = answerShapeIssue(prompt.key, setValue)
+      if (shapeIssue) {
+        issues.push(shapeIssue)
+      } else if (
+        prompt.validate &&
+        !anchoredPattern(prompt.validate.pattern).test(setValue)
+      ) {
+        issues.push(
+          `${prompt.key}: --set value does not match the required pattern (pass --set ${prompt.key}=<value> matching ${prompt.validate.pattern})`,
+        )
+      } else {
+        setValueValid = true
+      }
+    }
+
     const trusted = await inputs.confirmIssuerTrust(
       inputs.builtIns.brokerIssuer ?? '',
     )
@@ -241,8 +272,32 @@ export const collectTemplateAnswers = async (
       issues.push(
         `${prompt.key}: the broker issuer is not trusted (pass --trust-issuer <origin>, or confirm interactively)`,
       )
+    } else if (setValue !== undefined) {
+      // The format issue (if any) was already pushed above; only record the
+      // answer when it actually passed.
+      if (setValueValid) {
+        let redirectUris: readonly string[] = []
+        try {
+          redirectUris = prompt.redirectUris.map((uri) =>
+            interpolate(uri, values, inputs.builtIns)
+          )
+        } catch {
+          // `--set` never calls the registrar, so it has no use for
+          // redirectUris; keep the recorded list empty rather than failing
+          // an otherwise-valid --set value over an unrelated missing key.
+        }
+        values.set(prompt.key, setValue)
+        brokerRegistration = {
+          clientId: setValue,
+          key: prompt.key,
+          redirectUris,
+          registered: false,
+        }
+      }
     } else {
-      const setValue = inputs.setValues.get(prompt.key)
+      // No `--set`: attempt the real registrar call, but only once every
+      // other answer in the manifest (declared before *or* after
+      // broker-register) is known to be valid.
       let redirectUris: readonly string[] = []
       let clientName = ''
       let interpolationFailed = false
@@ -254,29 +309,26 @@ export const collectTemplateAnswers = async (
       } catch {
         interpolationFailed = true
       }
-
-      // `--set` needs neither of the above (its branch never touches the
-      // registrar), so it may proceed even if another answer is missing or
-      // interpolation failed on account of that missing answer - its own
-      // format is still worth checking and reporting alongside that other
-      // issue (steiner r1/r2 B-2, cyan r1/r2 B3).
-      const canAttempt = setValue !== undefined ||
-        (!interpolationFailed && issues.length === 0)
-      if (canAttempt) {
+      if (!interpolationFailed && issues.length === 0) {
         const clientId = await inputs.resolveBrokerRegister(
           prompt,
           redirectUris,
           clientName,
         )
         const shapeIssue = answerShapeIssue(prompt.key, clientId)
-        if (shapeIssue) {
-          issues.push(shapeIssue)
-        } else if (
-          prompt.validate &&
-          !anchoredPattern(prompt.validate.pattern).test(clientId)
-        ) {
+        const patternOk = prompt.validate === undefined ||
+          anchoredPattern(prompt.validate.pattern).test(clientId)
+        if (shapeIssue !== undefined || !patternOk) {
+          // The registrar *was* called and returned this value - show it
+          // (redacted if it carries a control character) rather than only
+          // saying "invalid", so the user can tell the bad value came back
+          // from the network rather than from their own --set (packet
+          // Decision 6).
+          const shown = CONTROL_CHARACTER_PATTERN.test(clientId)
+            ? `<redacted, ${clientId.length} characters>`
+            : clientId
           issues.push(
-            `${prompt.key}: value does not match the required pattern`,
+            `${prompt.key}: the registrar's response does not match the required pattern (got ${shown}; pass --set ${prompt.key}=<value> to override)`,
           )
         } else {
           values.set(prompt.key, clientId)
@@ -284,7 +336,7 @@ export const collectTemplateAnswers = async (
             clientId,
             key: prompt.key,
             redirectUris,
-            registered: setValue === undefined,
+            registered: true,
           }
         }
       }

@@ -1,6 +1,5 @@
 // Orchestrates `erpc app init --template <name>@<tag>`.
 // See design doc §1/§2.6 and Task Brief Decisions 1-16.
-// Hardened per steiner r1 (PR #1 review) and cyan r1 (PR #1 review).
 
 import { mkdir, readdir, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
@@ -75,7 +74,7 @@ export const defaultOidcClientRegistrar: OidcClientRegistrar =
 
 /**
  * The Decision 16 trust-boundary warning text, exported so PR-B/PR-C can
- * reuse the exact wording instead of duplicating it (steiner r1 N11).
+ * reuse the exact wording instead of duplicating it.
  */
 export const unpinnedTemplateWarning = (
   owner: string,
@@ -96,7 +95,7 @@ const originsMatch = (a: string, b: string): boolean => {
  * Platform-safe "is `child` inside (or equal to) `parent`" check. Compares
  * the relative path's first segment to `..` exactly, rather than a string
  * prefix - `..startsWith` would misfire on a legitimately named entry such
- * as `..hidden` (steiner r2 N-2).
+ * as `..hidden`.
  */
 const isInsideDirectory = (parent: string, child: string): boolean => {
   const relativePath = relative(parent, child)
@@ -118,15 +117,15 @@ export interface InitializeTemplateAppOptions {
   readonly fetch?: typeof globalThis.fetch
   readonly name?: string
   readonly oidcRegistrar?: OidcClientRegistrar
-  /** Forwarded to the OIDC registrar's io (steiner/cyan N10); PR-A never sets this itself. */
+  /** Forwarded to the OIDC registrar's io; PR-A never sets this itself. */
   readonly openExternal?: (url: string) => void
   readonly output: (message: string) => void
   readonly promptIO?: PromptIO
-  /** Overrides step ⑧'s renderer. Defaults to the real `renderTemplateFiles`; tests use this to force a deterministic render failure (steiner r2 B-1/B-3). */
+  /** Overrides step ⑧'s renderer. Defaults to the real `renderTemplateFiles`; tests use this to force a deterministic render failure. */
   readonly renderTemplateFiles?: typeof defaultRenderTemplateFiles
   readonly setValues: ReadonlyMap<string, string>
   readonly sha256?: string
-  /** Forwarded to the OIDC registrar's io (steiner/cyan N10); PR-A never creates one itself. */
+  /** Forwarded to the OIDC registrar's io; PR-A never creates one itself. */
   readonly signal?: AbortSignal
   readonly tag: string
   readonly templateName: string
@@ -136,7 +135,7 @@ export interface InitializeTemplateAppOptions {
    * Overrides the primitive used for every file write in step ⑨ (and the
    * `erpc.toml` write). Defaults to `node:fs/promises`'s `writeFile`; tests
    * use this to force a deterministic, root-safe write failure instead of
-   * relying on filesystem permissions (steiner r2 N-8).
+   * relying on filesystem permissions.
    */
   readonly writeFile?: WriteFileFunction
   readonly yes: boolean
@@ -261,7 +260,7 @@ const summaryText = (
   // `secret-generate`/`secret-pipe` produce a value with no user input;
   // `secret-input` asks the user for one (or reads an env var) - list them
   // separately so the summary doesn't call a prompt "generated" when it will
-  // actually ask (steiner r2 N-3).
+  // actually ask.
   const generatedSecretKeys = manifest.prompts
     .filter((prompt) =>
       prompt.target === 'secret-generate' || prompt.target === 'secret-pipe'
@@ -314,7 +313,7 @@ export const initializeTemplateApp = async (
 
   // ① Target directory must not already contain files. Checked before any
   // network access (design §2.6 step 1) and without creating the directory
-  // (steiner/cyan N3/N9): a later failure must not leave an empty directory.
+  // a later failure must not leave an empty directory.
   const existing = await readdir(directory).catch((error) => {
     if (
       error && typeof error === 'object' && 'code' in error &&
@@ -430,7 +429,7 @@ export const initializeTemplateApp = async (
     // checks it against `prompt.validate` right after this call returns, the
     // same way it checks a value the registrar itself returned, so a bad
     // `--set` value joins the same aggregated error instead of throwing here
-    // on its own (steiner r2 B-3, cyan r2 B3).
+    // on its own.
     const setValue = options.setValues.get(prompt.key)
     if (setValue !== undefined) return setValue
     const result = await oidcRegistrar.register(
@@ -448,8 +447,7 @@ export const initializeTemplateApp = async (
 
   // ⑥/⑦ Collect var + derived answers, show the interactive summary once
   // every one of them is ready, then - only after that - resolve broker
-  // registration (design §2.5 order: var → summary → registrar; steiner r2
-  // N-3, cyan r2 P7).
+  // registration (design §2.5 order: var → summary → registrar).
   const { values, brokerRegistration } = await collectTemplateAnswers(
     manifest,
     {
@@ -490,12 +488,17 @@ export const initializeTemplateApp = async (
     }
     : undefined
 
-  // Steps ⑧ (render) and ⑨ (write) share one try/catch: a real, newly
-  // registered OAuth client (never a `--set`-provided one - cyan r2 P8) is
-  // public information the user needs to avoid registering a second client
-  // on retry, and a render failure is just as much "after registration
-  // succeeded" as a write failure is (steiner r2 B-1/B-3; design §2.6:
-  // "⑦〜⑨ 間の失敗は client_id を表示し --set APP_OIDC_CLIENT_ID=<id> で再実行").
+  // Steps ⑧ (render) and ⑨ (write) below share one try/catch: a real,
+  // newly registered OAuth client (never one supplied via `--set` - see
+  // `registered` on `CollectedBrokerRegistration`) is public information the
+  // user needs in order to avoid registering a second client on retry, and a
+  // render failure is exactly as much "after registration already
+  // succeeded" as a write failure is. This mirrors design §2.6's ordering
+  // (registration resolves, then rendering, then writing) and its "⑦〜⑨ 間の
+  // 失敗は client_id を表示し --set APP_OIDC_CLIENT_ID=<id> で再実行" contract,
+  // even though registration itself now runs inside the combined answer-
+  // collection call above rather than as its own separately numbered step
+  // here (packet Decision 6).
   try {
     const render = options.renderTemplateFiles ?? defaultRenderTemplateFiles
     const rendered = render(manifest, files, values, {

@@ -607,7 +607,7 @@ describe('initializeTemplateApp', () => {
     }
     // An injected write failure rather than a chmod'd read-only directory:
     // running as root (which ignores permission bits) would otherwise make
-    // this test flaky (steiner r2 N-8).
+    // this test flaky.
     const failingWriteFile: WriteFileFunction = () => {
       throw new Error('injected write failure')
     }
@@ -695,8 +695,7 @@ describe('initializeTemplateApp', () => {
         },
         // Declared AFTER broker-register: with the registration call
         // deferred to a single pass over the whole manifest, this missing
-        // answer must still prevent the registrar from ever being called
-        // (steiner r2 B-3).
+        // answer must still prevent the registrar from ever being called.
         { key: 'LATER_REQUIRED', target: 'var', question: 'A later value' },
       ],
     })
@@ -741,7 +740,7 @@ describe('initializeTemplateApp', () => {
   it('B4: lists a missing var alongside an untrusted broker issuer in the same error', async () => {
     // A broker-register prompt whose redirectUris/clientName do not depend on
     // the missing var, so it reaches the trust check regardless of that
-    // var's status (Decision 6 / Acceptance A8; steiner r1 B4, cyan r1 B3).
+    // var's status (Decision 6 / Acceptance A8).
     const manifestJsonText = JSON.stringify({
       schemaVersion: 1,
       name: 'fixture-template',
@@ -794,6 +793,82 @@ describe('initializeTemplateApp', () => {
     expect(message).toContain('not trusted')
   })
 
+  it('B2: shows the registrar-returned value when it does not match the required pattern', async () => {
+    const archive = await buildFixtureArchive({ withBroker: true })
+    const sha256 = await sha256Hex(archive)
+    const parent = await temporaryDirectory('erpc-template-init-cyanb2-')
+    let registrarCalls = 0
+    const registrar: OidcClientRegistrar = {
+      register: () => {
+        registrarCalls++
+        return Promise.resolve({ clientId: 'not-app-format' })
+      },
+    }
+
+    let observed: unknown
+    try {
+      await initializeTemplateApp({
+        directory: join(parent, 'app'),
+        erpcHome: join(parent, '.erpc'),
+        templateName: 'fixture-template',
+        templateRegistry: registryWith(sha256), // pinned: trust is automatic
+        tag: 'v0.1.0',
+        setValues: new Map([['domain', 'example.com'], ['LABEL', 'x']]),
+        yes: true,
+        output: () => {},
+        fetch: fetchStubFor(archive).fetch,
+        oidcRegistrar: registrar,
+      })
+    } catch (error) {
+      observed = error
+    }
+    const message = observed instanceof Error
+      ? observed.message
+      : String(observed)
+    // The registrar *was* called - show the value it returned rather than
+    // only saying "invalid" (packet Decision 6), and distinguish this
+    // wording from the --set path's own message.
+    expect(registrarCalls).toBe(1)
+    expect(message).toContain('not-app-format')
+    expect(message).toContain("registrar's response")
+    expect(message).toContain('does not match the required pattern')
+    expect(message).toContain('--set APP_OIDC_CLIENT_ID=')
+  })
+
+  it('B2: redacts a control character in a registrar-returned value instead of echoing it', async () => {
+    const archive = await buildFixtureArchive({ withBroker: true })
+    const sha256 = await sha256Hex(archive)
+    const parent = await temporaryDirectory('erpc-template-init-cyanb2redact-')
+    const badValue = 'app_bad\x01value1234567890'
+    const registrar: OidcClientRegistrar = {
+      register: () => Promise.resolve({ clientId: badValue }),
+    }
+
+    let observed: unknown
+    try {
+      await initializeTemplateApp({
+        directory: join(parent, 'app'),
+        erpcHome: join(parent, '.erpc'),
+        templateName: 'fixture-template',
+        templateRegistry: registryWith(sha256),
+        tag: 'v0.1.0',
+        setValues: new Map([['domain', 'example.com'], ['LABEL', 'x']]),
+        yes: true,
+        output: () => {},
+        fetch: fetchStubFor(archive).fetch,
+        oidcRegistrar: registrar,
+      })
+    } catch (error) {
+      observed = error
+    }
+    const message = observed instanceof Error
+      ? observed.message
+      : String(observed)
+    expect(message).not.toContain(badValue)
+    expect(message).toContain('redacted')
+    expect(message).toContain(`${badValue.length} characters`)
+  })
+
   it('B5: shows an interactive summary of derived values and deploy-time secrets', async () => {
     const archive = await buildFixtureArchive()
     const sha256 = await sha256Hex(archive)
@@ -816,6 +891,48 @@ describe('initializeTemplateApp', () => {
     expect(promptIO.informed).toHaveLength(1)
     expect(promptIO.informed[0]).toContain('MCP_SERVER_BASE_URL')
     expect(promptIO.informed[0]).toContain('JWT_SECRET')
+  })
+
+  it('shows the interactive summary before calling the registrar, not after (packet Decision 6)', async () => {
+    const archive = await buildFixtureArchive({ withBroker: true })
+    const sha256 = await sha256Hex(archive)
+    const parent = await temporaryDirectory('erpc-template-init-order-')
+    const events: string[] = []
+    const promptIO: PromptIO = {
+      isInteractive: () => true,
+      text: () => Promise.resolve('stub-value'),
+      confirm: () => Promise.resolve(true),
+      select: () => Promise.resolve(''),
+      secret: () => Promise.resolve(''),
+      inform: () => {
+        events.push('summary')
+      },
+    }
+    const registrar: OidcClientRegistrar = {
+      register: () => {
+        events.push('registrar')
+        return Promise.resolve({ clientId: 'app_1234567890123456789012' })
+      },
+    }
+
+    await initializeTemplateApp({
+      directory: join(parent, 'app'),
+      erpcHome: join(parent, '.erpc'),
+      templateName: 'fixture-template',
+      templateRegistry: registryWith(sha256),
+      tag: 'v0.1.0',
+      setValues: new Map(),
+      yes: false,
+      output: () => {},
+      fetch: fetchStubFor(archive).fetch,
+      promptIO,
+      oidcRegistrar: registrar,
+    })
+
+    // A mutant that moves `onAnswersReady` to after the broker-register
+    // block (or drops the "single pass after every var/derived" ordering)
+    // would flip this to ['registrar', 'summary'].
+    expect(events).toEqual(['summary', 'registrar'])
   })
 
   it('does not show the summary non-interactively', async () => {
@@ -846,7 +963,7 @@ describe('initializeTemplateApp', () => {
     // Unlike the B4 fixture above, this uses the real shape (redirectUris:
     // ["https://{{domain}}/oauth/callback"]) so the trust check must run
     // even though interpolating redirectUris would otherwise fail for the
-    // same reason domain is missing (steiner r2 B-2, cyan r2 B3).
+    // same reason domain is missing.
     const archive = await buildFixtureArchive({ withBroker: true })
     const sha256 = await sha256Hex(archive)
     const parent = await temporaryDirectory('erpc-template-init-b2-1-')
@@ -905,6 +1022,44 @@ describe('initializeTemplateApp', () => {
       : String(observed)
     expect(message).toContain('LABEL')
     expect(message).toContain('APP_OIDC_CLIENT_ID')
+  })
+
+  it('X1b: lists an untrusted issuer alongside an invalid --set client_id in the same error', async () => {
+    const archive = await buildFixtureArchive({ withBroker: true })
+    const sha256 = await sha256Hex(archive)
+    const parent = await temporaryDirectory('erpc-template-init-x1b-')
+
+    let observed: unknown
+    try {
+      await initializeTemplateApp({
+        directory: join(parent, 'app'),
+        erpcHome: join(parent, '.erpc'),
+        templateName: 'fixture-template',
+        // Unpinned and no --trust-issuer: the issuer is not trusted.
+        templateRegistry: registryWith(sha256, { pinned: false }),
+        tag: 'v0.1.0',
+        sha256,
+        setValues: new Map([
+          ['domain', 'example.com'],
+          ['LABEL', 'x'],
+          ['APP_OIDC_CLIENT_ID', 'not-a-valid-client-id'],
+        ]),
+        yes: true,
+        output: () => {},
+        fetch: fetchStubFor(archive).fetch,
+      })
+    } catch (error) {
+      observed = error
+    }
+    const message = observed instanceof Error
+      ? observed.message
+      : String(observed)
+    // Both issues must land in the same aggregated error: an untrusted
+    // issuer must not suppress the independent --set format check, and vice
+    // versa (packet Decision 6).
+    expect(message).toContain('not trusted')
+    expect(message).toContain('--set APP_OIDC_CLIENT_ID=')
+    expect(message).toContain('does not match the required pattern')
   })
 
   it('P8: does not claim registration "already succeeded" when the client_id came from --set', async () => {
@@ -1039,7 +1194,7 @@ describe('initializeTemplateApp', () => {
     ).rejects.toThrow('{{')
   })
 
-  it('does not misinterpret a literal ".." at the start of a filename as a path escape (steiner r2 N-2)', async () => {
+  it('does not misinterpret a literal ".." at the start of a filename as a path escape', async () => {
     const archive = await tarGzFromInputs([
       fileInput('erpc-template.json', manifestJson()),
       fileInput('wrangler.toml', WRANGLER_TOML),
@@ -1067,7 +1222,7 @@ describe('initializeTemplateApp', () => {
     )
   })
 
-  it('escapes DEL (U+007F) in erpc.toml through tomlBasicString, not JSON.stringify (cyan r2 B5/N3, mutant M10)', async () => {
+  it('escapes DEL (U+007F) in erpc.toml through tomlBasicString, not JSON.stringify (mutant M10)', async () => {
     const archive = await buildFixtureArchive()
     // A registry-controlled field (not user input) carrying a byte
     // JSON.stringify would leave unescaped, to prove erpc.toml's [template]
@@ -1106,13 +1261,13 @@ describe('initializeTemplateApp', () => {
 })
 
 describe('tomlBasicString', () => {
-  it('escapes DEL (U+007F) and a newline (steiner r1 N3/M5)', () => {
+  it('escapes DEL (U+007F) and a newline', () => {
     expect(tomlBasicString('a\u007fb\nc')).toBe('a\\u007fb\\nc')
   })
 })
 
 describe('CLI wiring', () => {
-  it('forwards --template through cliffy to initializeTemplateApp (cyan r1 N13)', async () => {
+  it('forwards --template through cliffy to initializeTemplateApp', async () => {
     const archive = await buildFixtureArchive()
     const sha256 = await sha256Hex(archive)
     const parent = await temporaryDirectory('erpc-template-cli-wiring-')
@@ -1145,5 +1300,134 @@ describe('CLI wiring', () => {
     expect(await readFile(join(directory, 'erpc.toml'), 'utf8')).toContain(
       'runtime = "cloudflare-worker"',
     )
+  })
+
+  it('wires an injected openExternal through to the registrar', async () => {
+    const archive = await buildFixtureArchive({ withBroker: true })
+    const sha256 = await sha256Hex(archive)
+    const parent = await temporaryDirectory('erpc-template-cli-openexternal-')
+    const directory = join(parent, 'app')
+    const opened: string[] = []
+    const registrar: OidcClientRegistrar = {
+      register: (_request, io) => {
+        io.openExternal?.('https://broker.example.com/verify')
+        return Promise.resolve({ clientId: 'app_1234567890123456789012' })
+      },
+    }
+
+    await expect(
+      runCli(
+        [
+          'app',
+          'init',
+          directory,
+          '--template',
+          'fixture-template@v0.1.0',
+          '--set',
+          'domain=example.com',
+          '--set',
+          'LABEL=x',
+          '--yes',
+        ],
+        {
+          erpcHome: join(parent, '.erpc'),
+          templateRegistry: registryWith(sha256),
+          fetch: fetchStubFor(archive).fetch,
+          output: () => {},
+          oidcRegistrar: registrar,
+          openExternal: (url) => opened.push(url),
+        },
+      ),
+    ).resolves.toBe(0)
+
+    expect(opened).toEqual(['https://broker.example.com/verify'])
+  })
+
+  it('wires a default openExternal through to the registrar when none is injected (packet Decision 6)', async () => {
+    const archive = await buildFixtureArchive({ withBroker: true })
+    const sha256 = await sha256Hex(archive)
+    const parent = await temporaryDirectory(
+      'erpc-template-cli-openexternal-default-',
+    )
+    const directory = join(parent, 'app')
+    let capturedOpenExternal: ((url: string) => void) | undefined
+    const registrar: OidcClientRegistrar = {
+      register: (_request, io) => {
+        capturedOpenExternal = io.openExternal
+        return Promise.resolve({ clientId: 'app_1234567890123456789012' })
+      },
+    }
+
+    await expect(
+      runCli(
+        [
+          'app',
+          'init',
+          directory,
+          '--template',
+          'fixture-template@v0.1.0',
+          '--set',
+          'domain=example.com',
+          '--set',
+          'LABEL=x',
+          '--yes',
+        ],
+        {
+          erpcHome: join(parent, '.erpc'),
+          templateRegistry: registryWith(sha256),
+          fetch: fetchStubFor(archive).fetch,
+          output: () => {},
+          oidcRegistrar: registrar,
+          // openExternal intentionally not injected: cli.ts must fall back
+          // to its own real-launcher default instead of leaving this
+          // undefined (a production run would then never actually open the
+          // broker's verification URL in a browser).
+        },
+      ),
+    ).resolves.toBe(0)
+
+    expect(typeof capturedOpenExternal).toBe('function')
+  })
+
+  it('forwards an injected signal through to the registrar (packet Decision 6)', async () => {
+    const archive = await buildFixtureArchive({ withBroker: true })
+    const sha256 = await sha256Hex(archive)
+    const parent = await temporaryDirectory('erpc-template-cli-signal-')
+    const directory = join(parent, 'app')
+    const controller = new AbortController()
+    let capturedSignal: AbortSignal | undefined
+    const registrar: OidcClientRegistrar = {
+      register: (_request, io) => {
+        capturedSignal = io.signal
+        return Promise.resolve({ clientId: 'app_1234567890123456789012' })
+      },
+    }
+
+    await expect(
+      runCli(
+        [
+          'app',
+          'init',
+          directory,
+          '--template',
+          'fixture-template@v0.1.0',
+          '--set',
+          'domain=example.com',
+          '--set',
+          'LABEL=x',
+          '--yes',
+        ],
+        {
+          erpcHome: join(parent, '.erpc'),
+          templateRegistry: registryWith(sha256),
+          fetch: fetchStubFor(archive).fetch,
+          output: () => {},
+          oidcRegistrar: registrar,
+          signal: controller.signal,
+        },
+      ),
+    ).resolves.toBe(0)
+
+    expect(capturedSignal).toBe(controller.signal)
   })
 })
