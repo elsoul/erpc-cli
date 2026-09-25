@@ -12,6 +12,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { TarStream, type TarStreamInput } from '@std/tar'
+import { parse as parseToml } from '@std/toml'
 import { afterEach, describe, expect, it } from './testing.ts'
 import {
   type CloudflareWorkerManifest,
@@ -106,6 +107,7 @@ interface TemplateManifestOptions {
   readonly includeKv?: boolean
   readonly includePostDeploy?: boolean
   readonly includePreflight?: boolean
+  readonly kvTitle?: string
   readonly minWranglerVersion?: string
   readonly postDeploy?: readonly Record<string, unknown>[]
   readonly secretPrompts?: readonly Record<string, unknown>[]
@@ -121,9 +123,12 @@ const templateManifestJson = (options: TemplateManifestOptions = {}): string =>
       config: 'wrangler.toml',
       wrangler: ['fake-wrangler'],
       minWranglerVersion: options.minWranglerVersion ?? '4.0.0',
-      ...(options.includeKv === false
-        ? {}
-        : { kv: [{ binding: 'MCP_KV', title: '{{app.name}}-mcp-kv' }] }),
+      ...(options.includeKv === false ? {} : {
+        kv: [{
+          binding: 'MCP_KV',
+          title: options.kvTitle ?? '{{app.name}}-mcp-kv',
+        }],
+      }),
       ...(options.includePreflight === false
         ? {}
         : { preflight: [['fake-preflight']] }),
@@ -1769,5 +1774,207 @@ required = ["JWT_SECRET"]
 
     expect(await Deno.readTextFile(wranglerTomlPath)).toBe(original)
     expect(commandNames(fake.calls)).toEqual(['--version', 'whoami'])
+  })
+})
+
+describe('erpc deploy --target cloudflare: OAuth client registration retries', () => {
+  const countingProbeFetch = (
+    options: {
+      readonly failFirstAuthorize?: boolean
+      readonly failFirstRegister?: boolean
+    },
+  ) => {
+    const counts = { authorize: 0, register: 0 }
+    const probeFetch: typeof fetch = (async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input))
+      if (url.origin === WORKER_BASE && url.pathname === '/oauth/register') {
+        counts.register++
+        if (options.failFirstRegister && counts.register === 1) {
+          return new Response('unavailable', { status: 503 })
+        }
+      }
+      if (url.origin === WORKER_BASE && url.pathname === '/oauth/authorize') {
+        counts.authorize++
+        if (options.failFirstAuthorize && counts.authorize === 1) {
+          return new Response('error', { status: 500 })
+        }
+      }
+      return await successProbeFetch(input, init)
+    }) as typeof fetch
+    return { counts, probeFetch }
+  }
+
+  const verify = async (project: Project, probeFetch: typeof fetch) =>
+    await deployToCloudflare(await loadManifest(project), {
+      erpcHome: project.erpcHome,
+      output: () => undefined,
+      promptIO: nonInteractivePromptIO(),
+      random: fixedRandom(1),
+      verifyOnly: true,
+      fetch: buildFetchStub(project.archive, probeFetch),
+      templateRegistry: pinnedRegistryFor(project.sha256),
+    })
+
+  it('a successful registration is reused when the authorize step is retried', async () => {
+    const project = await setupProject({
+      includeKv: false,
+      includePreflight: false,
+    })
+    const { counts, probeFetch } = countingProbeFetch({
+      failFirstAuthorize: true,
+    })
+
+    await verify(project, probeFetch)
+
+    expect(counts.authorize).toBe(2)
+    expect(counts.register).toBe(1)
+  })
+
+  it('a failed registration is retried on the next attempt', async () => {
+    const project = await setupProject({
+      includeKv: false,
+      includePreflight: false,
+    })
+    const { counts, probeFetch } = countingProbeFetch({
+      failFirstRegister: true,
+    })
+
+    await verify(project, probeFetch)
+
+    expect(counts.register).toBe(2)
+    expect(counts.authorize).toBe(1)
+  })
+})
+
+describe('erpc deploy --target cloudflare: account and config handling', () => {
+  const deployOnce = async (
+    project: Project,
+    fake: ReturnType<typeof createFakeWrangler>,
+    extra: { readonly dryRun?: boolean; readonly noProvision?: boolean } = {},
+  ): Promise<void> =>
+    await deployToCloudflare(await loadManifest(project), {
+      ...extra,
+      erpcHome: project.erpcHome,
+      output: () => undefined,
+      promptIO: nonInteractivePromptIO(),
+      random: fixedRandom(1),
+      run: fake.run,
+      fetch: buildFetchStub(project.archive, successProbeFetch),
+      templateRegistry: pinnedRegistryFor(project.sha256),
+    })
+
+  it('--dry-run leaves wrangler.toml byte-for-byte unchanged', async () => {
+    const project = await setupProject({
+      includePreflight: false,
+      includePostDeploy: false,
+    })
+    const wranglerTomlPath = join(project.root, 'wrangler.toml')
+    const before = await Deno.readTextFile(wranglerTomlPath)
+    const fake = createFakeWrangler()
+
+    await deployOnce(project, fake, { dryRun: true })
+
+    expect(await Deno.readTextFile(wranglerTomlPath)).toBe(before)
+  })
+
+  it('every wrangler call names the project config explicitly with --config', async () => {
+    const project = await setupProject({ includePostDeploy: false })
+    const fake = createFakeWrangler()
+
+    await deployOnce(project, fake)
+
+    const wranglerCalls = fake.calls.filter((call) =>
+      call.command === 'fake-wrangler'
+    )
+    expect(wranglerCalls.length > 0).toBe(true)
+    for (const call of wranglerCalls) {
+      expect(call.args.slice(0, 2)).toEqual([
+        '--config',
+        join(project.root, 'wrangler.toml'),
+      ])
+    }
+  })
+
+  it('an account_id already in wrangler.toml that this login cannot see stops right after whoami', async () => {
+    setEnv('CLOUDFLARE_ACCOUNT_ID', undefined)
+    const project = await setupProject({
+      includeKv: false,
+      includePreflight: false,
+      includePostDeploy: false,
+      accountId: 'dddddddddddddddddddddddddddddddd',
+    })
+    const fake = createFakeWrangler()
+
+    await expect(deployOnce(project, fake)).rejects.toThrow(
+      'is not one of the accounts this wrangler login can see',
+    )
+    expect(commandNames(fake.calls)).toEqual(['--version', 'whoami'])
+  })
+
+  it('a CLOUDFLARE_ACCOUNT_ID that is not an account id is never written into wrangler.toml', async () => {
+    setEnv('CLOUDFLARE_ACCOUNT_ID', 'abc"\n[vars]\nINJECTED = "1')
+    const project = await setupProject({
+      includeKv: false,
+      includePreflight: false,
+      includePostDeploy: false,
+    })
+    const wranglerTomlPath = join(project.root, 'wrangler.toml')
+    const before = await Deno.readTextFile(wranglerTomlPath)
+    const fake = createFakeWrangler()
+
+    await expect(deployOnce(project, fake)).rejects.toThrow(
+      'does not look like an account id',
+    )
+    expect(await Deno.readTextFile(wranglerTomlPath)).toBe(before)
+  })
+
+  it('account_id is inserted above an indented first table header', async () => {
+    setEnv('CLOUDFLARE_ACCOUNT_ID', undefined)
+    const project = await setupProject({
+      includeKv: false,
+      includePreflight: false,
+      includePostDeploy: false,
+    })
+    const wranglerTomlPath = join(project.root, 'wrangler.toml')
+    await writeFile(
+      wranglerTomlPath,
+      `name = "test-app"
+main = "src/index.ts"
+compatibility_date = "2026-01-01"
+
+  [vars]
+  MCP_SERVER_BASE_URL = "${WORKER_BASE}"
+  APP_OIDC_ISSUER = "${ISSUER}"
+
+[secrets]
+required = ["JWT_SECRET"]
+`,
+      'utf8',
+    )
+    const fake = createFakeWrangler()
+
+    await deployOnce(project, fake)
+
+    const after = parseToml(await Deno.readTextFile(wranglerTomlPath))
+    expect(after.account_id).toBe('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
+    expect(after.vars).toEqual({
+      MCP_SERVER_BASE_URL: WORKER_BASE,
+      APP_OIDC_ISSUER: ISSUER,
+    })
+  })
+
+  it('a kv title written as {{ app.name }} (with spaces) is interpolated like {{app.name}}', async () => {
+    const project = await setupProject({
+      includePreflight: false,
+      includePostDeploy: false,
+      kvTitle: '{{ app.name }}-mcp-kv',
+    })
+    const fake = createFakeWrangler()
+
+    await deployOnce(project, fake)
+
+    expect(fake.kvNamespaces.map((namespace) => namespace.title)).toEqual([
+      'test-app-mcp-kv',
+    ])
   })
 })
