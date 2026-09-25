@@ -346,6 +346,27 @@ const lintTemplateManifest = (manifest: TemplateManifest): void => {
     }
   }
 
+  // At most one `var` may claim flag "domain": the --domain shorthand and the
+  // L12 route-origin check both assume that flag uniquely identifies one
+  // prompt (steiner r2 N-9).
+  const domainFlaggedVarCount =
+    manifest.prompts.filter((prompt) =>
+      prompt.target === 'var' && prompt.flag === 'domain'
+    ).length
+  if (domainFlaggedVarCount > 1) {
+    violations.push('L12: at most one var prompt may declare flag "domain"')
+  }
+
+  // `cloudflare.config` must itself be a render[] target, or any `{{...}}` it
+  // contains is written to the generated app unresolved (steiner r2 N-4).
+  if (
+    !manifest.render.some((entry) => entry.path === manifest.cloudflare.config)
+  ) {
+    violations.push(
+      `L12: cloudflare.config (${manifest.cloudflare.config}) must be listed in render[]`,
+    )
+  }
+
   for (const prompt of manifest.prompts) {
     if (
       isSecretPromptTarget(prompt.target) &&
@@ -541,19 +562,34 @@ const lintCloudflareWorkerConfig = (
           violations.push(
             `L12: ${configPath} [[routes]] entry must be exactly { pattern = "{{domain}}", custom_domain = true }`,
           )
-        } else if (
-          !manifest.prompts.some((prompt) =>
-            prompt.target === 'var' && prompt.flag === 'domain'
+        } else {
+          // The placeholder is named "domain", but that alone does not prove
+          // its value came from the user: the "domain" *key* itself must be
+          // the flagged var - a decoy where some other key (e.g. "host")
+          // carries flag "domain" while a `derived` (or flag-less `var`)
+          // "domain" key supplies a fixed/attacker-chosen value would
+          // otherwise pass, since `{{domain}}` still resolves and *some*
+          // prompt still has flag "domain" (steiner r2 B-1, closing the gap
+          // left by steiner r1 B2 / cyan r1 B2).
+          const domainPrompt = manifest.prompts.find((prompt) =>
+            prompt.key === 'domain'
           )
-        ) {
-          // {{domain}} could otherwise be a `derived` key (a fixed or
-          // attacker-chosen expression) or a flag-less `var` (never surfaced
-          // by --domain / the interactive domain question), letting a
-          // template route to a domain the user never actually supplied
-          // (steiner r1 B2 / cyan r1 B2).
-          violations.push(
-            `L12: ${configPath} [[routes]] binds to {{domain}}, but no \`var\` prompt with flag "domain" declares that key`,
-          )
+          const isDomainKeyItselfFlagged = domainPrompt !== undefined &&
+            domainPrompt.target === 'var' && domainPrompt.flag === 'domain'
+          if (!isDomainKeyItselfFlagged) {
+            violations.push(
+              `L12: ${configPath} [[routes]] binds to {{domain}}, but the "domain" prompt itself is not { target: "var", flag: "domain" }`,
+            )
+          } else if (
+            domainPrompt.target === 'var' && domainPrompt.default !== undefined
+          ) {
+            // A `default` would let `--yes` route to that zone with no value
+            // the user actually typed (el ruling, cyan r2 B2-P2): the
+            // "domain" prompt must require a real answer.
+            violations.push(
+              `L12: ${configPath} [[routes]] binds to {{domain}}, but the "domain" prompt declares a default (it must require a typed answer)`,
+            )
+          }
         }
       }
     }
