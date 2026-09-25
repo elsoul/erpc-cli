@@ -774,6 +774,23 @@ const executeCliCommand = async (
         '--target is only supported for the cloudflare-worker runtime',
       )
     }
+    // Every option below this point exists only for the cloudflare-worker
+    // deploy path: silently accepting one here would run a real SSH deploy
+    // while ignoring what the caller asked for (Decision 1, non-goal).
+    const cloudflareOnlyOptions: ReadonlyArray<readonly [string, unknown]> = [
+      ['--yes', parsed.yes],
+      ['--no-provision', parsed.noProvision],
+      ['--dry-run', parsed.dryRun],
+      ['--verify-only', parsed.verifyOnly],
+      ['--ack-backup', parsed.ackBackup.length > 0],
+    ]
+    for (const [flag, used] of cloudflareOnlyOptions) {
+      if (used) {
+        throw new Error(
+          `${flag} is only supported for the cloudflare-worker runtime`,
+        )
+      }
+    }
     const localConfig = await readErpcConfig(configOptions)
     const nodeNames = Object.keys(localConfig.nodes).sort()
     const nodeName = parsed.node ?? (
