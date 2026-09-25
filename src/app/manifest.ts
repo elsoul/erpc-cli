@@ -171,3 +171,154 @@ export const findErpcManifest = async (
   }
   throw new Error('No erpc.toml found in the current directory or its parents')
 }
+
+const SHA256_HEX = /^[0-9a-f]{64}$/
+
+/**
+ * The `erpc.toml` contract `erpc app init --template` produces (design doc
+ * §1.4/§3.2). `run`/`build.artifact` do not apply: `erpc deploy --target
+ * cloudflare` (a later PR) never runs a local build artifact the way the
+ * node/deno SSH deploy path does.
+ */
+export interface CloudflareWorkerManifest {
+  readonly app: {
+    readonly entrypoint: string
+    readonly runtime: 'cloudflare-worker'
+  }
+  readonly build?: {
+    readonly command: readonly string[]
+  }
+  readonly cloudflare: {
+    readonly config: string
+    readonly wrangler: readonly string[]
+  }
+  readonly configPath: string
+  readonly deploy: {
+    readonly target: string
+  }
+  readonly health: {
+    readonly timeoutSeconds: number
+  }
+  readonly name: string
+  readonly oidc?: {
+    readonly clientId: string
+    readonly issuer: string
+    readonly redirectUris: readonly string[]
+  }
+  readonly projectRoot: string
+  readonly schemaVersion: 1
+  readonly template: {
+    readonly asset: string
+    readonly name: string
+    readonly ref: string
+    readonly sha256: string
+    readonly source: string
+  }
+}
+
+const stringArray = (value: unknown): value is readonly string[] =>
+  Array.isArray(value) && value.length > 0 &&
+  value.every((item) => typeof item === 'string' && item.length > 0)
+
+const parseCloudflareWorkerManifest = (
+  document: Record<string, unknown>,
+  absoluteConfig: string,
+): CloudflareWorkerManifest => {
+  const app = objectValue(document.app)
+  const cloudflare = objectValue(document.cloudflare)
+  const deploy = objectValue(document.deploy)
+  const health = objectValue(document.health)
+  const template = objectValue(document.template)
+  const build = document.build === undefined
+    ? undefined
+    : objectValue(document.build)
+  const oidc = document.oidc === undefined
+    ? undefined
+    : objectValue(document.oidc)
+  const invalid = new Error(`Invalid ERPC manifest contract: ${absoluteConfig}`)
+
+  if (
+    document.schema_version !== 1 ||
+    typeof document.name !== 'string' || !APP_NAME.test(document.name) ||
+    !app || app.runtime !== 'cloudflare-worker' ||
+    typeof app.entrypoint !== 'string' || !app.entrypoint ||
+    !cloudflare ||
+    typeof cloudflare.config !== 'string' || !cloudflare.config ||
+    !stringArray(cloudflare.wrangler) ||
+    !deploy || typeof deploy.target !== 'string' || !deploy.target ||
+    !health || typeof health.timeout_seconds !== 'number' ||
+    !Number.isInteger(health.timeout_seconds) || health.timeout_seconds < 1 ||
+    !template ||
+    typeof template.name !== 'string' || !template.name ||
+    typeof template.source !== 'string' || !template.source ||
+    typeof template.ref !== 'string' || !template.ref ||
+    typeof template.asset !== 'string' || !template.asset ||
+    typeof template.sha256 !== 'string' || !SHA256_HEX.test(template.sha256) ||
+    (document.build !== undefined && (!build || !stringArray(build.command))) ||
+    (document.oidc !== undefined && (
+      !oidc ||
+      typeof oidc.issuer !== 'string' || !oidc.issuer ||
+      typeof oidc.client_id !== 'string' || !oidc.client_id ||
+      !stringArray(oidc.redirect_uris)
+    ))
+  ) throw invalid
+
+  return {
+    app: { entrypoint: app.entrypoint, runtime: 'cloudflare-worker' },
+    ...(build
+      ? { build: { command: build.command as readonly string[] } }
+      : {}),
+    cloudflare: {
+      config: cloudflare.config,
+      wrangler: cloudflare.wrangler as readonly string[],
+    },
+    configPath: absoluteConfig,
+    deploy: { target: deploy.target },
+    health: { timeoutSeconds: health.timeout_seconds },
+    name: document.name,
+    ...(oidc
+      ? {
+        oidc: {
+          clientId: oidc.client_id as string,
+          issuer: oidc.issuer as string,
+          redirectUris: oidc.redirect_uris as readonly string[],
+        },
+      }
+      : {}),
+    projectRoot: dirname(absoluteConfig),
+    schemaVersion: 1,
+    template: {
+      asset: template.asset,
+      name: template.name,
+      ref: template.ref,
+      sha256: template.sha256,
+      source: template.source,
+    },
+  }
+}
+
+/**
+ * Loads an `erpc.toml` whose `[app].runtime` may be `node`, `deno`, or
+ * `cloudflare-worker`. `node`/`deno` manifests keep the exact
+ * `loadErpcManifest` contract (design doc §3.2: "`loadErpcManifest` は現行契約
+ * のまま"); this only adds the `cloudflare-worker` branch on top.
+ */
+export const loadAnyErpcManifest = async (
+  configPath: string,
+): Promise<ErpcManifest | CloudflareWorkerManifest> => {
+  const absoluteConfig = resolve(configPath)
+  let document: Record<string, unknown>
+  try {
+    document = parse(await readFile(absoluteConfig, 'utf8')) as Record<
+      string,
+      unknown
+    >
+  } catch {
+    throw new Error(`Unable to parse ERPC manifest: ${absoluteConfig}`)
+  }
+  const app = objectValue(document.app)
+  if (app?.runtime === 'cloudflare-worker') {
+    return parseCloudflareWorkerManifest(document, absoluteConfig)
+  }
+  return await loadErpcManifest(configPath)
+}

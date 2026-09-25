@@ -5,14 +5,14 @@ import {
   type ErpcLocalConfig,
   readErpcConfig,
 } from '../config.ts'
-import { loadErpcManifest } from './manifest.ts'
-import type { AppRuntime } from './templates.ts'
+import { loadAnyErpcManifest } from './manifest.ts'
+import type { ManifestRuntime } from './templates.ts'
 
 export interface RegisteredApplication {
   readonly config: string
   readonly name: string
   readonly root: string
-  readonly runtime: AppRuntime
+  readonly runtime: ManifestRuntime
   readonly target: string
 }
 
@@ -36,7 +36,7 @@ export const listErpcApplications = async (
   const applications: RegisteredApplication[] = []
   for (const path of paths) {
     try {
-      const manifest = await loadErpcManifest(path)
+      const manifest = await loadAnyErpcManifest(path)
       applications.push({
         config: manifest.configPath,
         name: manifest.name,

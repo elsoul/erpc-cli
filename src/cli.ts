@@ -14,9 +14,25 @@ import {
 } from './auth/token-store.ts'
 import { initializeApp } from './app/init.ts'
 import { findErpcManifest, loadErpcManifest } from './app/manifest.ts'
-import { promptForRuntime } from './app/prompt.ts'
+import { promptForRuntime, promptForTemplateOrRuntime } from './app/prompt.ts'
+import { defaultPromptIO, type PromptIO } from './app/prompt-io.ts'
 import { listErpcApplications } from './app/registry.ts'
 import { APP_RUNTIMES, type AppRuntime } from './app/templates.ts'
+import {
+  isValidSha256Hex,
+  isValidTemplateTag,
+  parseTemplateRef,
+  TEMPLATE_TAG_PATTERN,
+} from './app/template-ref.ts'
+import {
+  defaultOidcClientRegistrar,
+  initializeTemplateApp,
+  type OidcClientRegistrar,
+} from './app/template-init.ts'
+import {
+  TEMPLATE_REGISTRY,
+  type TemplateRegistry,
+} from './app/template-registry.ts'
 import { readErpcConfig, registerErpcApplication } from './config.ts'
 import { buildForDeployment } from './deploy/build.ts'
 import { deployOverSsh } from './deploy/ssh.ts'
@@ -28,10 +44,21 @@ export interface CliDependencies {
   readonly auth?: DeviceAuthClient
   readonly cwd?: string
   readonly erpcHome?: string
+  readonly fetch?: typeof globalThis.fetch
+  readonly oidcRegistrar?: OidcClientRegistrar
   readonly openExternal?: (url: string) => void
   readonly output?: (message: string) => void
+  readonly promptIO?: PromptIO
   readonly runProcess?: ProcessRunner
+  /**
+   * Forwarded into `initializeTemplateApp`'s broker-register call so a
+   * caller wiring its own cancellation (for example an `AbortController`
+   * tied to `SIGINT`) can cut short the device-flow poll instead of it
+   * running to its own timeout (packet Decision 6).
+   */
+  readonly signal?: AbortSignal
   readonly store?: RefreshTokenStore
+  readonly templateRegistry?: TemplateRegistry
 }
 
 const help = `ERPC CLI
@@ -47,6 +74,7 @@ Usage:
   erpc resources get <resource-id>
   erpc resources status <resource-id>
   erpc app init [directory] [--runtime node|deno] [--name app-name]
+  erpc app init [directory] --template <name>@<tag> [--sha256 <hex>] [--set KEY=VALUE]...
   erpc app list
   erpc deploy [--config path/to/erpc.toml] [--node node-name]
 
@@ -56,9 +84,18 @@ const appInitHelp = `Create a minimal ERPC application
 
 Usage:
   erpc app init [directory] [--runtime node|deno] [--name app-name]
+  erpc app init [directory] --template <name>@<tag> [--sha256 <hex64>]
+    [--set KEY=VALUE]... [--domain <value>] [--email <value>]
+    [--trust-issuer <origin>] [--yes]
 
 Bare names are created below ~/.erpc/apps. Paths are created where specified.
-When --runtime is omitted in a terminal, the CLI asks you to choose.`
+When neither --runtime nor --template is given in a terminal, the CLI asks
+you to choose. --runtime and --template are mutually exclusive.
+
+--template fetches a registered template's GitHub release asset, verifies it
+against a pinned or explicitly supplied --sha256, and answers its prompts
+from --set/--domain/--email or interactively. Non-interactive runs require
+--yes and fail with every missing or invalid answer listed together.`
 
 const defaultOpenExternal = (url: string): void => {
   const platform = Deno.build.os
@@ -103,11 +140,78 @@ const parseRuntime = (value: string | undefined): AppRuntime | undefined => {
   throw new Error('Runtime must be node or deno')
 }
 
+/** Parses the leading `vMAJOR.MINOR.PATCH` for ordering tags; unparsable tags sort first. */
+const semverSortKey = (value: string): readonly [number, number, number] => {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(value)
+  if (!match) return [-1, -1, -1]
+  return [Number(match[1]), Number(match[2]), Number(match[3])]
+}
+
+const compareSemver = (a: string, b: string): number => {
+  const [aMajor, aMinor, aPatch] = semverSortKey(a)
+  const [bMajor, bMinor, bPatch] = semverSortKey(b)
+  return (aMajor - bMajor) || (aMinor - bMinor) || (aPatch - bPatch)
+}
+
+/** Interactively asks for a tag (and, when unpinned, a sha256) after the user picks a template by name. */
+const promptForTemplateTagAndSha256 = async (
+  promptIO: PromptIO,
+  registry: TemplateRegistry,
+  name: string,
+): Promise<{ readonly sha256?: string; readonly tag: string }> => {
+  // `Object.hasOwn` (not bracket access) so a template named e.g.
+  // "constructor" can't resolve through the prototype chain.
+  const entry = Object.hasOwn(registry, name) ? registry[name] : undefined
+  const pinnedTags = entry ? Object.keys(entry.pins).sort(compareSemver) : []
+  const suggestion = pinnedTags.at(-1) // highest semver, not lexicographically last
+  const tag = await promptIO.text(
+    pinnedTags.length > 0
+      ? `Tag for ${name} (pinned: ${pinnedTags.join(', ')})`
+      : `Tag for ${name} (for example v0.1.0)`,
+    {
+      ...(suggestion === undefined ? {} : { default: suggestion }),
+      validate: (value) =>
+        isValidTemplateTag(value) ||
+        `Must match ${TEMPLATE_TAG_PATTERN} (for example v0.1.0)`,
+    },
+  )
+  const pinnedSha256 = entry && Object.hasOwn(entry.pins, tag)
+    ? entry.pins[tag]
+    : undefined
+  if (pinnedSha256 !== undefined) return { tag }
+  const sha256 = await promptIO.text(
+    `sha256 for ${name}@${tag} (this tag is not pinned by this CLI; 64 hex characters)`,
+    {
+      validate: (value) =>
+        isValidSha256Hex(value) || 'Must be 64 lowercase hex characters',
+    },
+  )
+  return { sha256, tag }
+}
+
 interface AppInitArguments {
   readonly directory?: string
+  readonly domainValue?: string
+  readonly emailValue?: string
   readonly name?: string
   readonly runtime?: AppRuntime
+  readonly setValues: ReadonlyMap<string, string>
+  readonly sha256?: string
+  readonly template?: string
+  readonly trustIssuer?: string
+  readonly yes: boolean
 }
+
+const VALUED_APP_INIT_OPTIONS = [
+  '--runtime',
+  '--name',
+  '--template',
+  '--sha256',
+  '--set',
+  '--domain',
+  '--email',
+  '--trust-issuer',
+] as const
 
 const parseAppInitArguments = (
   args: readonly string[],
@@ -115,20 +219,78 @@ const parseAppInitArguments = (
   let directory: string | undefined
   let name: string | undefined
   let runtime: AppRuntime | undefined
+  let template: string | undefined
+  let sha256: string | undefined
+  let domainValue: string | undefined
+  let emailValue: string | undefined
+  let trustIssuer: string | undefined
+  let yes = false
+  const setValues = new Map<string, string>()
 
   for (let index = 0; index < args.length; index++) {
     const value = args[index]
-    if (value === '--runtime' || value === '--name') {
+    if (value === '--yes') {
+      yes = true
+      continue
+    }
+    if ((VALUED_APP_INIT_OPTIONS as readonly string[]).includes(value ?? '')) {
       const optionValue = args[index + 1]
       if (!optionValue || optionValue.startsWith('-')) {
         throw new Error(`${value} requires a value`)
       }
-      if (value === '--runtime') {
-        if (runtime !== undefined) throw new Error('--runtime may be used once')
-        runtime = parseRuntime(optionValue)
-      } else {
-        if (name !== undefined) throw new Error('--name may be used once')
-        name = optionValue
+      switch (value) {
+        case '--runtime':
+          if (runtime !== undefined) {
+            throw new Error('--runtime may be used once')
+          }
+          runtime = parseRuntime(optionValue)
+          break
+        case '--name':
+          if (name !== undefined) throw new Error('--name may be used once')
+          name = optionValue
+          break
+        case '--template':
+          if (template !== undefined) {
+            throw new Error('--template may be used once')
+          }
+          template = optionValue
+          break
+        case '--sha256':
+          if (sha256 !== undefined) throw new Error('--sha256 may be used once')
+          if (!isValidSha256Hex(optionValue)) {
+            throw new Error('--sha256 must be 64 lowercase hex characters')
+          }
+          sha256 = optionValue
+          break
+        case '--domain':
+          if (domainValue !== undefined) {
+            throw new Error('--domain may be used once')
+          }
+          domainValue = optionValue
+          break
+        case '--email':
+          if (emailValue !== undefined) {
+            throw new Error('--email may be used once')
+          }
+          emailValue = optionValue
+          break
+        case '--trust-issuer':
+          if (trustIssuer !== undefined) {
+            throw new Error('--trust-issuer may be used once')
+          }
+          trustIssuer = optionValue
+          break
+        case '--set': {
+          const equalsIndex = optionValue.indexOf('=')
+          if (equalsIndex <= 0) {
+            throw new Error('--set requires KEY=VALUE')
+          }
+          setValues.set(
+            optionValue.slice(0, equalsIndex),
+            optionValue.slice(equalsIndex + 1),
+          )
+          break
+        }
       }
       index++
       continue
@@ -141,10 +303,21 @@ const parseAppInitArguments = (
     directory = value
   }
 
+  if (runtime !== undefined && template !== undefined) {
+    throw new Error('--runtime and --template are mutually exclusive')
+  }
+
   return {
     ...(directory === undefined ? {} : { directory }),
+    ...(domainValue === undefined ? {} : { domainValue }),
+    ...(emailValue === undefined ? {} : { emailValue }),
     ...(name === undefined ? {} : { name }),
     ...(runtime === undefined ? {} : { runtime }),
+    setValues,
+    ...(sha256 === undefined ? {} : { sha256 }),
+    ...(template === undefined ? {} : { template }),
+    ...(trustIssuer === undefined ? {} : { trustIssuer }),
+    yes,
   }
 }
 
@@ -357,7 +530,30 @@ const executeCliCommand = async (
       return 0
     }
     const parsed = parseAppInitArguments(appArgs)
-    const runtime = parsed.runtime ?? await promptForRuntime()
+    const templateRegistry = dependencies.templateRegistry ?? TEMPLATE_REGISTRY
+    const promptIO = dependencies.promptIO ?? defaultPromptIO
+
+    let runtime = parsed.runtime
+    let templateRef = parsed.template === undefined
+      ? undefined
+      : parseTemplateRef(parsed.template)
+    let interactiveSha256: string | undefined
+
+    if (runtime === undefined && templateRef === undefined) {
+      const choice = await promptForTemplateOrRuntime(templateRegistry)
+      if (choice.kind === 'runtime') {
+        runtime = choice.runtime
+      } else {
+        const tagAndSha256 = await promptForTemplateTagAndSha256(
+          promptIO,
+          templateRegistry,
+          choice.name,
+        )
+        templateRef = { name: choice.name, tag: tagAndSha256.tag }
+        interactiveSha256 = tagAndSha256.sha256
+      }
+    }
+
     const localConfig = await readErpcConfig(configOptions)
     const requested = parsed.directory
     const applicationName = parsed.name ?? (
@@ -370,9 +566,61 @@ const executeCliCommand = async (
     const directory = requested !== undefined && pathLike(requested)
       ? resolve(cwd, requested)
       : join(localConfig.appsDirectory, requested ?? applicationName)
+
+    if (templateRef !== undefined) {
+      const initialized = await initializeTemplateApp({
+        directory,
+        ...(parsed.domainValue === undefined
+          ? {}
+          : { domainValue: parsed.domainValue }),
+        ...(parsed.emailValue === undefined
+          ? {}
+          : { emailValue: parsed.emailValue }),
+        erpcHome: localConfig.erpcHome,
+        ...(dependencies.fetch === undefined
+          ? {}
+          : { fetch: dependencies.fetch }),
+        ...(parsed.name === undefined ? {} : { name: parsed.name }),
+        oidcRegistrar: dependencies.oidcRegistrar ?? defaultOidcClientRegistrar,
+        // Falls back to the real `xdg-open`/`open`/`start` launcher outside
+        // tests, the same way `oidcRegistrar` falls back above - without
+        // this, a production run never actually opens the broker's
+        // verification URL in a browser (packet Decision 6).
+        openExternal: dependencies.openExternal ?? defaultOpenExternal,
+        output,
+        promptIO,
+        setValues: parsed.setValues,
+        ...(dependencies.signal === undefined
+          ? {}
+          : { signal: dependencies.signal }),
+        ...(parsed.sha256 ?? interactiveSha256) === undefined
+          ? {}
+          : { sha256: (parsed.sha256 ?? interactiveSha256)! },
+        tag: templateRef.tag,
+        templateName: templateRef.name,
+        templateRegistry,
+        ...(parsed.trustIssuer === undefined
+          ? {}
+          : { trustIssuer: parsed.trustIssuer }),
+        yes: parsed.yes,
+      })
+      if (!insideDirectory(localConfig.appsDirectory, initialized.directory)) {
+        await registerErpcApplication({
+          config: join(initialized.directory, 'erpc.toml'),
+          name: initialized.name,
+        }, configOptions)
+      }
+      output(
+        `Created ${initialized.name} from template ${templateRef.name}@${templateRef.tag}.`,
+      )
+      output(`Next: cd ${initialized.directory}`)
+      return 0
+    }
+
+    const resolvedRuntime = runtime ?? await promptForRuntime()
     const initialized = await initializeApp({
       directory,
-      runtime,
+      runtime: resolvedRuntime,
       name: applicationName,
     })
     if (!insideDirectory(localConfig.appsDirectory, initialized.directory)) {
@@ -602,18 +850,73 @@ export const createProgram = (
     .type('runtime', new EnumType([...APP_RUNTIMES]))
     .option('--runtime <runtime:runtime>', 'Application runtime.')
     .option('--name <name:string>', 'Application name.')
-    .action(async ({ name, runtime }, directory?: string) => {
-      await execute(
-        appendCommandOptions([
+    .option(
+      '--template <ref:string>',
+      'Create from a registered template: <name>@<tag>. Mutually exclusive with --runtime.',
+    )
+    .option(
+      '--sha256 <hex:string>',
+      'Expected sha256 of the template release asset (required for an unpinned tag).',
+    )
+    .option(
+      '--set <keyValue:string>',
+      'Answer a template prompt: KEY=VALUE. May be repeated.',
+      { collect: true },
+    )
+    .option(
+      '--domain <value:string>',
+      'Shorthand for a template prompt flagged "domain".',
+    )
+    .option(
+      '--email <value:string>',
+      'Shorthand for a template prompt flagged "email".',
+    )
+    .option(
+      '--trust-issuer <origin:string>',
+      'Trust an unpinned template broker issuer non-interactively.',
+    )
+    .option(
+      '--yes',
+      'Do not prompt; use defaults and fail if an answer is missing.',
+    )
+    .action(
+      async (
+        {
+          domain,
+          email,
+          name,
+          runtime,
+          set,
+          sha256,
+          template,
+          trustIssuer,
+          yes,
+        },
+        directory?: string,
+      ) => {
+        const args = appendCommandOptions([
           'app',
           'init',
           ...(directory === undefined ? [] : [directory]),
         ], [
           ['--runtime', runtime],
           ['--name', name],
-        ]),
-      )
-    })
+          ['--template', template],
+          ['--sha256', sha256],
+          ['--domain', domain],
+          ['--email', email],
+          ['--trust-issuer', trustIssuer],
+          ['--yes', yes],
+        ])
+        const setValues = set === undefined
+          ? []
+          : Array.isArray(set)
+          ? set
+          : [set]
+        for (const value of setValues) args.push('--set', value)
+        await execute(args)
+      },
+    )
   const appCommand = new Command()
     .description('Create and inspect local ERPC applications.')
     .action(showHelp)
