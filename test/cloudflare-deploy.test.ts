@@ -1001,7 +1001,8 @@ describe('erpc deploy --target cloudflare', () => {
   })
 
   it('D7: a worker 302 followed by the issuer 302ing to /oauth/consent passes', async () => {
-    // Covered end-to-end by the A10 test above; this asserts the exact
+    // Covered end-to-end by "full provision -> deploy -> probe in order, then a
+    // second run is a no-op for KV/secret" above; this asserts the exact
     // Location shape once more in isolation via --verify-only.
     const project = await setupProject({
       includeKv: false,
