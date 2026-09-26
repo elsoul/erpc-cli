@@ -63,7 +63,7 @@ export interface OidcClientRegistrar {
 export const unsupportedOidcClientRegistrar: OidcClientRegistrar = {
   register(): Promise<{ clientId: string }> {
     throw new Error(
-      'Broker registration is not available in this CLI version. ' +
+      'This template requires a broker registration, which this command was not configured to perform. ' +
         'Pass --set APP_OIDC_CLIENT_ID=<client id>.',
     )
   },

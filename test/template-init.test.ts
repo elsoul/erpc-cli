@@ -485,7 +485,7 @@ describe('initializeTemplateApp', () => {
         oidcRegistrar: unsupportedOidcClientRegistrar,
       }),
     ).rejects.toThrow(
-      'Broker registration is not available in this CLI version',
+      'This template requires a broker registration, which this command was not configured to perform',
     )
 
     expect(await directoryIsMissingOrEmpty(directory)).toBe(true)
