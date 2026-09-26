@@ -1,9 +1,8 @@
 // Archive expansion policy for `erpc app init --template`.
-// See design doc §1.3 and Task Brief Decision 4.
 //
 // `@std/tar`'s UntarStream does not apply pax `path` overrides, passes `..`
 // and absolute paths straight through, and represents symlinks with their
-// literal typeflag (design R11/R12). This module is therefore the only place
+// literal typeflag. This module is therefore the only place
 // that decides whether an archive entry is safe to write, and it validates
 // every entry into an in-memory map before a single file is written.
 

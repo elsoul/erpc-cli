@@ -1,5 +1,4 @@
 // Template ref parsing and validation.
-// See design doc `2026-09-25-erpc-cli-template-cloudflare-gogo.md` §1.1.
 
 export const TEMPLATE_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/
 export const TEMPLATE_TAG_PATTERN = /^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/

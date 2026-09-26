@@ -101,7 +101,7 @@ describe('parseTemplateManifest', () => {
     expect(() => parseTemplateManifest(manifest)).toThrow('L2')
   })
 
-  it('L2: rejects a derived expr referencing a broker-register key, declared before or after it (packet Decision 6)', () => {
+  it('L2: rejects a derived expr referencing a broker-register key, declared before or after it', () => {
     // Broker registration always resolves in a single pass after every
     // `var`/`derived` prompt (design §2.6 order), so a `derived` value -
     // computed in that earlier pass - can never actually observe the
@@ -158,6 +158,28 @@ describe('parseTemplateManifest', () => {
     expect(() => parseTemplateManifest(manifest)).toThrow('L3')
   })
 
+  it('L2: rejects a cloudflare.kv title referencing {{broker.issuer}} (only {{app.name}} is interpolated for a kv title)', () => {
+    const manifest = baseManifest()
+    manifest.cloudflare = {
+      ...manifest.cloudflare,
+      kv: [{ binding: 'MCP_KV', title: '{{broker.issuer}}-mcp-kv' }],
+    }
+    expect(() => parseTemplateManifest(manifest)).toThrow('L2')
+  })
+
+  it('L2: rejects a cloudflare.kv title referencing an earlier non-secret prompt key (only {{app.name}} is interpolated for a kv title)', () => {
+    const manifest = baseManifest()
+    manifest.cloudflare = {
+      ...manifest.cloudflare,
+      kv: [{ binding: 'MCP_KV', title: '{{LABEL}}-mcp-kv' }],
+    }
+    manifest.prompts = [
+      { key: 'LABEL', target: 'var', question: 'A label' },
+      ...manifest.prompts,
+    ] as TemplatePrompt[]
+    expect(() => parseTemplateManifest(manifest)).toThrow('L2')
+  })
+
   it('L6: rejects more than one broker-register prompt', () => {
     const manifest = baseManifest()
     const brokerPrompt = manifest.prompts[2]! as BrokerRegisterPrompt
@@ -205,6 +227,24 @@ describe('parseTemplateManifest', () => {
     expect(() => parseTemplateManifest(manifest)).toThrow('L10')
   })
 
+  it('L10: rejects a var default containing a template placeholder', () => {
+    // A `default` becomes the answer whenever nothing else supplies one, and
+    // every answer is rejected if it contains "{{" - so a default with a
+    // placeholder in it could never actually be used; lint should catch this
+    // instead of letting a template author discover it as a confusing
+    // answer-collection failure at init time.
+    const manifest = baseManifest()
+    manifest.prompts = [
+      {
+        key: 'LABEL',
+        target: 'var',
+        question: 'A label',
+        default: '{{app.name}}-x',
+      },
+    ] as TemplatePrompt[]
+    expect(() => parseTemplateManifest(manifest)).toThrow('L10')
+  })
+
   it('L11: rejects a template that requires a newer CLI than is running', () => {
     const manifest = baseManifest()
     manifest.minCliVersion = '99.0.0'
@@ -230,7 +270,7 @@ describe('parseTemplateManifest', () => {
     expect(() => parseTemplateManifest(manifest)).toThrow('L9')
   })
 
-  it('N6: rejects a reference to {{broker.issuer}} when no broker section exists', () => {
+  it('rejects a reference to {{broker.issuer}} when no broker section exists', () => {
     const manifest = { ...baseManifest(), broker: undefined }
     manifest.prompts = [
       {
@@ -401,7 +441,7 @@ describe('lintTemplateFiles', () => {
     ).toThrow('L12')
   })
 
-  it('L12: rejects a "domain" var with no flag at all and no default either (packet Decision 5(c), mutant MR15)', () => {
+  it('L12: rejects a "domain" var with no flag at all and no default either', () => {
     // Isolates the missing-flag condition from every other way this prompt
     // could be wrong: no `default`, a `validate` pattern, otherwise a
     // perfectly ordinary `var` prompt - only `flag` itself is absent. A

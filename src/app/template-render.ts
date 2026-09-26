@@ -1,5 +1,5 @@
-// Renders the `render[]` files declared by an `erpc-template.json` manifest.
-// See design doc §1.4/§2.3 (L4/L5) and Task Brief Decision 9.
+// Renders the `render[]` files declared by an `erpc-template.json` manifest
+// (the L4/L5 placeholder rules are checked by `template-manifest.ts`).
 
 import type { ExtractedTemplateFile } from './template-archive.ts'
 import {

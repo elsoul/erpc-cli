@@ -13,7 +13,12 @@ import {
   type RefreshTokenStore,
 } from './auth/token-store.ts'
 import { initializeApp } from './app/init.ts'
-import { findErpcManifest, loadErpcManifest } from './app/manifest.ts'
+import {
+  type CloudflareWorkerManifest,
+  type ErpcManifest,
+  findErpcManifest,
+  loadAnyErpcManifest,
+} from './app/manifest.ts'
 import { promptForRuntime, promptForTemplateOrRuntime } from './app/prompt.ts'
 import { defaultPromptIO, type PromptIO } from './app/prompt-io.ts'
 import { listErpcApplications } from './app/registry.ts'
@@ -37,6 +42,7 @@ import { readErpcConfig, registerErpcApplication } from './config.ts'
 import { buildForDeployment } from './deploy/build.ts'
 import { deployOverSsh } from './deploy/ssh.ts'
 import { resolveVerifiedNodeRuntime } from './deploy/node-runtime.ts'
+import { deployToCloudflare } from './deploy/cloudflare.ts'
 import type { ProcessRunner } from './process.ts'
 import { erpcAA, erpcWelcomeMessage } from './ui/welcome.ts'
 
@@ -49,12 +55,19 @@ export interface CliDependencies {
   readonly openExternal?: (url: string) => void
   readonly output?: (message: string) => void
   readonly promptIO?: PromptIO
+  /**
+   * `crypto.getRandomValues`'s signature. Forwarded into
+   * `erpc deploy --target cloudflare`'s secret generation and post-deploy
+   * PKCE probe so a test can inject deterministic bytes instead of real
+   * entropy.
+   */
+  readonly random?: (bytes: Uint8Array<ArrayBuffer>) => void
   readonly runProcess?: ProcessRunner
   /**
    * Forwarded into `initializeTemplateApp`'s broker-register call so a
    * caller wiring its own cancellation (for example an `AbortController`
    * tied to `SIGINT`) can cut short the device-flow poll instead of it
-   * running to its own timeout (packet Decision 6).
+   * running to its own timeout.
    */
   readonly signal?: AbortSignal
   readonly store?: RefreshTokenStore
@@ -77,6 +90,8 @@ Usage:
   erpc app init [directory] --template <name>@<tag> [--sha256 <hex>] [--set KEY=VALUE]...
   erpc app list
   erpc deploy [--config path/to/erpc.toml] [--node node-name]
+  erpc deploy [--config path/to/erpc.toml] [--target cloudflare] [--yes]
+    [--ack-backup <KEY>]... [--no-provision] [--dry-run] [--verify-only]
 
 Cloud billing and resource write commands are unavailable until their authorization and confirmation contracts are enabled.`
 
@@ -97,7 +112,7 @@ against a pinned or explicitly supplied --sha256, and answers its prompts
 from --set/--domain/--email or interactively. Non-interactive runs require
 --yes and fail with every missing or invalid answer listed together.`
 
-const defaultOpenExternal = (url: string): void => {
+export const defaultOpenExternal = (url: string): void => {
   const platform = Deno.build.os
   const [command, args] = platform === 'darwin'
     ? ['open', [url]]
@@ -322,16 +337,51 @@ const parseAppInitArguments = (
 }
 
 interface DeployArguments {
+  readonly ackBackup: readonly string[]
   readonly config?: string
+  readonly dryRun: boolean
   readonly node?: string
+  readonly noProvision: boolean
+  readonly target?: string
+  readonly verifyOnly: boolean
+  readonly yes: boolean
 }
+
+const DEPLOY_VALUED_OPTIONS = [
+  '--config',
+  '--node',
+  '--target',
+  '--ack-backup',
+] as const
 
 const parseDeployArguments = (args: readonly string[]): DeployArguments => {
   let config: string | undefined
   let node: string | undefined
+  let target: string | undefined
+  let dryRun = false
+  let noProvision = false
+  let verifyOnly = false
+  let yes = false
+  const ackBackup: string[] = []
   for (let index = 0; index < args.length; index++) {
     const option = args[index]
-    if (option !== '--config' && option !== '--node') {
+    if (option === '--yes') {
+      yes = true
+      continue
+    }
+    if (option === '--no-provision') {
+      noProvision = true
+      continue
+    }
+    if (option === '--dry-run') {
+      dryRun = true
+      continue
+    }
+    if (option === '--verify-only') {
+      verifyOnly = true
+      continue
+    }
+    if (!(DEPLOY_VALUED_OPTIONS as readonly string[]).includes(option ?? '')) {
       throw new Error(`Unknown deploy option: ${option}`)
     }
     const value = args[index + 1]
@@ -341,15 +391,26 @@ const parseDeployArguments = (args: readonly string[]): DeployArguments => {
     if (option === '--config') {
       if (config !== undefined) throw new Error('--config may be used once')
       config = value
-    } else {
+    } else if (option === '--node') {
       if (node !== undefined) throw new Error('--node may be used once')
       node = value
+    } else if (option === '--target') {
+      if (target !== undefined) throw new Error('--target may be used once')
+      target = value
+    } else {
+      ackBackup.push(value)
     }
     index++
   }
   return {
+    ackBackup,
     ...(config === undefined ? {} : { config }),
+    dryRun,
     ...(node === undefined ? {} : { node }),
+    noProvision,
+    ...(target === undefined ? {} : { target }),
+    verifyOnly,
+    yes,
   }
 }
 
@@ -363,6 +424,17 @@ const insideDirectory = (parent: string, child: string): boolean => {
   const path = relative(parent, child)
   return path === '' || (!path.startsWith('..') && !isAbsolute(path))
 }
+
+/**
+ * `loadAnyErpcManifest`'s union discriminates on `app.runtime`, which sits
+ * one property below the union's root - some TypeScript versions do not
+ * narrow through that automatically, so this predicate makes the narrowing
+ * explicit at both call sites below.
+ */
+const isCloudflareWorkerManifest = (
+  manifest: ErpcManifest | CloudflareWorkerManifest,
+): manifest is CloudflareWorkerManifest =>
+  manifest.app.runtime === 'cloudflare-worker'
 
 const executeCliCommand = async (
   args: readonly string[],
@@ -583,9 +655,7 @@ const executeCliCommand = async (
         ...(parsed.name === undefined ? {} : { name: parsed.name }),
         oidcRegistrar: dependencies.oidcRegistrar ?? defaultOidcClientRegistrar,
         // Falls back to the real `xdg-open`/`open`/`start` launcher outside
-        // tests, the same way `oidcRegistrar` falls back above - without
-        // this, a production run never actually opens the broker's
-        // verification URL in a browser (packet Decision 6).
+        // tests, the same way `oidcRegistrar` falls back above.
         openExternal: dependencies.openExternal ?? defaultOpenExternal,
         output,
         promptIO,
@@ -659,7 +729,67 @@ const executeCliCommand = async (
   if (command === 'deploy') {
     const parsed = parseDeployArguments(args.slice(1))
     const configPath = await findErpcManifest(cwd, parsed.config)
-    const manifest = await loadErpcManifest(configPath)
+    const manifest = await loadAnyErpcManifest(configPath)
+
+    if (isCloudflareWorkerManifest(manifest)) {
+      if (parsed.node !== undefined) {
+        throw new Error(
+          '--node is not supported for the cloudflare-worker runtime; use --config to select the application',
+        )
+      }
+      if (parsed.target !== undefined && parsed.target !== 'cloudflare') {
+        throw new Error(
+          '--target must be "cloudflare" for the cloudflare-worker runtime',
+        )
+      }
+      const localConfig = await readErpcConfig(configOptions)
+      await deployToCloudflare(manifest, {
+        ackBackup: parsed.ackBackup,
+        dryRun: parsed.dryRun,
+        erpcHome: localConfig.erpcHome,
+        noProvision: parsed.noProvision,
+        output,
+        verifyOnly: parsed.verifyOnly,
+        yes: parsed.yes,
+        ...(dependencies.fetch === undefined
+          ? {}
+          : { fetch: dependencies.fetch }),
+        promptIO: dependencies.promptIO ?? defaultPromptIO,
+        ...(dependencies.random === undefined
+          ? {}
+          : { random: dependencies.random }),
+        ...(dependencies.runProcess === undefined
+          ? {}
+          : { run: dependencies.runProcess }),
+        ...(dependencies.templateRegistry === undefined
+          ? {}
+          : { templateRegistry: dependencies.templateRegistry }),
+      })
+      return 0
+    }
+
+    if (parsed.target !== undefined) {
+      throw new Error(
+        '--target is only supported for the cloudflare-worker runtime',
+      )
+    }
+    // Every option below this point exists only for the cloudflare-worker
+    // deploy path: silently accepting one here would run a real SSH deploy
+    // while ignoring what the caller asked for.
+    const cloudflareOnlyOptions: ReadonlyArray<readonly [string, unknown]> = [
+      ['--yes', parsed.yes],
+      ['--no-provision', parsed.noProvision],
+      ['--dry-run', parsed.dryRun],
+      ['--verify-only', parsed.verifyOnly],
+      ['--ack-backup', parsed.ackBackup.length > 0],
+    ]
+    for (const [flag, used] of cloudflareOnlyOptions) {
+      if (used) {
+        throw new Error(
+          `${flag} is only supported for the cloudflare-worker runtime`,
+        )
+      }
+    }
     const localConfig = await readErpcConfig(configOptions)
     const nodeNames = Object.keys(localConfig.nodes).sort()
     const nodeName = parsed.node ?? (
@@ -929,15 +1059,59 @@ export const createProgram = (
     )
 
   const deployCommand = new Command()
-    .description('Build for Linux and deploy an application over SSH.')
+    .description(
+      'Build for Linux and deploy an application over SSH, or deploy a ' +
+        'cloudflare-worker application with `--target cloudflare`.',
+    )
     .option('--config <path:string>', 'Path to an erpc.toml file.')
     .option('--node <name:string>', 'Configured deployment node name.')
-    .action(async ({ config, node }) => {
-      await execute(commandArguments('deploy', [
-        ['--config', config],
-        ['--node', node],
-      ]))
-    })
+    .option(
+      '--target <target:string>',
+      'Deployment target for the cloudflare-worker runtime (only "cloudflare" is supported).',
+    )
+    .option(
+      '--yes',
+      'Do not prompt during a cloudflare-worker deploy; fail on a missing non-interactive answer.',
+    )
+    .option(
+      '--ack-backup <key:string>',
+      'Acknowledge a secret-pipe backup warning non-interactively. May be repeated.',
+      { collect: true },
+    )
+    .option(
+      '--no-provision',
+      'Skip Cloudflare KV/secret provisioning (cloudflare-worker only).',
+    )
+    .option(
+      '--dry-run',
+      'Run `wrangler deploy --dry-run` instead of a real deploy (cloudflare-worker only).',
+    )
+    .option(
+      '--verify-only',
+      'Only re-run the post-deploy verification probes (cloudflare-worker only).',
+    )
+    .action(
+      async (
+        { ackBackup, config, dryRun, node, provision, target, verifyOnly, yes },
+      ) => {
+        const args = commandArguments('deploy', [
+          ['--config', config],
+          ['--node', node],
+          ['--target', target],
+          ['--yes', yes],
+          ['--no-provision', !provision],
+          ['--dry-run', dryRun],
+          ['--verify-only', verifyOnly],
+        ])
+        const ackBackupValues = ackBackup === undefined
+          ? []
+          : Array.isArray(ackBackup)
+          ? ackBackup
+          : [ackBackup]
+        for (const value of ackBackupValues) args.push('--ack-backup', value)
+        await execute(args)
+      },
+    )
 
   program
     .command('login', loginCommand)

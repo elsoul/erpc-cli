@@ -175,10 +175,10 @@ export const findErpcManifest = async (
 const SHA256_HEX = /^[0-9a-f]{64}$/
 
 /**
- * The `erpc.toml` contract `erpc app init --template` produces (design doc
- * §1.4/§3.2). `run`/`build.artifact` do not apply: `erpc deploy --target
- * cloudflare` (a later PR) never runs a local build artifact the way the
- * node/deno SSH deploy path does.
+ * The `erpc.toml` contract `erpc app init --template` produces.
+ * `run`/`build.artifact` do not apply: `erpc deploy --target cloudflare`
+ * never runs a local build artifact the way the node/deno SSH deploy path
+ * does.
  */
 export interface CloudflareWorkerManifest {
   readonly app: {
@@ -300,8 +300,8 @@ const parseCloudflareWorkerManifest = (
 /**
  * Loads an `erpc.toml` whose `[app].runtime` may be `node`, `deno`, or
  * `cloudflare-worker`. `node`/`deno` manifests keep the exact
- * `loadErpcManifest` contract (design doc §3.2: "`loadErpcManifest` は現行契約
- * のまま"); this only adds the `cloudflare-worker` branch on top.
+ * `loadErpcManifest` contract unchanged; this only adds the
+ * `cloudflare-worker` branch on top.
  */
 export const loadAnyErpcManifest = async (
   configPath: string,
