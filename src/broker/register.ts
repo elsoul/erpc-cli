@@ -4,8 +4,11 @@
 // issuing any token: the CLI files an unauthenticated registration request,
 // the user reviews and approves it in the broker's own page, and the CLI polls
 // until the broker hands back the new client_id exactly once. The
-// `device_code` is the only thing that ties the poll to the request, so it is
-// never printed or included in an error.
+// `device_code` is the only thing that ties the poll to the request. The CLI
+// sends it only to the poll endpoint and never puts it in output or an error
+// itself; what it shows from the broker's response cannot carry it either,
+// because a response whose `user_code` or displayed verification page
+// contains it is refused (see `parsePendingRegistration`).
 
 import type {
   OidcClientRegistrar,
@@ -35,6 +38,9 @@ export interface BrokerRegistrarDeps {
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
 const SLOW_DOWN_INCREMENT_SECONDS = 5 // RFC 8628, section 3.5
+// How long the broker keeps answering the device_code of a delivered
+// registration with the same approved response.
+const REDELIVERY_GRACE_MS = 60_000
 
 const MAX_CLIENT_NAME_LENGTH = 64
 const MAX_REDIRECT_URIS = 5
@@ -156,7 +162,10 @@ interface PendingRegistration {
   readonly expiresIn: number
   readonly interval: number
   readonly userCode: string
-  readonly verificationUriComplete: string
+  /** The approval page printed as `Open <page>`. */
+  readonly verificationPage: string
+  /** Whether `verificationPage` may be handed to the browser opener. */
+  readonly openable: boolean
 }
 
 const isIntegerInRange = (
@@ -213,13 +222,27 @@ const parsePendingRegistration = (
     }
     pages.push(url)
   }
+  if (userCode.includes(deviceCode)) throw invalid('user_code')
+  // The opener on some platforms hands its argument to a shell, so only the
+  // fixed form built from the checked issuer and user_code is ever opened.
+  // Anything else falls back to the verification page without its query,
+  // which is printed next to the code and never opened.
+  const fixedComplete = `${issuer}/register?user_code=${userCode}`
+  const openable = pages[1]!.href === fixedComplete
+  // `href` is the URL serializer's output: printable ASCII only.
+  const verificationPage = openable
+    ? fixedComplete
+    : `${pages[0]!.origin}${pages[0]!.pathname}`
+  if (verificationPage.includes(deviceCode)) {
+    throw invalid(openable ? 'verification_uri_complete' : 'verification_uri')
+  }
   return {
     deviceCode,
     expiresIn: body.expires_in as number,
     interval: body.interval as number,
     userCode,
-    // `href` is the URL serializer's output: printable ASCII only.
-    verificationUriComplete: pages[1]!.href,
+    verificationPage,
+    openable,
   }
 }
 
@@ -389,9 +412,9 @@ export const createBrokerRegistrar = (
       )
     }
     const pending = parsePendingRegistration(created.json, issuer)
-    const deadline = now() + pending.expiresIn * 1000
+    const expiresAt = now() + pending.expiresIn * 1000
 
-    io.output(`Open ${pending.verificationUriComplete}`)
+    io.output(`Open ${pending.verificationPage}`)
     io.output(`Code: ${pending.userCode}`)
     io.output(
       [
@@ -399,18 +422,34 @@ export const createBrokerRegistrar = (
         ...redirectUris.map((uri) => `  ${uri}`),
       ].join('\n'),
     )
-    try {
-      io.openExternal?.(pending.verificationUriComplete)
-    } catch {
-      // The URL is printed above, so opening a browser is best effort.
+    if (pending.openable) {
+      try {
+        io.openExternal?.(pending.verificationPage)
+      } catch {
+        // The URL is printed above, so opening a browser is best effort.
+      }
     }
 
     const pollUrl = issuerUrl(issuer, '/clients/registration-requests/poll')
+    // A poll that starts before `expiresAt` may be the one the broker answered
+    // with the approval, and that answer may have been lost. The broker
+    // re-sends it for REDELIVERY_GRACE_MS, so polling continues until that
+    // long after the last such poll instead of reading a pending request as
+    // expired at `expiresAt`.
+    let lastPollBeforeExpiry: number | undefined
+    const pollingEndsAt = (): number =>
+      lastPollBeforeExpiry === undefined
+        ? expiresAt
+        : Math.max(expiresAt, lastPollBeforeExpiry + REDELIVERY_GRACE_MS)
     let intervalSeconds = pending.interval
-    while (now() < deadline) {
-      await sleep(intervalSeconds * 1000, signal)
+    while (true) {
+      const remaining = pollingEndsAt() - now()
+      if (remaining <= 0) break
+      await sleep(Math.min(intervalSeconds * 1000, remaining), signal)
       if (signal?.aborted) throw abortError()
-      if (now() >= deadline) break
+      const startedAt = now()
+      if (startedAt >= pollingEndsAt()) break
+      if (startedAt < expiresAt) lastPollBeforeExpiry = startedAt
 
       let polled: BrokerResponse
       try {

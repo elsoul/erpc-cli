@@ -200,7 +200,10 @@ you approve the request in the broker's own page instead:
 
    Approve only if the page lists exactly those redirect URIs; otherwise deny
    the request. The CLI refuses an approval page that is not on the issuer's own
-   origin.
+   origin. It opens the page only when the broker's link is exactly
+   `<issuer>/register?user_code=<code>`; for any other link it prints the
+   approval page without its query, opens nothing, and you enter the code there
+   yourself.
 4. The CLI waits for your approval and receives the new client id once. It
    refuses the result unless the client name and the set of redirect URIs match
    what it asked for, then shows which Google account approved it:
@@ -212,10 +215,16 @@ you approve the request in the broker's own page instead:
 The client id is written into the rendered files and into `[oidc] client_id` in
 `erpc.toml`. A request that is not approved before the broker's expiry (reported
 by the broker, typically ten minutes) fails; run `erpc app init` again to start
-a new one. If a later step fails after registration succeeded, the CLI prints
-the client id so you can re-run with `--set APP_OIDC_CLIENT_ID=<client id>`
-instead of registering a second client. The CLI never follows redirects from the
-broker and never sends it an `Authorization` header.
+a new one. Because the broker re-sends an approval for 60 seconds, the CLI keeps
+waiting for up to 60 seconds after its last check before the expiry, in case
+that check's answer was lost, and stops as soon as the broker reports the
+request expired. If a later step fails after registration succeeded, the CLI
+prints the client id so you can re-run with
+`--set APP_OIDC_CLIENT_ID=<client id>` instead of registering a second client.
+The CLI never follows redirects from the broker and never sends it an
+`Authorization` header. The request's device code, which the CLI uses to wait
+for your approval, is sent only to the broker; the CLI does not print it, and
+refuses a broker response whose code or printed approval page contains it.
 
 ## `erpc.toml`
 

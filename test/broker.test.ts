@@ -129,6 +129,8 @@ const pending = () => oauthError('authorization_pending')
 
 interface FakeBroker {
   readonly fetch: typeof fetch
+  /** The fake clock's time at each poll, in order. */
+  readonly pollTimes: readonly number[]
   readonly polls: () => number
   readonly posts: () => number
   readonly requests: readonly RecordedRequest[]
@@ -142,6 +144,7 @@ const fakeBroker = (options: {
   readonly polls?: readonly PollStep[]
 }): FakeBroker => {
   const requests: RecordedRequest[] = []
+  const pollTimes: number[] = []
   const steps = [...(options.polls ?? [])]
   let submitted: SubmittedRegistration = {
     client_name: '',
@@ -176,6 +179,7 @@ const fakeBroker = (options: {
       return options.created?.() ?? json(201, registrationCreated())
     }
     if (record.method === 'POST' && url.pathname === POLL_PATH) {
+      pollTimes.push(options.clock.now())
       const step = steps.shift() ?? pending()
       const result = typeof step === 'function'
         ? step({ now: options.clock.now(), submitted })
@@ -187,6 +191,7 @@ const fakeBroker = (options: {
   }) as typeof fetch
   return {
     fetch: fetchImpl,
+    pollTimes,
     polls: () =>
       requests.filter((request) => request.path === POLL_PATH).length,
     posts: () => requests.filter((request) => request.method === 'POST').length,
@@ -422,6 +427,68 @@ describe('createBrokerRegistrar', () => {
       assertEquals(error.reason, 'discovery_failed')
     })
 
+    it('refuses a discovery document over 64 KiB and accepts one of exactly 64 KiB', async () => {
+      const paddedTo = (bytes: number): string => {
+        const empty = JSON.stringify({ ...discoveryDocument(), pad: '' })
+        return JSON.stringify({
+          ...discoveryDocument(),
+          pad: 'x'.repeat(bytes - empty.length),
+        })
+      }
+      assertEquals(new TextEncoder().encode(paddedTo(65_536)).length, 65_536)
+
+      const over = run({
+        discovery: () => new Response(paddedTo(65_537), { status: 200 }),
+      })
+      await expectFailure(over, 'discovery_failed')
+      assertEquals(over.broker.posts(), 0)
+
+      const exact = run({
+        discovery: () => new Response(paddedTo(65_536), { status: 200 }),
+        polls: [approve()],
+      })
+      assertEquals(await exact.result, { clientId: CLIENT_ID })
+    })
+
+    it('times out a discovery response whose body stops arriving', async () => {
+      // Headers arrive at once; the body sends one chunk and then stalls
+      // until the request is aborted, as a real fetch body does.
+      const stalledBody =
+        ((_input: string | URL | Request, init?: RequestInit) =>
+          Promise.resolve(
+            new Response(
+              new ReadableStream<Uint8Array>({
+                start(controller) {
+                  controller.enqueue(new TextEncoder().encode('{"issuer":'))
+                  init?.signal?.addEventListener(
+                    'abort',
+                    () =>
+                      controller.error(
+                        new DOMException('Aborted', 'AbortError'),
+                      ),
+                    { once: true },
+                  )
+                },
+              }),
+              { status: 200 },
+            ),
+          )) as typeof fetch
+      let guard: ReturnType<typeof setTimeout> | undefined
+      const outcome = await Promise.race([
+        assertIssuerDiscovery(ISSUER, {
+          fetch: stalledBody,
+          requestTimeoutMs: 20,
+        }).then(() => 'resolved', (error: unknown) => error),
+        new Promise<string>((resolve) => {
+          guard = setTimeout(() => resolve('still waiting'), 2_000)
+        }),
+      ])
+      clearTimeout(guard)
+      assert(outcome instanceof BrokerRegistrationError, String(outcome))
+      assertEquals(outcome.reason, 'discovery_failed')
+      assert(outcome.message.includes('could not be reached'))
+    })
+
     it('rejects an issuer that is not a bare origin before any request', async () => {
       for (
         const issuer of [
@@ -487,6 +554,45 @@ describe('createBrokerRegistrar', () => {
       assertEquals(subject.broker.requests.length, 0)
     })
 
+    it('rejects an empty query or fragment and a URI over 2048 characters', async () => {
+      const prefix = 'https://app.example.org/'
+      const tooLong = `${prefix}${'a'.repeat(2049 - prefix.length)}`
+      const subject = run({
+        redirectUris: [
+          'https://app.example.org/cb?',
+          'https://app.example.org/cb#',
+          tooLong,
+        ],
+      })
+      const error = await expectFailure(subject, 'invalid_request')
+      const lines = error.message.split('\n')
+      assertEquals(
+        lines.filter((line) => line.includes('redirect_uris[0]')),
+        [
+          '  - redirect_uris[0] "https://app.example.org/cb?" must not contain a query',
+        ],
+      )
+      assertEquals(
+        lines.filter((line) => line.includes('redirect_uris[1]')),
+        [
+          '  - redirect_uris[1] "https://app.example.org/cb#" must not contain a fragment',
+        ],
+      )
+      const longIssues = lines.filter((line) =>
+        line.includes('redirect_uris[2]')
+      )
+      assertEquals(longIssues.length, 1)
+      assert(longIssues[0]!.endsWith('longer than 2048 characters'))
+      assertEquals(subject.broker.requests.length, 0)
+    })
+
+    it('accepts a redirect URI of exactly 2048 characters', async () => {
+      const prefix = 'https://app.example.org/'
+      const longest = `${prefix}${'a'.repeat(2048 - prefix.length)}`
+      const subject = run({ redirectUris: [longest], polls: [approve()] })
+      assertEquals(await subject.result, { clientId: CLIENT_ID })
+    })
+
     it('rejects the other forms the broker refuses', async () => {
       const subject = run({
         clientName: 'bad\u202ename',
@@ -541,6 +647,109 @@ describe('createBrokerRegistrar', () => {
         assertEquals(subject.opened, [])
         assertEquals(subject.broker.polls(), 0)
       }
+    })
+
+    it('opens the verification page only in its fixed form', async () => {
+      const unexpected: ReadonlyArray<readonly [string, readonly string[]]> = [
+        [`${VERIFICATION_URI_COMPLETE}&calc`, ['calc']],
+        [`${VERIFICATION_URI_COMPLETE}&t=%CLOUDFLARE_API_TOKEN%`, [
+          'CLOUDFLARE_API_TOKEN',
+        ]],
+        [`${ISSUER}/register?u=%USERNAME%|x^y`, ['USERNAME', '|', '^']],
+      ]
+      for (const [complete, fragments] of unexpected) {
+        const subject = run({
+          created: () =>
+            json(
+              201,
+              registrationCreated({ verification_uri_complete: complete }),
+            ),
+          polls: [approve()],
+        })
+        assertEquals(await subject.result, { clientId: CLIENT_ID }, complete)
+        assertEquals(subject.opened, [], complete)
+        assertEquals(subject.output.slice(0, 2), [
+          `Open ${ISSUER}/register`,
+          `Code: ${USER_CODE}`,
+        ])
+        for (const line of subject.output) {
+          assert(!line.includes('?'), line)
+          for (const fragment of fragments) {
+            assert(!line.includes(fragment), `${fragment} in ${line}`)
+          }
+        }
+      }
+    })
+
+    it('prints the verification_uri fallback without its query', async () => {
+      const subject = run({
+        created: () =>
+          json(
+            201,
+            registrationCreated({
+              verification_uri: `${ISSUER}/register?x=%CLOUDFLARE_API_TOKEN%`,
+              verification_uri_complete:
+                `${ISSUER}/register?x=1&user_code=${USER_CODE}`,
+            }),
+          ),
+        polls: [approve()],
+      })
+      assertEquals(await subject.result, { clientId: CLIENT_ID })
+      assertEquals(subject.opened, [])
+      assertEquals(subject.output.slice(0, 2), [
+        `Open ${ISSUER}/register`,
+        `Code: ${USER_CODE}`,
+      ])
+    })
+
+    it('neither prints nor opens a verification_uri_complete that carries the device_code', async () => {
+      const subject = run({
+        created: () =>
+          json(
+            201,
+            registrationCreated({
+              verification_uri_complete:
+                `${VERIFICATION_URI_COMPLETE}&device_code=${DEVICE_SENTINEL}`,
+            }),
+          ),
+        polls: [approve()],
+      })
+      assertEquals(await subject.result, { clientId: CLIENT_ID })
+      assertEquals(subject.opened, [])
+      assert(subject.output.includes(`Open ${ISSUER}/register`))
+      assertNoSecretInOutput(subject)
+    })
+
+    it('refuses a registration response whose user_code is the device_code', async () => {
+      const subject = run({
+        created: () =>
+          json(201, registrationCreated({ device_code: USER_CODE })),
+      })
+      const error = await expectFailure(subject, 'invalid_response')
+      assert(error.message.includes('(user_code)'))
+      assert(!error.message.includes(USER_CODE))
+      assertEquals(subject.output, [])
+      assertEquals(subject.opened, [])
+      assertEquals(subject.broker.polls(), 0)
+    })
+
+    it('refuses a registration response whose printed verification page carries the device_code', async () => {
+      const page = `${ISSUER}/register/${DEVICE_SENTINEL}`
+      const subject = run({
+        created: () =>
+          json(
+            201,
+            registrationCreated({
+              verification_uri: page,
+              verification_uri_complete: `${page}?user_code=${USER_CODE}`,
+            }),
+          ),
+      })
+      const error = await expectFailure(subject, 'invalid_response')
+      assert(error.message.includes('(verification_uri)'))
+      assertEquals(subject.output, [])
+      assertEquals(subject.opened, [])
+      assertEquals(subject.broker.polls(), 0)
     })
 
     it('shows the broker error code and a cleaned, bounded description on 400', async () => {
@@ -637,10 +846,32 @@ describe('createBrokerRegistrar', () => {
         created: () =>
           json(201, registrationCreated({ expires_in: 60, interval: 5 })),
       })
+      const start = subject.clock.now()
       const error = await expectFailure(subject, 'expired')
       assert(error.message.includes('expired before it was approved'))
-      // Polls at 5 s, 10 s, ... 55 s; the 60 s mark is the deadline itself.
-      assertEquals(subject.broker.polls(), 11)
+      // Polls at 5 s, 10 s, ... 55 s before expiry. The 55 s poll could have
+      // been answered with a lost approval, so polling goes on until 60 s
+      // after it: 60 s, 65 s, ... 110 s. The 115 s mark is the end itself.
+      assertEquals(
+        subject.broker.pollTimes.map((time) => (time - start) / 1000),
+        Array.from({ length: 22 }, (_, index) => 5 * (index + 1)),
+      )
+    })
+
+    it('never sleeps past the expiry when the interval is longer than the lifetime', async () => {
+      const subject = run({
+        created: () =>
+          json(201, registrationCreated({ expires_in: 1, interval: 60 })),
+      })
+      await expectFailure(subject, 'expired')
+      assert(subject.clock.sleeps.length > 0)
+      for (const milliseconds of subject.clock.sleeps) {
+        assert(milliseconds <= 1000, `slept ${milliseconds} ms`)
+      }
+      assert(
+        subject.clock.sleeps.reduce((sum, value) => sum + value, 0) <= 1000,
+      )
+      assert(subject.broker.polls() <= 1)
     })
 
     it('keeps polling through network errors and server errors', async () => {
@@ -827,6 +1058,27 @@ describe('createBrokerRegistrar', () => {
       const subject = run({ polls: [step, step] })
       assertEquals(await subject.result, { clientId: CLIENT_ID })
       assertEquals(subject.broker.polls(), 2)
+    })
+
+    it('receives an approval lost at the last poll before expiry', async () => {
+      const step = deliverOnce()
+      const subject = run({
+        created: () =>
+          json(201, registrationCreated({ expires_in: 60, interval: 5 })),
+        polls: [...Array.from({ length: 10 }, pending), step, step],
+      })
+      const start = subject.clock.now()
+      assertEquals(await subject.result, { clientId: CLIENT_ID })
+      // The approval went out, and was lost, at 55 s; it arrives again from
+      // the poll at 60 s, which is already past expires_in.
+      assertEquals(
+        subject.broker.pollTimes.slice(-2).map((time) => (time - start) / 1000),
+        [55, 60],
+      )
+      assertEquals(
+        subject.output.filter((line) => line.startsWith('Approved by:')).length,
+        1,
+      )
     })
 
     it('stops with the expired-request message once the grace period is over', async () => {
