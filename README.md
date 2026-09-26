@@ -168,9 +168,54 @@ prints a one-time warning before collecting any answer; only proceed with
 `--sha256` for a template and tag you trust. `docs/TEMPLATES.md` documents the
 manifest contract for template authors, including this trust boundary in full.
 
-Templates that register an OAuth client (a `broker-register` prompt) are not yet
-supported end-to-end in this release: pass
-`--set APP_OIDC_CLIENT_ID=<client id>` for a template that declares one.
+Templates that register an OAuth client (a `broker-register` prompt) register it
+with their OIDC broker during `init`; see
+[Registering your app with the OIDC broker](#registering-your-app-with-the-oidc-broker).
+Pass `--set APP_OIDC_CLIENT_ID=<client id>` instead to reuse a client you
+already have.
+
+## Registering your app with the OIDC broker
+
+A template with a `broker-register` prompt (usually `APP_OIDC_CLIENT_ID`) needs
+an OAuth client registered with the OIDC broker named in its `broker.issuer`.
+`erpc app init --template` registers one for you. You do not sign in to the CLI;
+you approve the request in the broker's own page instead:
+
+1. The CLI reads `<issuer>/.well-known/openid-configuration` and stops unless
+   that document's `issuer` is exactly `<issuer>`.
+2. It checks the client name (1 to 64 characters) and redirect URIs (one to five
+   `https` URLs in canonical form, with no query, fragment, userinfo, or
+   wildcard, and not on an IP address, `localhost`, `erpc.global`, or the
+   broker's own host) before sending anything, then files a registration request
+   with the broker.
+3. It prints the broker's approval page and a code, and opens the page in your
+   browser when it can:
+
+   ```text
+   Open https://broker.example.com/register?user_code=BCDF-GHJK
+   Code: BCDF-GHJK
+   Before approving, confirm that the broker page shows exactly these redirect URIs:
+     https://my-app.example.org/oauth/callback
+   ```
+
+   Approve only if the page lists exactly those redirect URIs; otherwise deny
+   the request. The CLI refuses an approval page that is not on the issuer's own
+   origin.
+4. The CLI waits for your approval and receives the new client id once. It
+   refuses the result unless the client name and the set of redirect URIs match
+   what it asked for, then shows which Google account approved it:
+
+   ```text
+   Approved by: you@example.com — if this is not the Google account you used, stop and do not deploy.
+   ```
+
+The client id is written into the rendered files and into `[oidc] client_id` in
+`erpc.toml`. A request that is not approved before the broker's expiry (reported
+by the broker, typically ten minutes) fails; run `erpc app init` again to start
+a new one. If a later step fails after registration succeeded, the CLI prints
+the client id so you can re-run with `--set APP_OIDC_CLIENT_ID=<client id>`
+instead of registering a second client. The CLI never follows redirects from the
+broker and never sends it an `Authorization` header.
 
 ## `erpc.toml`
 

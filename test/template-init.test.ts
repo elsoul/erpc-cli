@@ -4,7 +4,10 @@ import { join } from 'node:path'
 import { TarStream, type TarStreamInput } from '@std/tar'
 import { parse as parseToml } from '@std/toml'
 import { afterEach, describe, expect, it } from './testing.ts'
-import { initializeTemplateApp } from '../src/app/template-init.ts'
+import {
+  initializeTemplateApp,
+  unsupportedOidcClientRegistrar,
+} from '../src/app/template-init.ts'
 import { sha256Hex } from '../src/app/template-fetch.ts'
 import { tomlBasicString } from '../src/app/template-render.ts'
 import { defaultOpenExternal, runCli } from '../src/cli.ts'
@@ -479,6 +482,7 @@ describe('initializeTemplateApp', () => {
         yes: true,
         output: () => {},
         fetch: fetchStubFor(archive).fetch,
+        oidcRegistrar: unsupportedOidcClientRegistrar,
       }),
     ).rejects.toThrow(
       'Broker registration is not available in this CLI version',

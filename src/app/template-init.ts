@@ -20,6 +20,7 @@ import {
   parseTemplateManifest,
   type TemplateManifest,
 } from './template-manifest.ts'
+import { createBrokerRegistrar } from '../broker/register.ts'
 import type { PromptIO } from './prompt-io.ts'
 import { defaultPromptIO } from './prompt-io.ts'
 import {
@@ -55,9 +56,9 @@ export interface OidcClientRegistrar {
 }
 
 /**
- * The stub broker-register target for this release: automatic broker
- * registration is not available yet. `--set APP_OIDC_CLIENT_ID=<id>`
- * bypasses this entirely; see `collectTemplateAnswers`.
+ * A registrar that always refuses, for callers that must not contact a
+ * broker. `--set APP_OIDC_CLIENT_ID=<id>` bypasses any registrar entirely;
+ * see `collectTemplateAnswers`.
  */
 export const unsupportedOidcClientRegistrar: OidcClientRegistrar = {
   register(): Promise<{ clientId: string }> {
@@ -69,7 +70,7 @@ export const unsupportedOidcClientRegistrar: OidcClientRegistrar = {
 }
 
 export const defaultOidcClientRegistrar: OidcClientRegistrar =
-  unsupportedOidcClientRegistrar
+  createBrokerRegistrar()
 
 /**
  * The trust-boundary warning text, exported so the deploy

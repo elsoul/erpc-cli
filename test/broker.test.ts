@@ -15,6 +15,7 @@ import {
   createBrokerRegistrar,
 } from '../src/broker/register.ts'
 import { runCli } from '../src/cli.ts'
+import { defaultOidcClientRegistrar } from '../src/app/template-init.ts'
 import { sha256Hex } from '../src/app/template-fetch.ts'
 import type { TemplateRegistry } from '../src/app/template-registry.ts'
 
@@ -837,6 +838,24 @@ describe('createBrokerRegistrar', () => {
       const error = await expectFailure(subject, 'expired_token')
       assert(error.message.includes('expired or was already used'))
     })
+  })
+
+  it('is what app init uses when no registrar is injected', async () => {
+    // A trailing-slash issuer is refused before any request, so this reaches
+    // no network: it only shows that the default is this registrar.
+    const error = await assertRejects(
+      () =>
+        defaultOidcClientRegistrar.register(
+          {
+            issuer: `${ISSUER}/`,
+            clientName: CLIENT_NAME,
+            redirectUris: REDIRECT_URIS,
+          },
+          { output: () => {} },
+        ),
+      BrokerRegistrationError,
+    )
+    assertEquals(error.reason, 'invalid_issuer')
   })
 
   it('rejects a non-positive request timeout', () => {
