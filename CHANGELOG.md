@@ -2,22 +2,30 @@
 
 ## Unreleased
 
+## 0.2.3 — 2026-09-26
+
 - Add `erpc app init --template <name>@<tag>`: fetch a registered template's
   GitHub release asset, verify it against a pinned or explicitly supplied
   `--sha256`, validate its `erpc-template.json` manifest, collect answers from
   `--set`/`--domain`/`--email` or interactively, and generate a
-  `cloudflare-worker` application. This release ships with no templates
-  registered (`TEMPLATE_REGISTRY` is empty); once a name is registered,
-  `--sha256 <hex64>` can still fetch a tag that release does not have a bundled
-  checksum for yet. See [`docs/TEMPLATES.md`](./docs/TEMPLATES.md) for the
-  manifest contract and
+  `cloudflare-worker` application. See
+  [`docs/TEMPLATES.md`](./docs/TEMPLATES.md) for the manifest contract and
   [the README](./README.md#create-an-application-from-a-template) for usage.
 - Register the OAuth client for a template with a `broker-register` prompt
   during `erpc app init --template`: the CLI checks the broker's discovery
   document, files a registration request, shows the broker's approval page and
   code, and waits for the approval, accepting the new client id only when the
-  approved client name and redirect URIs match the request. See
+  approved client name and redirect URIs match the request. The request's device
+  code is never shown: a broker response that puts it in anything the CLI would
+  print is refused without printing that value. See
   [the README](./README.md#registering-your-app-with-the-oidc-broker).
+- Register the `stablecoin-manager` template (the `erpc-template.tar.gz` release
+  asset of `elsoul/stablecoinmanager`) and pin its `v0.1.0` asset, so
+  `erpc app init --template stablecoin-manager@v0.1.0` needs no `--sha256`.
+- On Windows, open a URL in the browser only when it is an `http` or `https` URL
+  with none of the characters the command interpreter treats specially (`&`,
+  `|`, `^`, `<`, `>`, `"`, `%`); any other URL is only printed. This covers both
+  `erpc login` and the broker approval page.
 - Add `erpc deploy --target cloudflare` for a `cloudflare-worker` application:
   authenticate and fix a Cloudflare account through project-local `wrangler`,
   reuse-or-create KV namespaces, generate or collect Worker secrets without ever
