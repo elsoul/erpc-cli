@@ -7,7 +7,8 @@ documentation (see the
 [README](../README.md#create-an-application-from-a-template) for that) and it
 does not cover Cloudflare deployment (`erpc deploy --target
 cloudflare`), which
-ships in a later release.
+the README's [Deploy to Cloudflare](../README.md#deploy-to-cloudflare) section
+documents.
 
 ## Packaging
 
@@ -224,19 +225,20 @@ expectations before they run it.
 
 This CLI ships a small, hand-maintained `name -> { owner, repo, asset }` table
 (`src/app/template-registry.ts`) plus a `pins: { tag: sha256 }` map per name.
-**This table ships empty in the current release** (see the README's
-[template section](../README.md#create-an-application-from-a-template) for why);
+The current release registers one name, `stablecoin-manager`
+(`elsoul/stablecoinmanager`, asset `erpc-template.tar.gz`), and pins its
+`v0.1.0` tag (see the README's
+[template section](../README.md#create-an-application-from-a-template));
 `erpc app init --template <name>@<tag>` fails with "Unknown template" for every
-name until a later release adds an entry. Getting a template added or pinned
-there is a request to the erpc-cli maintainers, not something a template
-repository can do on its own — there is intentionally no way for a template to
-make this CLI trust an arbitrary `owner/repo` at runtime (a remote, mutable
-index would let whoever controls that index point `name@tag` at a different
-repository without the user noticing). Once a name is registered, adding a
-`pins` entry for a new tag is the follow-up commit that lets users skip
-`--sha256`; a tag with no `pins` entry yet still works with an explicit
-`--sha256 <hex64>`, but that flag only unlocks a tag of an _already-registered_
-name — it cannot register a new one.
+other name. Getting a template added or pinned there is a request to the
+erpc-cli maintainers, not something a template repository can do on its own —
+there is intentionally no way for a template to make this CLI trust an arbitrary
+`owner/repo` at runtime (a remote, mutable index would let whoever controls that
+index point `name@tag` at a different repository without the user noticing).
+Once a name is registered, adding a `pins` entry for a new tag is the follow-up
+commit that lets users skip `--sha256`; a tag with no `pins` entry yet still
+works with an explicit `--sha256 <hex64>`, but that flag only unlocks a tag of
+an _already-registered_ name — it cannot register a new one.
 
 To compute the sha256 to put in a `pins` entry (or to pass as `--sha256`
 yourself while a tag is still unpinned), hash the exact release asset bytes:

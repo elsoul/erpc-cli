@@ -1,5 +1,5 @@
 {
-  "version": "0.2.2",
+  "version": "0.2.3",
   "tasks": {
     "check": "deno check --frozen-lockfile src/bin.ts src/index.ts scripts/*.ts test/*.test.ts",
     "test": "deno test --frozen-lockfile --allow-env --allow-net --allow-read --allow-run --allow-sys --allow-write test",

@@ -15,15 +15,25 @@ export interface TemplateRegistryEntry {
 export type TemplateRegistry = Readonly<Record<string, TemplateRegistryEntry>>
 
 /**
- * The CLI-bundled name -> source/pin table. Left empty in this release: the
- * public template repository owner, repo, and asset name for
- * `stablecoin-manager` have not been decided yet. Shipping a guessed repository name here would let
- * `erpc app init --template stablecoin-manager@<tag>` silently resolve to the
- * wrong GitHub repository, so this table stays empty until a future release
- * fills it in a single follow-up commit. Tests inject a registry through
- * `CliDependencies.templateRegistry` instead of relying on this table.
+ * The CLI-bundled name -> source/pin table. A name resolves only to the
+ * repository listed here. A pinned tag's release asset must match its sha256;
+ * a tag with no `pins` entry needs an explicit `--sha256`. Tests inject a
+ * registry through `CliDependencies.templateRegistry` instead of relying on
+ * this table.
  */
-export const TEMPLATE_REGISTRY: TemplateRegistry = {}
+export const TEMPLATE_REGISTRY: TemplateRegistry = {
+  'stablecoin-manager': {
+    source: {
+      owner: 'elsoul',
+      repo: 'stablecoinmanager',
+      asset: 'erpc-template.tar.gz',
+    },
+    pins: {
+      'v0.1.0':
+        '36193691b085efe06312fafee106cf33a12d7283eca1ef4817114ee5167ab49e',
+    },
+  },
+}
 
 export const resolveTemplateRegistryEntry = (
   registry: TemplateRegistry,

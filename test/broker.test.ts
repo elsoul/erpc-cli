@@ -140,6 +140,8 @@ const fakeBroker = (options: {
   readonly clock: Clock
   readonly created?: () => Response
   readonly discovery?: () => Response
+  /** The origin the fake broker serves. Defaults to `ISSUER`. */
+  readonly issuer?: string
   /** Poll answers in order; once exhausted, every further poll is pending. */
   readonly polls?: readonly PollStep[]
 }): FakeBroker => {
@@ -165,14 +167,15 @@ const fakeBroker = (options: {
       url: url.href,
     }
     requests.push(record)
-    if (url.origin !== ISSUER) {
+    const issuer = options.issuer ?? ISSUER
+    if (url.origin !== issuer) {
       throw new TypeError(`unexpected origin ${url.origin}`)
     }
     if (
       record.method === 'GET' &&
       url.pathname === '/.well-known/openid-configuration'
     ) {
-      return options.discovery?.() ?? json(200, discoveryDocument())
+      return options.discovery?.() ?? json(200, discoveryDocument(issuer))
     }
     if (record.method === 'POST' && url.pathname === REGISTRATION_PATH) {
       submitted = JSON.parse(body ?? '{}') as SubmittedRegistration
@@ -242,6 +245,7 @@ const run = (options: {
     clock,
     ...(options.created ? { created: options.created } : {}),
     ...(options.discovery ? { discovery: options.discovery } : {}),
+    ...(options.issuer ? { issuer: options.issuer } : {}),
     ...(options.polls ? { polls: options.polls } : {}),
   })
   const output: string[] = []
@@ -681,6 +685,35 @@ describe('createBrokerRegistrar', () => {
       }
     })
 
+    it('does not open the fixed form when the issuer host has a shell metacharacter', async () => {
+      for (
+        const issuer of [
+          'https://x&calc.example.com',
+          'https://x!username!.example.com',
+        ]
+      ) {
+        const subject = run({
+          issuer,
+          created: () =>
+            json(
+              201,
+              registrationCreated({
+                verification_uri: `${issuer}/register`,
+                verification_uri_complete:
+                  `${issuer}/register?user_code=${USER_CODE}`,
+              }),
+            ),
+          polls: [approve()],
+        })
+        assertEquals(await subject.result, { clientId: CLIENT_ID }, issuer)
+        assertEquals(subject.opened, [], issuer)
+        assertEquals(subject.output.slice(0, 2), [
+          `Open ${issuer}/register`,
+          `Code: ${USER_CODE}`,
+        ], issuer)
+      }
+    })
+
     it('prints the verification_uri fallback without its query', async () => {
       const subject = run({
         created: () =>
@@ -733,6 +766,20 @@ describe('createBrokerRegistrar', () => {
       assertEquals(subject.broker.polls(), 0)
     })
 
+    it('refuses a registration response whose user_code contains the device_code', async () => {
+      const deviceCode = USER_CODE.slice(1, 6)
+      const subject = run({
+        created: () =>
+          json(201, registrationCreated({ device_code: deviceCode })),
+      })
+      const error = await expectFailure(subject, 'invalid_response')
+      assert(error.message.includes('(user_code)'), error.message)
+      assert(!error.message.includes(deviceCode))
+      assertEquals(subject.output, [])
+      assertEquals(subject.opened, [])
+      assertEquals(subject.broker.polls(), 0)
+    })
+
     it('refuses a registration response whose printed verification page carries the device_code', async () => {
       const page = `${ISSUER}/register/${DEVICE_SENTINEL}`
       const subject = run({
@@ -751,6 +798,53 @@ describe('createBrokerRegistrar', () => {
       assertEquals(subject.opened, [])
       assertEquals(subject.broker.polls(), 0)
     })
+
+    // Each case would print the device code in a changed form (percent-encoded
+    // in the page path, or with its control character removed from the
+    // approver email) if the device code were accepted.
+    const deviceCodesChangedByPrinting: ReadonlyArray<
+      readonly [string, string, string, Record<string, unknown>, PollStep]
+    > = [
+      [
+        'a space',
+        'dev code',
+        'dev%20code',
+        {
+          verification_uri: `${ISSUER}/r/dev code`,
+          verification_uri_complete:
+            `${ISSUER}/r/dev code?user_code=${USER_CODE}`,
+        },
+        approve(),
+      ],
+      [
+        'a control character',
+        'dev\u0007code',
+        'devcode',
+        {},
+        approve({ approved_by_email: 'devcode@example.com' }),
+      ],
+    ]
+    for (
+      const [label, deviceCode, printed, overrides, poll]
+        of deviceCodesChangedByPrinting
+    ) {
+      it(`refuses a device_code with ${label} before printing anything`, async () => {
+        const subject = run({
+          created: () =>
+            json(
+              201,
+              registrationCreated({ device_code: deviceCode, ...overrides }),
+            ),
+          polls: [poll],
+        })
+        const error = await expectFailure(subject, 'invalid_response')
+        assert(error.message.includes('(device_code)'), error.message)
+        assert(!error.message.includes(printed), error.message)
+        assertEquals(subject.output, [])
+        assertEquals(subject.opened, [])
+        assertEquals(subject.broker.polls(), 0)
+      })
+    }
 
     it('shows the broker error code and a cleaned, bounded description on 400', async () => {
       const subject = run({
@@ -841,14 +935,22 @@ describe('createBrokerRegistrar', () => {
       assert(messages[2]!.includes('expired or was already used'))
     })
 
-    it('gives up at expires_in with a bounded number of polls', async () => {
+    it('gives up 60 s after the last poll before expires_in, after at most 22 polls', async () => {
       const subject = run({
         created: () =>
           json(201, registrationCreated({ expires_in: 60, interval: 5 })),
+        // Pending for every poll the window allows. A poll past the window is
+        // denied, so polling too long fails the assertions below instead of
+        // running without end.
+        polls: [
+          ...Array.from({ length: 22 }, pending),
+          oauthError('access_denied'),
+        ],
       })
       const start = subject.clock.now()
       const error = await expectFailure(subject, 'expired')
       assert(error.message.includes('expired before it was approved'))
+      assertEquals(subject.broker.polls(), 22)
       // Polls at 5 s, 10 s, ... 55 s before expiry. The 55 s poll could have
       // been answered with a lost approval, so polling goes on until 60 s
       // after it: 60 s, 65 s, ... 110 s. The 115 s mark is the end itself.
@@ -871,7 +973,7 @@ describe('createBrokerRegistrar', () => {
       assert(
         subject.clock.sleeps.reduce((sum, value) => sum + value, 0) <= 1000,
       )
-      assert(subject.broker.polls() <= 1)
+      assertEquals(subject.broker.polls(), 0)
     })
 
     it('keeps polling through network errors and server errors', async () => {
@@ -886,6 +988,23 @@ describe('createBrokerRegistrar', () => {
       })
       assertEquals(await subject.result, { clientId: CLIENT_ID })
       assertEquals(subject.broker.polls(), 5)
+    })
+
+    it('stops without showing a poll error code that carries the device_code', async () => {
+      const codes = [
+        `bad_${DEVICE_SENTINEL}`,
+        // Only the shown form, after control characters are removed, has it.
+        `${DEVICE_SENTINEL.slice(0, 16)}\u0007${DEVICE_SENTINEL.slice(16)}`,
+        // Only the full value has it; the shown form is cut at 64 characters.
+        `${'x'.repeat(30)}${DEVICE_SENTINEL}`,
+      ]
+      for (const code of codes) {
+        const subject = run({ polls: [oauthError(code)] })
+        const error = await expectFailure(subject, 'invalid_response')
+        assert(error.message.includes('(error)'), error.message)
+        assert(!error.message.includes('SENTINEL'), error.message)
+        assertEquals(subject.broker.polls(), 1)
+      }
     })
 
     it('stops on an unexpected poll status', async () => {
@@ -972,6 +1091,29 @@ describe('createBrokerRegistrar', () => {
         assert(error.message.includes('was not used'))
       })
     }
+
+    it('refuses without showing a client_id that carries the device_code', async () => {
+      const subject = run({
+        polls: [
+          approve({
+            client_id: `app_${DEVICE_SENTINEL}`,
+            client_name: 'someone-else',
+          }),
+        ],
+      })
+      const error = await expectFailure(subject, 'invalid_response')
+      assert(error.message.includes('(client_id)'), error.message)
+    })
+
+    it('refuses without showing an approver email that carries the device_code', async () => {
+      const subject = run({
+        polls: [
+          approve({ approved_by_email: `${DEVICE_SENTINEL}@example.com` }),
+        ],
+      })
+      const error = await expectFailure(subject, 'invalid_response')
+      assert(error.message.includes('(approved_by_email)'), error.message)
+    })
 
     it('refuses a malformed client_id', async () => {
       const subject = run({
