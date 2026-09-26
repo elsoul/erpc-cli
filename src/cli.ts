@@ -45,6 +45,7 @@ import { resolveVerifiedNodeRuntime } from './deploy/node-runtime.ts'
 import { deployToCloudflare } from './deploy/cloudflare.ts'
 import type { ProcessRunner } from './process.ts'
 import { erpcAA, erpcWelcomeMessage } from './ui/welcome.ts'
+import { openExternalUrl } from './open-external.ts'
 
 export interface CliDependencies {
   readonly auth?: DeviceAuthClient
@@ -112,25 +113,12 @@ against a pinned or explicitly supplied --sha256, and answers its prompts
 from --set/--domain/--email or interactively. Non-interactive runs require
 --yes and fail with every missing or invalid answer listed together.`
 
-export const defaultOpenExternal = (url: string): void => {
-  const platform = Deno.build.os
-  const [command, args] = platform === 'darwin'
-    ? ['open', [url]]
-    : platform === 'windows'
-    ? ['cmd', ['/c', 'start', '', url]]
-    : ['xdg-open', [url]]
-  try {
-    const child = new Deno.Command(command, {
-      args,
-      stdin: 'null',
-      stdout: 'null',
-      stderr: 'null',
-    }).spawn()
-    child.unref()
-  } catch {
-    // The verification URL is always printed, so browser launch is best effort.
-  }
-}
+/**
+ * The browser launcher used when no `openExternal` is injected. On Windows it
+ * opens only a URL that cmd cannot reinterpret; see `openExternalUrl`.
+ */
+export const defaultOpenExternal = (url: string): boolean =>
+  openExternalUrl(url)
 
 const parseScopes = (args: readonly string[]): readonly ErpcCloudScope[] => {
   const requested: ErpcCloudScope[] = []

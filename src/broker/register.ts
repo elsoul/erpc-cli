@@ -6,9 +6,12 @@
 // until the broker hands back the new client_id exactly once. The
 // `device_code` is the only thing that ties the poll to the request. The CLI
 // sends it only to the poll endpoint and never puts it in output or an error
-// itself; what it shows from the broker's response cannot carry it either,
-// because a response whose `user_code` or displayed verification page
-// contains it is refused (see `parsePendingRegistration`).
+// itself. A value it would show from a broker response cannot carry it
+// either: a registration response whose `user_code` or displayed verification
+// page contains it, and a poll response whose error code, `client_id` or
+// `approved_by_email` contains it, are refused without showing that value
+// (see `parsePendingRegistration`, `acceptApprovedRegistration` and the poll
+// loop).
 
 import type {
   OidcClientRegistrar,
@@ -28,6 +31,7 @@ import {
   parseIssuerOrigin,
   sanitizeForDisplay,
 } from './discovery.ts'
+import { isShellSafeUrl } from '../open-external.ts'
 
 export interface BrokerRegistrarDeps {
   readonly fetch?: typeof globalThis.fetch
@@ -224,11 +228,13 @@ const parsePendingRegistration = (
   }
   if (userCode.includes(deviceCode)) throw invalid('user_code')
   // The opener on some platforms hands its argument to a shell, so only the
-  // fixed form built from the checked issuer and user_code is ever opened.
-  // Anything else falls back to the verification page without its query,
-  // which is printed next to the code and never opened.
+  // fixed form built from the checked issuer and user_code is ever opened,
+  // and only when the issuer's host keeps it inside the characters a shell
+  // reads as plain text. Anything else falls back to the verification page
+  // without its query, which is printed next to the code and never opened.
   const fixedComplete = `${issuer}/register?user_code=${userCode}`
-  const openable = pages[1]!.href === fixedComplete
+  const openable = pages[1]!.href === fixedComplete &&
+    isShellSafeUrl(fixedComplete)
   // `href` is the URL serializer's output: printable ASCII only.
   const verificationPage = openable
     ? fixedComplete
@@ -267,28 +273,28 @@ const isValidApproverEmail = (value: unknown): value is string =>
 /**
  * Checks an approved registration against what was requested. Nothing from a
  * response that fails here is returned: the client_id is only shown so the
- * user can recognise the stray registration later.
+ * user can recognise the stray registration later, and a client_id or
+ * approver email that contains the device_code is never shown.
  */
 const acceptApprovedRegistration = (
   body: Record<string, unknown> | null,
   request: {
     readonly clientName: string
+    readonly deviceCode: string
     readonly redirectUris: readonly string[]
   },
 ): { readonly approvedByEmail: string; readonly clientId: string } => {
-  if (body === null) {
-    throw new BrokerRegistrationError(
+  const invalid = (field: string) =>
+    new BrokerRegistrationError(
       'invalid_response',
-      'The broker returned an invalid approved registration (body is not a JSON object). The registration was not used.',
+      `The broker returned an invalid approved registration (${field}). The registration was not used.`,
     )
-  }
+  if (body === null) throw invalid('body is not a JSON object')
   const clientId = body.client_id
-  if (typeof clientId !== 'string' || !CLIENT_ID_PATTERN.test(clientId)) {
-    throw new BrokerRegistrationError(
-      'invalid_response',
-      'The broker returned an invalid approved registration (client_id). The registration was not used.',
-    )
-  }
+  if (
+    typeof clientId !== 'string' || !CLIENT_ID_PATTERN.test(clientId) ||
+    clientId.includes(request.deviceCode)
+  ) throw invalid('client_id')
   const mismatched: string[] = []
   if (body.client_name !== request.clientName) mismatched.push('client_name')
   if (!sameRedirectUriSet(body.redirect_uris, request.redirectUris)) {
@@ -308,6 +314,9 @@ const acceptApprovedRegistration = (
       'invalid_approver',
       `The broker did not say which account approved the registration (client_id: ${clientId}). The client_id was not used.`,
     )
+  }
+  if (approvedByEmail.includes(request.deviceCode)) {
+    throw invalid('approved_by_email')
   }
   return { approvedByEmail, clientId }
 }
@@ -469,6 +478,7 @@ export const createBrokerRegistrar = (
       if (polled.status === 200) {
         const approved = acceptApprovedRegistration(polled.json, {
           clientName,
+          deviceCode: pending.deviceCode,
           redirectUris,
         })
         io.output(
@@ -502,13 +512,22 @@ export const createBrokerRegistrar = (
             "The broker reports that this registration request has expired or was already used. Run 'erpc app init' again to start a new request.",
           )
         }
+        const shownCode = typeof code === 'string'
+          ? sanitizeForDisplay(code, 64)
+          : 'no error code'
+        if (
+          typeof code === 'string' &&
+          (code.includes(pending.deviceCode) ||
+            shownCode.includes(pending.deviceCode))
+        ) {
+          throw new BrokerRegistrationError(
+            'invalid_response',
+            'The broker returned an invalid registration poll response (error).',
+          )
+        }
         throw new BrokerRegistrationError(
           'invalid_response',
-          `The broker rejected the registration poll (${
-            typeof code === 'string'
-              ? sanitizeForDisplay(code, 64)
-              : 'no error code'
-          }).`,
+          `The broker rejected the registration poll (${shownCode}).`,
         )
       }
       throw new BrokerRegistrationError(

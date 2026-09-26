@@ -122,23 +122,13 @@ collects answers, and generates a `cloudflare-worker` application:
 erpc app init my-wallet --template stablecoin-manager@v0.1.0
 ```
 
-**This release ships with an empty template registry.** The public template
-repository's owner, repo, and asset name (`TEMPLATE_REGISTRY` in
-`src/app/template-registry.ts`) were not decided when this release was cut, so
-`--template <name>@<tag>` fails with "Unknown template" for every `<name>` until
-a later release adds an entry shaped like:
-
-```ts
-export const TEMPLATE_REGISTRY: TemplateRegistry = {
-  'stablecoin-manager': {
-    source: { owner: 'elsoul', repo: '<repo>', asset: 'erpc-template.tar.gz' },
-    pins: { 'v0.1.0': '<64 lowercase hex characters>' }, // omit to ship unpinned
-  },
-}
-```
-
-The `stablecoin-manager@v0.1.0` example above becomes valid once that entry
-(with a `v0.1.0` pin) ships in a future release.
+This release registers one template: `TEMPLATE_REGISTRY` in
+`src/app/template-registry.ts` maps `stablecoin-manager` to the
+`erpc-template.tar.gz` release asset of
+[`elsoul/stablecoinmanager`](https://github.com/elsoul/stablecoinmanager) and
+pins the `v0.1.0` asset's sha256, so the command above needs no `--sha256`.
+`--template <name>@<tag>` fails with "Unknown template" for every other
+`<name>`.
 
 Once a template _name_ is registered, `--sha256` lets you use a _tag_ that
 release doesn't have a bundled checksum for yet — it cannot register an unknown
@@ -201,9 +191,10 @@ you approve the request in the broker's own page instead:
    Approve only if the page lists exactly those redirect URIs; otherwise deny
    the request. The CLI refuses an approval page that is not on the issuer's own
    origin. It opens the page only when the broker's link is exactly
-   `<issuer>/register?user_code=<code>`; for any other link it prints the
-   approval page without its query, opens nothing, and you enter the code there
-   yourself.
+   `<issuer>/register?user_code=<code>` and that link uses only characters a
+   command shell reads as plain text (an issuer whose host contains `&`, for
+   example, is never opened); for any other link it prints the approval page
+   without its query, opens nothing, and you enter the code there yourself.
 4. The CLI waits for your approval and receives the new client id once. It
    refuses the result unless the client name and the set of redirect URIs match
    what it asked for, then shows which Google account approved it:
@@ -223,8 +214,11 @@ prints the client id so you can re-run with
 `--set APP_OIDC_CLIENT_ID=<client id>` instead of registering a second client.
 The CLI never follows redirects from the broker and never sends it an
 `Authorization` header. The request's device code, which the CLI uses to wait
-for your approval, is sent only to the broker; the CLI does not print it, and
-refuses a broker response whose code or printed approval page contains it.
+for your approval, is sent only to the broker. The CLI never adds it to its
+output or errors itself, and it stops without showing the value when a broker
+response puts the device code in something the CLI would show: the code or the
+approval page of the registration response, or the error code, client id, or
+approving account of a later response.
 
 ## `erpc.toml`
 
@@ -435,12 +429,15 @@ The CLI opens the ERPC verification page. It requests read-only usage and
 resource scopes when the authorization server advertises them; during rollout,
 it uses the existing identity scopes so base account authentication remains
 available. If the browser cannot be opened, follow the URL printed in the
-terminal. The access credential stays in process memory and the refresh
-credential is stored in the operating-system keychain. Linux login currently
-requires `secret-tool` and an available Secret Service; on Debian and Ubuntu it
-is provided by the `libsecret-tools` package. The macOS and Windows binaries
-currently support local application and deployment commands, while native
-keychain-backed login on those systems remains on the roadmap.
+terminal. On Windows the CLI opens only an `http` or `https` URL with none of
+the characters the command interpreter treats specially (`&`, `|`, `^`, `<`,
+`>`, `"`, `%`); any other URL is only printed. The access credential stays in
+process memory and the refresh credential is stored in the operating-system
+keychain. Linux login currently requires `secret-tool` and an available Secret
+Service; on Debian and Ubuntu it is provided by the `libsecret-tools` package.
+The macOS and Windows binaries currently support local application and
+deployment commands, while native keychain-backed login on those systems remains
+on the roadmap.
 
 When the login grants Cloud scopes:
 
