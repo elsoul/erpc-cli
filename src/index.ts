@@ -129,6 +129,16 @@ export {
   unsupportedOidcClientRegistrar,
 } from './app/template-init.ts'
 export {
+  assertIssuerDiscovery,
+  BrokerRegistrationError,
+  type BrokerRegistrationFailure,
+  type BrokerRequestDeps,
+} from './broker/discovery.ts'
+export {
+  type BrokerRegistrarDeps,
+  createBrokerRegistrar,
+} from './broker/register.ts'
+export {
   type BuildArtifact,
   buildForDeployment,
   type BuildOptions,
