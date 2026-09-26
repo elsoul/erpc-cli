@@ -218,7 +218,9 @@ for your approval, is sent only to the broker. The CLI never adds it to its
 output or errors itself, and it stops without showing the value when a broker
 response puts the device code in something the CLI would show: the code or the
 approval page of the registration response, or the error code, client id, or
-approving account of a later response.
+approving account of a later response. It accepts only a device code made of
+ASCII letters, digits, `.`, `_`, `~`, and `-`, which printing leaves unchanged,
+so these checks also cover the printed form.
 
 ## `erpc.toml`
 
@@ -429,9 +431,10 @@ The CLI opens the ERPC verification page. It requests read-only usage and
 resource scopes when the authorization server advertises them; during rollout,
 it uses the existing identity scopes so base account authentication remains
 available. If the browser cannot be opened, follow the URL printed in the
-terminal. On Windows the CLI opens only an `http` or `https` URL with none of
-the characters the command interpreter treats specially (`&`, `|`, `^`, `<`,
-`>`, `"`, `%`); any other URL is only printed. The access credential stays in
+terminal. On Windows the CLI opens only an `http` or `https` URL whose parsed
+form consists of ASCII letters, digits, and the characters
+`-._~:/?#[]@$'()*+,;=`; any other URL (for example one with `&`, `%`, `!`, a
+space, or a non-ASCII character) is only printed. The access credential stays in
 process memory and the refresh credential is stored in the operating-system
 keychain. Linux login currently requires `secret-tool` and an available Secret
 Service; on Debian and Ubuntu it is provided by the `libsecret-tools` package.

@@ -686,26 +686,32 @@ describe('createBrokerRegistrar', () => {
     })
 
     it('does not open the fixed form when the issuer host has a shell metacharacter', async () => {
-      const issuer = 'https://x&calc.example.com'
-      const subject = run({
-        issuer,
-        created: () =>
-          json(
-            201,
-            registrationCreated({
-              verification_uri: `${issuer}/register`,
-              verification_uri_complete:
-                `${issuer}/register?user_code=${USER_CODE}`,
-            }),
-          ),
-        polls: [approve()],
-      })
-      assertEquals(await subject.result, { clientId: CLIENT_ID })
-      assertEquals(subject.opened, [])
-      assertEquals(subject.output.slice(0, 2), [
-        `Open ${issuer}/register`,
-        `Code: ${USER_CODE}`,
-      ])
+      for (
+        const issuer of [
+          'https://x&calc.example.com',
+          'https://x!username!.example.com',
+        ]
+      ) {
+        const subject = run({
+          issuer,
+          created: () =>
+            json(
+              201,
+              registrationCreated({
+                verification_uri: `${issuer}/register`,
+                verification_uri_complete:
+                  `${issuer}/register?user_code=${USER_CODE}`,
+              }),
+            ),
+          polls: [approve()],
+        })
+        assertEquals(await subject.result, { clientId: CLIENT_ID }, issuer)
+        assertEquals(subject.opened, [], issuer)
+        assertEquals(subject.output.slice(0, 2), [
+          `Open ${issuer}/register`,
+          `Code: ${USER_CODE}`,
+        ], issuer)
+      }
     })
 
     it('prints the verification_uri fallback without its query', async () => {
@@ -792,6 +798,53 @@ describe('createBrokerRegistrar', () => {
       assertEquals(subject.opened, [])
       assertEquals(subject.broker.polls(), 0)
     })
+
+    // Each case would print the device code in a changed form (percent-encoded
+    // in the page path, or with its control character removed from the
+    // approver email) if the device code were accepted.
+    const deviceCodesChangedByPrinting: ReadonlyArray<
+      readonly [string, string, string, Record<string, unknown>, PollStep]
+    > = [
+      [
+        'a space',
+        'dev code',
+        'dev%20code',
+        {
+          verification_uri: `${ISSUER}/r/dev code`,
+          verification_uri_complete:
+            `${ISSUER}/r/dev code?user_code=${USER_CODE}`,
+        },
+        approve(),
+      ],
+      [
+        'a control character',
+        'dev\u0007code',
+        'devcode',
+        {},
+        approve({ approved_by_email: 'devcode@example.com' }),
+      ],
+    ]
+    for (
+      const [label, deviceCode, printed, overrides, poll]
+        of deviceCodesChangedByPrinting
+    ) {
+      it(`refuses a device_code with ${label} before printing anything`, async () => {
+        const subject = run({
+          created: () =>
+            json(
+              201,
+              registrationCreated({ device_code: deviceCode, ...overrides }),
+            ),
+          polls: [poll],
+        })
+        const error = await expectFailure(subject, 'invalid_response')
+        assert(error.message.includes('(device_code)'), error.message)
+        assert(!error.message.includes(printed), error.message)
+        assertEquals(subject.output, [])
+        assertEquals(subject.opened, [])
+        assertEquals(subject.broker.polls(), 0)
+      })
+    }
 
     it('shows the broker error code and a cleaned, bounded description on 400', async () => {
       const subject = run({

@@ -11,7 +11,8 @@
 // page contains it, and a poll response whose error code, `client_id` or
 // `approved_by_email` contains it, are refused without showing that value
 // (see `parsePendingRegistration`, `acceptApprovedRegistration` and the poll
-// loop).
+// loop). A device code with a character that printing would change is
+// refused first, so these checks also hold for the printed form.
 
 import type {
   OidcClientRegistrar,
@@ -55,6 +56,11 @@ const MAX_DEVICE_CODE_LENGTH = 1024
 const MAX_EMAIL_LENGTH = 320
 
 const USER_CODE_PATTERN = /^[A-Z]{4}-[A-Z]{4}$/
+// Printing does not change these characters (the URL serializer does not
+// percent-encode them and `sanitizeForDisplay` does not remove them), so a
+// printed value that shows such a device code contains it exactly, and the
+// `includes` checks find it.
+const DEVICE_CODE_PATTERN = /^[A-Za-z0-9._~-]+$/
 const CLIENT_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/
 const IPV4_LITERAL = /^\d{1,3}(?:\.\d{1,3}){3}$/
 const CONTROL_OR_FORMAT_CHARACTER = /[\p{Cc}\p{Cf}]/u
@@ -194,7 +200,8 @@ const parsePendingRegistration = (
   const deviceCode = body.device_code
   if (
     typeof deviceCode !== 'string' || deviceCode.length === 0 ||
-    deviceCode.length > MAX_DEVICE_CODE_LENGTH
+    deviceCode.length > MAX_DEVICE_CODE_LENGTH ||
+    !DEVICE_CODE_PATTERN.test(deviceCode)
   ) throw invalid('device_code')
   const userCode = body.user_code
   if (typeof userCode !== 'string' || !USER_CODE_PATTERN.test(userCode)) {

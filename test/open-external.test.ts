@@ -20,6 +20,7 @@ describe('openExternalUrl', () => {
       const url of [
         `${PAGE}&calc`,
         'https://broker.example.com/register?u=%USERNAME%',
+        'https://broker.example.com/register?u=!USERNAME!',
         'https://broker.example.com/register?u=x|x^y',
         'https://x&calc.example.com/register?user_code=BCDF-GHJK',
         'https://broker.example.com/register?u=<x>',
@@ -64,6 +65,33 @@ describe('openExternalUrl', () => {
     assertEquals(launcher.started, [['cmd', ['/c', 'start', '', PAGE]]])
   })
 
+  it('checks the parsed href on Windows and hands cmd that href', () => {
+    for (
+      const url of [
+        'HTTPS://BROKER.EXAMPLE.COM/register?user_code=BCDF-GHJK',
+        'https://broker.example.com/regi\tster?user_code=BCDF-GHJK',
+      ]
+    ) {
+      const launcher = recorder()
+      assertEquals(
+        openExternalUrl(url, { os: 'windows', spawn: launcher.spawn }),
+        true,
+        url,
+      )
+      assertEquals(launcher.started, [['cmd', ['/c', 'start', '', PAGE]]], url)
+    }
+    // Every character is allowed as written, but the href percent-encodes `'`.
+    const launcher = recorder()
+    assertEquals(
+      openExternalUrl("https://broker.example.com/register?u='x'", {
+        os: 'windows',
+        spawn: launcher.spawn,
+      }),
+      false,
+    )
+    assertEquals(launcher.started, [])
+  })
+
   it('hands the URL unchanged to open on macOS and xdg-open elsewhere', () => {
     const url = `${PAGE}&x=%41`
     for (
@@ -92,9 +120,11 @@ describe('openExternalUrl', () => {
 })
 
 describe('isShellSafeUrl', () => {
-  it('accepts the fixed approval page and refuses cmd metacharacters and %', () => {
+  it('accepts the fixed approval page and refuses cmd metacharacters, % and !', () => {
     assert(isShellSafeUrl(PAGE))
-    for (const character of ['&', '|', '^', '<', '>', '"', '%', ' ', '`']) {
+    for (
+      const character of ['&', '|', '^', '<', '>', '"', '%', '!', ' ', '`']
+    ) {
       assert(!isShellSafeUrl(`${PAGE}${character}`), character)
     }
   })

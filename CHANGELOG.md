@@ -23,8 +23,8 @@
   asset of `elsoul/stablecoinmanager`) and pin its `v0.1.0` asset, so
   `erpc app init --template stablecoin-manager@v0.1.0` needs no `--sha256`.
 - On Windows, open a URL in the browser only when it is an `http` or `https` URL
-  with none of the characters the command interpreter treats specially (`&`,
-  `|`, `^`, `<`, `>`, `"`, `%`); any other URL is only printed. This covers both
+  whose parsed form consists of ASCII letters, digits, and the characters
+  `-._~:/?#[]@$'()*+,;=`; any other URL is only printed. This covers both
   `erpc login` and the broker approval page.
 - Add `erpc deploy --target cloudflare` for a `cloudflare-worker` application:
   authenticate and fix a Cloudflare account through project-local `wrangler`,
