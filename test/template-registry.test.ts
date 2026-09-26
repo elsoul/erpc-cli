@@ -1,4 +1,4 @@
-import { assert, assertEquals } from '@std/assert'
+import { assert, assertEquals, assertThrows } from '@std/assert'
 import { describe, it } from './testing.ts'
 import {
   resolveExpectedSha256,
@@ -43,6 +43,18 @@ describe('TEMPLATE_REGISTRY', () => {
     assertEquals(
       templateAssetUrl(entry.source, 'v0.1.0').href,
       'https://github.com/elsoul/stablecoinmanager/releases/download/v0.1.0/erpc-template.tar.gz',
+    )
+  })
+
+  it('refuses a --sha256 that disagrees with the pinned checksum', () => {
+    const entry = resolveTemplateRegistryEntry(
+      TEMPLATE_REGISTRY,
+      'stablecoin-manager',
+    )
+    assertThrows(
+      () => resolveExpectedSha256(entry, 'v0.1.0', '0'.repeat(64)),
+      Error,
+      'does not match the pinned checksum',
     )
   })
 })

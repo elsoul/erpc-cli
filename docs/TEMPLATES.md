@@ -7,7 +7,8 @@ documentation (see the
 [README](../README.md#create-an-application-from-a-template) for that) and it
 does not cover Cloudflare deployment (`erpc deploy --target
 cloudflare`), which
-ships in a later release.
+the README's [Deploy to Cloudflare](../README.md#deploy-to-cloudflare) section
+documents.
 
 ## Packaging
 
