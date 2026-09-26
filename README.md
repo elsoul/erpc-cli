@@ -354,7 +354,7 @@ erpc deploy --config /path/to/app/erpc.toml
 erpc deploy --yes                      # non-interactive; fail on any missing answer
 erpc deploy --ack-backup WALLET_MNEMONIC # acknowledge a secret-pipe backup non-interactively
 erpc deploy --no-provision             # skip Cloudflare KV/secret provisioning
-erpc deploy --dry-run                  # `wrangler deploy --dry-run`; reports instead of stopping, changes no Cloudflare state
+erpc deploy --dry-run                  # `wrangler deploy --dry-run`; reports instead of stopping; no KV, secret, account_id, or deploy changes
 erpc deploy --verify-only              # re-run only the post-deploy verification probes
 ```
 
@@ -371,8 +371,9 @@ environment variable) is skipped and reported as unset.
 
 `--dry-run` resolves the account without writing it: it leaves `wrangler.toml`
 unchanged (no account id is fixed into it), creates no KV namespace, and puts no
-secret. The template's `[build].command` still runs. It reports unresolved
-placeholders and missing secrets instead of stopping, then runs
+secret. The template's `[build].command` and preflight commands still run, and
+`wrangler login` can still run interactively when no session exists. It reports
+unresolved placeholders and missing secrets instead of stopping, then runs
 `wrangler deploy --dry-run`.
 
 A secret value never touches a file, an argument list, or an error message: it

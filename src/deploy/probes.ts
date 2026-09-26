@@ -12,8 +12,10 @@
 // backoff attempt would leave one new row per attempt - only the PKCE
 // authorize/follow step is retried once a client id is in hand. A
 // registration that fails (a 503, say) is retried on the next attempt, so one
-// probe run can POST more than once, but no more than one of those POSTs
-// succeeds.
+// probe run can POST more than once. What the probe guarantees is only that it
+// reuses a registration it saw succeed and re-sends only the attempts it saw
+// fail: if the worker stored a client and the response was then lost, the next
+// POST can leave a second client row.
 
 import { encodeBase64 } from '@std/encoding/base64'
 import type { TemplateManifest } from '../app/template-manifest.ts'
