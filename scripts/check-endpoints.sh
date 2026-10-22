@@ -33,8 +33,18 @@
 #     that is the part that decides the destination. An earlier version
 #     stripped the expression and checked the prefix alone, which let an
 #     allowlisted prefix vouch for an attacker-chosen suffix.
-#   - A host with NO literal part at all is skipped: there is nothing to
-#     check. Nothing in this repository builds one.
+#   - A host that is ENTIRELY one balanced expression, such as ${MIRROR}, is
+#     skipped: there is nothing literal to check. An UNTERMINATED opener is
+#     not that case and is reported, because the text after it is literal
+#     and is usually the registrable domain.
+#   - The matcher reads each line as written and never rewrites it. A URL is
+#     a run of non-space characters or whole balanced ${ }, ${{ }}, {{ }} and
+#     $( ) expressions, so a space inside one of those does not end it.
+#     Backticks are excluded on purpose: a backtick is also a string quote,
+#     and pairing them across a space would splice a URL to unrelated text.
+#     The cost is the one case this gate does NOT see: a backtick expression
+#     containing a space, as in https://`cat host`.evil.example.net, is cut
+#     at the space and its domain is never checked.
 #   - A host that is not plain ASCII, or one containing a backslash escape
 #     anywhere, is reported: both are literals a reviewer should see, and
 #     neither may be skipped just because the matcher finds them awkward.
@@ -199,18 +209,20 @@ is_loopback_host() {
 # and neither literal part introduces a dot of its own, so the registrable
 # domain cannot move. `solana-snapshot-${REGION}.erpc.global` qualifies;
 # `github.com${X}.evil.example.net` does not.
-# The host's literal skeleton: every expression removed, so a caller can
-# apply character checks to the parts the author actually wrote. An
-# unterminated expression is left in place, and its delimiters then fail the
-# character check, which is the conservative direction.
+# The host's literal skeleton: every BALANCED expression removed, so a caller
+# can apply character checks to the parts the author actually wrote.
+#
+# Balanced only, and nothing is cut to end-of-string. An earlier version cut
+# from any surviving opener to the end, which emptied the skeleton for
+# `https://${x.evil.example.net` and made the caller skip the host on the
+# grounds that it had no literal part -- while its literal part was the
+# registrable domain. A surviving opener now stays in the skeleton, where
+# `$` and `{` fail the character check, which is what the comment above this
+# function always claimed happened.
 strip_expressions() {
-  # Paired expressions first. Any delimiter still standing after that is
-  # unterminated -- usually because the URL matcher stopped at a space inside
-  # it, as in `https://$(cat host)/x` -- so everything from it to the end is
-  # not literal either and is cut.
   printf '%s' "$1" \
-    | sed -e 's/\${{[^}]*}}//g' -e 's/\${[^}]*}//g' -e 's/{{[^}]*}}//g' -e 's/\$([^)]*)//g' -e 's/`[^`]*`//g' \
-    | sed -e 's/\${{.*$//' -e 's/\${.*$//' -e 's/{{.*$//' -e 's/\$(.*$//' -e 's/`.*$//'
+    | sed -e 's/\${{[^}]*}}//g' -e 's/\${[^}]*}//g' -e 's/{{[^}]*}}//g' \
+          -e 's/\$([^)]*)//g' -e 's/`[^`]*`//g'
 }
 
 template_host_matches_pattern() {
@@ -268,11 +280,16 @@ check_url() {
     *) host="${hostport%%:*}";;
   esac
 
-  # Decided BEFORE the punctuation trim below, which cuts at a backtick: a
-  # backtick is both a template delimiter and a JavaScript string quote, and
-  # trimming first would cut a backtick-expression host in half.
+  # An expression is present when removing the balanced ones changed the
+  # host, or when an opener survives that removal. Derived this way rather
+  # than by looking for a delimiter, because a lone backtick is far more
+  # often a JavaScript string quote than an expression: treating
+  # `https://user-api.erpc.global`;` as an expression host would report a
+  # host. A removed backtick PAIR does count.
+  paired=$(strip_expressions "$host")
   has_expr=no
-  case "$host" in *'${'*|*'{{'*|*'$('*|*'`'*) has_expr=yes;; esac
+  [ "$paired" = "$host" ] || has_expr=yes
+  case "$paired" in *'${'*|*'{{'*|*'$('*) has_expr=yes;; esac
 
   # A backslash ANYWHERE in the host hides the rest of it. In Rust,
   # TypeScript and Python alike `https://github.com\x2eevil.example.net` is
@@ -295,7 +312,7 @@ check_url() {
   # http, a Cyrillic label or an escape past checks the gate states as
   # absolute.
   if [ "$has_expr" = yes ]; then
-    probe=$(strip_expressions "$host")
+    probe="$paired"
   else
     host="${host%%[)\",\';\`]*}"
     probe="$host"
@@ -346,17 +363,25 @@ for f in "${files[@]}"; do
   # Escaped slashes (\/\/) are normalised so a JSON or TypeScript string
   # cannot hide a URL from the matcher.
   #
-  # Expressions are collapsed to space-free placeholders before matching.
-  # The matcher stops at a space, so `https://{{ host }}.evil.example.net`
-  # was read as the host `{{` and the registrable domain after the space was
-  # never seen. Collapsing keeps the marker, which is what tells check_url an
-  # expression is present, while putting the literal tail back in reach.
+  # A URL is a run of non-space characters OR whole balanced expressions,
+  # so a space inside `${{ ... }}` or `{{ ... }}` does not end it and
+  # `https://{{ host }}.evil.example.net` is seen whole. An earlier version
+  # got this by rewriting expressions to space-free placeholders before
+  # matching, which is the one thing a gate must not do: `[^}]*` ran to the
+  # next closer anywhere on the line, so an unbalanced `${` before a URL and
+  # a `}` after it replaced the URL itself, and nothing downstream ever saw
+  # it. The matcher now reads the line as written and edits nothing.
+  #
+  # Backticks are deliberately NOT one of the balanced forms here. A backtick
+  # is also a JavaScript string quote, so pairing them across a space would
+  # join a URL to whatever text follows it in the file. The cost is that
+  # `https://`cat host`.evil.example.net` is cut at the space and its domain
+  # is not seen; that limit is stated in the header.
   while IFS=: read -r ln url; do
     [ -z "$ln" ] && continue
     check_url "$f" "$ln" "$url" "$kind"
   done < <(grep -a '' "$f" 2>/dev/null | sed 's|\\/|/|g' \
-    | sed -e 's/\${{[^}]*}}/${{}}/g' -e 's/\${[^{}][^}]*}/${}/g' -e 's/{{[^}]*}}/{{}}/g' -e 's/\$([^)]*)/$()/g' \
-    | grep -naoiE '(https?|wss?)://[^[:space:]"'"'"'<>]+' 2>/dev/null)
+    | grep -naoiE '(https?|wss?)://(\$\{\{[^}]*\}\}|\$\{[^}]*\}|\{\{[^}]*\}\}|\$\([^)]*\)|[^[:space:]"'"'"'<>])+' 2>/dev/null)
 done
 
 if [ "$status" -ne 0 ]; then

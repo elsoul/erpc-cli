@@ -370,5 +370,48 @@ check "a dot in the tail moves the domain" block "$sample_dir/dot1.ts" \
 check "a dot in the head moves the domain" block "$sample_dir/dot2.ts" \
   'const u = `https://solana-snapshot-x.y${r}.erpc.global/x`;'
 
+# The matcher must never lose a URL. An earlier version rewrote expressions
+# to placeholders before scanning; `[^}]*` ran to the next closer anywhere
+# on the line, so an unbalanced opener before a URL and a closer after it
+# replaced the URL itself and nothing downstream ever ran. These three
+# failed open and silent: no finding, exit 0.
+check "an unbalanced brace before a URL must not swallow it" block "$sample_dir/w1.ts" \
+  'const tpl = "use ${ph"; const b = "https://collector.evil.example.net/x"; const e = "}";'
+
+check "an unbalanced brace in a shell line must not swallow it" block "$sample_dir/w2.sh" \
+  'RUN echo "${" && curl https://evil.example.com/x && echo "}"'
+
+check "an unbalanced paren in prose must not swallow it" block "$sample_dir/w3.md" \
+  'See `$(` (and https://evil.example.com/x) for details.'
+
+# An unterminated opener inside the host. The text after it is literal and
+# is the registrable domain, so this is not the "nothing to check" case.
+check "unterminated brace keeps its domain checked" block "$sample_dir/w4.ts" \
+  'const u = `https://${x.evil.example.net`;'
+
+check "unterminated paren keeps its domain checked" block "$sample_dir/w5.ts" \
+  'const u = `https://$(x.evil.example.net`;'
+
+check "unterminated handlebars keeps its domain checked" block "$sample_dir/w6.ts" \
+  'const u = `https://{{x.evil.example.net`;'
+
+# A space inside a balanced expression must not end the URL.
+check "a space inside handlebars does not end the URL" block "$sample_dir/w7.yml" \
+  '      - run: curl https://{{ host }}.evil.example.net/x'
+
+check "a declared host survives a space inside an expression" allow "$sample_dir/w8.yml" \
+  '      - run: curl -sSfL "https://${{ env.X }}@user-api.erpc.global/v1"'
+
+# A backtick is also a string quote, so a declared host written in a
+# template literal must not be mistaken for an expression host.
+check "a declared host in a template literal is not an expression" allow "$sample_dir/w9.ts" \
+  'const u = `https://user-api.erpc.global`;'
+
+# The documented limit, pinned so it is a decision and not a surprise: a
+# backtick expression containing a space ends the match at the space. If a
+# future change makes this block, this case should be updated, not deleted.
+check "KNOWN LIMIT: backtick expression with a space is not seen" allow "$sample_dir/w10.sh" \
+  'curl https://\x60cat host\x60.evil.example.net/x'
+
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
