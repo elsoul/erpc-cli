@@ -132,17 +132,25 @@ check "internal docs path reference" block "$sample_dir/i.md" \
 check "developer home path" block "$sample_dir/j.sh" \
   'cp /Users/someone/secrets.txt .'
 
+# The identifiers below are self-evidently placeholders, on purpose. The
+# previous fixtures were random-looking 26-character strings, and a reviewer
+# reasonably asked whether they had been copied from somewhere -- the only
+# reassurance available was that they contained `8` and `9`, which are
+# outside the RFC 4648 base32 alphabet a real 1Password identifier uses, so
+# they could not have been real. Nobody should have to know that to read a
+# test in the file whose own rule exists to keep these identifiers out of a
+# public repository. These spell what they are.
 check "bare 1Password vault identifier" block "$sample_dir/op1.md" \
-  'The signing key lives in vault 4xq7zj2mn8d5r3vb6kwth9pcyf.'
+  'The signing key lives in vault examplevaultidaaaaaaaaaaaa.'
 
 check "bare 1Password item identifier" block "$sample_dir/op2.md" \
-  'Rotate item gk2m9r4xtp7vn6bq3zdw8scylh after use.'
+  'Rotate item exampleitemidbbbbbbbbbbbbb after use.'
 
 check "1Password dashboard URL with both identifiers" block "$sample_dir/op2b.md" \
-  'See https://my.1password.com/vaults/4xq7zj2mn8d5r3vb6kwth9pcyf/items/gk2m9r4xtp7vn6bq3zdw8scylh'
+  'See https://my.1password.com/vaults/examplevaultidaaaaaaaaaaaa/items/exampleitemidbbbbbbbbbbbbb'
 
 check "the words vault ID before the identifier" block "$sample_dir/op2c.md" \
-  '1Password vault ID 4xq7zj2mn8d5r3vb6kwth9pcyf.'
+  '1Password vault ID examplevaultidaaaaaaaaaaaa.'
 
 check "an op:// reference carrying both ids is a pointer, not a leak" allow "$sample_dir/op3.toml" \
   'identity_ref = "op://abcdefghijklmnopqrstuvwxyz/abcdefghijklmnopqrstuvwxyz/keypair"'

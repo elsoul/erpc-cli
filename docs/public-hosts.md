@@ -55,24 +55,47 @@ code as authoritative if the two ever disagree.
 
   The cost is the trade, and it is real: a default-report gate will report
   correct lines until its terminator and trailing-punctuation sets cover
-  them. That cost is *bounded* — two enumerated lists, one case per entry,
-  and a miss is a loud failure on a correct line that someone fixes the same
-  day. The old cost was *unbounded*: a character class that had to be
-  complete, with no way to know when it was, and a miss was a silent pass
-  that survived review rounds.
+  them. That cost is *bounded* — two enumerated lists, fourteen entries
+  between them, and a miss is a loud failure on a correct line that someone
+  fixes the same day. The old cost was *unbounded*: a character class that
+  had to be complete, with no way to know when it was, and a miss was a
+  silent pass that survived review rounds.
 
-  Before the scan, the line is normalised once, in `normalise()`, and the
-  script's header is the full statement of what that does. In outline: ASCII
-  tab and CR are deleted, except immediately before a scheme, where they
-  become a space because there they separate two URLs rather than sit inside
-  one; and any run of `/` after a scheme, **including no slash at all**,
-  becomes `://`. These are not cosmetic. `ht<TAB>tps://host`,
-  `https://declared<TAB>.other`, `https:host`, `https:/host` and
-  `https:///host` are all live destinations to anything that fetches them --
-  the URL Standard strips tab, CR and LF before parsing and skips any number
-  of slashes after a special scheme -- and every one of them once passed this
-  gate without being looked at. A backslash is refused rather than resolved,
-  since resolving it would name a host the source does not.
+  Each of those fourteen entries has a case that fails when it is dropped —
+  which is a claim worth stating only because it was false when first made.
+  A review measured it and found at most six of eighteen entries covered,
+  six live and uncovered, and four doing nothing at all. The uncovered ones
+  were the real problem: a refactor could have dropped an entry and produced
+  false positives that are loud to users and silent to CI. Eight cases were
+  added and the four dead entries removed, after checking that dropping all
+  four changed neither verdict nor message on eight probes.
+
+  Two further reasons the sets cannot hide a destination, which is what
+  makes them different in kind from the character class they replaced.
+  Every terminator except `"` and `'` is a character the URL Standard
+  forbids in a host, so it cannot cut a real host short; those two are the
+  disclosed limit below. And no character in the trailing-punctuation set
+  can form a DNS label, so stripping a run of them off the end cannot move
+  the registrable domain.
+
+  Before the scan, the line is normalised once, in `normalise()`. The script
+  header is the full statement of what that does; this page does not
+  paraphrase it, because a paraphrase drifts — an earlier version of this
+  paragraph went on describing a slash-collapsing rule for a while after
+  that rule was deleted. There are five rules, and all five are about tab,
+  CR, or separating two adjacent URLs so that neither is read as part of the
+  other.
+
+  What matters here is why any normalisation exists at all: the URL Standard
+  strips tab, CR and LF from its input *before* parsing, so
+  `ht<TAB>tps://host` and `https://declared<TAB>.other` are live
+  destinations to anything that fetches them, and a matcher looking at the
+  line as written sees nothing in the first and stops at the tab in the
+  second. A backslash is refused rather than resolved, since resolving it
+  would name a host the source does not. Slash counts need no rule: the
+  scanner starts from the scheme and strips the leading slashes itself,
+  whatever their number including none, so `https:host`, `https:/host` and
+  `https:///host` are all judged on their real host.
 
   **The list of shapes this gate does not see is still not complete, and
   must not be read as if it were.** The rewrite removed the mechanism that
@@ -92,12 +115,26 @@ code as authoritative if the two ever disagree.
     Standard deletes LF as it deletes tab and CR; this gate reads one line
     at a time.
 
-  Two limits this page used to state are now **closed** rather than
-  restated. A colon followed by something that is not a port no longer ends
-  the authority — `https://declared:x.other/` is reported, where it used to
-  be judged as `declared` — and a `,`, `;`, `)` or backtick between a
-  declared host and a second URL no longer hides that URL, because the
-  second scheme occurrence is scanned in its own right.
+  Three shapes this page used to list as limits are now **closed** rather
+  than restated:
+
+  - a colon followed by something that is not a port. It no longer ends the
+    authority, so `https://declared:x.other/` is reported where it used to
+    be judged as `declared`.
+  - a backtick expression containing a space, as in
+    ``https://`cat host`.other/``. The authority does end early there — the
+    backtick is deliberately not paired across a space, because pairing it
+    would swallow ``` `https://semver.org`. ``` and
+    ``` `https://user-api.erpc.global`.trim() ``` to end of line, both
+    correct lines. What changed is the answer: an authority that begins with
+    punctuation has no literal part to judge, and is now reported instead of
+    skipped. It was skipped *silently* until a review found it, and the same
+    commit that introduced the rewrite had removed this entry from the list
+    without closing it.
+  - a `,`, `;`, `)` or backtick between a declared host and a second URL,
+    which no longer hides that URL because the second scheme occurrence is
+    scanned in its own right. This one was never on the list; it was found
+    by a review two rounds before the rewrite.
 
   What follows from all of this: the gate raises the cost of adding a
   destination and makes one appearing in a diff visible. It is not a proof

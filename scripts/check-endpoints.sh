@@ -33,12 +33,24 @@
 #     that is the part that decides the destination. An earlier version
 #     stripped the expression and checked the prefix alone, which let an
 #     allowlisted prefix vouch for an attacker-chosen suffix.
+#
+#     A BACKTICK expression CONTAINING A SPACE can never be allowed by a
+#     pattern, because the authority ends at the space and the pattern's
+#     declared suffix is past it. It is reported either as a hidden literal,
+#     when nothing precedes the backtick, or as a host not in the allowlist,
+#     when the truncated prefix is all that is left --
+#     https://solana-snapshot-`cat r`.erpc.global is the second of those.
+#     Worth naming because this bullet claimed "is reported" for a while
+#     when the first of those cases was in fact skipped in silence.
 #   - One assumption here is about the allowlist rather than the grammar:
-#     a match can absorb the LETTERS of a following scheme (never its colon,
-#     which no production admits in that position), and the host then ends
-#     in http, https, ws or wss. That is caught because no declared host
-#     ends in those and HOST_PATTERNS requires .erpc.global last. Declaring
-#     a host that ends in one of them would quietly break it.
+#     an authority can absorb the LETTERS of a following scheme, and its
+#     colon with them -- the colon is removed by the trailing-punctuation
+#     strip or reported by the colon check, depending on what follows. The
+#     absorbed-letters case is caught by the trailing-scheme-word arm of the
+#     mid-punctuation tail test, not by an assumption about the allowlist.
+#     An earlier version of this bullet said a match could never absorb the
+#     colon and leaned on no declared host ending in http, https, ws or wss;
+#     that was true of the regex this scanner replaced, and is not true now.
 #   - A host that is ENTIRELY one balanced expression, such as ${MIRROR}, is
 #     skipped: there is nothing literal to check. An UNTERMINATED opener is
 #     not that case and is reported, because the text after it is literal
@@ -346,11 +358,28 @@ EOF
 #
 # The cost is real and is the point of the trade: a default-report gate
 # reports correct lines until the terminator and trailing-punctuation sets
-# cover them. That cost is BOUNDED -- two enumerated lists, one case per
-# entry, and a miss is a loud failure on a correct line that someone fixes
-# the same day. The old cost was UNBOUNDED: a character class that had to be
-# COMPLETE, with no way to know when it was, and a miss was a silent pass
-# that survived review rounds.
+# cover them. That cost is BOUNDED -- two enumerated lists, fourteen entries
+# between them, and a miss is a loud failure on a correct line that someone
+# fixes the same day. The old cost was UNBOUNDED: a character class that had
+# to be COMPLETE, with no way to know when it was, and a miss was a silent
+# pass that survived review rounds.
+#
+# Each of those fourteen entries has a case that fails when it is dropped.
+# Said here only because it was FALSE when first claimed: a review measured
+# it and found at most six of eighteen entries covered, six live and
+# uncovered, and four doing nothing. The uncovered ones were the real
+# problem -- a refactor could drop one and produce false positives that are
+# loud to users and silent to CI -- so eight cases were added and the four
+# dead entries removed. A list whose completeness is the stated
+# justification must not contain an entry that does nothing, because such an
+# entry makes the claim unfalsifiable.
+#
+# Two reasons neither set can hide a destination, which is what makes them
+# different in kind from the character class they replaced. Every terminator
+# except `"` and `'` is a character the URL Standard FORBIDS in a host, so
+# it cannot cut a real host short; those two are the disclosed limit above.
+# And no character in the trailing-punctuation set can form a DNS label, so
+# stripping a run of them off the end cannot move the registrable domain.
 
 # Where an authority ENDS. A character here cannot be part of one, so the
 # authority is the run before it. Space is in the set because normalise()
@@ -367,12 +396,27 @@ EOF
 authority_end='[/?#"'"'"'<> ]'
 
 # Trailing punctuation stripped from the END of an authority, and only from
-# the end. This is what lets prose write a URL inside a sentence: `(see
-# https://erpc.global)`, `https://semver.org.`, `https://erpc.global,` in a
-# list. Stripping at the FIRST occurrence instead -- which the previous
-# design did -- is what let `https://api.github.com,evil.example.net` be
-# judged as api.github.com.
-authority_tail_punct='[].,;:)}!?`]'
+# the end. This is what lets prose write a URL inside a sentence. Stripping
+# at the FIRST occurrence instead -- which the previous design did -- is
+# what let `https://api.github.com,evil.example.net` be judged as
+# api.github.com.
+#
+# Why this cannot move a destination, which is the argument the list rests
+# on: no character in it can form a DNS label. Stripping a run of them off
+# the end therefore cannot change the registrable domain; the only two that
+# alter the host string at all are `:` (an empty port) and, before it was
+# removed, a trailing root dot -- both the same host.
+#
+# SIX entries, and each has a case: `]` `;` `:` `}` `!` and a backtick.
+# Four more were removed as redundant, after checking that dropping all
+# four changed neither the verdict NOR the message on eight probes:
+# `.` is already handled by host_allowed stripping a trailing root dot,
+# `,` and `)` by the mid-punctuation prefix path below, and `?` cannot
+# reach here because it ends the authority in the first place. The list is
+# short on purpose: its completeness is what the header offers as the
+# bounded cost of reporting by default, so an entry that does nothing is
+# worse than absent -- it makes the claim unfalsifiable.
+authority_tail_punct='[];:}!`]'
 
 # $1 scheme word (with its colon), $2 the rest of the line after that colon,
 # $3 file, $4 line number, $5 prose|code
@@ -484,6 +528,26 @@ check_occurrence() {
         tail="${host#*[,\;\)\`]}"
         if printf '%s' "$tail" | LC_ALL=C grep -qE '[A-Za-z0-9-]+\.[A-Za-z0-9-]+|([Hh][Tt][Tt][Pp][Ss]?|[Ww][Ss][Ss]?)$'; then
           report "$f" "$ln" "punctuation inside the host hides the rest of it: $scheme://$host"
+          return 0
+        fi
+        # An EMPTY prefix means the punctuation is the first thing in the
+        # authority, so there is no literal part before it and nothing to
+        # judge -- and falling through to the `[ -n "$host" ]` test below
+        # then RETURNED SUCCESS with real text still unexamined. That was
+        # the one silent pass left in this function, and it covered every
+        # backtick expression containing a space or any terminator
+        # character: `https://`echo evil`.example.net/x` was allowed, in a
+        # workflow `run:` step where the backtick really is a command
+        # substitution and the host really is contacted.
+        #
+        # The backtick is the one expression form awk does NOT track as a
+        # balanced opener, deliberately: pairing backticks across a space
+        # would swallow `` `https://semver.org`. `` and
+        # `` `https://user-api.erpc.global`.trim() `` to end of line, both
+        # correct lines. So the authority ends early for that form, and the
+        # honest answer is to report rather than to resolve or to skip.
+        if [ -z "$prefix" ]; then
+          report "$f" "$ln" "the authority begins with punctuation, so the literal is hidden: $scheme://$host"
           return 0
         fi
         host="$prefix"
@@ -610,15 +674,22 @@ for f in "${files[@]}"; do
   # gate does not judge -- it is not special, so no parser applies the
   # slash-skipping rule to it and no client fetches it over TLS -- and
   # matching the tail of a word instead reported `let flows:u32 = 1;`.
+  scan_complete=no
   while IFS="$tab" read -r ln scheme rest; do
     [ -n "$ln" ] || continue
+    if [ "$scheme" = "__scan_complete__" ]; then scan_complete=yes; continue; fi
     check_occurrence "$scheme" "$rest" "$f" "$ln" "$kind"
   done < <(grep -a '' "$f" 2>/dev/null | normalise | awk '
     # Where an authority ends. index() rather than a regex, so no character
     # here needs escaping in two languages at once.
     BEGIN {
       re = "(^|[^A-Za-z0-9])([Hh][Tt][Tt][Pp][Ss]?|[Ww][Ss][Ss]?):"
-      TERM = "/?#\"\x27<> "
+      # The apostrophe via sprintf: `\x` is a gawk/mawk extension, not
+      # POSIX awk, and an awk without it would read this string as
+      # `/?#"x27<> ` -- making x, 2 and 7 terminators, so that
+      # https://x402.erpc.global yielded an empty authority. A silent
+      # failure mode, which is the kind this gate must not have.
+      TERM = "/?#\"" sprintf("%c", 39) "<> "
     }
     # The authority: the run after the slashes, up to the first character
     # that cannot continue one -- except inside a BALANCED expression, where
@@ -657,7 +728,20 @@ for f in "${files[@]}"; do
         printf "%d\t%s\t%s\n", NR, tok, authority_of(substr(s, RSTART + RLENGTH))
         s = substr(s, RSTART + RLENGTH)
       }
-    }')
+    }
+    # The scan ran to completion. Checked below, because without it this
+    # gate FAILS OPEN: the pipeline runs inside a process substitution, so
+    # neither pipefail nor any exit status reaches $status, and an awk that
+    # cannot start produces zero records -- no findings, exit 0, every URL
+    # in the tree allowed. Demonstrated by renaming a variable to one of
+    # awk reserved words, which is exactly the mistake that produced this
+    # scanner s first draft.
+    END { printf "0\t__scan_complete__\t\n" }')
+
+  if [ "$scan_complete" != yes ]; then
+    echo "the scanner did not run to completion on $f; refusing to report a clean result" >&2
+    exit 2
+  fi
 
 done
 
