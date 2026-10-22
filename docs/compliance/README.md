@@ -13,7 +13,7 @@ operator is handled by ELSOUL LABO B.V. outside this repository.
 | Evidence | Where | Produced by |
 |---|---|---|
 | License and notices | `LICENSE`, `NOTICE`, `LICENSES/`, `REUSE.toml` | repository; `reuse lint` in CI |
-| Third-party notices | `THIRD_PARTY_NOTICES.md` in each release; `erpc licenses` | `cargo about` |
+| Third-party notices | `THIRD_PARTY_NOTICES.md` in each release | `cargo about` |
 | Software bill of materials | `*.cdx.json` attached to each GitHub Release | `cargo cyclonedx` via cargo-dist |
 | Build provenance | GitHub Attestations on every release artifact | `actions/attest` via cargo-dist |
 | Release signatures | `release-manifest.json.minisig`, `latest.json.minisig` | release workflow; key custody by ELSOUL LABO B.V. |

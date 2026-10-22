@@ -103,10 +103,13 @@ description = "Public material, pointers and the detection patterns themselves"
 paths = [
   '''LICENSES/.*''',
   '''crates/erpc-release/pubkey\.txt''',
-  # These files quote the patterns on purpose.
+  # These files quote the patterns on purpose. The exemption names the two
+  # self-test scripts rather than their directory, so a file dropped into
+  # scripts/tests/ is still scanned.
   '''\.gitleaks\.toml''',
   '''scripts/check-oss-hygiene\.sh''',
-  '''scripts/tests/.*''',
+  '''scripts/tests/check-oss-hygiene\.test\.sh''',
+  '''scripts/tests/check-endpoints\.test\.sh''',
   '''docs/secret-exposure-response\.md''',
 ]
 regexes = [

@@ -38,7 +38,8 @@ under `crates/` and the discussion on the pull request you are working from.
    public-host list. Design documents, internal assessments and operational
    records stay in ELSOUL LABO B.V.'s private documentation, so that a
    revision of them cannot leak internal context here. The hygiene gate
-   refuses files such as `docs/architecture.md` by name for this reason.
+   refuses such documents by filename; if you have a genuine need for one,
+   raise it rather than renaming the file.
 6. **Toolchain.** `rust-toolchain.toml` pins the compiler. `cargo fmt`,
    `cargo clippy --all-targets -- -D warnings` and `cargo test --workspace`
    must pass on Linux, macOS and Windows.
@@ -46,11 +47,15 @@ under `crates/` and the discussion on the pull request you are working from.
    `permissions: contents: read` by default, and never use
    `pull_request_target` or `workflow_run`.
 8. **Outbound destinations.** Every host `erpc` contacts is declared in
-   `crates/erpc-core/src/endpoints.rs`, and nowhere else. A URL anywhere in
-   the tree that is not on that list fails `scripts/check-endpoints.sh`. ERPC
-   service endpoints are never read from configuration or environment
-   variables, so a compromised dependency or a tampered config cannot redirect
-   traffic. At runtime, `ensure_service_url` enforces the same list.
+   `crates/erpc-core/src/endpoints.rs`, and nowhere else.
+   `scripts/check-endpoints.sh` fails a URL in any tracked text file whose
+   host is not on that list; prose files are the one exception, and even
+   there a line carrying a download or execute command is held to the list.
+   Because ERPC endpoints are compile-time constants and are never read from
+   configuration or environment variables, a tampered config cannot redirect
+   traffic. This is a source gate, not a sandbox: it does not constrain what a
+   malicious dependency does at runtime. `ensure_service_url` is the helper
+   callers will use once the HTTP client lands; it has no callers today.
 9. **Gates must be tested.** Any check that can block a commit needs a case in
    `scripts/tests/` proving it blocks a known-bad sample and passes a
    known-good one. A gate that silently stops matching is worse than none.

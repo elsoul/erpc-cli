@@ -140,6 +140,22 @@ jobs:
       - name: endpoint allowlist (all tracked files)
         run: scripts/check-endpoints.sh
 
+  gates-bash32:
+    name: gates under bash 3.2 (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: confirm the shell really is bash 3.2
+        run: /bin/bash --version | head -1
+      - name: gates and their self-tests under /bin/bash
+        run: |
+          /bin/bash scripts/check-oss-hygiene.sh
+          /bin/bash scripts/check-endpoints.sh
+          /bin/bash scripts/tests/check-oss-hygiene.test.sh
+          /bin/bash scripts/tests/check-endpoints.test.sh
+
   zizmor:
     name: zizmor (workflow audit)
     runs-on: ubuntu-latest

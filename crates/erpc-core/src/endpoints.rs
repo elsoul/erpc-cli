@@ -5,15 +5,19 @@
 //!
 //! Two controls share this list:
 //!
-//! 1. At runtime, [`ensure_service_url`] refuses a request to anything that is
-//!    not listed, so a compromised dependency or an injected configuration
-//!    value cannot quietly redirect ERPC traffic somewhere else.
-//! 2. Before a commit, `scripts/check-endpoints.sh` extracts the same literals
-//!    from this file and refuses any other URL in the source tree.
+//! 1. Before a commit, `scripts/check-endpoints.sh` extracts these literals and
+//!    refuses any other URL in a tracked text file, so a new destination cannot
+//!    enter the repository without a reviewer seeing this file change.
+//! 2. At runtime, [`ensure_service_url`] is the helper that callers use to
+//!    check a destination before contacting it. **It has no callers yet**:
+//!    this version of `erpc` performs no network requests at all. When the
+//!    HTTP client lands, every outbound call path must go through it.
 //!
-//! Adding a host means editing this file, which puts it in front of a
-//! reviewer. Do not read endpoints from configuration or environment variables
-//! for ERPC's own services.
+//! What this does and does not buy. Because ERPC's own endpoints are
+//! compile-time constants and are never read from configuration or environment
+//! variables, a tampered config file cannot redirect ERPC traffic. It does
+//! **not** stop a malicious dependency, which can open its own socket without
+//! consulting this module; there is no egress sandbox here.
 //!
 //! **Not covered:** node endpoints the operator names themselves, such as
 //! `erpc check rpc --url`. Those are the user's own targets, validated by
@@ -59,7 +63,11 @@ pub const HOST_PATTERNS: &[(&str, &str)] = &[("solana-snapshot-", ".erpc.global"
 
 /// Loopback hosts, where plaintext `http`/`ws` is allowed: the OAuth redirect
 /// listener and `erpc mcp serve --http`.
-pub const LOOPBACK_HOSTS: &[&str] = &["127.0.0.1", "localhost", "[::1]", "::1"];
+///
+/// An IPv6 literal must be bracketed in a URL, so `[::1]` is the form that
+/// reaches this list; a bare `::1` is rejected as malformed before the list is
+/// consulted.
+pub const LOOPBACK_HOSTS: &[&str] = &["127.0.0.1", "localhost", "[::1]"];
 
 /// Why a URL was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -136,6 +144,8 @@ pub fn is_allowed_host(host: &str) -> bool {
 /// Accepts `https`/`wss` to an allowlisted host with no explicit port and no
 /// userinfo, or `http`/`ws`/`https`/`wss` to loopback with any port.
 ///
+/// No caller exists in this version; see the module documentation.
+///
 /// # Errors
 ///
 /// Returns the specific [`EndpointError`] so the caller can report why.
@@ -147,7 +157,7 @@ pub fn ensure_service_url(raw: &str) -> Result<(), EndpointError> {
     if !is_allowed_host(&parsed.host) {
         return Err(EndpointError::HostNotAllowed(parsed.host));
     }
-    if is_loopback(&parsed.host) {
+    if is_loopback(parsed.host.trim_end_matches('.')) {
         return match parsed.scheme.as_str() {
             "http" | "https" | "ws" | "wss" => Ok(()),
             other => Err(EndpointError::Scheme(other.to_owned())),
@@ -345,5 +355,25 @@ mod tests {
         sorted.sort_unstable();
         sorted.dedup();
         assert_eq!(hosts, sorted);
+    }
+
+    /// `docs/public-hosts.md` explains this list to readers. The gates read the
+    /// code, so the page can drift silently unless something checks it.
+    #[test]
+    fn every_host_is_documented() {
+        let doc = include_str!("../../../docs/public-hosts.md");
+        let mut missing: Vec<&str> = all_hosts()
+            .into_iter()
+            .filter(|h| !doc.contains(h))
+            .collect();
+        for (prefix, suffix) in super::HOST_PATTERNS {
+            if !doc.contains(&format!("{prefix}*{suffix}")) {
+                missing.push(prefix);
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "not described in docs/public-hosts.md: {missing:?}"
+        );
     }
 }

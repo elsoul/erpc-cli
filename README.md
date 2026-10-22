@@ -15,17 +15,22 @@ account, the ERPC AI assistant and credits. It is the Rust successor of
 
 ## Install
 
+**There is no release yet.** No version has been published, the download
+host and the installer are not serving, and the package names are not
+registered. Install instructions will appear here with the first release;
+until then, build from source:
+
 ```bash
-curl --proto '=https' --tlsv1.2 -sSfL https://install.erpc.global | bash
+git clone https://github.com/elsoul/erpc-cli
+cd erpc-cli
+cargo build --release
 ```
 
-```powershell
-irm https://install.erpc.global/ps1 | iex
-```
-
-Or `cargo binstall erpc`, or download a release archive and verify it with
-[`docs/verify-release.md`](docs/verify-release.md). Operators of mainnet
-validators should follow the high-assurance path in that document.
+When releases begin, every artifact will carry a signed manifest, a software
+bill of materials and build provenance. The procedure for checking them is
+already written down in
+[`docs/verify-release.md`](docs/verify-release.md), so it can be reviewed
+before it is relied on.
 
 ## Repository layout
 

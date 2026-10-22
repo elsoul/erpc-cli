@@ -39,6 +39,17 @@ for sbom in "$dir"/*.cdx.json "$dir"/*.cdx.xml; do
   break
 done
 
+# A signed manifest that vouches for nothing is worse than a missing one:
+# it would be mirrored and presented to users as a verification artifact.
+[ -n "$targets_json" ] || { echo "no release archives found in $dir; refusing to emit an empty manifest" >&2; exit 1; }
+[ -n "$sbom_sha" ] || { echo "no CycloneDX SBOM found in $dir; refusing to emit a manifest without one" >&2; exit 1; }
+target_count=$(printf '%s' "$targets_json" | tr ',' '\n' | grep -c '"archive"')
+expected_targets=$(grep -cE '^  "[a-z0-9_]+-[a-z0-9_-]+",$' "$(git rev-parse --show-toplevel)/dist-workspace.toml" 2>/dev/null || echo 0)
+if [ "$expected_targets" -gt 0 ] && [ "$target_count" -ne "$expected_targets" ]; then
+  echo "manifest covers $target_count targets but dist-workspace.toml configures $expected_targets" >&2
+  exit 1
+fi
+
 cat <<EOF
 {
   "schema": 1,

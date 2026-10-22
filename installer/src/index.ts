@@ -10,12 +10,20 @@
  *   GET /vX.Y.Z/ps1  -> PowerShell installer pinned to that tag
  *   GET /healthz     -> 200
  *
- * Trust model (docs/verify-release.md): the latest tag and the installer
- * scripts come from GitHub (immutable releases, the origin). The R2 mirror
- * (dl.erpc.global) is used only when GitHub is unreachable, and the response
- * header `x-erpc-source` says which source answered. Signature verification of
- * releases is done by `erpc upgrade` on the client, not here; this worker holds
- * no secrets and no keys.
+ * Trust model (docs/verify-release.md). This worker holds no secrets and no
+ * keys, and it verifies no signatures: WebCrypto has no BLAKE2b, so minisign
+ * cannot be checked here.
+ *
+ * Because of that, **the latest tag is resolved from GitHub only**. The R2
+ * mirror is a fallback for downloading an installer whose tag is already
+ * fixed, never for deciding which tag that is. Letting the mirror name the
+ * tag would allow anyone able to write to the bucket, or to interpose on
+ * dl.erpc.global, to pin every `curl … | bash` to an older release. The
+ * response carries `x-erpc-source` saying which source answered.
+ *
+ * The convenience path therefore trusts DNS, TLS, this worker and GitHub
+ * Releases. Operators who need more follow the high-assurance path in
+ * docs/verify-release.md.
  */
 
 export interface Env {
@@ -52,15 +60,23 @@ export default {
       return text("not found", 404);
     }
 
+    // Normalise the cache key to the path: a query string changes nothing in
+    // the response, and keying on it would let `?x=1`, `?x=2`, … miss the
+    // cache and amplify requests to api.github.com.
     const cache = caches.default;
-    const cacheKey = new Request(url.toString(), { method: "GET" });
+    const cacheKey = new Request(new URL(url.pathname, url.origin).toString(), { method: "GET" });
     const cached = await cache.match(cacheKey);
     if (cached) return cached;
 
     let tagSource = "pinned";
     if (!tag) {
       const latest = await resolveLatest(env);
-      if (!latest) return text("could not determine the latest release", 502);
+      if (!latest) {
+        return text(
+          "could not determine the latest release from GitHub; retry, or install a pinned version with https://install.erpc.global/vX.Y.Z",
+          502,
+        );
+      }
       tag = latest.tag;
       tagSource = latest.source;
     }
@@ -122,7 +138,14 @@ async function fetchInstaller(
   return null;
 }
 
-/** Latest stable tag from GitHub (origin); mirror latest.json only as fallback. */
+/**
+ * Latest stable tag, from GitHub only.
+ *
+ * There is deliberately no mirror fallback here: this worker cannot verify
+ * the mirror's signed `latest.json`, so accepting it would let whoever can
+ * write to the bucket choose which version every reader installs. If GitHub
+ * is unreachable we serve an error rather than a version we cannot vouch for.
+ */
 async function resolveLatest(env: Env): Promise<{ tag: string; source: string } | null> {
   try {
     const r = await fetch(`https://api.github.com/repos/${env.GITHUB_REPO}/releases/latest`, {
@@ -134,21 +157,7 @@ async function resolveLatest(env: Env): Promise<{ tag: string; source: string } 
       if (j.tag_name && TAG_RE.test(j.tag_name)) return { tag: j.tag_name, source: "github-latest" };
     }
   } catch {
-    // fall through to the mirror
-  }
-  try {
-    const r = await fetch(`${env.MIRROR_BASE}/latest.json`, {
-      headers: { "user-agent": UA },
-      cf: { cacheTtl: CACHE_TTL },
-    });
-    if (r.ok) {
-      const j = (await r.json()) as { tag?: string; expires_at?: string };
-      if (j.tag && TAG_RE.test(j.tag) && j.expires_at && Date.parse(j.expires_at) > Date.now()) {
-        return { tag: j.tag, source: "mirror-latest-unverified" };
-      }
-    }
-  } catch {
-    // give up
+    // fall through
   }
   return null;
 }

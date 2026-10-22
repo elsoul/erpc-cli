@@ -68,8 +68,14 @@ check "labelled hex private key" block "$sample_dir/f.rs" \
 check "PEM private key block" block "$sample_dir/g.pem" \
   '-----BEGIN EC PRIVATE KEY-----'
 
-check "private repository reference" block "$sample_dir/h.md" \
-  'See elsoul/vs2-app for the internal runbook.'
+check "sibling private repository reference" block "$sample_dir/h.md" \
+  'See elsoul/internal-ops for the runbook.'
+
+check "this repository is not an internal reference" allow "$sample_dir/h2.md" \
+  'Clone it from https://github.com/elsoul/erpc-cli'
+
+check "mixed-case internal host" block "$sample_dir/h3.rs" \
+  'const U: &str = "https://ops-internal.ERPC.global/";'
 
 check "internal docs path reference" block "$sample_dir/i.md" \
   'The record lives in .claude/docs/erpc-cli-management/README.md'

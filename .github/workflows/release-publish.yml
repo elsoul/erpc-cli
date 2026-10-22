@@ -100,11 +100,19 @@ jobs:
           set -euo pipefail
           dist build --artifacts=local --target ${{ matrix.target }} --output-format=json > rebuild.json
           rebuilt=$(jq -r '.artifacts | to_entries[] | select(.value.kind=="executable-zip") | .value.path' rebuild.json | head -1)
+          [ -n "$rebuilt" ] && [ -f "$rebuilt" ] || { echo "rebuild produced no archive"; exit 1; }
           orig="artifacts/$(basename "$rebuilt")"
+          [ -f "$orig" ] || { echo "no published archive to compare against: $orig"; exit 1; }
           mkdir -p a b
           tar -C a -xf "$orig"; tar -C b -xf "$rebuilt"
+          # `find` exits 0 when it matches nothing, so an empty result would
+          # otherwise compare "" with "" and report a successful check.
+          na=$(find a -type f -name erpc | wc -l | tr -d ' ')
+          nb=$(find b -type f -name erpc | wc -l | tr -d ' ')
+          [ "$na" = "1" ] && [ "$nb" = "1" ] || { echo "expected exactly one erpc binary per archive, found $na and $nb"; exit 1; }
           ha=$(find a -type f -name erpc -exec sha256sum {} \; | cut -d' ' -f1)
           hb=$(find b -type f -name erpc -exec sha256sum {} \; | cut -d' ' -f1)
+          [ -n "$ha" ] && [ -n "$hb" ] || { echo "could not hash one of the binaries"; exit 1; }
           echo "original: $ha"; echo "rebuilt:  $hb"
           [ "$ha" = "$hb" ] || { echo "binary hash mismatch for ${{ matrix.target }}"; exit 1; }
 

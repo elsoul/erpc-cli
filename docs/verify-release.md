@@ -23,7 +23,8 @@ mainnet validators should use the high-assurance path.
    `release-manifest.json`, `release-manifest.json.minisig`, and the archive
    for your platform.
 2. Verify the manifest signature with the project public key
-   (`crates/erpc-release/pubkey.txt`, also embedded in every `erpc` binary):
+   (`crates/erpc-release/pubkey.txt` in this repository, at the tag you are
+   checking):
 
    ```bash
    minisign -Vm release-manifest.json -P "$(grep -v '^untrusted' crates/erpc-release/pubkey.txt)"
@@ -47,10 +48,14 @@ mainnet validators should use the high-assurance path.
 
 ## What the signature covers
 
-`release-manifest.json` contains `version`, `tag`, `commit`, `build_time`, the
-`sha256` and `size` of every archive, the SBOM hash and the URL of the signed
-revocation list. `latest.json` (used by `erpc upgrade`) is signed separately
-and carries an expiry so a stale copy cannot freeze you on an old version.
+`release-manifest.json` contains `version`, `tag`, `commit`, `build_time`, and
+the `sha256` and `size` of every archive, plus the SBOM hash. `latest.json` is
+signed separately and carries an expiry so a stale copy cannot freeze you on
+an old version.
+
+The manifest also carries a `revoked_versions_url`. **Nothing publishes that
+file yet**, and no command consumes it; it is a field reserved for a
+revocation list, not a list that exists.
 
 ## Reproducible build check
 

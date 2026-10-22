@@ -24,8 +24,8 @@ unless you prefer otherwise.
 
 ## Supported versions
 
-Only the latest minor release line receives security fixes. Older releases
-should upgrade with `erpc upgrade`.
+Only the latest minor release line receives security fixes. No release has
+been published yet, so nothing is currently supported or unsupported.
 
 ## Scope
 

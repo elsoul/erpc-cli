@@ -21,8 +21,12 @@ pub mod version {
 
     /// Static build information embedded at compile time.
     ///
-    /// `git_commit` and `build_time` are supplied by the release workflow
-    /// through `ERPC_GIT_COMMIT` / `ERPC_BUILD_TIME`. Local builds show `unknown`.
+    /// `git_commit` and `build_time` are read from `ERPC_GIT_COMMIT` and
+    /// `ERPC_BUILD_TIME` if the build environment sets them. **Nothing sets
+    /// them today**, so every build reports `unknown`; stamping them in the
+    /// release workflow has to keep the two independent builds byte-identical
+    /// (see the rebuild comparison in `release-publish.yml`), which means
+    /// deriving the timestamp from `SOURCE_DATE_EPOCH` rather than the clock.
     #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
     pub struct VersionInfo {
         /// Semantic version from `Cargo.toml`.
@@ -59,14 +63,36 @@ pub mod version {
 
     /// Target triple from compile-time cfg values.
     ///
-    /// Limited to the five release targets; anything else reports the raw
-    /// `arch-os` pair so support requests still carry the platform.
+    /// Covers the five release targets. A Linux build is only reported as
+    /// `musl` when it really is one: a `cargo install` against glibc must not
+    /// claim to be a release artifact in the output `SECURITY.md` asks
+    /// reporters to paste. Anything else reports `unknown`.
     #[must_use]
     pub fn target_triple() -> &'static str {
-        if cfg!(all(target_arch = "x86_64", target_os = "linux")) {
+        if cfg!(all(
+            target_arch = "x86_64",
+            target_os = "linux",
+            target_env = "musl"
+        )) {
             "x86_64-unknown-linux-musl"
-        } else if cfg!(all(target_arch = "aarch64", target_os = "linux")) {
+        } else if cfg!(all(
+            target_arch = "aarch64",
+            target_os = "linux",
+            target_env = "musl"
+        )) {
             "aarch64-unknown-linux-musl"
+        } else if cfg!(all(
+            target_arch = "x86_64",
+            target_os = "linux",
+            target_env = "gnu"
+        )) {
+            "x86_64-unknown-linux-gnu"
+        } else if cfg!(all(
+            target_arch = "aarch64",
+            target_os = "linux",
+            target_env = "gnu"
+        )) {
+            "aarch64-unknown-linux-gnu"
         } else if cfg!(all(target_arch = "x86_64", target_os = "macos")) {
             "x86_64-apple-darwin"
         } else if cfg!(all(target_arch = "aarch64", target_os = "macos")) {

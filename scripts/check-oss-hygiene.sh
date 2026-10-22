@@ -29,7 +29,7 @@ fi
 skip_re='(\.lock$|\.png$|\.jpg$|\.gif$|\.ico$|\.woff2?$|^LICENSES/|^LICENSE$|/node_modules/|^target/)'
 
 # Files that quote these patterns on purpose.
-self_re='^(scripts/check-oss-hygiene\.sh|scripts/tests/|docs/public-hosts\.md|docs/secret-exposure-response\.md|\.gitleaks\.toml|crates/erpc-core/src/endpoints\.rs)'
+self_re='^(scripts/check-oss-hygiene\.sh|scripts/tests/[a-z-]+\.test\.sh|docs/public-hosts\.md|docs/secret-exposure-response\.md|\.gitleaks\.toml|crates/erpc-core/src/endpoints\.rs)'
 
 # erpc.global hosts come from the one allowlist, so this gate and
 # check-endpoints.sh cannot drift apart. Only the const arrays are read; the
@@ -96,7 +96,7 @@ for f in "${files[@]}"; do
     if ! erpc_host_allowed "$match"; then
       report "$f" "$ln" "non-public erpc.global host: $match"
     fi
-  done < <(grep -noE '[A-Za-z0-9._-]+\.erpc\.global' "$f" 2>/dev/null)
+  done < <(grep -noiE '[A-Za-z0-9._-]+\.erpc\.global' "$f" 2>/dev/null)
 
   # 2. Cloud account / zone / project identifiers.
   while IFS=: read -r ln match; do
@@ -133,10 +133,17 @@ for f in "${files[@]}"; do
   done < <(grep -noE -- '-----BEGIN [A-Z ]*PRIVATE KEY-----' "$f" 2>/dev/null)
 
   # 6. References into the company's private repositories and documents.
+  # Any sibling repository in the organisation, the internal documentation
+  # convention, or a developer home path. Phrased so that this public file does
+  # not itself name a private repository.
   while IFS=: read -r ln match; do
     [ -z "$ln" ] && continue
+    # This project's own org paths, including its reviewer team.
+    case "$match" in
+      */erpc-cli|*/erpc-cli-*) continue;;
+    esac
     report "$f" "$ln" "internal reference: $match"
-  done < <(grep -noE '(elsoul/vs2-app|[^A-Za-z0-9_-]vs2-app[^A-Za-z0-9_-]|\.claude/docs/|/Users/[A-Za-z0-9_.-]+/)' "$f" 2>/dev/null)
+  done < <(grep -noE '(elsoul/[A-Za-z0-9_.-]+|\.claude/docs/|/Users/[A-Za-z0-9_.-]+/)' "$f" 2>/dev/null)
 
   # 7. Committed .env files.
   case "$f" in
