@@ -489,6 +489,15 @@ check "a match that stops inside an authority is reported" block "$sample_dir/a9
 check "the same shape in prose is left alone" allow "$sample_dir/a10.md" \
   'See [ERPC](https://erpc.global): the multi-chain endpoint.'
 
+# A bare scheme with no host is not a truncated authority: there is no
+# authority. Ordinary URL-parsing code contains this literal, and counting
+# it made the guard fail the first file that parsed a URL.
+check "a bare scheme in code is not a truncated authority" allow "$sample_dir/a11.rs" \
+  'let rest = url.strip_prefix("https://")?;'
+
+check "a bare scheme in prose is not one either" allow "$sample_dir/a12.md" \
+  'The value must be an absolute https:// URL.'
+
 # IP-literal. The brackets are terminal: anything after the ] is a new
 # token, never part of this host.
 check "a bracketed host does not absorb the next scheme" block "$sample_dir/a4.sh" \

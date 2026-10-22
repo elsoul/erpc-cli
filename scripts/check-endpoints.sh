@@ -512,7 +512,13 @@ for f in "${files[@]}"; do
   while IFS= read -r gline; do
     gln=$((gln + 1))
     case "$gline" in *://*) ;; *) continue;; esac
-    n_sch=$(printf '%s ' "$gline" | grep -oiE '(https?|wss?)://' 2>/dev/null | grep -c . || true)
+    # A scheme with at least one host character after it. A bare
+    # `https://` -- in `strip_prefix("https://")`, or in prose such as
+    # "an absolute https:// URL" -- has no authority at all, so it cannot
+    # have a truncated one, and counting it made ordinary URL-parsing code
+    # fail this check.
+    n_sch=$(printf '%s ' "$gline" \
+      | grep -oiE '(https?|wss?)://[^[:space:]"'"'"'<>/?#]' 2>/dev/null | grep -c . || true)
     [ "${n_sch:-0}" -gt 0 ] || continue
     n_end=$(printf '%s ' "$gline" | grep -oiE "$url_re$url_end_re" 2>/dev/null | grep -c . || true)
     if [ "${n_end:-0}" -lt "${n_sch:-0}" ]; then
