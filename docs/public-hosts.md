@@ -20,8 +20,10 @@ code as authoritative if the two ever disagree.
   A URL whose host is built from an expression is reported unless the literal
   text on both sides of the expression matches a declared `HOST_PATTERNS`
   pair, because an allowlisted prefix on its own says nothing about where the
-  request goes. A host that is *entirely* an expression carries no literal to
-  check and is skipped; nothing in this repository builds one.
+  request goes. This holds wherever the expression sits: a host that *starts*
+  with one still carries the registrable domain as a literal, and that is the
+  part that decides the destination. Only a host with no literal part at all
+  is skipped, there being nothing to check; nothing here builds one.
   Some files are not scanned at all. That list is not copied here, because a
   copy drifts: run `scripts/check-endpoints.sh --print-exceptions`.
 - `erpc_core::endpoints::ensure_service_url` is the runtime helper callers

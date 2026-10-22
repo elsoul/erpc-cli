@@ -139,7 +139,16 @@ jobs:
         run: |
           set -euo pipefail
           sudo locale-gen en_US.UTF-8
-          locale -a | grep -qi '^en_US\.utf-\?8$'
+          # Captured, not piped into `grep -q`: under `set -o pipefail` the
+          # -q exit closes the pipe, the producer dies of SIGPIPE and the
+          # pipeline reports failure. That is the pattern the self-test
+          # harness had to stop using for exactly this reason.
+          have=$(locale -a || true)
+          printf '%s\n' "$have" | grep -qi '^en_US\.utf-\?8$' || {
+            echo "locale-gen did not produce en_US.UTF-8; the suite needs a"
+            echo "dictionary-collation locale to check what its name claims."
+            exit 1
+          }
       - name: gate self-tests
         run: |
           scripts/tests/check-oss-hygiene.test.sh

@@ -25,12 +25,22 @@
 # Scope and limits, stated exactly:
 #   - Files listed by --print-exceptions are not scanned at all.
 #   - Plaintext http:// and ws:// are refused outside loopback, per URL.
-#   - A URL whose host begins with a shell or template expression (${, {{,
-#     $(, backtick) is skipped, because there is no literal to check. An
-#     expression anywhere else is stripped and the literal prefix IS checked.
-#   - A host that is not plain ASCII, or one that starts with a backslash
-#     escape, is reported: both are literals a reviewer should see, and
+#   - A host containing a shell or template expression (${, ${{, {{, $(,
+#     backtick) is reported, UNLESS the literal text on both sides of the
+#     expression matches a declared HOST_PATTERNS pair and neither literal
+#     part adds a dot of its own. Where the expression sits does not change
+#     this: a leading expression leaves the registrable domain literal, and
+#     that is the part that decides the destination. An earlier version
+#     stripped the expression and checked the prefix alone, which let an
+#     allowlisted prefix vouch for an attacker-chosen suffix.
+#   - A host with NO literal part at all is skipped: there is nothing to
+#     check. Nothing in this repository builds one.
+#   - A host that is not plain ASCII, or one containing a backslash escape
+#     anywhere, is reported: both are literals a reviewer should see, and
 #     neither may be skipped just because the matcher finds them awkward.
+#     These checks, and the plaintext one above, run on every URL before the
+#     allowlist question is answered, so no host can reach an "allowed"
+#     verdict without passing them first.
 #   - Escaped slashes (\/\/) are normalised before matching, so a URL in a
 #     JSON or TypeScript string cannot hide from the pattern.
 #   - A host assembled at runtime from fragments is invisible to this gate.
@@ -189,6 +199,20 @@ is_loopback_host() {
 # and neither literal part introduces a dot of its own, so the registrable
 # domain cannot move. `solana-snapshot-${REGION}.erpc.global` qualifies;
 # `github.com${X}.evil.example.net` does not.
+# The host's literal skeleton: every expression removed, so a caller can
+# apply character checks to the parts the author actually wrote. An
+# unterminated expression is left in place, and its delimiters then fail the
+# character check, which is the conservative direction.
+strip_expressions() {
+  # Paired expressions first. Any delimiter still standing after that is
+  # unterminated -- usually because the URL matcher stopped at a space inside
+  # it, as in `https://$(cat host)/x` -- so everything from it to the end is
+  # not literal either and is cut.
+  printf '%s' "$1" \
+    | sed -e 's/\${{[^}]*}}//g' -e 's/\${[^}]*}//g' -e 's/{{[^}]*}}//g' -e 's/\$([^)]*)//g' -e 's/`[^`]*`//g' \
+    | sed -e 's/\${{.*$//' -e 's/\${.*$//' -e 's/{{.*$//' -e 's/\$(.*$//' -e 's/`.*$//'
+}
+
 template_host_matches_pattern() {
   local host prefix suffix lit_pre lit_suf opener closer after best d c o cl mid tail
   host=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
@@ -234,15 +258,9 @@ EOF
 
 # $1 file, $2 line number, $3 url, $4 kind
 check_url() {
-  local f="$1" ln="$2" url="$3" kind="$4" scheme rest hostport host
+  local f="$1" ln="$2" url="$3" kind="$4" scheme rest hostport host has_expr probe
   scheme=$(printf '%s' "${url%%://*}" | tr '[:upper:]' '[:lower:]')
   rest="${url#*://}"
-  # The host itself is computed, so there is no literal to check. A backtick
-  # command substitution counts: `https://`h`.example.com/` has no literal
-  # host either. One appearing after a literal prefix is handled below.
-  case "$rest" in
-    '${'*|'{{'*|'$('*|'`'*) return 0;;
-  esac
   hostport="${rest%%/*}"; hostport="${hostport%%\?*}"; hostport="${hostport%%#*}"
   hostport="${hostport##*@}"
   case "$hostport" in
@@ -250,27 +268,12 @@ check_url() {
     *) host="${hostport%%:*}";;
   esac
 
-  # A template anywhere but position 0 of the host leaves an allowlisted
-  # literal prefix in front of a suffix the author chooses. It is the same
-  # mechanism as the backslash below: `https://github.com${""}.evil.example.net`
-  # is one string whose prefix is allowlisted and whose registrable domain is
-  # not, and cutting at the template to check the prefix passes it.
-  #
-  # Such a host is allowed only when its literal prefix and literal suffix
-  # match a declared HOST_PATTERNS pair, which is exactly what that list is
-  # for (`solana-snapshot-${REGION}.erpc.global`). Anything else is reported:
-  # the gate cannot know what the expression expands to, and the one thing it
-  # must not do is vouch for a host on the strength of its first few bytes.
-  # A template AT position 0 was already returned above: there is no literal.
-  case "$host" in
-    *'${'*|*'{{'*|*'$('*|*'`'*)
-      if template_host_matches_pattern "$host"; then
-        return 0
-      fi
-      report "$f" "$ln" "expression in host, so the literal prefix does not fix the destination: $scheme://$host"
-      return 0
-      ;;
-  esac
+  # Decided BEFORE the punctuation trim below, which cuts at a backtick: a
+  # backtick is both a template delimiter and a JavaScript string quote, and
+  # trimming first would cut a backtick-expression host in half.
+  has_expr=no
+  case "$host" in *'${'*|*'{{'*|*'$('*|*'`'*) has_expr=yes;; esac
+
   # A backslash ANYWHERE in the host hides the rest of it. In Rust,
   # TypeScript and Python alike `https://github.com\x2eevil.example.net` is
   # one compile-time literal under evil.example.net, and trimming at the
@@ -282,20 +285,51 @@ check_url() {
       return 0
       ;;
   esac
-  host="${host%%[)\",\';\`]*}"
-  [ -n "$host" ] || return 0
+
+  # `probe` is the host's literal skeleton: the same string with every
+  # expression removed, so the checks below read the parts the author wrote
+  # and not the parts the expansion decides. With no expression it is just
+  # the host. The scheme and character checks run on it BEFORE the allowlist
+  # question, because an earlier arrangement answered that question first and
+  # returned, which let a host matching a declared pattern carry plaintext
+  # http, a Cyrillic label or an escape past checks the gate states as
+  # absolute.
+  if [ "$has_expr" = yes ]; then
+    probe=$(strip_expressions "$host")
+  else
+    host="${host%%[)\",\';\`]*}"
+    probe="$host"
+  fi
+  probe="${probe%%[)\",\';\`]*}"
+  [ "$has_expr" = yes ] || [ -n "$host" ] || return 0
 
   # A host that is not plain ASCII is a homograph risk and must be seen, not
   # silently skipped because the matcher's character class missed it.
   # Deliberately `tr -d` and not a bracket expression: a class containing
   # `[` and `]` is read differently by different greps, and two attempts at
   # writing one here produced a check that silently matched nothing.
-  if [ -n "$(printf '%s' "$host" | LC_ALL=C tr -d 'A-Za-z0-9.:_[]-')" ]; then
+  if [ -n "$(printf '%s' "$probe" | LC_ALL=C tr -d 'A-Za-z0-9.:_[]-')" ]; then
     report "$f" "$ln" "non-ASCII or unexpected character in host: $scheme://$host"
     return 0
   fi
   if ! is_loopback_host "$host" && [ "$scheme" = http -o "$scheme" = ws ]; then
     report "$f" "$ln" "plaintext $scheme:// outside loopback: $host"
+    return 0
+  fi
+
+  # An expression in the host means the destination is not fixed by what is
+  # written. It is allowed only when the literal text on both sides matches a
+  # declared HOST_PATTERNS pair, which is what that list is for
+  # (`solana-snapshot-${REGION}.erpc.global`). The one thing this gate must
+  # not do is vouch for a host on the strength of its first few bytes -- and
+  # that applies just as much when the expression comes FIRST, because the
+  # literal that follows it is the registrable domain. A host with no literal
+  # part at all is skipped: there is nothing to check, and nothing here
+  # builds one.
+  if [ "$has_expr" = yes ]; then
+    [ -n "$probe" ] || return 0
+    template_host_matches_pattern "$host" && return 0
+    report "$f" "$ln" "expression in host, so the literal text does not fix the destination: $scheme://$host"
     return 0
   fi
   if ! host_allowed "$host" "$kind"; then
@@ -311,10 +345,17 @@ for f in "${files[@]}"; do
   # -a so a stray NUL cannot hide the rest of the file from either branch.
   # Escaped slashes (\/\/) are normalised so a JSON or TypeScript string
   # cannot hide a URL from the matcher.
+  #
+  # Expressions are collapsed to space-free placeholders before matching.
+  # The matcher stops at a space, so `https://{{ host }}.evil.example.net`
+  # was read as the host `{{` and the registrable domain after the space was
+  # never seen. Collapsing keeps the marker, which is what tells check_url an
+  # expression is present, while putting the literal tail back in reach.
   while IFS=: read -r ln url; do
     [ -z "$ln" ] && continue
     check_url "$f" "$ln" "$url" "$kind"
   done < <(grep -a '' "$f" 2>/dev/null | sed 's|\\/|/|g' \
+    | sed -e 's/\${{[^}]*}}/${{}}/g' -e 's/\${[^{}][^}]*}/${}/g' -e 's/{{[^}]*}}/{{}}/g' -e 's/\$([^)]*)/$()/g' \
     | grep -naoiE '(https?|wss?)://[^[:space:]"'"'"'<>]+' 2>/dev/null)
 done
 
