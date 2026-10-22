@@ -340,6 +340,32 @@ impl<R: OpRunner> OnePassword<R> {
         })
     }
 
+    /// Whether an item with this title exists in the vault.
+    ///
+    /// Asked with `op item list`, whose success or failure means something,
+    /// rather than by reading the words in a failed `op item edit`. Matching
+    /// `op`'s prose was wrong in exactly the way that is hard to notice: the
+    /// real message for a missing item is "could not find item to edit", the
+    /// code looked for "isn't an item" and "not found", so the first sign-in
+    /// on a machine reported a failure instead of creating the item. A
+    /// message is not an interface; an exit status over a listing is.
+    ///
+    /// A failure here is returned, not swallowed. "The vault does not exist"
+    /// and "the item does not exist" are different problems with different
+    /// fixes, and the operator needs to be told which one they have.
+    fn item_exists(&self, title: &str) -> Result<bool, StoreError> {
+        let out = self.runner.run(
+            &["item", "list", "--vault", &self.vault, "--format", "json"],
+            None,
+        )?;
+        if !out.success {
+            return Err(self.backend("list the vault", out.stderr));
+        }
+        let items: Vec<OpListEntry> =
+            serde_json::from_str(&out.stdout).map_err(|e| StoreError::Corrupt(e.to_string()))?;
+        Ok(items.iter().any(|i| i.title == title))
+    }
+
     fn backend(&self, operation: &'static str, reason: String) -> StoreError {
         StoreError::Backend {
             kind: self.mode.kind(),
@@ -347,6 +373,13 @@ impl<R: OpRunner> OnePassword<R> {
             reason,
         }
     }
+}
+
+/// One row of `op item list --format json`.
+#[derive(Debug, Deserialize)]
+struct OpListEntry {
+    #[serde(default)]
+    title: String,
 }
 
 /// The parts of `op item get --format json` this store reads.
@@ -393,13 +426,14 @@ impl<R: OpRunner> CredentialStore for OnePassword<R> {
             None,
         )?;
         if !out.success {
-            // `op` says "isn't an item" for a miss. Anything else is a
-            // failure the operator needs to see rather than a missing
-            // session, which would silently start a fresh login.
-            if out.stderr.contains("isn't an item") || out.stderr.contains("not found") {
-                return Ok(None);
+            // A miss and a failure look alike in `op`'s output, and
+            // treating a failure as a miss would silently start a fresh
+            // login and strand the session already in the vault. Ask
+            // instead of guessing.
+            if self.item_exists(&title)? {
+                return Err(self.backend("read the item", out.stderr));
             }
-            return Err(self.backend("read the item", out.stderr));
+            return Ok(None);
         }
 
         let item: OpItem =
@@ -445,18 +479,23 @@ impl<R: OpRunner> CredentialStore for OnePassword<R> {
         // and a refresh token sitting in a process listing is outside the
         // vault boundary this store exists to keep it inside.
         //
-        // Edit first: it replaces the fields of the existing item in one
-        // call, which is the atomic replacement the trait promises. Create
-        // would leave a second item with the same title.
-        let edit = self.runner.run(
-            &["item", "edit", &title, "--vault", &self.vault],
-            Some(&template),
-        )?;
-        if edit.success {
-            return Ok(());
-        }
-        if !(edit.stderr.contains("isn't an item") || edit.stderr.contains("not found")) {
-            return Err(self.backend("update the item", edit.stderr));
+        // Ask whether the item is there, then do the one right thing.
+        // Editing an item that does not exist and creating one that does
+        // are both failures, and the two commands report them in prose
+        // that differs between `op` versions.
+        if self.item_exists(&title)? {
+            // Edit replaces the fields in one call, which is the atomic
+            // replacement the trait promises. Create would leave a second
+            // item with the same title.
+            let edit = self.runner.run(
+                &["item", "edit", &title, "--vault", &self.vault],
+                Some(&template),
+            )?;
+            return if edit.success {
+                Ok(())
+            } else {
+                Err(self.backend("update the item", edit.stderr))
+            };
         }
 
         let create = self.runner.run(
@@ -472,10 +511,13 @@ impl<R: OpRunner> CredentialStore for OnePassword<R> {
 
     fn delete(&self, key: &CredKey) -> Result<(), StoreError> {
         let title = self.item_title(key);
+        if !self.item_exists(&title)? {
+            return Ok(());
+        }
         let out = self
             .runner
             .run(&["item", "delete", &title, "--vault", &self.vault], None)?;
-        if out.success || out.stderr.contains("isn't an item") || out.stderr.contains("not found") {
+        if out.success {
             Ok(())
         } else {
             Err(self.backend("remove the item", out.stderr))
@@ -549,13 +591,29 @@ mod tests {
         }
     }
 
-    fn missing() -> OpOutput {
+    /// The message `op` 2.40 really prints when an item is not there.
+    ///
+    /// Measured, not guessed. The previous code looked for "isn't an item"
+    /// and "not found", neither of which appears in it, so a first sign-in
+    /// on a new machine reported a failure instead of creating the item.
+    const REAL_EDIT_MISS: &str = "[ERROR] 2026/10/22 17:37:43 unable to process line 1: \
+                                  could not find item to edit";
+
+    fn failed(stderr: &str) -> OpOutput {
         OpOutput {
             success: false,
             stdout: String::new(),
-            stderr: "\"x\" isn't an item. Specify the item with its UUID, name, or domain."
-                .to_owned(),
+            stderr: stderr.to_owned(),
         }
+    }
+
+    /// A successful `op item list` holding these titles.
+    fn list_of(titles: &[&str]) -> OpOutput {
+        let rows: Vec<String> = titles
+            .iter()
+            .map(|t| format!(r#"{{"id":"x","title":"{t}"}}"#))
+            .collect();
+        ok(&format!("[{}]", rows.join(",")))
     }
 
     fn key() -> CredKey {
@@ -580,7 +638,8 @@ mod tests {
 
     #[test]
     fn a_missing_item_reads_as_no_session() {
-        let fake = FakeOp::new(vec![missing()]);
+        // get fails, and the listing says the item is not there.
+        let fake = FakeOp::new(vec![failed(REAL_EDIT_MISS), list_of(&[])]);
         let store = OnePassword::new(&fake, Mode::Desktop, VAULT, "mac-001");
         assert!(
             store
@@ -591,15 +650,33 @@ mod tests {
     }
 
     #[test]
-    fn a_failure_that_is_not_a_miss_is_an_error() {
-        let fake = FakeOp::new(vec![OpOutput {
-            success: false,
-            stdout: String::new(),
-            stderr: "authorization prompt dismissed".to_owned(),
-        }]);
+    fn a_vault_that_does_not_exist_is_an_error_not_an_empty_session() {
+        // The operator's problem here is the vault, not the session, and
+        // reporting "not signed in" would send them to fix the wrong one.
+        let fake = FakeOp::new(vec![
+            failed("x"),
+            failed("[ERROR] \"v\" isn't a vault in this account."),
+        ]);
         let store = OnePassword::new(&fake, Mode::Desktop, VAULT, "mac-001");
-        // Reporting this as "no session" would silently start a new login
-        // and leave the old one in the vault.
+        match store.load(&key()) {
+            Err(StoreError::Backend { operation, .. }) => {
+                assert_eq!(operation, "list the vault");
+            }
+            other => panic!("expected a vault error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_failure_that_is_not_a_miss_is_an_error() {
+        // The item is there; the read failed for another reason. Calling
+        // that "no session" would start a new login and strand the one in
+        // the vault.
+        let title = "ERPC CLI session alice@mac-001 (auth-api)";
+        let fake = FakeOp::new(vec![
+            failed("authorization prompt dismissed"),
+            list_of(&[title]),
+        ]);
+        let store = OnePassword::new(&fake, Mode::Desktop, VAULT, "mac-001");
         assert!(store.load(&key()).is_err());
     }
 
@@ -676,16 +753,21 @@ mod tests {
 
     #[test]
     fn saving_edits_an_existing_item_in_one_call() {
-        let fake = FakeOp::new(vec![ok("")]);
+        let fake = FakeOp::new(vec![
+            list_of(&["ERPC CLI session alice@mac-001 (auth-api)"]),
+            ok(""),
+        ]);
         let store = OnePassword::new(&fake, Mode::Desktop, VAULT, "mac-001");
         store.save(&key(), &session()).expect("save");
 
         let calls = store_calls(&fake);
-        assert_eq!(calls.len(), 1, "an edit should not be followed by a create");
-        assert_eq!(calls[0][1], "edit");
+        assert_eq!(calls.len(), 2, "one listing, then one edit, and no create");
+        assert_eq!(calls[0][1], "list");
+        assert_eq!(calls[1][1], "edit");
         assert_no_token_in_argv(&fake);
 
-        let body = fake.stdins()[0]
+        // Index 1: the listing comes first and carries no stdin.
+        let body = fake.stdins()[1]
             .clone()
             .expect("the template goes in on stdin");
         assert!(body.contains(ACCESS), "the template carries the session");
@@ -695,12 +777,17 @@ mod tests {
 
     #[test]
     fn saving_creates_the_item_when_there_is_none() {
-        let fake = FakeOp::new(vec![missing(), ok("")]);
+        // The listing is empty, so the item is created. This is the path
+        // that was broken: `op item edit` on a missing item says "could
+        // not find item to edit", which the old prose match missed, so
+        // the first sign-in on a machine failed instead of creating.
+        let fake = FakeOp::new(vec![list_of(&[]), ok("")]);
         let store = OnePassword::new(&fake, Mode::Desktop, VAULT, "mac-001");
         store.save(&key(), &session()).expect("save");
 
         let calls = store_calls(&fake);
         assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0][1], "list");
         assert_eq!(calls[1][1], "create");
         assert!(
             calls[1].iter().any(|a| a == "-"),
@@ -710,7 +797,8 @@ mod tests {
         assert!(
             fake.stdins()[1]
                 .as_deref()
-                .is_some_and(|b| b.contains(REFRESH))
+                .is_some_and(|b| b.contains(REFRESH)),
+            "the create call carries the session on stdin"
         );
     }
 
@@ -720,7 +808,13 @@ mod tests {
         // to other processes on your machine. For sensitive values, use a
         // template instead." A refresh token in argv is outside the vault
         // boundary this store exists to keep it inside.
-        for replies in [vec![ok("")], vec![missing(), ok("")]] {
+        for replies in [
+            vec![
+                list_of(&["ERPC CLI session alice@mac-001 (auth-api)"]),
+                ok(""),
+            ],
+            vec![list_of(&[]), ok("")],
+        ] {
             let fake = FakeOp::new(replies);
             let store = OnePassword::new(&fake, Mode::Desktop, VAULT, "mac-001");
             store.save(&key(), &session()).expect("save");
@@ -730,9 +824,14 @@ mod tests {
 
     #[test]
     fn deleting_an_item_that_is_not_there_succeeds() {
-        let fake = FakeOp::new(vec![missing()]);
+        let fake = FakeOp::new(vec![list_of(&[])]);
         let store = OnePassword::new(&fake, Mode::Desktop, VAULT, "mac-001");
         store.delete(&key()).expect("deleting nothing is fine");
+        assert_eq!(
+            store_calls(&fake).len(),
+            1,
+            "nothing to delete means no delete call"
+        );
     }
 
     #[test]
