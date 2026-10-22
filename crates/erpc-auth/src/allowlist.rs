@@ -16,13 +16,13 @@
 //! only ever sees the refresh token. The `mcp-user-api` host is both the
 //! issuer and the API, so both of its tokens go there.
 //!
-//! `docs/public-hosts.md` restates this per host. A test below pins every
-//! line of that document that contains a `|`, exactly and in order, so no
-//! row can be added, reworded or written in another form without the test
-//! changing in the same diff; it also refuses an HTML table and text run on
-//! from a table's last row. A second test requires the hosts whose token
-//! rows are pinned to be exactly the issuers and destinations here. Whether
-//! a pinned sentence is true is for the reader of the diff that changes it.
+//! `docs/public-hosts.md` restates this per host. A test below pins that
+//! whole page by its SHA-256, so it cannot change in any way without the
+//! test changing in the same diff. Another reads the row of every host a
+//! token goes to from the page and compares it with a pinned sentence, and
+//! a third requires those hosts to be exactly the issuers and destinations
+//! here. Whether a pinned sentence is true is for the reader of the diff
+//! that changes it.
 //!
 //! A token is disclosed to whoever receives it, so both sets are
 //! compile-time constants rather than anything a configuration file, an
@@ -411,51 +411,24 @@ mod tests {
         );
     }
 
-    /// Every line of `docs/public-hosts.md` that contains a `|`, in order,
-    /// exactly as it must be.
+    /// The SHA-256 of `docs/public-hosts.md`, with CRLF read as LF so a
+    /// Windows checkout hashes the same.
     ///
-    /// Fail-closed, after three rounds of reading the table and each time
-    /// missing a row written in a form the reader did not expect: a line
-    /// with an extra cell, one without a leading pipe, one with an escaped
-    /// pipe, a second table. Whatever a line looks like, if it has a pipe
-    /// in it, it is one of these or the test fails. Changing the table
-    /// means changing this list in the same diff, where a reader checks
-    /// what the rows say; what they mean is that reader's job.
-    const PIPED_LINES: &[&str] = &[
-        "| Host | Purpose | Credentials that may be sent |",
-        "|---|---|---|",
-        "| `auth-api.erpc.global` | OAuth device flow: issue, refresh, revoke; its verification page is opened in the browser | the device code, and the refresh token to the token and revoke endpoints only; never the access token |",
-        "| `user-api.erpc.global` | ERPC account API | auth-api access token only |",
-        "| `mcp-user-api.erpc.global` | ERPC User MCP server, and the issuer of its own tokens | the device code, the MCP refresh token to the token and revoke endpoints, and the MCP access token; never the auth-api tokens |",
-        "| `x402.erpc.global` | x402 payments and credit top-up | x402 billing session token and payment headers only; never auth-api/MCP tokens, never ERPC API keys |",
-        "| `edge.erpc.global` | RPC endpoint, for the planned `check` command | RPC API key supplied by the operator |",
-        "| `dashboard.erpc.global` | opened in the browser for signup and payment setup | none |",
-        "| `erpc.global` | project home page, linked from package metadata | none |",
-        "| `solana-snapshot-*.erpc.global` | snapshot mirrors | none |",
-        "| `dl.erpc.global` | release mirror (R2) | none |",
-        "| `install.erpc.global` | installer script | none |",
-        "| `github.com`, `api.github.com` | releases, attestations | none |",
-        "| `objects.githubusercontent.com`, `release-assets.githubusercontent.com` | release artifact downloads | none |",
-        "| `crates.io`, `index.crates.io`, `static.crates.io` | dependencies (cargo, build time) | none |",
-        "| `registry.npmjs.org` | installer worker dependencies (npm, build time) | none |",
-        "| `sh.rustup.rs` | toolchain installation in CI | none |",
-        "| `127.0.0.1`, `localhost`, `[::1]` | planned OAuth redirect listener and local MCP server; plaintext `http`/`ws` allowed here only | session token for the local MCP server |",
-        "| Host | Linked from |",
-        "|---|---|",
-        "| `www.apache.org` | the licence text and headers |",
-        "| `www.contributor-covenant.org` | `CODE_OF_CONDUCT.md` |",
-        "| `keepachangelog.com` | `CHANGELOG.md` |",
-        "| `semver.org` | `CHANGELOG.md` |",
-        "| `elsoul.nl` | `NOTICE` |",
-        "| `axodotdev.github.io` | the cargo-dist configuration comment |",
-        "| `docs.github.com` | contributor documentation |",
-        "| `reuse.software` | licensing documentation |",
-    ];
+    /// The whole page, byte for byte. Four rounds of review each found a
+    /// way to change what the page shows -- a row in a form the check did
+    /// not parse, a table with no pipes, a "blank" line GitHub does not
+    /// think is blank, the table hidden in a comment -- because each check
+    /// modelled part of how the page is rendered. This models none of it:
+    /// any edit to the page fails the test until this digest is changed in
+    /// the same diff, where a reader checks the page. What the page says is
+    /// that reader's job; that it cannot change unseen is this test's.
+    const PAGE_SHA256: &str = "8e0df7285c495c8b92c181cb68a902f2b084e75c9c3da85d1e85fdc83ef128b7";
 
-    /// The credentials cell of every host a session token goes to, which
-    /// must be the cell of that host's line in [`PIPED_LINES`]. Kept apart
-    /// so that [`the_pinned_hosts_are_exactly_the_hosts_a_token_goes_to`]
-    /// can tie the set of such hosts to the code.
+    /// The credentials cell of every host a session token goes to, as the
+    /// pinned page states it. Read from the page by
+    /// [`token_row_errors`], and tied to the code by
+    /// [`the_pinned_hosts_are_exactly_the_hosts_a_token_goes_to`], so the
+    /// digest, these sentences and the code's hosts cannot move apart.
     const PINNED: &[(&str, &str)] = &[
         (
             "auth-api.erpc.global",
@@ -470,55 +443,47 @@ mod tests {
         ),
     ];
 
-    /// Every way the document departs from [`PIPED_LINES`] and [`PINNED`].
-    fn table_errors(doc: &str) -> Vec<String> {
-        table_errors_against(doc, PIPED_LINES)
+    const PAGE: &str = include_str!("../../../docs/public-hosts.md");
+
+    fn sha256_hex(text: &str) -> String {
+        use sha2::{Digest as _, Sha256};
+        Sha256::digest(text.replace("\r\n", "\n").as_bytes())
+            .iter()
+            .fold(String::with_capacity(64), |mut out, byte| {
+                use core::fmt::Write as _;
+                let _ = write!(out, "{byte:02x}");
+                out
+            })
     }
 
-    /// [`table_errors`] against a given list of pinned lines, so a test can
-    /// change the list and the document together and reach the
-    /// cross-check with [`PINNED`] on its own.
-    fn table_errors_against(doc: &str, pinned_lines: &[&str]) -> Vec<String> {
-        let mut errors = Vec::new();
-        let lines: Vec<&str> = doc.lines().collect();
-        let piped: Vec<&str> = lines.iter().copied().filter(|l| l.contains('|')).collect();
-        if piped != pinned_lines {
-            let at = piped
-                .iter()
-                .zip(pinned_lines)
-                .position(|(a, b)| a != b)
-                .unwrap_or_else(|| piped.len().min(pinned_lines.len()));
-            errors.push(format!(
-                "the lines with a pipe differ from the pinned ones at {at}: found {:?}, pinned {:?}",
-                piped.get(at),
-                pinned_lines.get(at)
-            ));
+    /// Whether `page` is the pinned page.
+    fn page_errors(page: &str) -> Vec<String> {
+        let found = sha256_hex(page);
+        if found == PAGE_SHA256 {
+            Vec::new()
+        } else {
+            vec![format!(
+                "docs/public-hosts.md has changed: its SHA-256 is {found}, pinned {PAGE_SHA256}. \
+                 Read the change, then update PAGE_SHA256 in the same diff"
+            )]
         }
-        // A table ends at a blank line. A line of text straight after the
-        // last row is read by GitHub as one more row, pipe or not.
-        for (n, pair) in lines.windows(2).enumerate() {
-            if pair[0].contains('|') && !pair[1].contains('|') && !pair[1].trim().is_empty() {
-                errors.push(format!(
-                    "line {}: a table row followed by text, not a blank line",
-                    n + 1
-                ));
-            }
-        }
-        // And a table can be written in HTML, with no pipe at all.
-        if doc.to_ascii_lowercase().contains("<table") {
-            errors.push("an HTML table".to_owned());
-        }
-        for (host, cell) in PINNED {
-            let start = format!("| `{host}` |");
-            let row = pinned_lines.iter().find(|l| l.starts_with(&start));
-            let found = row.and_then(|l| l.split('|').nth(3)).map(str::trim);
-            if found != Some(*cell) {
-                errors.push(format!(
-                    "{host}: pinned \"{cell}\", the pinned table says {found:?}"
-                ));
-            }
-        }
-        errors
+    }
+
+    /// Whether each token host's row on `page` says what [`PINNED`] says.
+    fn token_row_errors(page: &str) -> Vec<String> {
+        PINNED
+            .iter()
+            .filter_map(|(host, cell)| {
+                let start = format!("| `{host}` |");
+                let found = page
+                    .lines()
+                    .find(|l| l.starts_with(&start))
+                    .and_then(|l| l.split('|').nth(3))
+                    .map(str::trim);
+                (found != Some(*cell))
+                    .then(|| format!("{host}: pinned \"{cell}\", the page says {found:?}"))
+            })
+            .collect()
     }
 
     #[test]
@@ -538,116 +503,71 @@ mod tests {
         assert_eq!(pinned, from_code);
     }
 
-    const DOC: &str = include_str!("../../../docs/public-hosts.md");
-
     #[test]
-    fn the_public_hosts_table_says_where_each_token_goes() {
-        assert_eq!(table_errors(DOC), Vec::<String>::new());
+    fn the_public_hosts_page_is_the_pinned_one() {
+        assert_eq!(page_errors(PAGE), Vec::<String>::new());
+        assert_eq!(token_row_errors(PAGE), Vec::<String>::new());
     }
 
     #[test]
-    fn a_row_in_any_form_is_held_to_the_pinned_lines() {
-        // The forms round 11 of the review used to slip a row past a
-        // reader that parsed the table, each one rendered by GitHub as an
-        // ordinary row, and the word games an earlier check fell for.
-        let x402 = PIPED_LINES
-            .iter()
-            .find(|l| l.starts_with("| `x402.erpc.global` |"))
-            .expect("the x402 row");
-        let replace = |from: &str, to: &str| -> String {
-            assert_eq!(DOC.matches(from).count(), 1, "{from}");
-            DOC.replacen(from, to, 1)
-        };
-        let after_last_row = |extra: &str| -> String {
-            let last = PIPED_LINES
-                .iter()
-                .find(|l| l.starts_with("| `127.0.0.1`"))
-                .expect("the loopback row");
-            replace(last, &format!("{last}\n{extra}"))
-        };
+    fn a_page_read_with_crlf_is_the_same_page() {
+        assert_eq!(
+            page_errors(&PAGE.replace('\n', "\r\n")),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn any_change_to_the_page_is_refused() {
+        // What earlier checks let through, each one rendered by GitHub as a
+        // change to where tokens go, and the plainest change of all.
+        let loopback = PAGE
+            .lines()
+            .find(|l| l.starts_with("| `127.0.0.1`"))
+            .expect("the loopback row");
+        let after_table = |extra: &str| PAGE.replacen(loopback, &format!("{loopback}\n{extra}"), 1);
         for (name, bad) in [
             (
+                "a table with no pipes",
+                format!(
+                    "{PAGE}\nHosts that receive the auth-api refresh token\n:--\n`x402.erpc.global`\n"
+                ),
+            ),
+            (
+                "a non-breaking space line, then text",
+                after_table("\u{a0}\n`x402.erpc.global`: the auth-api refresh token"),
+            ),
+            (
+                "a form feed line, then text",
+                after_table("\u{c}\n`x402.erpc.global`: the auth-api refresh token"),
+            ),
+            (
+                "the table hidden in a comment",
+                PAGE.replacen("| Host | Purpose |", "<!--\n| Host | Purpose |", 1)
+                    .replacen(loopback, &format!("{loopback}\n-->"), 1),
+            ),
+            (
                 "an extra trailing cell",
-                replace(x402, &format!("{x402} |")),
+                PAGE.replacen("| `x402.erpc.global` |", "| `x402.erpc.global` | |", 1),
             ),
-            (
-                "a compact second table",
-                format!(
-                    "{DOC}\n|Host|Purpose|Credentials|\n|-|-|-|\n\
-                     |`user-api.erpc.global`|ERPC account API|auth-api refresh token|\n"
-                ),
-            ),
-            (
-                "an indented repeated row",
-                after_last_row(" | `user-api.erpc.global` | x | the auth-api refresh token |"),
-            ),
-            (
-                "no leading pipe",
-                after_last_row("`x402.erpc.global` | x402 payments | the MCP access token"),
-            ),
-            (
-                "a host out of backticks",
-                replace(
-                    x402,
-                    &x402.replacen("`x402.erpc.global`", "x402.erpc.global", 1),
-                ),
-            ),
-            (
-                "an escaped pipe",
-                replace(
-                    x402,
-                    &x402.replacen("x402 payments", "x402 payments \\| top-up", 1),
-                ),
-            ),
-            (
-                "a synonym",
-                replace(
-                    x402,
-                    &x402.replacen(
-                        "never auth-api/MCP tokens",
-                        "the auth-api and MCP tokens",
-                        1,
-                    ),
-                ),
-            ),
-            (
-                "an entity",
-                replace(
-                    x402,
-                    &x402.replacen("payment headers", "acc&#101;ss tokens", 1),
-                ),
-            ),
-            (
-                "text straight after the table",
-                after_last_row("the auth-api refresh token"),
-            ),
-            (
-                "an HTML table",
-                format!(
-                    "{DOC}\n<table><tr><td>user-api.erpc.global</td><td>refresh token</td></tr></table>\n"
-                ),
-            ),
+            ("one character", PAGE.replacen("none", "None", 1)),
         ] {
-            assert_ne!(bad, DOC, "the case must change the document: {name}");
-            assert!(!table_errors(&bad).is_empty(), "{name} was accepted");
+            assert_ne!(bad, PAGE, "the case must change the page: {name}");
+            assert!(!page_errors(&bad).is_empty(), "{name} was accepted");
         }
     }
 
     #[test]
-    fn a_pinned_cell_must_agree_with_the_pinned_table() {
-        // The document and the pinned lines changed together, so the line
-        // comparison is satisfied; only the cross-check with PINNED is left
-        // to notice that user-api no longer admits to the access token.
-        let from = "| `user-api.erpc.global` | ERPC account API | auth-api access token only |";
-        let to = "| `user-api.erpc.global` | ERPC account API | none |";
-        let lines: Vec<&str> = PIPED_LINES
-            .iter()
-            .map(|l| if *l == from { to } else { *l })
-            .collect();
-        assert_ne!(lines, PIPED_LINES, "the row is in the pinned lines");
-        let doc = DOC.replacen(from, to, 1);
-        assert_ne!(doc, DOC);
-        let errors = table_errors_against(&doc, &lines);
+    fn a_token_row_must_say_what_is_pinned() {
+        // Checked apart from the digest, which a change to the page would
+        // trip first: this is the tie between the page and PINNED.
+        let page = PAGE.replacen(
+            "| ERPC account API | auth-api access token only |",
+            "| ERPC account API | none |",
+            1,
+        );
+        assert_ne!(page, PAGE);
+        let errors = token_row_errors(&page);
         assert_eq!(errors.len(), 1, "{errors:?}");
         assert!(
             errors[0].starts_with("user-api.erpc.global: pinned"),
