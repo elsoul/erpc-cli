@@ -110,10 +110,9 @@ impl fmt::Display for CredKey {
 /// written, and because the refresh path has to decide whether to rotate
 /// before it can know anything else.
 ///
-/// The tokens are [`SecretString`], so they do not appear in a `Debug`
-/// rendering of this struct. That is the only reason this type does not
-/// derive `Debug` by hand: the derive is correct here precisely because the
-/// fields refuse to print themselves.
+/// The tokens are [`SecretString`], which do not print themselves, and
+/// `Debug` is implemented by hand below so that the rendering names the
+/// fields and shows only the expiry.
 /// `Credential` is deliberately not serialisable. What goes into a store is
 /// [`StoredCredential`], which carries a version; a type that could be
 /// written directly would be written without one.

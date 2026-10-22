@@ -123,18 +123,20 @@ pub fn findings(selection: Selection, on_disk: &[OnDisk]) -> Vec<Finding> {
                 // instruction that is right for both.
                 format!(
                     "{} — a session parked more than a day ago. It may be a live refresh token \
-                     in cleartext. Run `erpc login`, which revokes it and replaces the session; \
-                     if the file is still here afterwards, erpc could not delete it, so check \
-                     the permissions on its directory and delete it yourself.",
+                     in cleartext. Run `erpc login`, which tries to revoke it, says whether it \
+                     could, and replaces the session; if the file is still here afterwards, \
+                     erpc could not delete it, so check the permissions on its directory and \
+                     delete it yourself.",
                     item.path.display()
                 )
             } else {
                 format!(
                     "{} — a session parked when a store write failed. If the store still holds \
                      the session it replaced, the next `erpc whoami` files it away and deletes \
-                     it. If you have signed in or out since, it was revoked then and erpc \
-                     ignores it; it is here only because it could not be deleted, so check the \
-                     permissions on its directory and delete it yourself.",
+                     it. If you have signed in since, erpc ignores it, and `erpc login` said \
+                     then whether its token could be revoked; it is here only because it could \
+                     not be deleted, so check the permissions on its directory and delete it \
+                     yourself.",
                     item.path.display()
                 )
             }

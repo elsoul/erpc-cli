@@ -3,11 +3,13 @@
 
 //! The last-resort store: a file under the erpc state directory.
 //!
-//! This is the one place `erpc` writes a session to the local disk, and it
-//! is therefore a stated exception to "nothing is left on the machine"
-//! rather than a normal option. It exists for minimal Linux installs with
-//! neither `op` nor a Secret Service. Choosing it is explicit, and
-//! `erpc doctor` reports that it is in use.
+//! This is the one store that writes a session to the local disk, and it is
+//! therefore a stated exception to "nothing is left on the machine" rather
+//! than a normal option. (The other exception is not a store: a rotation
+//! the store refused, parked by [`crate::lock`].) It exists for minimal
+//! Linux installs with neither `op` nor a Secret Service. It is used when
+//! asked for, or when neither of those is available; `erpc login` warns
+//! when it is, and `erpc doctor` reports that it is in use.
 //!
 //! The file is created 0600, written to a temporary file in the same
 //! directory and renamed over the target, under an exclusive `flock` held

@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use zeroize::Zeroize;
 
-use crate::credential::{Credential, STORE_VERSION};
+use crate::credential::Credential;
 use crate::store::{StoreError, StoreKind};
 
 /// The permission bits on anything this module creates.
@@ -60,6 +60,16 @@ impl ExclusiveLock {
     }
 }
 
+/// The format version of a parked file.
+///
+/// Its own number, not the store's: the parked record and the stored one
+/// are different shapes, and the parked one changed when it started
+/// naming the session it replaced. Reusing the store's version would let
+/// a build that ignores unknown fields read a new record as an old one and
+/// file it away unconditionally, which is exactly what the new field is
+/// there to stop.
+pub const PARKED_VERSION: u32 = 2;
+
 /// A parked session as it sits in the file.
 ///
 /// Not a [`crate::credential::StoredCredential`]: a parked session is only
@@ -103,6 +113,18 @@ impl Parked {
     pub fn supersedes(&self, held: Option<&Credential>) -> bool {
         held.is_some_and(|h| fingerprint(&h.refresh_token) == self.replaces)
     }
+
+    /// Whether the store already holds this very session.
+    ///
+    /// A store write that reported failure but was applied leaves the same
+    /// live token in the store and in this file. Nothing needs filing, but
+    /// the cleartext copy should not wait for the next sign-in to go.
+    #[must_use]
+    pub fn is_held_in(&self, held: Option<&Credential>) -> bool {
+        held.is_some_and(|h| {
+            fingerprint(&h.refresh_token) == fingerprint(&self.credential.refresh_token)
+        })
+    }
 }
 
 /// Names a refresh token without writing it down.
@@ -128,7 +150,7 @@ fn fingerprint(token: &SecretString) -> String {
 /// atomically so a concurrent reader sees one version or the other.
 ///
 /// `replaces` is the session the store still holds, which the rotation
-/// spent. It is recorded by [`fingerprint`] only, so that a later reader
+/// spent. It is recorded by its SHA-256 only, so that a later reader
 /// can tell whether the store has moved on.
 ///
 /// # Errors
@@ -140,7 +162,7 @@ pub fn park_credential(
     replaces: &Credential,
 ) -> Result<(), StoreError> {
     let stored = ParkedRecord {
-        store_version: STORE_VERSION,
+        store_version: PARKED_VERSION,
         access_token: cred.access_token.expose_secret().to_owned(),
         refresh_token: cred.refresh_token.expose_secret().to_owned(),
         expires_at: cred.expires_at,
@@ -200,10 +222,10 @@ pub fn read_parked(path: &Path) -> Result<Option<Parked>, StoreError> {
     };
     let stored: ParkedRecord =
         toml::from_str(&text).map_err(|e| StoreError::Corrupt(e.to_string()))?;
-    if stored.store_version != STORE_VERSION {
+    if stored.store_version != PARKED_VERSION {
         return Err(StoreError::UnknownVersion {
             found: stored.store_version,
-            expected: STORE_VERSION,
+            expected: PARKED_VERSION,
         });
     }
     Ok(Some(Parked {
@@ -293,8 +315,9 @@ mod tests {
 
     #[test]
     fn a_parked_file_that_does_not_say_what_it_replaced_is_not_trusted() {
-        // The format before this one. It cannot be told apart from a stale
-        // leftover, so reading it is an error and nothing files it away.
+        // The format before this one, which shared the store's version
+        // number. It cannot be told apart from a stale leftover, so
+        // reading it is an error and nothing files it away.
         let dir = tempfile::tempdir().expect("a temporary directory");
         let path = dir.path().join("pending-credentials.auth-api");
         std::fs::write(
@@ -302,7 +325,34 @@ mod tests {
             "store_version = 1\naccess_token = \"a\"\nrefresh_token = \"b\"\nexpires_at = 1\n",
         )
         .expect("write the fixture");
-        assert!(matches!(read_parked(&path), Err(StoreError::Corrupt(_))));
+        assert!(read_parked(&path).is_err());
+    }
+
+    #[test]
+    fn a_parked_file_is_versioned_apart_from_the_store() {
+        // An earlier build reads `store_version` and compares it with the
+        // store's own number. A new record carrying that number would be
+        // read as an old one; carrying its own, it is refused.
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let path = dir.path().join("pending-credentials.auth-api");
+        park_credential(&path, &cred(), &spent()).expect("parked");
+        let text = std::fs::read_to_string(&path).expect("read the file");
+        assert!(
+            text.contains(&format!("store_version = {}", super::PARKED_VERSION)),
+            "{text}"
+        );
+        assert_ne!(super::PARKED_VERSION, crate::credential::STORE_VERSION);
+    }
+
+    #[test]
+    fn a_parked_session_knows_when_the_store_already_holds_it() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let path = dir.path().join("pending-credentials.auth-api");
+        park_credential(&path, &cred(), &spent()).expect("parked");
+        let parked = read_parked(&path).expect("read").expect("present");
+        assert!(parked.is_held_in(Some(&cred())));
+        assert!(!parked.is_held_in(Some(&spent())));
+        assert!(!parked.is_held_in(None));
     }
 
     #[test]

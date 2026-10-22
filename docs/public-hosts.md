@@ -19,9 +19,16 @@ code as authoritative if the two ever disagree.
   every review round found both a bypass and a false positive in it.
   Some files are not scanned at all. That list is not copied here, because a
   copy drifts: run `scripts/check-endpoints.sh --print-exceptions`.
-- `erpc_core::endpoints::ensure_service_url` is the runtime helper callers
-  will use to check a destination. It has **no callers in this version**,
-  which performs no network requests at all.
+- `erpc_core::endpoints::ensure_service_url` checks a URL against the
+  declared service hosts.
+  - **At runtime** its one caller is the code that opens the sign-in page in a
+    browser. That is the only place `erpc` acts on a URL it received from the
+    network instead of building it.
+  - **Requests `erpc` sends** go to URLs that are compile-time constants on
+    declared hosts. Tests run each one through this check.
+  - **Session tokens** are attached only to the hosts in
+    `crates/erpc-auth/src/allowlist.rs`, by an HTTPS-only client that does not
+    follow redirects.
 - `scripts/check-oss-hygiene.sh` additionally blocks cloud account
   identifiers, 1Password identifiers outside the `op://` reference format,
   bearer-token and key-shaped strings, references to the organisation's other

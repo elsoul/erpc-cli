@@ -58,7 +58,11 @@ const KNOWN_OP_PATHS: &[&str] = &[
 ];
 
 /// What `op` printed.
-#[derive(Debug, Clone)]
+///
+/// Both streams can hold a token -- `item get` prints the item, and a
+/// failed write may echo the template -- so `Debug` reports their lengths
+/// and not their contents.
+#[derive(Clone)]
 pub struct OpOutput {
     /// Whether `op` exited successfully.
     pub success: bool,
@@ -71,6 +75,16 @@ pub struct OpOutput {
     /// knows. Cutting it first could leave half a token, which neither the
     /// exact match nor the shape check recognises.
     pub stderr: String,
+}
+
+impl core::fmt::Debug for OpOutput {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("OpOutput")
+            .field("success", &self.success)
+            .field("stdout_len", &self.stdout.len())
+            .field("stderr_len", &self.stderr.len())
+            .finish()
+    }
 }
 
 /// Runs `op`. Injectable so that the command this store builds can be
@@ -1154,6 +1168,59 @@ mod tests {
             .to_string();
         assert!(!rendered.contains(&ACCESS[..5]), "{rendered}");
         assert!(rendered.contains("<reda"), "{rendered}");
+    }
+
+    /// Saves through the real [`OpCli`], with `op` replaced by a script
+    /// that lists the item and then fails the edit printing `stderr`.
+    ///
+    /// The `FakeOp` tests cannot see where the runner cuts the message,
+    /// because they never go through [`OpCli::run`]; that is where round 5
+    /// found the previous cut, and a `FakeOp` test of it stayed green with
+    /// the old code restored.
+    #[cfg(unix)]
+    fn save_through_a_scripted_op(stderr: &str) -> String {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let script = dir.path().join("op");
+        let title = "ERPC CLI session alice@mac-001 (auth-api)";
+        let body = format!(
+            "#!/bin/sh\n/bin/cat >/dev/null\nif [ \"$2\" = list ]; then\n  \
+             printf '%s' '[{{\"id\":\"x\",\"title\":\"{title}\"}}]'\n  exit 0\nfi\n\
+             printf '%s\\n' '{stderr}' >&2\nexit 1\n"
+        );
+        std::fs::write(&script, body).expect("write the script");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700))
+            .expect("make it executable");
+        let store = OnePassword::new(
+            OpCli::at(&script, BTreeMap::new()).expect("an absolute path"),
+            Mode::Desktop,
+            VAULT,
+            "mac-001",
+        );
+        // A script written moments ago can be briefly "busy" to exec on
+        // Linux while another test thread forks; that is a spawn failure,
+        // not a result, so it is retried.
+        for _ in 0..5 {
+            match store.save(&key(), &session()) {
+                Err(StoreError::Unavailable { .. }) => {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(e) => return e.to_string(),
+                Ok(()) => panic!("the script fails the edit"),
+            }
+        }
+        panic!("the script could not be started");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_token_straddling_the_cut_is_replaced_whole_through_the_real_runner() {
+        let noisy = format!("{}{ACCESS} and the rest of the line", "~".repeat(195));
+        assert_eq!(redact_tokens(&noisy), noisy, "the shape check must miss it");
+        let rendered = save_through_a_scripted_op(&noisy);
+        assert!(rendered.contains("update the item"), "{rendered}");
+        assert!(!rendered.contains(&ACCESS[..5]), "{rendered}");
     }
 
     #[test]

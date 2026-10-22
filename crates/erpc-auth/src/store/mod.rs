@@ -10,8 +10,11 @@
 //! 2. [`one_password::ServiceAccount`] — CI, headless servers and resident
 //!    agents, selected by the presence of a service account token.
 //! 3. [`keychain::OsKeychain`] — machines without `op`.
-//! 4. [`file::FileStore`] — the last resort, and the only one that writes a
-//!    secret to disk. It warns, and `erpc doctor` reports it.
+//! 4. [`file::FileStore`] — the last resort, and the only store that writes
+//!    a secret to disk. It warns, and `erpc doctor` reports it. The one other
+//!    case of a session on disk is not a store: a rotation the store refused
+//!    is parked in a file by [`crate::lock`], and `erpc doctor` reports that
+//!    too.
 //!
 //! Validator keys and wallet keys do not come through here. This trait is
 //! for session tokens only; key material goes through `erpc-secret` and

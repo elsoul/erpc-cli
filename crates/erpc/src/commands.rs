@@ -12,7 +12,7 @@ use core::time::Duration;
 
 use erpc_auth::credential::CredKey;
 use erpc_auth::device_flow::DeviceAuthorization;
-use erpc_auth::session::{LoginPrompt, approved_to_credential};
+use erpc_auth::session::{LoginPrompt, ParkedReport, approved_to_credential};
 use erpc_auth::store::StoreKind;
 use erpc_auth::{AuthClient, session as auth_session};
 
@@ -158,7 +158,11 @@ pub async fn login(json: bool, requested: Option<StoreKind>, no_browser: bool) -
             "account": user.label(),
             "uid": user.uid,
             "store": report,
-            "undeleted_file": leftover.as_ref().map(|p| p.display().to_string()),
+            "parked_file": leftover.as_ref().map(|r| serde_json::json!({
+                "path": r.path.display().to_string(),
+                "revoked_at_issuer": r.revoked,
+                "removed": r.removed,
+            })),
         }));
         Outcome::Done(String::new())
     } else {
@@ -167,16 +171,10 @@ pub async fn login(json: bool, requested: Option<StoreKind>, no_browser: bool) -
         if report.writes_to_disk {
             lines.push(format!("  warning: {}", session::DISK_WARNING));
         }
-        // Said now, not left to `erpc doctor`: the sign-in is fine, but a
-        // file holding a token is still on disk and erpc could not remove
-        // it.
-        if let Some(path) = &leftover {
-            lines.push(format!(
-                "  warning: could not delete {}. It holds an older session, revoked just now, \
-                 and erpc will not use it; check the permissions on its directory and delete \
-                 it yourself.",
-                path.display()
-            ));
+        // Said now, not left to `erpc doctor`: the sign-in is fine, but
+        // something about the parked file it found did not go cleanly.
+        if let Some(report) = &leftover {
+            lines.push(format!("  warning: {}", parked_warning(report)));
         }
         Outcome::Done(lines.join("\n"))
     }
@@ -379,9 +377,61 @@ fn doctor_outcome(worst: crate::doctor::Level) -> Outcome {
     }
 }
 
+/// What `login` says about a parked file it could not deal with cleanly.
+///
+/// Each sentence is conditional on what actually happened: "revoked" only
+/// when the issuer accepted it, "deleted" only when the file is gone.
+fn parked_warning(report: &ParkedReport) -> String {
+    let path = report.path.display();
+    let token = if report.revoked {
+        "the older session in it was revoked"
+    } else {
+        "the older session in it could NOT be revoked and may stay valid until it expires"
+    };
+    if report.removed {
+        format!("removed {path}; {token}.")
+    } else {
+        format!(
+            "could not delete {path}; {token}. erpc will not use it. Check the permissions on \
+             its directory and delete it yourself."
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Outcome, now};
+    use super::{Outcome, ParkedReport, now, parked_warning};
+
+    fn report(revoked: bool, removed: bool) -> ParkedReport {
+        ParkedReport {
+            path: "/s/pending-credentials.auth-api".into(),
+            revoked,
+            removed,
+        }
+    }
+
+    #[test]
+    fn the_parked_warning_claims_a_revocation_only_when_there_was_one() {
+        // Round 5: `login` said "revoked just now" for a token that was
+        // never presented to the issuer.
+        for removed in [true, false] {
+            let refused = parked_warning(&report(false, removed));
+            assert!(refused.contains("could NOT be revoked"), "{refused}");
+            let accepted = parked_warning(&report(true, removed));
+            assert!(!accepted.contains("NOT"), "{accepted}");
+            assert!(accepted.contains("was revoked"), "{accepted}");
+        }
+    }
+
+    #[test]
+    fn the_parked_warning_says_delete_it_only_when_it_is_still_there() {
+        let stuck = parked_warning(&report(true, false));
+        assert!(stuck.contains("could not delete"), "{stuck}");
+        assert!(stuck.contains("delete it yourself"), "{stuck}");
+        let gone = parked_warning(&report(false, true));
+        assert!(gone.starts_with("removed "), "{gone}");
+        assert!(!gone.contains("delete it yourself"), "{gone}");
+    }
 
     #[test]
     fn the_clock_is_a_plausible_unix_time() {

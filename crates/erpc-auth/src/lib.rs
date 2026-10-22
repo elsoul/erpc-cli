@@ -3,7 +3,7 @@
 
 //! `erpc-auth`: signing in, and keeping the session somewhere sensible.
 //!
-//! Three things live here:
+//! The modules:
 //!
 //! * [`credential`] — what a session is and what it is filed under.
 //! * [`store`] — the four places a session can be kept, and the rules for

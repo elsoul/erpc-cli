@@ -10,8 +10,9 @@ operations (Solana first, then Ethereum, Avalanche and Sui), your ERPC
 account, the ERPC AI assistant and credits. It is the Rust successor of
 [SLV](https://github.com/ValidatorsDAO/slv).
 
-> Status: **Phase 0**. Only `erpc version` ships. The remaining commands are
-> under development; what exists in this repository is what works today.
+> Status: **Phase 1, in progress**. `erpc version`, `login`, `logout`,
+> `whoami` and `doctor` ship. The remaining commands are under development;
+> what exists in this repository is what works today.
 
 ## Install
 

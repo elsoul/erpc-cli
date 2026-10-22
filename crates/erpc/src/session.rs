@@ -156,8 +156,8 @@ pub const LOGIN_AUDIENCE: Audience = Audience::AuthApi;
 /// own line beside it, and the two readings of it (no store was available,
 /// or the operator asked for this one) are different sentences.
 pub const DISK_WARNING: &str = "the session will be written to a file on this machine, which is \
-     the one case where erpc leaves a secret on disk; `erpc doctor` reports it for as long as it \
-     is there";
+     the one store that leaves a secret on disk; `erpc doctor` reports it for as long as it is \
+     there";
 
 #[cfg(test)]
 mod tests {

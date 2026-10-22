@@ -13,12 +13,8 @@
 //! * [`op_ref`] is the only reference form accepted for a secret, by
 //!   identifier rather than by name.
 //!
-//! # What this crate does not do yet
-//!
-//! Reading a secret is not implemented here. There is no `op` invocation,
-//! no store-and-verify key generation, no memory locking and no core-dump
-//! suppression; those arrive with the work that needs them. Nothing in this
-//! crate should be read as providing them today.
+//! This crate decides and names; it does not read a secret, and no secret
+//! value passes through it.
 //!
 //! What it does provide is that a caller which asks the gate first cannot
 //! reach a key the table does not allow, and that a reference by name is

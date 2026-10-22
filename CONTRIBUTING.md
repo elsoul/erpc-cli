@@ -59,8 +59,10 @@ under `crates/` and the discussion on the pull request you are working from.
    configuration or environment variables, a tampered config cannot redirect
    traffic. This is a source gate, not a sandbox: it does not constrain what a
    malicious dependency does at runtime, and it cannot see a host assembled
-   from fragments. `ensure_service_url` is the helper callers will use once
-   the HTTP client lands; it has no callers today.
+   from fragments. Every request URL `erpc` builds is a constant on a
+   declared host, with a test that runs it through `ensure_service_url`; a
+   URL received at runtime, such as the sign-in page the issuer names, goes
+   through `ensure_service_url` before it is used.
 9. **Gates must be tested.** Any check that can block a commit needs a case in
    `scripts/tests/` proving it blocks a known-bad sample and passes a
    known-good one. A gate that silently stops matching is worse than none.
