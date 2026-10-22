@@ -253,7 +253,13 @@ impl AuthClient {
         access_token: &SecretString,
     ) -> Result<(u16, String), HttpError> {
         allowlist::ensure_token_destination(audience, url)?;
-        let host = audience.issuer_host();
+        // The destination, not the issuer. Naming the issuer here told an
+        // operator whose user-api request failed that auth-api could not
+        // be reached, which sends them to look at the wrong service.
+        let host = allowlist::destinations(audience)
+            .first()
+            .copied()
+            .unwrap_or_else(|| audience.issuer_host());
         let response = self
             .inner
             .get(url)

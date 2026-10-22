@@ -314,8 +314,8 @@ fn now() -> i64 {
 ///
 /// Synchronous on purpose: it looks at this machine and asks nothing of
 /// the network, so it works when nothing else does.
-pub fn doctor(json: bool) -> Outcome {
-    let selection = session::plan_store(None);
+pub fn doctor(json: bool, requested: Option<StoreKind>) -> Outcome {
+    let selection = session::plan_store(requested);
     let state_dir = session::state_dir();
     let on_disk = crate::doctor::secrets_on_disk(&state_dir);
     let found = crate::doctor::findings(selection, &on_disk);
@@ -331,7 +331,7 @@ pub fn doctor(json: bool) -> Outcome {
             "state_dir": state_dir,
             "findings": found,
         }));
-        return Outcome::Done(String::new());
+        return doctor_outcome(worst);
     }
 
     let mut lines = Vec::new();
@@ -343,7 +343,25 @@ pub fn doctor(json: bool) -> Outcome {
             finding.detail
         ));
     }
-    Outcome::Done(lines.join("\n"))
+    // Printed here rather than returned, because a report is not an
+    // error message: `Outcome::Failed` prefixes "error:" and writes to
+    // stderr, which is right for a failure and wrong for a page of
+    // findings. The outcome then carries only the exit status.
+    println!("{}", lines.join("\n"));
+    doctor_outcome(worst)
+}
+
+/// A warning exits non-zero.
+///
+/// A cron or a CI job that runs `erpc doctor` to assert this machine is
+/// clean has to be able to tell, and a command that always exits 0 can
+/// say nothing to one.
+fn doctor_outcome(worst: crate::doctor::Level) -> Outcome {
+    if worst == crate::doctor::Level::Warn {
+        Outcome::Failed(String::new())
+    } else {
+        Outcome::Done(String::new())
+    }
 }
 
 #[cfg(test)]

@@ -223,12 +223,15 @@ impl OpRunner for OpCli {
     }
 }
 
-/// Keeps the first line of `op`'s diagnostics and drops the rest.
+/// Keeps the first line of `op`'s diagnostics, redacted and shortened.
 ///
-/// `op` can be chatty, and a long message is both unhelpful in an error and
-/// more surface for something sensitive to appear in.
+/// `op` is fed a template containing both tokens on stdin. If it ever
+/// echoes part of that back in a parse error, the message travels into a
+/// `StoreError` and from there to the operator's terminal and logs. Any
+/// run that looks like a JWT is replaced before that can happen.
 fn first_line(text: &str) -> String {
-    let line = text.lines().next().unwrap_or_default().trim();
+    let redacted = redact_tokens(text);
+    let line = redacted.lines().next().unwrap_or_default().trim();
     if line.len() > 200 {
         let mut cut = 200;
         while !line.is_char_boundary(cut) {
@@ -238,6 +241,37 @@ fn first_line(text: &str) -> String {
     } else {
         line.to_owned()
     }
+}
+
+/// Replaces anything shaped like a JWT with a marker.
+///
+/// Deliberately crude and deliberately wide: three dot-separated runs of
+/// base64url with a long first run. A false positive costs a less helpful
+/// error message; a false negative puts a session token in a log.
+fn redact_tokens(text: &str) -> String {
+    let is_b64 = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '=';
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while !rest.is_empty() {
+        let token_len = rest
+            .split(|c: char| !(is_b64(c) || c == '.'))
+            .next()
+            .map_or(0, str::len);
+        let candidate = &rest[..token_len];
+        let parts: Vec<&str> = candidate.split('.').collect();
+        let looks_like_a_jwt = parts.len() == 3
+            && parts[0].len() >= 8
+            && parts.iter().all(|p| !p.is_empty() && p.chars().all(is_b64));
+        if looks_like_a_jwt {
+            out.push_str("<redacted>");
+            rest = &rest[token_len..];
+        } else {
+            let step = rest.chars().next().map_or(1, char::len_utf8);
+            out.push_str(&rest[..step]);
+            rest = &rest[step..];
+        }
+    }
+    out
 }
 
 /// How a 1Password store authenticates.
@@ -919,6 +953,45 @@ mod tests {
             2,
             "op must see only what it was given, saw {names:?}"
         );
+    }
+
+    #[test]
+    fn a_token_echoed_by_op_never_reaches_an_error_message() {
+        // `op` is handed both tokens on stdin. If it quotes any of the
+        // template back in a parse error, that message becomes a
+        // StoreError and reaches the terminal and the logs.
+        // Assembled rather than written out. A test for redacting
+        // token-shaped strings has to contain one, and a literal would be
+        // a finding for gitleaks -- correctly, since it cannot tell a
+        // fixture from the real thing. Same accommodation as the URL
+        // fixtures, for the same reason.
+        let token = [
+            "eyJhbGciOiJIUzI1NiJ9",
+            "eyJzdWIiOiJhbGljZSJ9",
+            "c2lnbmF0dXJl",
+        ]
+        .join(".");
+        let noisy = format!("[ERROR] unable to process line 1: near \"{token}\"");
+        let cleaned = first_line(&noisy);
+        assert!(!cleaned.contains(&token), "{cleaned}");
+        assert!(cleaned.contains("<redacted>"), "{cleaned}");
+        assert!(
+            cleaned.contains("unable to process"),
+            "the message survives"
+        );
+    }
+
+    #[test]
+    fn ordinary_diagnostics_are_left_readable() {
+        // The redaction is wide on purpose, but it must not eat the
+        // messages an operator needs.
+        for message in [
+            "[ERROR] \"v\" isn't a vault in this account.",
+            "[ERROR] unable to process line 1: could not find item to edit",
+            "authorization prompt dismissed",
+        ] {
+            assert_eq!(first_line(message), message, "{message}");
+        }
     }
 
     #[test]

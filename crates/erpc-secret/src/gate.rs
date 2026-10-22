@@ -125,10 +125,15 @@ pub struct Context {
 }
 
 impl Context {
-    /// A context with nothing available: no terminal, no desktop app.
+    /// A context with nothing present: no terminal, no SSH, no service
+    /// account, not on a node, not an AI path.
     ///
-    /// The deny-by-default starting point for tests and for callers that
-    /// set only the fields they know.
+    /// Not "nothing available". `biometric_unlock` starts true, because
+    /// every other field records something being PRESENT while that one
+    /// records something being SWITCHED OFF, and absent means available
+    /// for it — the same reading `from_env` uses. A caller building a
+    /// context by hand gets a desktop app that is assumed usable; if that
+    /// is not what they mean, they must say so.
     #[must_use]
     pub const fn empty() -> Self {
         Self {
@@ -213,8 +218,12 @@ pub enum Confirmation {
 pub enum Denial {
     /// No terminal, and this profile needs a person.
     NoTerminal,
-    /// The AI console child process may not resolve this.
-    FromAiConsole,
+    /// An AI path may not resolve this.
+    ///
+    /// Covers both the console child process and a tool invocation. Named
+    /// for the fact rather than for one of its two causes: a denial that
+    /// names the wrong one is what this enum exists to avoid.
+    FromAiPath,
     /// An AI tool path may not resolve this wallet.
     AiNotPermittedForWallet,
     /// A service account may not reach this profile.
@@ -234,7 +243,7 @@ impl fmt::Display for Denial {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let text = match self {
             Self::NoTerminal => "no terminal is attached, and this key needs a person present",
-            Self::FromAiConsole => "the AI console may not resolve this key",
+            Self::FromAiPath => "an AI path may not resolve this key",
             Self::AiNotPermittedForWallet => {
                 "this wallet is not marked for AI use; run the command yourself"
             }
@@ -325,7 +334,7 @@ fn human_wallet(allow_ai: bool, operation: Operation, context: &Context) -> Deci
         return Decision::Allow(Confirmation::None);
     }
     if context.ai_console {
-        return Decision::Deny(Denial::FromAiConsole);
+        return Decision::Deny(Denial::FromAiPath);
     }
     if !context.has_tty {
         return Decision::Deny(Denial::NoTerminal);
@@ -339,8 +348,14 @@ fn human_wallet(allow_ai: bool, operation: Operation, context: &Context) -> Deci
     reason = "the signature is frozen and Context is expected to gain non-Copy fields"
 )]
 fn validator_identity(network: Network, context: &Context) -> Decision {
-    if context.ai_console {
-        return Decision::Deny(Denial::FromAiConsole);
+    // Neither AI path, at any confirmation level. The reasoning is the
+    // one that governs an unmarked human wallet: being told no is the
+    // protection, and letting the request through to a confirmation is a
+    // weaker rule. A validator identity is strictly more sensitive than a
+    // wallet, and there is no legitimate AI-initiated use for one, so
+    // there is no marker to set either.
+    if context.ai_console || context.ai_tool_path {
+        return Decision::Deny(Denial::FromAiPath);
     }
     if context.on_node {
         return Decision::Deny(Denial::OnNode);
@@ -385,8 +400,8 @@ fn validator_identity(network: Network, context: &Context) -> Decision {
     reason = "the signature is frozen and Context is expected to gain non-Copy fields"
 )]
 fn node_resident(network: Network, context: &Context) -> Decision {
-    if context.ai_console {
-        return Decision::Deny(Denial::FromAiConsole);
+    if context.ai_console || context.ai_tool_path {
+        return Decision::Deny(Denial::FromAiPath);
     }
     if context.service_account && network.is_mainnet() {
         return Decision::Deny(Denial::ServiceAccount);
@@ -589,7 +604,7 @@ mod tests {
         );
         assert_eq!(
             evaluate(wallet, Operation::Resolve, &ctx),
-            Decision::Deny(Denial::FromAiConsole)
+            Decision::Deny(Denial::FromAiPath)
         );
     }
 
@@ -680,6 +695,45 @@ mod tests {
     }
 
     #[test]
+    fn no_ai_path_may_resolve_key_material() {
+        // Both AI facts, both networks, both key-material profiles. The
+        // confirmations would still put a person in the loop, which is
+        // why this was easy to miss; the rule is that an AI path asking
+        // for a validator identity is not in scope at any confirmation.
+        for ctx in [
+            Context {
+                ai_console: true,
+                ..at_a_desk()
+            },
+            Context {
+                ai_tool_path: true,
+                ..at_a_desk()
+            },
+        ] {
+            for profile in [
+                Profile::ValidatorIdentity {
+                    network: Network::Mainnet,
+                },
+                Profile::ValidatorIdentity {
+                    network: Network::Testnet,
+                },
+                Profile::NodeResident {
+                    network: Network::Mainnet,
+                },
+                Profile::NodeResident {
+                    network: Network::Testnet,
+                },
+            ] {
+                assert_eq!(
+                    evaluate(profile, Operation::Resolve, &ctx),
+                    Decision::Deny(Denial::FromAiPath),
+                    "{profile:?} from {ctx:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn the_ai_console_may_not_resolve_a_validator_identity() {
         // Both networks. Without this the AI console child process could
         // reach a mainnet staked identity key.
@@ -694,7 +748,7 @@ mod tests {
                     Operation::Resolve,
                     &ctx
                 ),
-                Decision::Deny(Denial::FromAiConsole),
+                Decision::Deny(Denial::FromAiPath),
                 "{network:?}"
             );
         }
@@ -714,7 +768,7 @@ mod tests {
                 Operation::Resolve,
                 &ctx
             ),
-            Decision::Deny(Denial::FromAiConsole)
+            Decision::Deny(Denial::FromAiPath)
         );
     }
 

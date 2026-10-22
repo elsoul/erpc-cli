@@ -101,7 +101,14 @@ pub fn park_credential(path: &Path, cred: &Credential) -> Result<(), StoreError>
     Ok(())
 }
 
-/// Reads a parked session and removes the file.
+/// Reads a parked session, leaving the file in place.
+///
+/// Reading and removing are separate on purpose. The file exists because
+/// a store write failed, and the store may still be failing when it is
+/// read: deleting first and then failing to save destroys the only copy
+/// of a token whose predecessor is already spent, which is the loss this
+/// whole mechanism exists to prevent. The caller clears it with
+/// [`clear_parked`] once the session is somewhere durable.
 ///
 /// Returns `Ok(None)` when there is nothing parked.
 ///
@@ -109,7 +116,7 @@ pub fn park_credential(path: &Path, cred: &Credential) -> Result<(), StoreError>
 ///
 /// Returns [`StoreError`] when the file exists but cannot be read, or is
 /// in a format this build does not know.
-pub fn take_parked(path: &Path) -> Result<Option<Credential>, StoreError> {
+pub fn read_parked(path: &Path) -> Result<Option<Credential>, StoreError> {
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -123,16 +130,28 @@ pub fn take_parked(path: &Path) -> Result<Option<Credential>, StoreError> {
             expected: STORE_VERSION,
         });
     }
-    let cred = Credential {
+    Ok(Some(Credential {
         access_token: secrecy::SecretString::from(stored.access_token.clone()),
         refresh_token: secrecy::SecretString::from(stored.refresh_token.clone()),
         expires_at: stored.expires_at,
-    };
-    // Remove only after a successful read: a file that could not be parsed
-    // stays, so `erpc doctor` can still report it rather than it vanishing
-    // on the next run.
-    fs::remove_file(path).map_err(|e| backend("remove the parked session", &e))?;
-    Ok(Some(cred))
+    }))
+}
+
+/// Removes a parked session.
+///
+/// Called once the session it held is durable somewhere else, or once it
+/// has been revoked. Removing a file that is not there succeeds, so a
+/// caller need not check first.
+///
+/// # Errors
+///
+/// Returns [`StoreError`] when the file exists and cannot be removed.
+pub fn clear_parked(path: &Path) -> Result<(), StoreError> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(backend("remove the parked session", &e)),
+    }
 }
 
 fn backend(operation: &'static str, error: &dyn core::fmt::Display) -> StoreError {
@@ -145,7 +164,7 @@ fn backend(operation: &'static str, error: &dyn core::fmt::Display) -> StoreErro
 
 #[cfg(test)]
 mod tests {
-    use super::{ExclusiveLock, park_credential, take_parked};
+    use super::{ExclusiveLock, clear_parked, park_credential, read_parked};
     use crate::credential::Credential;
     use crate::store::StoreError;
     use secrecy::{ExposeSecret as _, SecretString};
@@ -171,23 +190,30 @@ mod tests {
     }
 
     #[test]
-    fn a_parked_session_round_trips_and_the_file_goes_away() {
+    fn a_parked_session_round_trips_and_reading_does_not_remove_it() {
         let dir = tempfile::tempdir().expect("a temporary directory");
         let path = dir.path().join("pending-credentials.auth-api");
         park_credential(&path, &cred()).expect("parked");
-        assert!(path.exists());
 
-        let taken = take_parked(&path).expect("read").expect("present");
+        let taken = read_parked(&path).expect("read").expect("present");
         assert_eq!(taken.access_token.expose_secret(), "a.b.c");
         assert_eq!(taken.expires_at, 1_700_000_000);
-        assert!(!path.exists(), "the file is removed once it is filed away");
+        assert!(
+            path.exists(),
+            "reading must not remove it: the caller may still fail to store it, and this \
+             is the only copy"
+        );
+
+        clear_parked(&path).expect("cleared");
+        assert!(!path.exists());
+        clear_parked(&path).expect("clearing nothing is fine");
     }
 
     #[test]
     fn nothing_parked_is_not_an_error() {
         let dir = tempfile::tempdir().expect("a temporary directory");
         assert!(
-            take_parked(&dir.path().join("pending-credentials.auth-api"))
+            read_parked(&dir.path().join("pending-credentials.auth-api"))
                 .expect("reading nothing succeeds")
                 .is_none()
         );
@@ -200,7 +226,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temporary directory");
         let path = dir.path().join("pending-credentials.auth-api");
         std::fs::write(&path, "not toml {{{").expect("write the fixture");
-        assert!(matches!(take_parked(&path), Err(StoreError::Corrupt(_))));
+        assert!(matches!(read_parked(&path), Err(StoreError::Corrupt(_))));
         assert!(
             path.exists(),
             "a file that could not be read is not deleted"

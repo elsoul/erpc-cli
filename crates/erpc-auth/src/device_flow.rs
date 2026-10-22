@@ -115,9 +115,6 @@ pub enum LoginError {
     /// The server's tokens were not usable.
     #[error("the server returned a token that is not usable: {0}")]
     BadToken(#[from] TokenShapeError),
-    /// The client gave up after repeated network failures.
-    #[error("the sign-in could not reach {0}")]
-    Unreachable(&'static str),
 }
 
 /// Tracks the polling interval and the deadline across one login.
@@ -130,7 +127,6 @@ pub struct Poller {
     interval: Duration,
     elapsed: Duration,
     budget: Duration,
-    consecutive_network_errors: u32,
 }
 
 /// What the poller says to do next.
@@ -175,7 +171,6 @@ impl Poller {
             interval: auth.interval.max(MIN_INTERVAL),
             elapsed: Duration::ZERO,
             budget: auth.expires_in,
-            consecutive_network_errors: 0,
         }
     }
 
@@ -217,12 +212,8 @@ impl Poller {
             PollOutcome::Denied => Next::Stop(Err(LoginError::Denied)),
             PollOutcome::Expired => Next::Stop(Err(LoginError::Expired)),
             PollOutcome::Failed(code) => Next::Stop(Err(LoginError::Server(code))),
-            PollOutcome::Pending => {
-                self.consecutive_network_errors = 0;
-                self.advance()
-            }
+            PollOutcome::Pending => self.advance(),
             PollOutcome::SlowDown => {
-                self.consecutive_network_errors = 0;
                 // Always +5, with no ceiling. This is the server asking
                 // for less traffic, and RFC 8628 section 3.5 says the
                 // increase applies to this and every later request. A cap
@@ -232,7 +223,6 @@ impl Poller {
                 self.advance()
             }
             PollOutcome::NetworkError => {
-                self.consecutive_network_errors += 1;
                 // Double, rather than retry at once: a connection that is
                 // down stays down for a while, and hammering it is both
                 // useless and noisy.
