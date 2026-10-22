@@ -12,8 +12,9 @@ use std::io::IsTerminal as _;
 use std::path::PathBuf;
 
 use erpc_auth::credential::Audience;
+use erpc_auth::store::StoreKind;
+use erpc_auth::store::one_password::{Mode, OpCli, OpRunner as _};
 use erpc_auth::store::select::{Environment, Selection, choose};
-use erpc_auth::store::{StoreKind, one_password::OpCli};
 
 /// What a session command decided, in a form both renderers can print.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -66,17 +67,14 @@ pub fn detect_environment(probe_desktop: bool) -> Environment {
 /// The only thing that can establish that the desktop app is reachable.
 /// Any failure -- not installed, signed out, integration off, prompt
 /// dismissed -- is a no, and the caller falls through to the keychain.
+///
+/// Through the same runner the store uses, so the probe gets the same small
+/// environment as every other `op` this binary starts, not all of this
+/// process's.
 fn desktop_app_answers() -> bool {
-    let Some(path) = OpCli::discover() else {
-        return false;
-    };
-    std::process::Command::new(path)
-        .args(["account", "list", "--format", "json"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+    OpCli::from_env(Mode::Desktop, |name| std::env::var_os(name))
+        .and_then(|cli| cli.run(&["account", "list", "--format", "json"], None))
+        .is_ok_and(|out| out.success)
 }
 
 /// Chooses the store for this machine, honouring an explicit request.
@@ -268,8 +266,17 @@ mod tests {
     }
 
     #[test]
+    fn the_real_lookup_gives_an_absolute_directory_here() {
+        // The other tests hand `state_dir_from` the paths. This one asks the
+        // platform, which is the part Windows does differently: no `HOME`,
+        // a profile directory instead. CI runs it on all three.
+        let dir = super::state_dir().expect("a home directory on this machine");
+        assert!(dir.is_absolute(), "{}", dir.display());
+    }
+
+    #[test]
     fn the_state_directory_is_never_relative() {
-        // Round 6: with no home directory it fell back to `.`, which put
+        // With no home directory it used to fall back to `.`, which put
         // secrets in the working directory and split the refresh lock.
         assert!(super::state_dir_from(None, None).is_err());
         assert!(super::state_dir_from(Some(".".into()), None).is_err());

@@ -99,10 +99,22 @@ pub trait OpRunner {
 }
 
 /// The real `op` binary.
-#[derive(Debug, Clone)]
+///
+/// `Debug` names the variables it passes and not their values: in service
+/// account mode one of them is the service account token.
+#[derive(Clone)]
 pub struct OpCli {
     path: PathBuf,
     env: BTreeMap<String, OsString>,
+}
+
+impl core::fmt::Debug for OpCli {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("OpCli")
+            .field("path", &self.path)
+            .field("env", &self.env.keys().collect::<Vec<_>>())
+            .finish()
+    }
 }
 
 impl OpCli {
@@ -464,8 +476,23 @@ impl<R: OpRunner> OnePassword<R> {
             return Err(self.backend("list the vault", &out.stderr));
         }
         let items: Vec<OpListEntry> = serde_json::from_str(&out.stdout)
-            .map_err(|e| super::unparsable_json("the vault listing", &e))?;
+            .map_err(|e| self.unparsable_output("the vault listing", &e))?;
         Ok(items.iter().any(|i| i.title == title))
+    }
+
+    /// Output from `op` that does not parse.
+    ///
+    /// A failure of the tool, not of the record: `op` changing its output
+    /// format says nothing about the session in the vault, which may well
+    /// be live. So it is a backend error, which stops a sign-in rather
+    /// than letting it write over that session unrevoked, as a record
+    /// that does not parse would. Reported by position, as everywhere.
+    fn unparsable_output(&self, what: &str, error: &serde_json::Error) -> StoreError {
+        StoreError::Backend {
+            kind: self.mode.kind(),
+            operation: "read op's output",
+            reason: super::unparsable_json(what, error).to_string(),
+        }
     }
 
     /// Every one of `op`'s diagnostics becomes an error here, and only
@@ -481,21 +508,21 @@ impl<R: OpRunner> OnePassword<R> {
 }
 
 /// One row of `op item list --format json`.
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct OpListEntry {
     #[serde(default)]
     title: String,
 }
 
 /// The parts of `op item get --format json` this store reads.
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct OpItem {
     #[serde(default)]
     fields: Vec<OpField>,
 }
 
 /// One field of an item.
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct OpField {
     #[serde(default)]
     label: String,
@@ -542,7 +569,7 @@ impl<R: OpRunner> CredentialStore for OnePassword<R> {
         }
 
         let item: OpItem = serde_json::from_str(&out.stdout)
-            .map_err(|e| super::unparsable_json("the 1Password item", &e))?;
+            .map_err(|e| self.unparsable_output("the 1Password item", &e))?;
 
         let version = item
             .field(field::STORE_VERSION)
@@ -1174,7 +1201,7 @@ mod tests {
     /// that lists the item and then fails the edit printing `stderr`.
     ///
     /// The `FakeOp` tests cannot see where the runner cuts the message,
-    /// because they never go through [`OpCli::run`]; that is where round 5
+    /// because they never go through [`OpCli::run`]; that is where a review
     /// found the previous cut, and a `FakeOp` test of it stayed green with
     /// the old code restored.
     #[cfg(unix)]
@@ -1221,6 +1248,58 @@ mod tests {
         let rendered = save_through_a_scripted_op(&noisy);
         assert!(rendered.contains("update the item"), "{rendered}");
         assert!(!rendered.contains(&ACCESS[..5]), "{rendered}");
+    }
+
+    #[test]
+    fn a_malformed_item_is_reported_without_quoting_it() {
+        // serde_json quotes a value it could not convert; in an item that
+        // value is a token.
+        let token = crate::lock::tests::token_fixture();
+        let fake = FakeOp::new(vec![ok(&format!(r#"{{"fields":"{token}"}}"#))]);
+        let store = OnePassword::new(&fake, Mode::Desktop, VAULT, "mac-001");
+        let err = store.load(&key()).expect_err("the item is malformed");
+        // The tool's output, not the record: a sign-in must stop here, not
+        // write over a session that may be live.
+        assert!(matches!(err, StoreError::Backend { .. }), "{err:?}");
+        let shown = err.to_string();
+        assert!(!shown.contains("U0VDUkVUUEFZTE9BRA"), "{shown}");
+    }
+
+    #[test]
+    fn a_malformed_listing_is_reported_without_quoting_it() {
+        let token = crate::lock::tests::token_fixture();
+        let fake = FakeOp::new(vec![
+            failed("x"),
+            // A string where a row belongs, which serde_json quotes.
+            ok(&format!(r#"["{token}"]"#)),
+        ]);
+        let store = OnePassword::new(&fake, Mode::Desktop, VAULT, "mac-001");
+        let shown = store
+            .load(&key())
+            .expect_err("the listing is malformed")
+            .to_string();
+        assert!(!shown.contains("U0VDUkVUUEFZTE9BRA"), "{shown}");
+    }
+
+    #[test]
+    fn the_runner_does_not_print_the_values_it_passes() {
+        let token = crate::lock::tests::token_fixture();
+        let cli = OpCli::from_env(Mode::ServiceAccount, |name| {
+            (name == "OP_SERVICE_ACCOUNT_TOKEN").then(|| OsString::from(token.clone()))
+        });
+        // Without `op` installed there is no runner to print; the property
+        // is then checked on one built directly.
+        let cli = cli.unwrap_or_else(|_| {
+            let mut env = BTreeMap::new();
+            env.insert(
+                "OP_SERVICE_ACCOUNT_TOKEN".to_owned(),
+                OsString::from(token.clone()),
+            );
+            OpCli::at(std::env::temp_dir().join("op"), env).expect("an absolute path")
+        });
+        let shown = format!("{cli:?}");
+        assert!(!shown.contains("U0VDUkVUUEFZTE9BRA"), "{shown}");
+        assert!(shown.contains("OP_SERVICE_ACCOUNT_TOKEN"), "{shown}");
     }
 
     #[test]

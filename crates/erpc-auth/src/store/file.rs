@@ -173,7 +173,17 @@ impl CredentialStore for FileStore {
 
     fn save(&self, key: &CredKey, cred: &Credential) -> Result<(), StoreError> {
         let _lock = self.lock()?;
-        let mut doc = self.read_document()?;
+        // A file that does not parse is replaced by a fresh one. Nothing in
+        // it can be read by anyone, this record or the others, and refusing
+        // to write over it left `erpc login` approved in the browser and
+        // then failing -- with no command that could get past the file.
+        // The caller has already learned the record was unreadable from
+        // `load` and says so.
+        let mut doc = match self.read_document() {
+            Ok(doc) => doc,
+            Err(StoreError::Corrupt(_)) => Document::default(),
+            Err(e) => return Err(e),
+        };
         doc.sessions.insert(
             key.keychain_account(),
             StoredCredential {
@@ -188,7 +198,20 @@ impl CredentialStore for FileStore {
 
     fn delete(&self, key: &CredKey) -> Result<(), StoreError> {
         let _lock = self.lock()?;
-        let mut doc = self.read_document()?;
+        // A file that does not parse goes as a whole, for the reason `save`
+        // replaces one: nothing in it can be read, and keeping it would
+        // leave `erpc logout` unable to finish.
+        let mut doc = match self.read_document() {
+            Ok(doc) => doc,
+            Err(StoreError::Corrupt(_)) => {
+                return match fs::remove_file(&self.path) {
+                    Ok(()) => Ok(()),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                    Err(e) => Err(Self::backend("remove the credentials file", &e)),
+                };
+            }
+            Err(e) => return Err(e),
+        };
         if doc.sessions.remove(&key.keychain_account()).is_none() {
             return Ok(());
         }
@@ -209,7 +232,7 @@ mod tests {
 
     #[test]
     fn a_broken_credentials_file_does_not_quote_its_token() {
-        // Round 6: `erpc whoami --store file` printed the token from the
+        // `erpc whoami --store file` used to print the token from the
         // line `toml` failed on.
         let dir = tempfile::tempdir().expect("a temporary directory");
         let path = dir.path().join("credentials.toml");

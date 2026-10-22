@@ -1,11 +1,19 @@
 // SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Which hosts a session token may be attached to.
+//! Which hosts each part of a session may be sent to.
 //!
-//! A bearer token is disclosed to whoever receives it, so the set of
-//! destinations is a compile-time constant rather than anything a
-//! configuration file, an environment variable or a redirect can widen.
+//! A session is two tokens with two different destinations:
+//!
+//! * The **access token** is attached as a bearer token to API requests,
+//!   and only to the hosts in [`destinations`] -- never to the issuer.
+//! * The **refresh token** is sent to the issuer that granted it, to be
+//!   exchanged or revoked, and nowhere else. [`RefreshDestination`] is the
+//!   only way to name where it goes, and it can only be built by checking.
+//!
+//! A token is disclosed to whoever receives it, so both sets are
+//! compile-time constants rather than anything a configuration file, an
+//! environment variable or a redirect can widen.
 //!
 //! # What this covers, and what it does not
 //!
@@ -16,16 +24,16 @@
 
 use crate::credential::Audience;
 
-/// The only host an `auth-api` session token may be sent to.
+/// The only host an `auth-api` access token may be sent to.
 ///
-/// Not `auth-api.erpc.global` itself: tokens are *obtained* there, which is
-/// a different operation that does not attach an existing session.
+/// Not `auth-api.erpc.global` itself: that host receives the refresh token,
+/// through [`RefreshDestination`], and never the access token.
 pub const AUTH_API_TOKEN_DESTINATIONS: &[&str] = &["user-api.erpc.global"];
 
-/// The only host an `mcp-user-api` session token may be sent to.
+/// The only host an `mcp-user-api` access token may be sent to.
 pub const MCP_TOKEN_DESTINATIONS: &[&str] = &["mcp-user-api.erpc.global"];
 
-/// The destinations a token for `audience` may be attached to.
+/// The destinations an access token for `audience` may be attached to.
 #[must_use]
 pub const fn destinations(audience: Audience) -> &'static [&'static str] {
     match audience {
@@ -56,7 +64,8 @@ pub enum AllowlistError {
     },
 }
 
-/// Checks that a token for `audience` may be attached to a request to `url`.
+/// Checks that an access token for `audience` may be attached to a request
+/// to `url`.
 ///
 /// # Errors
 ///
@@ -73,6 +82,40 @@ pub fn ensure_token_destination(audience: Audience, url: &str) -> Result<(), All
         host,
         allowed: allowed.join(", "),
     })
+}
+
+/// Where a refresh token may be sent: its issuer, and only its issuer.
+///
+/// The field is private, so the only way to have one is [`Self::checked`].
+/// The two requests that carry a refresh token, the exchange and the
+/// revocation in [`crate::http`], take their URL from one of these.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefreshDestination(&'static str);
+
+impl RefreshDestination {
+    /// Checks that a refresh token for `audience` may be sent to `url`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AllowlistError`] when the URL is not absolute `https`, or
+    /// when its host is not the audience's issuer.
+    pub fn checked(audience: Audience, url: &'static str) -> Result<Self, AllowlistError> {
+        let host = https_host(url).ok_or_else(|| AllowlistError::NotHttps(url.to_owned()))?;
+        if host == audience.issuer_host() {
+            return Ok(Self(url));
+        }
+        Err(AllowlistError::HostNotAllowed {
+            audience,
+            host,
+            allowed: audience.issuer_host().to_owned(),
+        })
+    }
+
+    /// The URL, once checked.
+    #[must_use]
+    pub const fn url(&self) -> &'static str {
+        self.0
+    }
 }
 
 /// The host of an absolute `https` URL, as the parser that will build the
@@ -319,5 +362,39 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_refresh_token_goes_to_its_issuers_token_and_revoke_endpoints() {
+        for audience in Audience::all() {
+            for url in [
+                crate::device_flow::endpoint::token(*audience),
+                crate::device_flow::endpoint::revoke(*audience),
+            ] {
+                let checked = super::RefreshDestination::checked(*audience, url)
+                    .unwrap_or_else(|e| panic!("{url}: {e}"));
+                assert_eq!(checked.url(), url);
+            }
+        }
+    }
+
+    #[test]
+    fn a_refresh_token_goes_nowhere_else() {
+        // Not to the API hosts the access token goes to, and not to the
+        // other audience's issuer.
+        assert!(
+            super::RefreshDestination::checked(
+                Audience::AuthApi,
+                "https://user-api.erpc.global/oauth/token"
+            )
+            .is_err()
+        );
+        assert!(
+            super::RefreshDestination::checked(
+                Audience::AuthApi,
+                crate::device_flow::endpoint::token(Audience::McpUserApi)
+            )
+            .is_err()
+        );
     }
 }

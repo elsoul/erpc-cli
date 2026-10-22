@@ -64,6 +64,19 @@ where
     Err(NoBrowser::NoDisplay)
 }
 
+/// The variables a browser does not get from this process.
+///
+/// Every `OP_` variable: the service account token, a Connect token, and
+/// the `OP_SESSION_*` a signed-in `op` exports. The browser inherits the
+/// rest of the environment, because the openers need the display and the
+/// session bus to find it; these it has no use for, and a browser started
+/// with them holds a 1Password credential for as long as it runs.
+fn withheld(names: impl Iterator<Item = std::ffi::OsString>) -> Vec<std::ffi::OsString> {
+    names
+        .filter(|name| name.to_str().is_some_and(|n| n.starts_with("OP_")))
+        .collect()
+}
+
 /// Opens `url` in the operator's browser.
 ///
 /// Refuses a URL that is not on a host declared in `erpc-core`'s
@@ -99,7 +112,11 @@ pub fn open(url: &str) -> Result<(), String> {
         ("xdg-open", &[])
     };
 
-    Command::new(program)
+    let mut command = Command::new(program);
+    for name in withheld(std::env::vars_os().map(|(name, _)| name)) {
+        command.env_remove(name);
+    }
+    command
         .args(args)
         .arg(url)
         .stdin(Stdio::null())
@@ -114,7 +131,31 @@ pub fn open(url: &str) -> Result<(), String> {
 mod tests {
     use std::ffi::OsString;
 
-    use super::{NoBrowser, decide, open};
+    use super::{NoBrowser, decide, open, withheld};
+
+    #[test]
+    fn a_browser_does_not_inherit_a_1password_credential() {
+        let names = [
+            "OP_SERVICE_ACCOUNT_TOKEN",
+            "OP_SESSION_my_account",
+            "OP_CONNECT_TOKEN",
+            "PATH",
+            "DISPLAY",
+            "DBUS_SESSION_BUS_ADDRESS",
+        ]
+        .map(OsString::from);
+        let removed = withheld(names.into_iter());
+        assert_eq!(
+            removed,
+            [
+                "OP_SERVICE_ACCOUNT_TOKEN",
+                "OP_SESSION_my_account",
+                "OP_CONNECT_TOKEN"
+            ]
+            .map(OsString::from)
+            .to_vec()
+        );
+    }
 
     fn env(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<OsString> {
         move |name| {
@@ -183,7 +224,7 @@ mod tests {
 
     #[test]
     fn a_url_a_shell_would_read_as_syntax_is_not_opened() {
-        // Round 6. Refused before anything is started, so this test never
+        // Refused before anything is started, so this test never
         // opens a browser on the machine running it.
         for url in [
             "https://auth-api.erpc.global/oauth/device?user_code=A&calc.exe",

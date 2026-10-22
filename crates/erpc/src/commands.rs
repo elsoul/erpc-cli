@@ -12,7 +12,9 @@ use core::time::Duration;
 
 use erpc_auth::credential::CredKey;
 use erpc_auth::device_flow::DeviceAuthorization;
-use erpc_auth::session::{LoginPrompt, ParkedReport, SignInReport, approved_to_credential};
+use erpc_auth::session::{
+    LoginPrompt, ParkedReport, Revocation, SignInReport, approved_to_credential,
+};
 use erpc_auth::store::StoreKind;
 use erpc_auth::{AuthClient, session as auth_session};
 
@@ -93,10 +95,17 @@ pub async fn login(json: bool, requested: Option<StoreKind>, no_browser: bool) -
     }
 
     // Before the operator is sent to a browser: a sign-in that cannot be
-    // kept anywhere should not be approved first and revoked after.
+    // kept anywhere should not be approved first and revoked after. That
+    // covers the state directory and the store itself -- a 1Password store
+    // with no vault configured, say.
     let state_dir = match session::state_dir() {
         Ok(dir) => dir,
         Err(e) => return Outcome::Failed(e),
+    };
+    let key = CredKey::new(session::LOGIN_AUDIENCE, session::local_account());
+    let store = match store_for(selection.kind) {
+        Ok(store) => store,
+        Err(e) => return Outcome::Failed(e.to_string()),
     };
     let client = match AuthClient::new() {
         Ok(client) => client,
@@ -116,12 +125,6 @@ pub async fn login(json: bool, requested: Option<StoreKind>, no_browser: bool) -
     // the operator's next step here is `erpc signup`, not `erpc login`.
     let user = match erpc_api::get_user(&client, &credential.access_token).await {
         Ok(user) => user,
-        Err(e) => return Outcome::Failed(revoke_and_report(&client, &credential, e).await),
-    };
-
-    let key = CredKey::new(session::LOGIN_AUDIENCE, session::local_account());
-    let store = match store_for(selection.kind) {
-        Ok(store) => store,
         Err(e) => return Outcome::Failed(revoke_and_report(&client, &credential, e).await),
     };
 
@@ -205,24 +208,17 @@ pub async fn logout(json: bool, requested: Option<StoreKind>) -> Outcome {
         Err(e) => return Outcome::Failed(e),
     };
     match auth_session::sign_out(&client, store.as_ref(), &key, &state_dir).await {
-        Ok(revoked) => {
+        Ok(revocation) => {
             if json {
                 crate::print_json(&serde_json::json!({
                     "status": "signed-out",
-                    "revoked_at_issuer": revoked,
+                    "revoked_at_issuer": revocation == Revocation::Confirmed,
+                    "had_session": revocation != Revocation::NothingToRevoke,
                     "store": StoreReport::from(selection),
                 }));
                 Outcome::Done(String::new())
-            } else if revoked {
-                Outcome::Done("Signed out, and the session was revoked at the issuer.".to_owned())
             } else {
-                // Worth saying: the local copy is gone either way, but a
-                // token that was not revoked is still live until it expires.
-                Outcome::Done(
-                    "Signed out locally. The issuer did not confirm the revocation, so the \
-                     session may stay valid until it expires."
-                        .to_owned(),
-                )
+                Outcome::Done(sign_out_message(revocation).to_owned())
             }
         }
         Err(e) => Outcome::Failed(e.to_string()),
@@ -389,6 +385,22 @@ fn doctor_outcome(worst: crate::doctor::Level) -> Outcome {
     }
 }
 
+/// What `logout` says, from what happened at the issuer.
+const fn sign_out_message(revocation: Revocation) -> &'static str {
+    match revocation {
+        Revocation::Confirmed => "Signed out, and the session was revoked at the issuer.",
+        // Worth saying: the local copy is gone either way, but a token
+        // that was not revoked is still live until it expires.
+        Revocation::NotConfirmed => {
+            "Signed out locally. The issuer did not confirm the revocation, so the session may \
+             stay valid until it expires."
+        }
+        Revocation::NothingToRevoke => {
+            "There was no session on this machine; nothing to sign out of."
+        }
+    }
+}
+
 /// What `login` says about what it could not do cleanly.
 fn sign_in_warnings(report: &SignInReport) -> Vec<String> {
     let mut out = Vec::new();
@@ -428,7 +440,18 @@ fn parked_warning(report: &ParkedReport) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Outcome, ParkedReport, SignInReport, now, parked_warning, sign_in_warnings};
+    use super::{
+        Outcome, ParkedReport, Revocation, SignInReport, now, parked_warning, sign_in_warnings,
+        sign_out_message,
+    };
+
+    #[test]
+    fn signing_out_of_nothing_does_not_mention_the_issuer() {
+        let said = sign_out_message(Revocation::NothingToRevoke);
+        assert!(!said.contains("issuer"), "{said}");
+        assert!(sign_out_message(Revocation::NotConfirmed).contains("did not confirm"));
+        assert!(sign_out_message(Revocation::Confirmed).contains("was revoked"));
+    }
 
     #[test]
     fn a_clean_sign_in_warns_about_nothing() {
@@ -458,7 +481,7 @@ mod tests {
 
     #[test]
     fn the_parked_warning_claims_a_revocation_only_when_there_was_one() {
-        // Round 5: `login` said "revoked just now" for a token that was
+        // `login` used to say "revoked just now" for a token that was
         // never presented to the issuer.
         for removed in [true, false] {
             let refused = parked_warning(&report(false, removed));

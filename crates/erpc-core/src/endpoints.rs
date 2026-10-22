@@ -12,8 +12,8 @@
 //!    any kind -- not only the service hosts. Every request URL `erpc`
 //!    builds is a constant, and a test runs each one through it. At runtime
 //!    it is called before a page is opened in a browser. Which hosts may
-//!    receive a session token is much narrower, and lives in `erpc-auth`'s
-//!    allowlist.
+//!    receive the access token, and which the refresh token, is much
+//!    narrower, and lives in `erpc-auth`'s allowlist.
 //!
 //! What this does and does not buy. Because ERPC's own endpoints are
 //! compile-time constants and are never read from configuration or environment

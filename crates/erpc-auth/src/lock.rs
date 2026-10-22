@@ -425,7 +425,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_broken_parked_file_does_not_quote_its_token() {
-        // Round 6: `toml`'s message prints the line it failed on, and in
+        // `toml`'s message prints the line it failed on, and in
         // this file that line is a token. The message reaches `error:` on
         // the operator's terminal.
         let dir = tempfile::tempdir().expect("a temporary directory");

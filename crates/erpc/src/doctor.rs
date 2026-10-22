@@ -296,7 +296,7 @@ mod tests {
 
     #[test]
     fn a_write_that_did_not_finish_is_found_and_warned_about() {
-        // Round 6: the temporary file a crash leaves holds the same secret
+        // The temporary file a crash leaves holds the same secret
         // as the file it was going to replace, and nothing reported it.
         let dir = tempfile::tempdir().expect("a temporary directory");
         // Assembled: `credentials-` followed by a random-looking suffix is

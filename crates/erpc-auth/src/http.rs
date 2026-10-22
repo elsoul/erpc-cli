@@ -10,9 +10,10 @@
 //!
 //! Two properties are enforced here and nowhere else:
 //!
-//! * A session token is attached only to a destination
+//! * An access token is attached only to a destination
 //!   [`crate::allowlist`] permits, checked immediately before the request
-//!   is built, not when the URL was chosen.
+//!   is built, not when the URL was chosen. A refresh token is sent only to
+//!   an [`allowlist::RefreshDestination`], which exists only once checked.
 //! * The identity endpoints are the constants in [`crate::device_flow`].
 //!   Nothing reads a base URL from configuration or the environment,
 //!   because a build that can be pointed at another identity provider is a
@@ -181,8 +182,12 @@ impl AuthClient {
     /// caller in the middle of recovering from an earlier failure should
     /// not be derailed by it.
     pub async fn revoke(&self, audience: Audience, refresh_token: &SecretString) -> bool {
+        let Ok(to) = allowlist::RefreshDestination::checked(audience, endpoint::revoke(audience))
+        else {
+            return false;
+        };
         self.inner
-            .post(endpoint::revoke(audience))
+            .post(to.url())
             .form(&[
                 ("client_id", CLIENT_ID),
                 ("token", refresh_token.expose_secret()),
@@ -207,9 +212,10 @@ impl AuthClient {
         now: i64,
     ) -> Result<Credential, HttpError> {
         let host = audience.issuer_host();
+        let to = allowlist::RefreshDestination::checked(audience, endpoint::token(audience))?;
         let response = self
             .inner
-            .post(endpoint::token(audience))
+            .post(to.url())
             .form(&[
                 ("client_id", CLIENT_ID),
                 ("grant_type", "refresh_token"),
@@ -291,6 +297,20 @@ struct AuthorizationBody {
 
 impl AuthorizationBody {
     fn into_authorization(self, host: &'static str) -> Result<DeviceAuthorization, HttpError> {
+        // The user code is printed for the operator to type. Anything but
+        // letters, digits and hyphens is not a code anyone types, and on a
+        // terminal it can be an escape sequence.
+        if !self
+            .user_code
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        {
+            return Err(HttpError::Malformed {
+                host,
+                reason: "the authorization reply has a user code that is not letters and digits"
+                    .to_owned(),
+            });
+        }
         if self.device_code.is_empty() || self.user_code.is_empty() {
             return Err(HttpError::Malformed {
                 host,
@@ -331,6 +351,20 @@ impl AuthorizationBody {
     }
 }
 
+/// An error code from the server, cut down to what one may contain.
+fn printable_code(code: &str) -> String {
+    code.chars()
+        .take(64)
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.' {
+                c
+            } else {
+                '?'
+            }
+        })
+        .collect()
+}
+
 /// The token endpoint's reply, success or error.
 #[derive(Debug, Deserialize)]
 struct TokenBody {
@@ -353,7 +387,9 @@ impl TokenBody {
                 "slow_down" => PollOutcome::SlowDown,
                 "access_denied" => PollOutcome::Denied,
                 "expired_token" => PollOutcome::Expired,
-                other => PollOutcome::Failed(other.to_owned()),
+                // Printed to the operator's terminal, so only the characters
+                // an OAuth error code is made of (RFC 6749, 5.2) get there.
+                other => PollOutcome::Failed(printable_code(other)),
             };
         }
         if !success {
@@ -444,6 +480,25 @@ mod tests {
             auth.verification_uri,
             "https://auth-api.erpc.global/oauth/device"
         );
+    }
+
+    #[test]
+    fn a_user_code_that_is_not_a_code_is_refused() {
+        let body: AuthorizationBody = serde_json::from_str(
+            r#"{"device_code":"dc","user_code":"AB\u001b[2JCD","verification_uri":"https://auth-api.erpc.global/oauth/device","expires_in":600}"#,
+        )
+        .expect("parses");
+        assert!(matches!(
+            body.into_authorization(HOST),
+            Err(HttpError::Malformed { .. })
+        ));
+    }
+
+    #[test]
+    fn an_unknown_error_code_is_printed_without_control_characters() {
+        let shown = super::printable_code("weird\u{1b}[2J_error");
+        assert!(!shown.contains('\u{1b}'), "{shown}");
+        assert!(shown.starts_with("weird"), "{shown}");
     }
 
     #[test]

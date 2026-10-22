@@ -262,7 +262,7 @@ pub async fn current_session(
 /// nobody holding it -- or writes it back into the store after the delete,
 /// so a sign-out that reported success leaves a usable session behind.
 ///
-/// Returns whether the issuer confirmed the revocation.
+/// Returns what became of the session at the issuer.
 ///
 /// # Errors
 ///
@@ -274,7 +274,7 @@ pub async fn sign_out<R: Revoker>(
     store: &dyn CredentialStore,
     key: &CredKey,
     state_dir: &Path,
-) -> Result<bool, SessionError> {
+) -> Result<Revocation, SessionError> {
     let _guard =
         crate::lock::ExclusiveLock::acquire(&refresh_lock_path(state_dir, key.audience()))?;
     let stored_revoked = match readable(store.load(key))? {
@@ -328,7 +328,25 @@ pub async fn sign_out<R: Revoker>(
         .into_iter()
         .flatten()
         .collect();
-    Ok(!attempted.is_empty() && !attempted.contains(&false))
+    Ok(if attempted.is_empty() {
+        Revocation::NothingToRevoke
+    } else if attempted.contains(&false) {
+        Revocation::NotConfirmed
+    } else {
+        Revocation::Confirmed
+    })
+}
+
+/// What a sign-out did at the issuer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Revocation {
+    /// Every token it found was revoked, and the issuer said so.
+    Confirmed,
+    /// At least one token it found was not revoked: the issuer refused, or
+    /// the token could not be read to be presented.
+    NotConfirmed,
+    /// There was no session on this machine to revoke.
+    NothingToRevoke,
 }
 
 /// Stores a freshly obtained session, revoking whatever it replaces.
@@ -688,7 +706,7 @@ mod tests {
             .await
             .expect("signed out");
 
-        assert!(confirmed);
+        assert_eq!(confirmed, super::Revocation::Confirmed);
         assert!(!at.exists(), "no live token may survive a sign-out on disk");
         assert!(store.refresh_token().is_none());
         let seen = revoker.seen.borrow().clone();
@@ -732,8 +750,9 @@ mod tests {
         let confirmed = super::sign_out(&revoker, &store, &key(), dir.path())
             .await
             .expect("signed out");
-        assert!(
-            !confirmed,
+        assert_eq!(
+            confirmed,
+            super::Revocation::NotConfirmed,
             "the session the operator was using was not revoked, so nothing may say it was"
         );
         // The local removals happen either way.
@@ -758,7 +777,7 @@ mod tests {
         let confirmed = super::sign_out(&revoker, &store, &key(), dir.path())
             .await
             .expect("signed out");
-        assert!(!confirmed);
+        assert_eq!(confirmed, super::Revocation::NotConfirmed);
         assert!(!at.exists(), "it is still removed");
         assert!(store.refresh_token().is_none());
     }
@@ -768,10 +787,11 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temporary directory");
         let store = FlakyStore::new();
         let revoker = ChoosyRevoker { refuse: Vec::new() };
-        assert!(
-            !super::sign_out(&revoker, &store, &key(), dir.path())
+        assert_eq!(
+            super::sign_out(&revoker, &store, &key(), dir.path())
                 .await
                 .expect("signed out"),
+            super::Revocation::NothingToRevoke,
             "there was no session, so there is no revocation to report"
         );
     }
@@ -845,7 +865,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn a_leftover_a_sign_in_could_not_delete_never_comes_back_over_it() {
-        // Round 4's blocker. Letting the unlink fail quietly was only half
+        // Letting the unlink fail quietly was only half
         // of it: the next command found the file, filed it over the fresh
         // sign-in, and the store held a token the sign-in had just revoked.
         // Both cases the review reproduced: the directory still read-only
@@ -917,7 +937,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_sign_in_says_when_a_parked_token_it_removed_was_never_revoked() {
-        // Round 5. A parked file this build cannot read was unlinked
+        // A parked file this build cannot read used to be unlinked
         // without its token reaching the issuer, and nothing was said; with
         // the unlink failing too, `login` called it "revoked just now".
         let dir = tempfile::tempdir().expect("a temporary directory");
@@ -1018,7 +1038,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_unreadable_stored_session_does_not_block_a_sign_in() {
-        // Round 6: the error said to sign in again, and signing in failed
+        // The error said to sign in again, and signing in failed
         // on the same read -- after the operator had approved it, so the
         // new session was revoked as well.
         let dir = tempfile::tempdir().expect("a temporary directory");
@@ -1047,8 +1067,48 @@ mod tests {
         let confirmed = super::sign_out(&revoker, &store, &key(), dir.path())
             .await
             .expect("signed out");
-        assert!(!confirmed, "a token nobody could read was not revoked");
+        assert_eq!(
+            confirmed,
+            super::Revocation::NotConfirmed,
+            "a token nobody could read was not revoked"
+        );
         assert!(!store.unreadable.get(), "the record was removed");
+    }
+
+    /// A real file store whose file does not parse.
+    fn broken_file_store(dir: &Path) -> crate::store::file::FileStore {
+        let path = dir.join("credentials.toml");
+        std::fs::write(&path, "[sessions]\naccess_token = \"abc\n").expect("write");
+        crate::store::file::FileStore::new(path)
+    }
+
+    #[tokio::test]
+    async fn a_file_store_that_does_not_parse_does_not_block_a_sign_in() {
+        // A mock that accepts the save proves nothing about the store that
+        // refused it: the real one read the whole file first, failed, and
+        // the sign-in was approved in the browser and then revoked.
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let store = broken_file_store(dir.path());
+        let revoker = RecordingRevoker::default();
+        let report =
+            super::store_new_session(&revoker, &store, &key(), dir.path(), &cred("NEW-LOGIN"))
+                .await
+                .expect("signed in");
+        assert!(report.previous_unreadable);
+        let held = store.load(&key()).expect("readable now").expect("present");
+        assert_eq!(held.refresh_token.expose_secret(), "ref.NEW-LOGIN.s");
+    }
+
+    #[tokio::test]
+    async fn a_file_store_that_does_not_parse_does_not_block_a_sign_out() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let store = broken_file_store(dir.path());
+        let revoker = RecordingRevoker::default();
+        let confirmed = super::sign_out(&revoker, &store, &key(), dir.path())
+            .await
+            .expect("signed out");
+        assert_eq!(confirmed, super::Revocation::NotConfirmed);
+        assert!(!dir.path().join("credentials.toml").exists());
     }
 
     #[tokio::test]
@@ -1138,10 +1198,11 @@ mod tests {
         let store = FlakyStore::new();
         store.save(&key(), &cred("STORED")).expect("save");
         let revoker = RecordingRevoker::default();
-        assert!(
+        assert_eq!(
             super::sign_out(&revoker, &store, &key(), dir.path())
                 .await
-                .expect("signed out")
+                .expect("signed out"),
+            super::Revocation::Confirmed
         );
     }
 

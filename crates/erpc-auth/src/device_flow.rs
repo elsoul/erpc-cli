@@ -326,7 +326,7 @@ mod tests {
 
     #[test]
     fn a_verification_page_anywhere_else_or_with_shell_syntax_is_refused() {
-        // Round 6: on Windows the URL went to `cmd /C start`, where these
+        // On Windows the URL goes to `cmd /C start`, where these
         // are command separators and variable expansion.
         let host = "auth-api.erpc.global";
         for url in [

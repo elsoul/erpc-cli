@@ -48,8 +48,9 @@ SBOM and GitHub build provenance attestations. See `docs/verify-release.md`.
 token and a refresh token obtained through the OAuth device authorization
 grant. It does not read or store private keys. When it uses a 1Password
 service account, it reads `OP_SERVICE_ACCOUNT_TOKEN` from its environment and
-passes it to the `op` process it starts. It does not write that token
-anywhere.
+passes it to the `op` processes it starts, and to no other process: the
+browser `erpc login` opens is started without any `OP_` variable. It does not
+write that token anywhere.
 
 ### Where the session is kept
 
@@ -91,7 +92,8 @@ they are in.
 
 - The access token is sent as a bearer token only to the hosts listed for its
   audience in `crates/erpc-auth/src/allowlist.rs`.
-- The refresh token is sent only to its issuer's token and revoke endpoints.
+- The refresh token is sent only to its issuer's token and revoke endpoints,
+  checked against the issuer's host before each request.
 - Every request URL is a compile-time constant.
 - The HTTP client is configured to accept `https` only and not to follow
   redirects. Neither setting is covered by a test; the reasons are given

@@ -54,6 +54,27 @@ impl OsKeychain {
     }
 }
 
+/// Reads a keychain entry's text back into a session.
+///
+/// Apart from the keychain call so that it can be tested on a machine
+/// with no keychain, including that a malformed entry is reported without
+/// quoting it.
+fn parse_entry(raw: &str) -> Result<Credential, StoreError> {
+    let stored: StoredCredential =
+        serde_json::from_str(raw).map_err(|e| super::unparsable_json("the keychain entry", &e))?;
+    if stored.store_version != STORE_VERSION {
+        return Err(StoreError::UnknownVersion {
+            found: stored.store_version,
+            expected: STORE_VERSION,
+        });
+    }
+    Ok(Credential {
+        access_token: SecretString::from(stored.access_token.clone()),
+        refresh_token: SecretString::from(stored.refresh_token.clone()),
+        expires_at: stored.expires_at,
+    })
+}
+
 impl CredentialStore for OsKeychain {
     fn load(&self, key: &CredKey) -> Result<Option<Credential>, StoreError> {
         let entry = self.entry(key)?;
@@ -68,19 +89,7 @@ impl CredentialStore for OsKeychain {
                 });
             }
         };
-        let stored: StoredCredential = serde_json::from_str(&raw)
-            .map_err(|e| super::unparsable_json("the keychain entry", &e))?;
-        if stored.store_version != STORE_VERSION {
-            return Err(StoreError::UnknownVersion {
-                found: stored.store_version,
-                expected: STORE_VERSION,
-            });
-        }
-        Ok(Some(Credential {
-            access_token: SecretString::from(stored.access_token.clone()),
-            refresh_token: SecretString::from(stored.refresh_token.clone()),
-            expires_at: stored.expires_at,
-        }))
+        parse_entry(&raw).map(Some)
     }
 
     fn save(&self, key: &CredKey, cred: &Credential) -> Result<(), StoreError> {
@@ -125,9 +134,22 @@ impl CredentialStore for OsKeychain {
 
 #[cfg(test)]
 mod tests {
-    use super::{OsKeychain, SERVICE};
+    use super::{OsKeychain, SERVICE, parse_entry};
     use crate::credential::{Audience, CredKey};
     use crate::store::{CredentialStore as _, StoreKind};
+
+    #[test]
+    fn a_malformed_entry_is_reported_without_quoting_it() {
+        let token = crate::lock::tests::token_fixture();
+        let raw = format!(
+            r#"{{"store_version":1,"access_token":"a","refresh_token":"b","expires_at":"{token}"}}"#
+        );
+        let Err(err) = parse_entry(&raw) else {
+            panic!("the entry is malformed");
+        };
+        let shown = err.to_string();
+        assert!(!shown.contains("U0VDUkVUUEFZTE9BRA"), "{shown}");
+    }
 
     #[test]
     fn the_default_service_is_erpc() {

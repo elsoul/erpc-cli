@@ -8,7 +8,8 @@
 //! * [`credential`] — what a session is and what it is filed under.
 //! * [`store`] — the four places a session can be kept, and the rules for
 //!   choosing between them.
-//! * [`allowlist`] — which hosts a session token may be sent to.
+//! * [`allowlist`] — which hosts the access token and the refresh token may
+//!   each be sent to.
 //! * [`device_flow`] — the polling rules of the device authorization grant.
 //! * [`http`] — the requests themselves, and the one client that sends them.
 //! * [`session`] — signing in, keeping a session current, signing out.
