@@ -54,14 +54,19 @@ with `OP_`, in any case. It does not write that token anywhere.
 
 ### Where the session is kept
 
-The session is kept in one store. Unless `--store` names one, the store is the
-first of these that applies:
+The session is kept in one store. `erpc login` at a terminal asks which: the
+operating system's keychain, which is the default, or the 1Password desktop app
+when `op account list` answers, followed by which vault. `--store` (and
+`--vault`) choose without asking. The choice is recorded as `credential_store`
+(and `credential_vault`) in `config.toml` beside the state directory, and the
+other commands use it.
+
+Without a choice, given or recorded, the store is the first of these that
+applies:
 
 1. a 1Password service account, when `OP_SERVICE_ACCOUNT_TOKEN` is set;
-2. the 1Password desktop app, when `op` is installed and `op account list`
-   answers;
-3. the operating system's keychain, when there is one;
-4. a file in the erpc state directory.
+2. the operating system's keychain, when there is one;
+3. a file in the erpc state directory.
 
 `erpc doctor` reports which store is in use and why.
 
