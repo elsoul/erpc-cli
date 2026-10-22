@@ -7,8 +7,8 @@
 //! therefore a stated exception to "nothing is left on the machine" rather
 //! than a normal option. (The other exception is not a store: a rotation
 //! the store refused, parked by [`crate::lock`].) It exists for minimal
-//! Linux installs with neither `op` nor a Secret Service. It is used when
-//! asked for, or when neither of those is available; `erpc login` warns
+//! Linux installs with no Secret Service. It is used when asked for, or
+//! when there is no OS keychain; `erpc login` warns
 //! when it is, and `erpc doctor` reports that it is in use.
 //!
 //! The file is created 0600, written to a temporary file in the same
