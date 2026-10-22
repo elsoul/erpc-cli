@@ -648,6 +648,41 @@ check "a bracketed loopback with a port is fine" allow "$sample_dir/a5.ts" \
 check "a colon inside an expression is not a port" allow "$sample_dir/a6.sh" \
   'curl "https://solana-snapshot-${a:-b}.erpc.global/x"'
 
+# The characters the host is trimmed at, INSIDE a host rather than between
+# two URLs. All three resolve under node's `new URL()` -- hostname
+# api.github.com,evil.example.net and so on, served by a wildcard record
+# under evil.example.net -- and all three were silent while the tail test
+# fired on a backtick only.
+check_msg "a comma inside the host does not hide the rest" "$sample_dir/c1.rs" \
+  'let u = "https://api.github.com,evil.example.net/x";' \
+  'punctuation inside the host hides the rest of it'
+
+check_msg "a semicolon inside the host does not either" "$sample_dir/c2.rs" \
+  'let u = "https://api.github.com;evil.example.net/x";' \
+  'punctuation inside the host hides the rest of it'
+
+check_msg "a closing paren inside the host does not either" "$sample_dir/c3.rs" \
+  'let u = "https://api.github.com)evil.example.net/x";' \
+  'punctuation inside the host hides the rest of it'
+
+# ...and the correct lines that the same characters appear on, which is why
+# the test is on the TAIL and not on the character. Each of these is a
+# declared host followed by ordinary punctuation.
+check "a declared host closing a markdown link" allow "$sample_dir/c4.md" \
+  'See [ERPC](https://erpc.global): the multi-chain endpoint.'
+
+check "a declared host before a comma in prose" allow "$sample_dir/c5.md" \
+  'Use https://erpc.global, then sign in.'
+
+check "a declared host before a semicolon in code" allow "$sample_dir/c6.ts" \
+  'const h = "https://user-api.erpc.global";'
+
+check "a backtick-quoted declared host with a method call" allow "$sample_dir/c7.ts" \
+  'const h = `https://user-api.erpc.global`.trim();'
+
+check "a JSON array of two declared hosts" allow "$sample_dir/c8.json" \
+  '{"u": ["https://erpc.global","https://github.com"]}'
+
 # --- the invariant ------------------------------------------------------
 #
 # Every shape-specific case above pins one bypass. This pins the property
@@ -709,6 +744,40 @@ invariant "nested command substitutions do not hide a URL" \
 invariant "a second scheme in the port position is still judged" \
   'curl https://one.evil.example.net:https://two.evil.example.net/x' \
   one.evil.example.net two.evil.example.net
+
+# THE FIRST HOST IS DECLARED. Every case in this block used to put an
+# undeclared host first, which means the line was reported whatever became
+# of the second URL -- so none of them could fail for the class of defect
+# below, and the header's claim that "the suite asserts that directly" was
+# false as written. A declared first host produces no finding of its own,
+# so the only thing that can name the second URL is the second URL being
+# evaluated.
+#
+# Each of these was silent, exit 0, no output, before normalise() learned to
+# separate a `)`, `,`, `;` or backtick from a following scheme: the match ran
+# to the second scheme's colon, the trim reduced it to the declared host, and
+# `grep -o` resumed PAST the second scheme, so that URL was never emitted.
+invariant "a comma after a declared host does not swallow the next URL" \
+  'curl https://erpc.global,https://two.evil.example.net/x' \
+  'two.evil.example.net'
+
+invariant "a semicolon after a declared host does not either" \
+  'curl https://erpc.global;https://two.evil.example.net/x' \
+  'two.evil.example.net'
+
+invariant "a closing paren after a declared host does not either" \
+  'curl "(https://erpc.global)https://two.evil.example.net/x"' \
+  'two.evil.example.net'
+
+invariant "a backtick after a declared host does not either" \
+  'const a = `https://erpc.global`https://two.evil.example.net/x;' \
+  'two.evil.example.net'
+
+# ...and the same with no slashes on the second URL, which is why the split
+# runs after the slash collapse rather than before it.
+invariant "a comma then a slashless second URL is still judged" \
+  'curl https://erpc.global,https:two.evil.example.net/x' \
+  'two.evil.example.net'
 
 invariant "two plain URLs on one line are both named" \
   'const a = "https://one.evil.example.net/1"; const b = "https://two.evil.example.net/2";' \

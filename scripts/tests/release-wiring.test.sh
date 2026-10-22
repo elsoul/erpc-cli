@@ -121,8 +121,10 @@ else
   fi
 fi
 
-# 5. And the page must name exactly the files the pipeline attaches, so that
-#    neither side can drift without this failing.
+# 5. And the page must name exactly the files the pipeline attaches. BOTH
+#    directions, because one was not enough: checking only
+#    attached-is-documented would still pass if the page regained a
+#    `latest.json` row, which is the exact drift this branch removes.
 uploaded_files=$(awk '
   /uses: actions\/upload-artifact/ { block = 1; next }
   block && /release-manifest/ { line = $0; sub(/^[[:space:]]*/, "", line); sub(/^artifacts\//, "", line); print line }
@@ -146,6 +148,39 @@ if [ -n "$uploaded_files" ]; then
   else
     bad "the verification page names the files the pipeline attaches" \
         "attached but not mentioned in docs/verify-release.md:$missing"
+  fi
+fi
+
+# 6. The reverse direction: every release file the page tells the operator
+#    to fetch must be one the pipeline attaches. Without this the page could
+#    name a file that no longer exists -- `latest.json` and its signature
+#    were exactly that until this branch removed them -- and the operator
+#    would be told to verify something they cannot download.
+documented_files=$(grep -ohE '[A-Za-z0-9_.-]+\.(json|minisig)' "$verify_doc" 2>/dev/null | sort -u)
+
+if [ -z "$documented_files" ]; then
+  bad "every release file the page names is one the pipeline attaches" \
+      "no .json or .minisig filename found in docs/verify-release.md"
+else
+  undelivered=""
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    case "
+$uploaded_files
+" in
+      *"
+$d
+"*) ;;
+      *) undelivered="$undelivered $d";;
+    esac
+  done <<EOF
+$documented_files
+EOF
+  if [ -z "$undelivered" ]; then
+    ok "every release file the page names is one the pipeline attaches"
+  else
+    bad "every release file the page names is one the pipeline attaches" \
+        "named in docs/verify-release.md but never attached:$undelivered"
   fi
 fi
 

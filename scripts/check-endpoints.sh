@@ -105,15 +105,14 @@
 #     These checks, and the plaintext one above, run on every URL before the
 #     allowlist question is answered, so no host can reach an "allowed"
 #     verdict without passing them first.
-#   - normalise() deletes ASCII tab and CR, accepts \ where / is expected
-#     after a scheme, and collapses runs of backslashes before a slash.
-#     Each form resolves for real: the URL Standard DELETES tab/CR/LF from
-#     its input before parsing, and treats \ as / for a special scheme, so
-#     ht<TAB>tps://h, https://declared<TAB>.evil.example.net, https:\\h and
-#     https:\/\/h are all live destinations that a text matcher looking for
-#     a literal :// does not see. The predecessor of this rule was a single
-#     pass of s|\\/|/|g, which turned \\/\\/ into \/\/ and so left no ://
-#     in the line at all -- a double escape was a complete bypass.
+#   - normalise() is the one rewrite, and the block above it is the full
+#     statement of what it does. It is NOT a summary of the Standard: the
+#     slash rule covers `/` only, and a backslash in the authority is
+#     refused rather than resolved, for the reason given there. An earlier
+#     version of this bullet described the rule as accepting `\` where `/`
+#     is expected and collapsing backslash runs, which stopped being true
+#     when the rule was rewritten and was left behind -- the designated
+#     authoritative description of a control, contradicting the control.
 #   - A host assembled at runtime from fragments is invisible to this gate.
 #     This is a text gate over source, not a sandbox, and it does not
 #     constrain a dependency.
@@ -331,7 +330,7 @@ EOF
 
 # $1 file, $2 line number, $3 url, $4 kind
 check_url() {
-  local f="$1" ln="$2" url="$3" kind="$4" scheme rest hostport host has_expr probe paired bt_tail
+  local f="$1" ln="$2" url="$3" kind="$4" scheme rest hostport host has_expr probe paired cut_tail
   scheme=$(printf '%s' "${url%%://*}" | tr '[:upper:]' '[:lower:]')
   rest="${url#*://}"
   hostport="${rest%%/*}"; hostport="${hostport%%\?*}"; hostport="${hostport%%#*}"
@@ -375,27 +374,37 @@ check_url() {
       ;;
   esac
 
-  # A LONE backtick is treated as a string quote above, which is right for
-  # `https://user-api.erpc.global`; -- but only while nothing host-like
-  # follows it. When something does, trimming there would drop the
-  # registrable domain and allow the host on the strength of what came
-  # before, which is the same mechanism as the backslash check.
+  # EVERY character the host is trimmed at below hides whatever follows it,
+  # not just the backtick this rule was first written for. Trimming is right
+  # when nothing host-like follows -- `https://semver.org`. ending a markdown
+  # sentence, [ERPC](https://erpc.global), `https://erpc.global,` in a list,
+  # `https://user-api.erpc.global`.trim() -- and wrong when something does,
+  # because the trim then drops the registrable domain and the allowlist is
+  # asked about a prefix.
   #
-  # The test is whether the tail LOOKS LIKE a host, not whether it is
-  # non-empty. Non-empty was wrong in both directions: it rejected
-  # `https://semver.org`. ending a markdown sentence and
-  # `https://user-api.erpc.global`.trim(), both declared hosts on correct
-  # lines, and -- because the tail was then trimmed at the same punctuation
-  # class as the host -- it let `https://github.com`;evil.example.net
-  # through, since the tail emptied at the `;`. So: no trim here, and report
-  # only when two dot-separated labels survive, which is the shortest thing
-  # that can carry a registrable domain.
+  # What means a destination survived the trim: TWO DOT-SEPARATED LABELS in
+  # the tail, the shortest thing that can carry a registrable domain.
+  # `https://api.github.com,evil.example.net`, `;evil.example.net` and
+  # `)evil.example.net` all resolve under node's new URL() -- hostname
+  # api.github.com,evil.example.net and so on -- and all three were silent
+  # before this check was generalised beyond the backtick.
+  #
+  # The OTHER shape, a second whole URL after one of these characters, is
+  # not handled here. It is handled by separating the two URLs in
+  # normalise(), so that each is matched and judged on its own; a test for
+  # a trailing scheme word was tried here first and is redundant once the
+  # split exists -- removing it leaves every case passing and every probe
+  # reported, which is why it is not in the condition below.
+  #
+  # The tail is NOT trimmed before either test. Trimming it was the defect
+  # that let `https://github.com`;evil.example.net through, the tail emptying
+  # at the `;`.
   if [ "$has_expr" = no ]; then
     case "$host" in
-      *'`'*)
-        bt_tail="${host#*\`}"
-        if printf '%s' "$bt_tail" | LC_ALL=C grep -qE '[A-Za-z0-9-]+\.[A-Za-z0-9-]+'; then
-          report "$f" "$ln" "backtick inside the host hides the rest of it: $scheme://$host"
+      *[\),\;\`]*)
+        cut_tail="${host#*[\),\;\`]}"
+        if printf '%s' "$cut_tail" | LC_ALL=C grep -qE '[A-Za-z0-9-]+\.[A-Za-z0-9-]+'; then
+          report "$f" "$ln" "punctuation inside the host hides the rest of it: $scheme://$host"
           return 0
         fi
         ;;
@@ -515,6 +524,21 @@ url_re='(https?|wss?)://(((\$\{\{[^}/]*\}\}|\$\{[^}/]*\}|\{\{[^}/]*\}\}|\$\([^)/
 #     `://` is inserted and the host becomes a backslash, which is then
 #     reported. No such line exists in the tree today. Write the pattern
 #     with a character class, or add the file to --print-exceptions.
+#   * A `)`, `,`, `;` or backtick IMMEDIATELY BEFORE a scheme gets a space
+#     inserted, for the same reason as the tab and CR exception above and
+#     with a sharper consequence. These are the characters the host is
+#     trimmed at, and without this the second URL on such a line was never
+#     evaluated AT ALL -- not merely misjudged. `grep -o` emits
+#     non-overlapping matches, so on
+#     `https://erpc.global,https://evil.example.net/x` the first match ran
+#     to the second scheme's colon, the trim reduced it to the declared
+#     erpc.global, and the scan then resumed PAST the second scheme: one
+#     URL in, no finding out, and the one invariant this gate claims
+#     broken. The split makes each URL its own match, judged on its own
+#     merits -- which is also the right reading of a comma-separated list,
+#     where the second URL really is contacted. It runs AFTER the slash
+#     collapse, so a second URL written `,https:host` is separated too.
+
 # The scheme alternation, spelled with character classes because BSD sed has
 # no portable case-insensitivity modifier for s/// and the matcher below runs
 # `grep -i`. Keeping the two in step matters: a rule that only saw lowercase
@@ -522,12 +546,16 @@ url_re='(https?|wss?)://(((\$\{\{[^}/]*\}\}|\$\{[^}/]*\}|\{\{[^}/]*\}\}|\$\([^)/
 scheme_re='([Hh][Tt][Tt][Pp][Ss]?|[Ww][Ss][Ss]?)'
 tab=$(printf '\t')
 cr=$(printf '\r')
+# A literal backtick, so the separator rule can name it without the shell
+# reading it as a command substitution.
+bt=$(printf '\140')
 normalise() {
   sed -E -e "s/${tab}${scheme_re}:/ \1:/g" \
          -e "s/${cr}${scheme_re}:/ \1:/g" \
          -e "s/${tab}//g" \
          -e "s/${cr}//g" \
-         -e "s#${scheme_re}:(/)*#\1://#g"
+         -e "s#${scheme_re}:(/)*#\1://#g" \
+         -e "s#([),;${bt}])${scheme_re}://#\1 \2://#g"
 }
 
 for f in "${files[@]}"; do
@@ -582,7 +610,13 @@ for f in "${files[@]}"; do
   # arbitrary source. Bounding the match to the authority removes the only
   # freedom the extension had. The invariant to hold on to is not "no
   # rewriting" but: no URL in a tracked file escapes evaluation. The suite
-  # asserts that directly.
+  # asserts it with cases whose first host is DECLARED as well as cases
+  # whose first host is not, and that distinction is the whole point: with
+  # an undeclared host first the line is reported whatever becomes of the
+  # second URL, so such a case cannot fail for this class. Every case in
+  # the invariant block once put an undeclared host first, while a comma
+  # between a declared host and a second URL made that second URL vanish
+  # from the scan completely.
   #
   # Backticks are deliberately NOT one of the balanced forms here. A backtick
   # is also a JavaScript string quote, so pairing them across a space would

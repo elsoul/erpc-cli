@@ -24,8 +24,16 @@ code as authoritative if the two ever disagree.
   with one still carries the registrable domain as a literal, and that is the
   part that decides the destination. Only a host that is entirely one
   balanced expression is skipped, there being nothing to check. The matcher
-  looks at the authority only, so a URL cannot be hidden inside another one
-  on the same line; the script's header states the bounds that guarantee it.
+  looks at the authority only, so that one URL cannot absorb another on the
+  same line and keep it out of the scan. That is a property the suite
+  asserts case by case rather than something the design guarantees: each
+  shape found so far has its own case, including five whose FIRST host is
+  declared. Those matter because a declared first host produces no finding
+  of its own, so the only thing that can name the second URL is the second
+  URL being evaluated — and a comma, semicolon, closing paren or backtick
+  between two URLs used to make the second one vanish from the scan
+  completely, which every case in that block missed by putting an
+  undeclared host first.
   Before matching, the line is normalised once, in `normalise()`, and the
   script's header is the full statement of what that does. In outline: ASCII
   tab and CR are deleted, except immediately before a scheme, where they
@@ -55,8 +63,13 @@ code as authoritative if the two ever disagree.
     this one **is** reachable: `https://declared'other.example.net/` resolves
     to `declared'other.example.net`, which a wildcard record serves, so the
     DNS lookup reaches the other zone even though no public CA will issue for
-    that label. Admitting quotes to the authority would misread a JSON array
-    of two URLs as one host, which is why it is open rather than closed;
+    that label. It is left open rather than closed, which is a choice and
+    not an impossibility: the tail test that closes the comma and backtick
+    shapes could close this one too, but only if `check_url` could see the
+    line beyond its match, which it cannot today. Admitting quotes to the
+    authority instead would misread `["https://a","https://b"]` as the
+    single host `a","https` and, worse, consume past the second URL so that
+    it was never evaluated — trading a disclosed limit for a silent bypass;
   - a URL split across two lines by a multi-line string literal. The Standard
     deletes LF as it deletes tab and CR; this gate reads one line at a time.
 
