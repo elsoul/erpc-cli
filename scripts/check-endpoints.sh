@@ -33,6 +33,12 @@
 #     that is the part that decides the destination. An earlier version
 #     stripped the expression and checked the prefix alone, which let an
 #     allowlisted prefix vouch for an attacker-chosen suffix.
+#   - One assumption here is about the allowlist rather than the grammar:
+#     a match can absorb the LETTERS of a following scheme (never its colon,
+#     which no production admits in that position), and the host then ends
+#     in http, https, ws or wss. That is caught because no declared host
+#     ends in those and HOST_PATTERNS requires .erpc.global last. Declaring
+#     a host that ends in one of them would quietly break it.
 #   - A host that is ENTIRELY one balanced expression, such as ${MIRROR}, is
 #     skipped: there is nothing literal to check. An UNTERMINATED opener is
 #     not that case and is reported, because the text after it is literal
@@ -401,6 +407,23 @@ check_url() {
   fi
 }
 
+# One definition of an authority, shared by the matcher and by the boundary
+# guard below so that tightening one cannot silently invalidate the other.
+#
+#   [ userinfo "@" ] ( IP-literal | host ) [ ":" digits ]
+#
+# userinfo admits ':' and '@' and stops at '/'. It has to admit '@': the
+# WHATWG URL Standard, and so every browser, curl and URL library, splits
+# an authority at the LAST '@', and `hostport="${hostport##*@}"` below is
+# written to that rule. A grammar that stopped at the first '@' disagreed
+# with it, and `https://a@user-api.erpc.global@evil.example.net/x` was then
+# approved on the declared middle component while resolving elsewhere.
+url_re='(https?|wss?)://(((\$\{\{[^}/]*\}\}|\$\{[^}/]*\}|\{\{[^}/]*\}\}|\$\([^)/]*\)|[^[:space:]"'"'"'<>/?#])*@)?(\[[0-9A-Fa-f:.]*\]|(\$\{\{[^}/]*\}\}|\$\{[^}/]*\}|\{\{[^}/]*\}\}|\$\([^)/]*\)|[^[:space:]"'"'"'<>/?#:@])+)(:[0-9]+)?)'
+
+# The characters that can legally end an authority. Anything else following
+# a match means the matcher stopped inside one.
+url_end_re='[[:space:]"'"'"'<>/?#)]'
+
 for f in "${files[@]}"; do
   [ -f "$f" ] || continue
   is_excepted "$f" && continue
@@ -464,7 +487,39 @@ for f in "${files[@]}"; do
     [ -z "$ln" ] && continue
     check_url "$f" "$ln" "$url" "$kind"
   done < <(grep -a '' "$f" 2>/dev/null | sed 's|\\/|/|g' \
-    | grep -naoiE '(https?|wss?)://(((\$\{\{[^}/]*\}\}|\$\{[^}/]*\}|\{\{[^}/]*\}\}|\$\([^)/]*\)|[^[:space:]"'"'"'<>/?#@])*@)?(\[[0-9A-Fa-f:.]*\]|(\$\{\{[^}/]*\}\}|\$\{[^}/]*\}|\{\{[^}/]*\}\}|\$\([^)/]*\)|[^[:space:]"'"'"'<>/?#:@])+)(:[0-9]+)?)' 2>/dev/null)
+    | grep -naoiE "$url_re" 2>/dev/null)
+
+  # Maximal-munch guard. The grammar proves that no URL goes unevaluated; it
+  # does not prove that the host evaluated is the host that would be
+  # contacted. A match that stops in the middle of an authority hides
+  # nothing and hands over a PREFIX of the real host, which is how
+  # `https://a@user-api.erpc.global@evil.example.net/x` and
+  # `https://user-api.erpc.global:x.evil.example.net/y` both read as a
+  # declared host.
+  #
+  # So: every scheme occurrence on a line must yield a match that ends at a
+  # character which can legally end an authority. That is a statement about
+  # the boundary rather than the contents, and it is the only check here
+  # that does not depend on the grammar being a complete model of a URL --
+  # which, after four rounds of corrections to it, is worth one grep.
+  # Code files only. In prose a colon or a bracket after a URL is ordinary
+  # punctuation -- `[ERPC](https://erpc.global): ...` in this README was the
+  # first thing this guard reported -- and teaching it to tell prose from
+  # an instruction is the machinery this gate deleted. A prose file also
+  # cannot run, so the shape that matters is the one in code.
+  if [ "$kind" = code ]; then
+  gln=0
+  while IFS= read -r gline; do
+    gln=$((gln + 1))
+    case "$gline" in *://*) ;; *) continue;; esac
+    n_sch=$(printf '%s ' "$gline" | grep -oiE '(https?|wss?)://' 2>/dev/null | grep -c . || true)
+    [ "${n_sch:-0}" -gt 0 ] || continue
+    n_end=$(printf '%s ' "$gline" | grep -oiE "$url_re$url_end_re" 2>/dev/null | grep -c . || true)
+    if [ "${n_end:-0}" -lt "${n_sch:-0}" ]; then
+      report "$f" "$gln" "a URL's authority ends in the middle of itself, so the host checked is only a prefix of it"
+    fi
+  done < <(grep -a '' "$f" 2>/dev/null | sed 's|\\/|/|g')
+  fi
 done
 
 if [ "$status" -ne 0 ]; then

