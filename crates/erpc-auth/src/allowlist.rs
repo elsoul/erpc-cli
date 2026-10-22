@@ -6,10 +6,19 @@
 //! A session is two tokens with two different destinations:
 //!
 //! * The **access token** is attached as a bearer token to API requests,
-//!   and only to the hosts in [`destinations`] -- never to the issuer.
+//!   and only to the hosts in [`destinations`] for its audience.
 //! * The **refresh token** is sent to the issuer that granted it, to be
 //!   exchanged or revoked, and nowhere else. [`RefreshDestination`] is the
 //!   only way to name where it goes, and it can only be built by checking.
+//!
+//! Whether those are different hosts depends on the audience. An
+//! `auth-api` access token goes to `user-api`, never to `auth-api`, which
+//! only ever sees the refresh token. The `mcp-user-api` host is both the
+//! issuer and the API, so both of its tokens go there.
+//!
+//! `docs/public-hosts.md` restates this per host, and a test below reads
+//! that table and checks it against these lists, so the two cannot drift
+//! apart unnoticed again.
 //!
 //! A token is disclosed to whoever receives it, so both sets are
 //! compile-time constants rather than anything a configuration file, an
@@ -396,5 +405,36 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    /// The row for `host` in the public hosts table.
+    fn row<'a>(table: &'a str, host: &str) -> &'a str {
+        let start = format!("| `{host}` |");
+        table
+            .lines()
+            .find(|line| line.starts_with(&start))
+            .unwrap_or_else(|| panic!("docs/public-hosts.md has no row for {host}"))
+    }
+
+    #[test]
+    fn the_public_hosts_table_says_where_each_token_goes() {
+        // The credentials column was written by hand and checked by
+        // nothing, and twice it said something these lists contradict.
+        let table = include_str!("../../../docs/public-hosts.md");
+        for audience in Audience::all() {
+            let issuer = row(table, audience.issuer_host());
+            assert!(issuer.contains("refresh token"), "{issuer}");
+            assert!(issuer.contains("device code"), "{issuer}");
+            for host in super::destinations(*audience) {
+                let api = row(table, host);
+                assert!(api.contains("access token"), "{api}");
+            }
+            if !super::destinations(*audience).contains(&audience.issuer_host()) {
+                assert!(
+                    issuer.contains("never the access token"),
+                    "an issuer that does not receive the access token says so: {issuer}"
+                );
+            }
+        }
     }
 }

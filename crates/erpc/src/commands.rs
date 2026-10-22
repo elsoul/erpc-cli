@@ -164,7 +164,7 @@ pub async fn login(json: bool, requested: Option<StoreKind>, no_browser: bool) -
     if json {
         crate::print_json(&serde_json::json!({
             "status": "signed-in",
-            "account": user.label(),
+            "account": user.label_for_display(),
             "uid": user.uid,
             "store": report,
             "previous_session_unreadable": leftover.previous_unreadable,
@@ -176,7 +176,7 @@ pub async fn login(json: bool, requested: Option<StoreKind>, no_browser: bool) -
         }));
         Outcome::Done(String::new())
     } else {
-        let mut lines = vec![format!("Signed in as {}.", user.label())];
+        let mut lines = vec![format!("Signed in as {}.", user.label_for_display())];
         lines.push(format!("  session kept in the {} store", report.store));
         if report.writes_to_disk {
             lines.push(format!("  warning: {}", session::DISK_WARNING));
@@ -260,7 +260,7 @@ pub async fn whoami(json: bool, requested: Option<StoreKind>) -> Outcome {
             if json {
                 crate::print_json(&serde_json::json!({
                     "status": "signed-in",
-                    "account": user.label(),
+                    "account": user.label_for_display(),
                     "uid": user.uid,
                     "email": user.email,
                     "store": StoreReport::from(selection),
@@ -269,7 +269,7 @@ pub async fn whoami(json: bool, requested: Option<StoreKind>) -> Outcome {
             } else {
                 Outcome::Done(format!(
                     "{}\n  session kept in the {} store",
-                    user.label(),
+                    user.label_for_display(),
                     selection.kind
                 ))
             }
@@ -404,12 +404,11 @@ const fn sign_out_message(revocation: Revocation) -> &'static str {
 /// What `login` says about what it could not do cleanly.
 fn sign_in_warnings(report: &SignInReport) -> Vec<String> {
     let mut out = Vec::new();
-    if report.previous_unreadable {
-        out.push(
-            "the session stored before this one could not be read, so it was replaced without \
-             being revoked and may stay valid until it expires."
-                .to_owned(),
-        );
+    if let Some(why) = &report.previous_unreadable {
+        out.push(format!(
+            "the session stored before this one could not be read ({why}), so it was replaced \
+             without being revoked and may stay valid until it expires."
+        ));
     }
     if let Some(parked) = &report.parked {
         out.push(parked_warning(parked));
@@ -462,7 +461,7 @@ mod tests {
     fn an_unreadable_previous_session_is_said_not_to_be_revoked() {
         let warnings = sign_in_warnings(&SignInReport {
             parked: None,
-            previous_unreadable: true,
+            previous_unreadable: Some("the stored session is version 9".to_owned()),
         });
         assert_eq!(warnings.len(), 1);
         assert!(

@@ -68,6 +68,18 @@ impl User {
             .or(self.email.as_deref())
             .unwrap_or(&self.uid)
     }
+
+    /// [`Self::label`] with control characters replaced, for a terminal.
+    ///
+    /// The value comes from the server; a control character in it could be
+    /// an escape sequence by the time it is printed.
+    #[must_use]
+    pub fn label_for_display(&self) -> String {
+        self.label()
+            .chars()
+            .map(|c| if c.is_control() { '?' } else { c })
+            .collect()
+    }
 }
 
 /// Fetches the account behind a session.
@@ -153,6 +165,15 @@ mod tests {
     fn an_account_with_only_an_id_still_has_a_label() {
         let user = parse_user(r#"{"uid":"u3"}"#).expect("parses");
         assert_eq!(user.label(), "u3");
+    }
+
+    #[test]
+    fn a_label_is_printed_without_control_characters() {
+        let user: super::User =
+            serde_json::from_str(r#"{"uid":"u4","username":"al\u001b[2Jice"}"#).expect("parses");
+        let shown = user.label_for_display();
+        assert!(!shown.contains('\u{1b}'), "{shown}");
+        assert!(shown.starts_with("al"), "{shown}");
     }
 
     #[test]

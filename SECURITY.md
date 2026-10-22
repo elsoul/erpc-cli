@@ -49,8 +49,8 @@ token and a refresh token obtained through the OAuth device authorization
 grant. It does not read or store private keys. When it uses a 1Password
 service account, it reads `OP_SERVICE_ACCOUNT_TOKEN` from its environment and
 passes it to the `op` processes it starts, and to no other process: the
-browser `erpc login` opens is started without any `OP_` variable. It does not
-write that token anywhere.
+browser `erpc login` opens is started without any variable whose name begins
+with `OP_`, in any case. It does not write that token anywhere.
 
 ### Where the session is kept
 
@@ -74,7 +74,9 @@ that is not an absolute path.
 `erpc` writes a session to that directory in the following cases, and
 `erpc doctor` reports each file for as long as it exists:
 
-- **The file store.** `erpc login` warns when the session is going there.
+- **The file store.** `erpc login` warns when the session is going there. If
+  the file cannot be parsed, nothing in it can be read: `erpc login` replaces
+  it and `erpc logout` removes it, as a whole, and `erpc login` says so.
 - **A parked session.** If the issuer has rotated a refresh token and the
   store then refuses the new one, the new token is written here so that it is
   not lost. `erpc whoami` moves it into the store if the store still holds the

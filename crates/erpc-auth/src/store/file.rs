@@ -108,7 +108,18 @@ impl FileStore {
         if text.trim().is_empty() {
             return Ok(Document::default());
         }
-        toml::from_str(&text).map_err(|e| super::unparsable_toml("the credentials file", &text, &e))
+        toml::from_str(&text).map_err(|e| {
+            // Said in the message because it reaches the operator: a file
+            // that does not parse is replaced or removed as a whole, every
+            // record in it with it, since none of them can be read.
+            match super::unparsable_toml("the credentials file", &text, &e) {
+                StoreError::Corrupt(why) => StoreError::Corrupt(format!(
+                    "{why}; nothing in it can be read, so signing in replaces the whole file \
+                     and signing out removes it"
+                )),
+                other => other,
+            }
+        })
     }
 
     /// Writes the document beside the target and renames it over.

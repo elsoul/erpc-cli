@@ -286,7 +286,7 @@ pub async fn sign_out<R: Revoker>(
         // sign out over it left the operator no way out at all, since
         // signing in failed on the same read. Its token cannot be revoked,
         // and nothing may say it was.
-        Readable::Unreadable => Some(false),
+        Readable::Unreadable(_) => Some(false),
     };
 
     // A parked session is a live refresh token in cleartext on this
@@ -381,12 +381,12 @@ pub async fn store_new_session<R: Revoker>(
     let _guard =
         crate::lock::ExclusiveLock::acquire(&refresh_lock_path(state_dir, key.audience()))?;
     let (previous, previous_unreadable) = match readable(store.load(key))? {
-        Readable::Held(previous) => (Some(previous), false),
-        Readable::Nothing => (None, false),
+        Readable::Held(previous) => (Some(previous), None),
+        Readable::Nothing => (None, None),
         // Replaced all the same, and said so: a record this build cannot
         // read is one nobody can use, and refusing the sign-in over it
         // left the operator no way past it.
-        Readable::Unreadable => (None, true),
+        Readable::Unreadable(why) => (None, Some(why)),
     };
     store.save(key, credential)?;
 
@@ -440,16 +440,17 @@ pub async fn store_new_session<R: Revoker>(
 pub struct SignInReport {
     /// A parked file that was not both revoked and removed.
     pub parked: Option<ParkedReport>,
-    /// The store held a session this build could not read. It was replaced
-    /// and could not be revoked.
-    pub previous_unreadable: bool,
+    /// The store held a session this build could not read, and why. It was
+    /// replaced and could not be revoked. The reason says how much went
+    /// with it: for the file store, the whole file.
+    pub previous_unreadable: Option<String>,
 }
 
 /// A store read, sorted by what a writer can do about it.
 enum Readable {
     Held(Credential),
     Nothing,
-    Unreadable,
+    Unreadable(String),
 }
 
 /// Sorts a store read. A record that will not parse, or is from another
@@ -459,7 +460,9 @@ fn readable(read: Result<Option<Credential>, StoreError>) -> Result<Readable, Se
     match read {
         Ok(Some(held)) => Ok(Readable::Held(held)),
         Ok(None) => Ok(Readable::Nothing),
-        Err(StoreError::Corrupt(_) | StoreError::UnknownVersion { .. }) => Ok(Readable::Unreadable),
+        Err(e @ (StoreError::Corrupt(_) | StoreError::UnknownVersion { .. })) => {
+            Ok(Readable::Unreadable(e.to_string()))
+        }
         Err(e) => Err(e.into()),
     }
 }
@@ -1048,7 +1051,10 @@ mod tests {
             super::store_new_session(&revoker, &store, &key(), dir.path(), &cred("NEW-LOGIN"))
                 .await
                 .expect("signed in");
-        assert!(report.previous_unreadable, "and the operator is told");
+        assert!(
+            report.previous_unreadable.is_some(),
+            "and the operator is told"
+        );
         assert_eq!(
             store
                 .held
@@ -1094,7 +1100,8 @@ mod tests {
             super::store_new_session(&revoker, &store, &key(), dir.path(), &cred("NEW-LOGIN"))
                 .await
                 .expect("signed in");
-        assert!(report.previous_unreadable);
+        let why = report.previous_unreadable.expect("the operator is told");
+        assert!(why.contains("whole file"), "and how much went: {why}");
         let held = store.load(&key()).expect("readable now").expect("present");
         assert_eq!(held.refresh_token.expose_secret(), "ref.NEW-LOGIN.s");
     }

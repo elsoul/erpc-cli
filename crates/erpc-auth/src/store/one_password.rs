@@ -487,6 +487,9 @@ impl<R: OpRunner> OnePassword<R> {
     /// be live. So it is a backend error, which stops a sign-in rather
     /// than letting it write over that session unrevoked, as a record
     /// that does not parse would. Reported by position, as everywhere.
+    /// Output that parses but lacks the version field is treated the same
+    /// way, in `load`; one that parses with every field present is a
+    /// record, and judged as one.
     fn unparsable_output(&self, what: &str, error: &serde_json::Error) -> StoreError {
         StoreError::Backend {
             kind: self.mode.kind(),
@@ -571,10 +574,20 @@ impl<R: OpRunner> CredentialStore for OnePassword<R> {
         let item: OpItem = serde_json::from_str(&out.stdout)
             .map_err(|e| self.unparsable_output("the 1Password item", &e))?;
 
-        let version = item
-            .field(field::STORE_VERSION)
-            .and_then(|v| v.parse::<u32>().ok())
-            .unwrap_or(0);
+        // No version field at all is `op` speaking a shape this build does
+        // not read, not a record from another build: every item erpc has
+        // written has one. Everything in the parsed types defaults, so a
+        // renamed `fields` or `label` still parses -- into an item with no
+        // fields -- and calling that an unreadable record would let a
+        // sign-in write over a session that may be live, unrevoked.
+        let Some(raw_version) = item.field(field::STORE_VERSION) else {
+            return Err(self.backend(
+                "read op's output",
+                "the item has no store_version field, so op's output is not in a shape this \
+                 build reads",
+            ));
+        };
+        let version = raw_version.parse::<u32>().unwrap_or(0);
         if version != STORE_VERSION {
             return Err(StoreError::UnknownVersion {
                 found: version,
@@ -1274,11 +1287,26 @@ mod tests {
             ok(&format!(r#"["{token}"]"#)),
         ]);
         let store = OnePassword::new(&fake, Mode::Desktop, VAULT, "mac-001");
-        let shown = store
-            .load(&key())
-            .expect_err("the listing is malformed")
-            .to_string();
+        let err = store.load(&key()).expect_err("the listing is malformed");
+        // This runs when `item get` has failed, which is when a live item
+        // may be there; a corrupt-record error would let a sign-in write
+        // over it.
+        assert!(matches!(err, StoreError::Backend { .. }), "{err:?}");
+        let shown = err.to_string();
         assert!(!shown.contains("U0VDUkVUUEFZTE9BRA"), "{shown}");
+    }
+
+    #[test]
+    fn an_item_in_a_shape_this_build_does_not_read_stops_a_sign_in() {
+        // Parses -- every field defaults -- but carries no version, which
+        // every item erpc writes has. That is `op` changing its format,
+        // not a record from another build.
+        let fake = FakeOp::new(vec![ok(r#"{"sections":[],"fieldsV2":[]}"#)]);
+        let store = OnePassword::new(&fake, Mode::Desktop, VAULT, "mac-001");
+        let err = store
+            .load(&key())
+            .expect_err("not an item this build reads");
+        assert!(matches!(err, StoreError::Backend { .. }), "{err:?}");
     }
 
     #[test]

@@ -50,7 +50,7 @@ scheme and shape only.
 |---|---|---|
 | `auth-api.erpc.global` | OAuth device flow: issue, refresh, revoke; its verification page is opened in the browser | the device code, and the refresh token to the token and revoke endpoints only; never the access token |
 | `user-api.erpc.global` | ERPC account API | auth-api access token only |
-| `mcp-user-api.erpc.global` | ERPC User MCP server | MCP access token only |
+| `mcp-user-api.erpc.global` | ERPC User MCP server, and the issuer of its own tokens | the device code, the MCP refresh token to the token and revoke endpoints, and the MCP access token; never the auth-api tokens |
 | `x402.erpc.global` | x402 payments and credit top-up | x402 billing session token and payment headers only; never auth-api/MCP tokens, never ERPC API keys |
 | `edge.erpc.global` | RPC endpoint, for the planned `check` command | RPC API key supplied by the operator |
 | `dashboard.erpc.global` | opened in the browser for signup and payment setup | none |

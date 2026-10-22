@@ -73,7 +73,13 @@ where
 /// with them holds a 1Password credential for as long as it runs.
 fn withheld(names: impl Iterator<Item = std::ffi::OsString>) -> Vec<std::ffi::OsString> {
     names
-        .filter(|name| name.to_str().is_some_and(|n| n.starts_with("OP_")))
+        // Without regard to case: Windows looks variables up that way, so
+        // `op_service_account_token` is the same variable there.
+        .filter(|name| {
+            name.to_str()
+                .and_then(|n| n.get(..3))
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("OP_"))
+        })
         .collect()
 }
 
@@ -139,6 +145,7 @@ mod tests {
             "OP_SERVICE_ACCOUNT_TOKEN",
             "OP_SESSION_my_account",
             "OP_CONNECT_TOKEN",
+            "op_service_account_token",
             "PATH",
             "DISPLAY",
             "DBUS_SESSION_BUS_ADDRESS",
@@ -150,7 +157,8 @@ mod tests {
             [
                 "OP_SERVICE_ACCOUNT_TOKEN",
                 "OP_SESSION_my_account",
-                "OP_CONNECT_TOKEN"
+                "OP_CONNECT_TOKEN",
+                "op_service_account_token",
             ]
             .map(OsString::from)
             .to_vec()
