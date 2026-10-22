@@ -26,10 +26,16 @@ anything today. Operators of mainnet validators should use it.
 
 ## High-assurance path
 
-1. Pick a tag, e.g. `v0.1.0`, and download from the GitHub Release, which is
-   immutable: `release-manifest.json`, `release-manifest.json.minisig`, and
-   the archive for your platform. There is no mirror; GitHub Releases is the
-   only place release artifacts are published.
+1. Pick a tag, e.g. `v0.1.0`, and download from the GitHub Release:
+   `release-manifest.json`, `release-manifest.json.minisig`, and the archive
+   for your platform. There is no mirror; GitHub Releases is the only place
+   release artifacts are published.
+
+   Do not treat the download itself as trustworthy. A release asset can be
+   replaced by anyone who can publish a release, and this page does not
+   claim otherwise. What this procedure rests on is step 2: the signature is
+   checked against a key you already hold, so it does not matter where the
+   bytes came from. Step 4 adds the build provenance on top of that.
 2. Verify the manifest signature with the project public key
    (`crates/erpc-release/pubkey.txt` in this repository, at the tag you are
    checking):
