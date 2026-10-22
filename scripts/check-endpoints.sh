@@ -28,8 +28,9 @@
 #   - A URL whose host begins with a shell or template expression (${, {{,
 #     $(, backtick) is skipped, because there is no literal to check. An
 #     expression anywhere else is stripped and the literal prefix IS checked.
-#   - A host that is not plain ASCII is reported, so a homograph cannot slip
-#     past by not matching the URL pattern.
+#   - A host that is not plain ASCII, or one that starts with a backslash
+#     escape, is reported: both are literals a reviewer should see, and
+#     neither may be skipped just because the matcher finds them awkward.
 #   - Escaped slashes (\/\/) are normalised before matching, so a URL in a
 #     JSON or TypeScript string cannot hide from the pattern.
 #   - A host assembled at runtime from fragments is invisible to this gate.
@@ -100,6 +101,13 @@ patterns=$(printf '%s\n' "$all_consts" | grep -oE '\("[A-Za-z0-9.-]+",[[:space:]
 # strict and is useless. Fail loudly instead.
 if [ "$(printf '%s\n' "$service_hosts" | grep -c .)" -lt 5 ]; then
   echo "allowlist extraction produced fewer than 5 hosts; the gate is broken" >&2
+  exit 2
+fi
+# And an empty documentation list would make `grep -vxF ""` pass everything
+# through, so service_hosts would grow rather than shrink and the tripwire
+# above would never fire — the opposite of the intended failure.
+if [ "$(printf '%s\n' "$doc_hosts" | grep -c .)" -lt 1 ]; then
+  echo "DOCUMENTATION_HOSTS extraction is empty; the gate is broken" >&2
   exit 2
 fi
 
@@ -186,6 +194,13 @@ check_url() {
     \[*\]*) host="${hostport%%\]*}]";;
     *) host="${hostport%%:*}";;
   esac
+  # An escape sequence at the start of the host (\x65, \u{65}, \065) is a
+  # compile-time literal in Rust, TypeScript and Python alike, so the URL is
+  # real. Report it instead of truncating it away to an empty host.
+  if [ "$host" != "${host#\\}" ]; then
+    report "$f" "$ln" "escape sequence in host, so the literal is hidden: $scheme://$host"
+    return 0
+  fi
   host="${host%%[)\",\';\`\\]*}"
   [ -n "$host" ] || return 0
 

@@ -89,6 +89,15 @@ check "internal docs path reference" block "$sample_dir/i.md" \
 check "developer home path" block "$sample_dir/j.sh" \
   'cp /Users/someone/secrets.txt .'
 
+check "bare 1Password vault identifier" block "$sample_dir/op1.md" \
+  'The signing key lives in vault 4xq7zj2mn8d5r3vb6kwth9pcyf.'
+
+check "bare 1Password item identifier" block "$sample_dir/op2.md" \
+  'Rotate item gk2m9r4xtp7vn6bq3zdw8scylh after use.'
+
+check "an op:// reference is a pointer, not an identifier" allow "$sample_dir/op3.toml" \
+  'identity_ref = "op://abcdefghijklmnopqrstuvwxyz/abcdefghijklmnopqrstuvwxyz/keypair"'
+
 check "committed dotenv" block "$sample_dir/.env" \
   'TOKEN=abc'
 

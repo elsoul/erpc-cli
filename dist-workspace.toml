@@ -26,9 +26,10 @@ checksum = "sha256"
 cargo-auditable = true
 cargo-cyclonedx = true
 github-attestations = true
-# GitHub Releases (immutable) first, R2 mirror as fallback. Only shell/powershell installers fall back.
-hosting = ["github", "simple"]
-simple-download-url = "https://dl.erpc.global/{tag}"
+# GitHub Releases only. A mirror was configured earlier and dropped: nothing
+# verified what it served (no self-update command exists yet) while it cost a
+# bucket, a custom domain and a write token to hold and rotate.
+hosting = ["github"]
 # One custom publish workflow (.github/workflows/release-publish.yml) runs, in order:
 # release-gate -> rebuild-compare -> sign (environment `release`, human approval) -> upload-r2 -> publish-crates.
 # The GitHub Release itself is created in the `announce` phase, i.e. only after all of that succeeded.

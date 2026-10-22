@@ -8,9 +8,7 @@
 #
 # The manifest is what minisign signs (scripts/release/sign-manifest.sh) and
 # what docs/verify-release.md tells an operator to check: version, tag, commit,
-# build time, per-target archive sha256/size and the SBOM hash. It also carries
-# a `revoked_versions_url` field, reserved for a revocation list that nothing
-# publishes or consumes yet.
+# build time, per-target archive sha256/size and the SBOM hash.
 set -euo pipefail
 
 dir="${1:?artifacts dir}"
@@ -89,7 +87,6 @@ cat <<EOF
   "commit": "$commit",
   "build_time": "$build_time",
   "targets": { $targets_json },
-  "sbom_sha256": "$sbom_sha",
-  "revoked_versions_url": "https://dl.erpc.global/revoked-versions.json"
+  "sbom_sha256": "$sbom_sha"
 }
 EOF

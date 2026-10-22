@@ -181,12 +181,27 @@ check "a backtick host has no literal to check" allow "$sample_dir/y5.sh" \
 check "a backtick after a literal prefix is still checked" block "$sample_dir/y6.sh" \
   'curl https://evil.example.com\x60x\x60/y'
 
+check "backslash escape in a python host" block "$sample_dir/z1.py" \
+  'U = "https://\\x65vil.example.com/x"'
+
+check "backslash escape in a typescript host" block "$sample_dir/z2.ts" \
+  'const u = "https://\\x65rpc-exfil.example.net/collect";'
+
+check "backslash escape in a rust host" block "$sample_dir/z3.rs" \
+  'const U: &str = "https://\\u{65}vil.example.com/x";'
+
+check "plaintext ws outside loopback" block "$sample_dir/z4.rs" \
+  'const W: &str = "ws://relay.example.net/";'
+
 # --- must allow -------------------------------------------------------------
 
 check "allowlisted service host" allow "$sample_dir/g.rs" \
   'const AUTH: &str = "https://auth-api.erpc.global/oauth/token";'
 
 check "allowlisted distribution host" allow "$sample_dir/h.sh" \
+  'curl -sSfL https://github.com/elsoul/erpc-cli/releases/download/v0.1.0/release-manifest.json'
+
+check "the removed release mirror is no longer allowed" block "$sample_dir/h2.sh" \
   'curl -sSfL https://dl.erpc.global/v0.1.0/release-manifest.json'
 
 check "snapshot mirror matched by pattern" allow "$sample_dir/i.rs" \
@@ -212,6 +227,19 @@ check "declared host in an install command" allow "$sample_dir/q.md" \
 
 check "fenced code block with an allowlisted host" allow "$sample_dir/aa.md" \
   '\x60\x60\x60bash\ngit clone https://github.com/elsoul/erpc-cli\n\x60\x60\x60'
+
+
+check "ws on loopback" allow "$sample_dir/z5.rs" \
+  'const W: &str = "ws://127.0.0.1:20026/v1/session/ws";'
+
+check "leading dollar-brace host is skipped" allow "$sample_dir/z6.sh" \
+  'curl -sSfL "https://${MIRROR}/erpc.tar.xz"'
+
+check "leading command substitution host is skipped" allow "$sample_dir/z7.sh" \
+  'curl -sSfL "https://$(cat host)/erpc.tar.xz"'
+
+check "documentation host in a .txt file" allow "$sample_dir/z8.txt" \
+  'See https://semver.org for the versioning scheme.'
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

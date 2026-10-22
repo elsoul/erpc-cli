@@ -117,14 +117,10 @@ function text(msg: string, status: number): Response {
 }
 
 /**
- * Fetch an installer script from the GitHub Release for `tag`.
- *
- * GitHub only, by design: this body is executed by the caller and this worker
- * cannot verify a signature, so there is no second source to fall back to.
- */
-/**
- * A sanity check, not a security control: it turns a 404 page or an empty
- * body into a clear 502 instead of piping markup into a shell.
+ * A sanity check, not a security control: it rejects markup and an empty
+ * body, so a 404 page becomes a clear 502 rather than being piped into a
+ * shell. A plain-text or markdown error body opening with `#` is accepted
+ * for the PowerShell flavour, because the real installer opens that way too.
  *
  * The shapes are those of the installers cargo-dist actually generates, taken
  * from `dist build --artifacts=global` output rather than from the template:
@@ -142,6 +138,12 @@ export function looksLikeInstaller(body: string, flavor: "sh" | "ps1"): boolean 
   return head.startsWith("#") || head.startsWith("<#");
 }
 
+/**
+ * Fetch an installer script from the GitHub Release for `tag`.
+ *
+ * GitHub only, by design: this body is executed by the caller and this worker
+ * cannot verify a signature, so there is no second source to fall back to.
+ */
 async function fetchInstaller(
   env: Env,
   tag: string,

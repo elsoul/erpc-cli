@@ -29,7 +29,10 @@ fi
 skip_re='(\.lock$|\.png$|\.jpg$|\.gif$|\.ico$|\.woff2?$|^LICENSES/|^LICENSE$|/node_modules/|^target/)'
 
 # Files that quote these patterns on purpose.
-self_re='^(scripts/check-oss-hygiene\.sh|scripts/tests/(check-oss-hygiene|check-endpoints|build-manifest)\.test\.sh|docs/public-hosts\.md|docs/secret-exposure-response\.md|\.gitleaks\.toml|crates/erpc-core/src/endpoints\.rs)$'
+# Only the files that genuinely need it: each quotes a pattern this gate
+# matches. An exemption is a blanket bypass of every content check, so a
+# file that passes without one does not get one.
+self_re='^(scripts/check-oss-hygiene\.sh|scripts/tests/(check-oss-hygiene|check-endpoints)\.test\.sh|crates/erpc-core/src/endpoints\.rs)$'
 
 # erpc.global hosts come from the one allowlist, so this gate and
 # check-endpoints.sh cannot drift apart. Only the const arrays are read; the
@@ -105,6 +108,15 @@ for f in "${files[@]}"; do
     [ -z "$ln" ] && continue
     report "$f" "$ln" "infrastructure identifier: $match"
   done < <(grep -noiE '(account|zone|project)[_ -]?id[^0-9a-z]{0,8}[0-9a-f]{32}' "$f" 2>/dev/null)
+
+  # 2b. Bare 1Password vault or item identifiers. An `op://vault/item/field`
+  # reference is a pointer and is fine; the raw 26-character identifier beside
+  # the word vault or item is the thing that must not be published.
+  while IFS=: read -r ln match; do
+    [ -z "$ln" ] && continue
+    case "$match" in *op://*) continue;; esac
+    report "$f" "$ln" "bare 1Password identifier: $match"
+  done < <(grep -noiE '(vault|item)[^A-Za-z0-9/]{1,12}[a-z0-9]{26}([^A-Za-z0-9]|$)' "$f" 2>/dev/null)
 
   # 3. Bearer token literals.
   while IFS=: read -r ln match; do

@@ -23,10 +23,10 @@ code as authoritative if the two ever disagree.
   will use to check a destination. It has **no callers in this version**,
   which performs no network requests at all.
 - `scripts/check-oss-hygiene.sh` additionally blocks cloud account
-  identifiers, 1Password identifiers outside the `op://` reference format,
-  bearer-token and key-shaped strings, references to the organisation's other
-  repositories, and internal documents. Credential *values* are caught by
-  `gitleaks` (`.gitleaks.toml`).
+  identifiers, bare 1Password vault and item identifiers, bearer-token and
+  key-shaped strings, references to the organisation's other repositories,
+  and internal documents. Credential *values* are caught by `gitleaks`
+  (`.gitleaks.toml`). Read the script for what each rule actually matches.
 
 What this buys: ERPC endpoints are compile-time constants and are never read
 from configuration or environment variables, so a tampered configuration
@@ -48,7 +48,6 @@ scheme and shape only.
 | `dashboard.erpc.global` | opened in the browser for signup and payment setup | none |
 | `erpc.global` | project home page, linked from package metadata | none |
 | `solana-snapshot-*.erpc.global` | snapshot mirrors | none |
-| `dl.erpc.global` | release mirror (R2) | none |
 | `install.erpc.global` | installer script | none |
 | `github.com`, `api.github.com` | releases, attestations | none |
 | `objects.githubusercontent.com`, `release-assets.githubusercontent.com` | release artifact downloads | none |
@@ -70,14 +69,13 @@ an instruction a reader will run.
 
 | Host | Linked from |
 |---|---|
-| `www.apache.org` | the licence text and headers |
 | `www.contributor-covenant.org` | `CODE_OF_CONDUCT.md` |
 | `keepachangelog.com` | `CHANGELOG.md` |
 | `semver.org` | `CHANGELOG.md` |
 | `elsoul.nl` | `NOTICE` |
-| `axodotdev.github.io` | the cargo-dist configuration comment |
-| `docs.github.com` | contributor documentation |
-| `reuse.software` | licensing documentation |
+
+Each row names a file that links the host today. A grant for a host nothing
+links is removed, not kept "in case": four were removed for that reason.
 
 This is a standing grant: once a host is here, a later change can turn a prose
 link into an install command without the gate objecting. Keep the list short,

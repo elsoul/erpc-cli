@@ -39,7 +39,6 @@ pub const BROWSER_HOSTS: &[&str] = &["dashboard.erpc.global", "erpc.global"];
 
 /// Release distribution and update checks. No credential is sent.
 pub const DISTRIBUTION_HOSTS: &[&str] = &[
-    "dl.erpc.global",
     "install.erpc.global",
     "github.com",
     "api.github.com",
@@ -70,15 +69,13 @@ pub const HOST_PATTERNS: &[(&str, &str)] = &[("solana-snapshot-", ".erpc.global"
 /// here, which is cheap and visible.
 ///
 /// Not usable by [`ensure_service_url`]: these are not ERPC destinations.
+/// Keep this list to hosts something actually links today. A grant held "in
+/// case" is a standing permission nobody is reviewing.
 pub const DOCUMENTATION_HOSTS: &[&str] = &[
-    "www.apache.org",
     "www.contributor-covenant.org",
     "keepachangelog.com",
     "semver.org",
     "elsoul.nl",
-    "axodotdev.github.io",
-    "docs.github.com",
-    "reuse.software",
 ];
 
 /// Loopback hosts, where plaintext `http`/`ws` is allowed: the OAuth redirect
@@ -387,10 +384,12 @@ mod tests {
         // Documentation hosts are a standing grant to link from prose, so the
         // page that explains the lists must show them too; `all_hosts()`
         // deliberately excludes them, which once left them invisible.
+        // Match the table cell, not any substring: `github.com` is contained
+        // in `api.github.com`, so a plain `contains` lets rows be deleted.
         let mut missing: Vec<&str> = all_hosts()
             .into_iter()
             .chain(super::DOCUMENTATION_HOSTS.iter().copied())
-            .filter(|h| !doc.contains(h))
+            .filter(|h| !doc.contains(&format!("`{h}`")))
             .collect();
         for (prefix, suffix) in super::HOST_PATTERNS {
             if !doc.contains(&format!("{prefix}*{suffix}")) {
