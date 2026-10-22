@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Review ownership. Security-sensitive areas require maintainer review.
+# Replace the team handle once the GitHub team exists.
+
+*                           @elsoul/erpc-cli-maintainers
+/.github/                   @elsoul/erpc-cli-maintainers
+/installer/                 @elsoul/erpc-cli-maintainers
+/crates/erpc-auth/          @elsoul/erpc-cli-maintainers
+/crates/erpc-secret/        @elsoul/erpc-cli-maintainers
+/crates/erpc-wallet/        @elsoul/erpc-cli-maintainers
+/crates/erpc-x402/          @elsoul/erpc-cli-maintainers
+/crates/erpc-release/       @elsoul/erpc-cli-maintainers
+/deny.toml                  @elsoul/erpc-cli-maintainers
+/dist-workspace.toml        @elsoul/erpc-cli-maintainers

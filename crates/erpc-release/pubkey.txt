@@ -1,0 +1,2 @@
+untrusted comment: erpc-cli release signing public key — PLACEHOLDER, replaced in Phase 0 step 0.6 once the key pair is generated offline
+RWPLACEHOLDER0000000000000000000000000000000000000000000000

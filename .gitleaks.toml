@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+#
+# gitleaks configuration: default rules plus project-specific ones.
+
+title = "erpc-cli"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "onepassword-service-account-token"
+description = "1Password service account token"
+regex = '''ops_[A-Za-z0-9_-]{40,}'''
+keywords = ["ops_"]
+
+[[rules]]
+id = "minisign-secret-key"
+description = "minisign secret key block"
+regex = '''untrusted comment: minisign encrypted secret key'''
+keywords = ["minisign encrypted secret key"]
+
+[[rules]]
+id = "erpc-storage-access-key"
+description = "ERPC storage access key id"
+regex = '''erpcsk_[a-z2-7]{16}'''
+keywords = ["erpcsk_"]
+
+[allowlist]
+description = "Public material and pointers"
+paths = [
+  '''LICENSES/.*''',
+  '''crates/erpc-release/pubkey\.txt''',
+]
+regexes = [
+  # op:// secret references are pointers, not secrets.
+  '''op://[A-Za-z0-9]{26}/[A-Za-z0-9]{26}/[A-Za-z0-9_-]+''',
+]

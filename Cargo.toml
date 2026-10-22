@@ -1,0 +1,66 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+default-members = ["crates/erpc"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.98"
+license = "Apache-2.0"
+repository = "https://github.com/elsoul/erpc-cli"
+homepage = "https://erpc.global"
+authors = ["ELSOUL LABO B.V. <oss@elsoul.nl>"]
+
+[workspace.dependencies]
+# Internal crates (path for development; versions for crates.io publishing)
+erpc-core = { path = "crates/erpc-core", version = "0.0.1" }
+erpc-auth = { path = "crates/erpc-auth", version = "0.0.1" }
+erpc-api = { path = "crates/erpc-api", version = "0.0.1" }
+erpc-secret = { path = "crates/erpc-secret", version = "0.0.1" }
+erpc-ssh = { path = "crates/erpc-ssh", version = "0.0.1" }
+erpc-ops = { path = "crates/erpc-ops", version = "0.0.1" }
+erpc-chain = { path = "crates/erpc-chain", version = "0.0.1" }
+erpc-chain-solana = { path = "crates/erpc-chain-solana", version = "0.0.1" }
+erpc-ai = { path = "crates/erpc-ai", version = "0.0.1" }
+erpc-wallet = { path = "crates/erpc-wallet", version = "0.0.1" }
+erpc-x402 = { path = "crates/erpc-x402", version = "0.0.1" }
+erpc-skills = { path = "crates/erpc-skills", version = "0.0.1" }
+erpc-mcp-server = { path = "crates/erpc-mcp-server", version = "0.0.1" }
+erpc-release = { path = "crates/erpc-release", version = "0.0.1" }
+
+# Third-party. Rule: a new crate must be at least 14 days old before it enters Cargo.lock.
+clap = { version = "4.6", features = ["derive", "env", "wrap_help"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+dbg_macro = "deny"
+todo = "warn"
+unwrap_used = "warn"
+expect_used = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+module_name_repetitions = "allow"
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+opt-level = 3
+strip = "symbols"
+panic = "abort"
+
+# cargo-dist builds with this profile so release binaries are reproducible-friendly.
+[profile.dist]
+inherits = "release"
+debug = false
