@@ -131,6 +131,15 @@ jobs:
           rm -f gitleaks gitleaks.tar.gz
       - name: gitleaks (full history)
         run: '"$RUNNER_TEMP/gitleaks" git --redact --config .gitleaks.toml --exit-code 1 .'
+      # The self-tests run every case twice, in the C locale and in a
+      # dictionary-collation UTF-8 one, because that is where bash ranges
+      # change meaning. They refuse to run if no such locale exists rather
+      # than quietly checking half of what their name claims, so generate it.
+      - name: ensure a dictionary-collation UTF-8 locale exists
+        run: |
+          set -euo pipefail
+          sudo locale-gen en_US.UTF-8
+          locale -a | grep -qi '^en_US\.utf-\?8$'
       - name: gate self-tests
         run: |
           scripts/tests/check-oss-hygiene.test.sh

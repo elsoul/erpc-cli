@@ -16,6 +16,14 @@
 # docs/secret-exposure-response.md.
 set -uo pipefail
 
+# Every pattern below is matched against bytes, so the locale must not decide
+# what a character class means. Under en_US.UTF-8 — which is what the GitHub
+# runners set — a bash range follows collation order, so `[A-Z]` also matches
+# lowercase and `[!A-Za-z0-9._-]` stops matching accented letters. Both turned
+# live controls into no-ops that still passed their self-tests on a machine
+# with no LANG set. The self-tests run under both locales to keep this honest.
+export LC_ALL=C
+
 cd "$(git rev-parse --show-toplevel)"
 
 if [ "$#" -gt 0 ]; then
@@ -126,7 +134,10 @@ for f in "${files[@]}"; do
     for tok in $(printf '%s' "$stripped" | grep -oiE '(vault|item)s?([^A-Za-z0-9]{1,8}(id|identifier))?[^A-Za-z0-9]{1,8}[A-Za-z0-9]{26}([^A-Za-z0-9]|$)' 2>/dev/null); do
       id=$(printf '%s' "$tok" | grep -oE '[A-Za-z0-9]{26}$|[A-Za-z0-9]{26}' | tail -1)
       [ -n "$id" ] || continue
-      case "$id" in *[A-Z]*) continue;; esac
+      # `[[:upper:]]` and not `[A-Z]`: under a non-C locale the range
+      # follows collation order and matches lowercase too. LC_ALL=C above
+      # already settles this; the class is correct on its own as well.
+      case "$id" in *[[:upper:]]*) continue;; esac
       report "$f" "$op_ln" "bare 1Password identifier: $id"
     done
   done < <(grep -a '' "$f" 2>/dev/null)

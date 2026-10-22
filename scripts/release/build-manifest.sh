@@ -11,6 +11,14 @@
 # build time, per-target archive sha256/size and the SBOM hash.
 set -euo pipefail
 
+# Every pattern below is matched against bytes, so the locale must not decide
+# what a character class means. Under en_US.UTF-8 — which is what the GitHub
+# runners set — a bash range follows collation order, so `[A-Z]` also matches
+# lowercase and `[!A-Za-z0-9._-]` stops matching accented letters. Both turned
+# live controls into no-ops that still passed their self-tests on a machine
+# with no LANG set. The self-tests run under both locales to keep this honest.
+export LC_ALL=C
+
 dir="${1:?artifacts dir}"
 tag="${2:?tag, e.g. v0.1.0}"
 commit="${3:?full commit sha}"

@@ -41,6 +41,14 @@
 # CI exercises bash 3.2 and bash 5.
 set -uo pipefail
 
+# Every pattern below is matched against bytes, so the locale must not decide
+# what a character class means. Under en_US.UTF-8 — which is what the GitHub
+# runners set — a bash range follows collation order, so `[A-Z]` also matches
+# lowercase and `[!A-Za-z0-9._-]` stops matching accented letters. Both turned
+# live controls into no-ops that still passed their self-tests on a machine
+# with no LANG set. The self-tests run under both locales to keep this honest.
+export LC_ALL=C
+
 cd "$(git rev-parse --show-toplevel)"
 
 allowlist_src="crates/erpc-core/src/endpoints.rs"

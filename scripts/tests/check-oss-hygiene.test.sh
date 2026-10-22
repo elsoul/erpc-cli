@@ -9,8 +9,51 @@
 #   scripts/tests/check-oss-hygiene.test.sh
 set -uo pipefail
 
+# Run the gate, and this harness's own re-exec below, under the SAME bash
+# that was used to start it -- never whatever `#!/usr/bin/env bash` finds on
+# PATH. On a machine with a newer bash on PATH the CI job named "gates under
+# bash 3.2" ran only this harness under 3.2 while the gate itself ran under
+# bash 5, which does not share 3.2's collation behaviour. That is why two
+# locale defects passed locally and failed only on the runner.
+sh="${BASH:-/bin/bash}"
+
+# A gate must behave the same whatever locale the caller has. Outside the C
+# locale a bash range follows collation order: `[A-Z]` matches lowercase too,
+# and `[!A-Za-z0-9._-]` stops matching accented letters. That silently turned
+# two live rules into no-ops while this suite passed on a developer machine
+# with no LANG set and failed only on the runner. So the suite runs itself
+# once per locale and every case must pass in both.
+if [ -z "${ERPC_TEST_LOCALE:-}" ]; then
+  utf8=""
+  # Deliberately not `locale -a | grep -q`: under `set -o pipefail` the -q
+  # exit closes the pipe, `locale` dies of SIGPIPE and the pipeline reports
+  # failure, so every locale looked absent. Match the captured list instead.
+  all_locales="$(locale -a 2>/dev/null || true)"
+  for cand in en_US.UTF-8 en_GB.UTF-8 en_US.utf8; do
+    case "
+$all_locales
+" in
+      *"
+$cand
+"*) utf8="$cand"; break;;
+    esac
+  done
+  if [ -z "$utf8" ]; then
+    echo "no dictionary-collation UTF-8 locale on this machine, so the" >&2
+    echo "locale-independence of the gate cannot be verified here." >&2
+    exit 1
+  fi
+  rc=0
+  for loc in C "$utf8"; do
+    printf '== locale %s ==\n' "$loc"
+    ERPC_TEST_LOCALE="$loc" LC_ALL="$loc" LANG="$loc" "$sh" "$0" "$@" || rc=1
+  done
+  exit "$rc"
+fi
+
 repo_root="$(git rev-parse --show-toplevel)"
 gate="$repo_root/scripts/check-oss-hygiene.sh"
+
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
@@ -25,7 +68,7 @@ check() {
   mkdir -p "$(dirname "$abs")"
   printf '%s\n' "$content" > "$abs"
   local out rc
-  out="$("$gate" "$rel" 2>&1)"; rc=$?
+  out="$("$sh" "$gate" "$rel" 2>&1)"; rc=$?
   rm -f "$abs"
   rmdir -p "$(dirname "$abs")" 2>/dev/null || true
   if { [ "$expect" = block ] && [ "$rc" -ne 0 ]; } || { [ "$expect" = allow ] && [ "$rc" -eq 0 ]; }; then
