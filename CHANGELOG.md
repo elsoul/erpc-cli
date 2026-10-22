@@ -24,7 +24,7 @@ whose version has no entry below.
   public-host check, zizmor, `dist plan`).
 - cargo-dist release pipeline with GitHub Attestations, CycloneDX SBOM,
   `cargo-auditable`, release gate, independent rebuild comparison for Linux,
-  minisign-signed release manifest, R2 mirror and crates.io Trusted Publishing.
+  minisign-signed release manifest and crates.io Trusted Publishing.
 - `install.erpc.global` Cloudflare Worker serving the installers.
 
 [Unreleased]: https://github.com/elsoul/erpc-cli/compare/v0.0.1...HEAD

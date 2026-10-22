@@ -88,6 +88,7 @@ sample_dir="tmp-endpoint-test"
 # A literal tab, for the normalisation cases below. check_msg writes its
 # fixture with %s, so an escape in the argument would stay an escape.
 tab=$(printf '\t')
+cr=$(printf '\r')
 
 check() {
   local name="$1" expect="$2" rel="$3" content="$4"
@@ -243,20 +244,56 @@ check "documentation host is not allowed in code" block "$sample_dir/y2.rs" \
 # check_msg writes with %s, so a backslash here is one backslash on disk.
 # The predecessor of this case used `check`, which writes with %b and
 # halved them, so it only ever tested the single-escape form below.
-check_msg "a single escaped slash pair does not hide a URL" "$sample_dir/y0.json" \
+# A backslash in the authority is REFUSED, not resolved. The Standard skips
+# it like a slash, but doing that here would name x65vil.example.com for a
+# literal whose real authority is evil.example.com, so the gate reports the
+# hidden literal instead. These assert the refusal, which is the behaviour
+# the header commits to.
+check_msg "a single escaped slash pair is refused, not resolved" "$sample_dir/y0.json" \
   '{"u": "https:\/\/evil.example.com/x"}' \
-  'evil.example.com'
+  'escape sequence in host'
 
-check_msg "a doubled escaped slash pair does not either" "$sample_dir/y0b.json" \
+check_msg "a doubled escaped slash pair too" "$sample_dir/y0b.json" \
   '{"u": "https:\\/\\/evil.example.com/x"}' \
-  'evil.example.com'
+  'escape sequence in host'
 
-check_msg "a backslash authority resolves and is judged" "$sample_dir/y0c.ts" \
+check_msg "a backslash authority is refused" "$sample_dir/y0c.ts" \
   'const u = "https:\\evil.example.net/x";' \
-  'evil.example.net'
+  'escape sequence in host'
 
 check_msg "a mixed slash-backslash authority too" "$sample_dir/y0d.ts" \
   'const u = "https:/\\evil.example.net/x";' \
+  'escape sequence in host'
+
+# The slash COUNT. The Standard's special-authority-ignore-slashes state
+# skips any number of them, so each of these resolves to evil.example.net
+# under node's `new URL()` exactly as `https://` does. Every one passed this
+# gate silently until the collapse rule stopped assuming there were two.
+check_msg "no slash at all after the scheme" "$sample_dir/y0i.rs" \
+  'let u = "https:evil.example.net/x";' \
+  'evil.example.net'
+
+check_msg "one slash after the scheme" "$sample_dir/y0j.rs" \
+  'let u = "https:/evil.example.net/x";' \
+  'evil.example.net'
+
+check_msg "three slashes after the scheme" "$sample_dir/y0k.rs" \
+  'let u = "https:///evil.example.net/x";' \
+  'evil.example.net'
+
+check_msg "four slashes after the scheme" "$sample_dir/y0l.rs" \
+  'let u = "https:////evil.example.net/x";' \
+  'evil.example.net'
+
+check_msg "an odd slash count in prose too" "$sample_dir/y0m.md" \
+  'Fetch https:/evil.example.net/x to update.' \
+  'evil.example.net'
+
+# An uppercase scheme must normalise too: the rule is spelled with character
+# classes because BSD sed has no portable case flag for s///, and the matcher
+# runs `grep -i`. If the two fall out of step, this is what notices.
+check_msg "an uppercase scheme is normalised as well" "$sample_dir/y0n.rs" \
+  'let u = "HTTPS:/evil.example.net/x";' \
   'evil.example.net'
 
 check_msg "a tab inside the host does not end it" "$sample_dir/y0e.ts" \
@@ -270,6 +307,25 @@ check_msg "a tab inside the scheme does not hide the URL" "$sample_dir/y0f.ts" \
 check_msg "a tab inside the host, in prose" "$sample_dir/y0g.md" \
   "Fetch https://api.github.com${tab}.evil.example.net/x to update." \
   'api.github.com.evil.example.net'
+
+# A LONE CR, from a classic-Mac line ending or a `\r` in a string literal,
+# sits mid-line and ends the match exactly as a tab does. This is the case
+# the CR rule exists for; the header used to justify it by the trailing CR
+# of a CRLF file, which is the one case where it does nothing -- and the
+# rule had no case at all, so removing it failed nothing.
+check_msg "a lone CR inside the host does not end it" "$sample_dir/y0o.rs" \
+  "let a = \"https://api.github.com${cr}.evil.example.net/x\";" \
+  'api.github.com.evil.example.net'
+
+check_msg "a lone CR inside the host, in prose" "$sample_dir/y0p.md" \
+  "Fetch https://api.github.com${cr}.evil.example.net/x to update." \
+  'api.github.com.evil.example.net'
+
+# ...and CR gets the same before-a-scheme exception as tab, for the same
+# reason. Without it a CR between two declared URLs splices them into
+# `erpc.globalhttps`, which is a false positive on a correct line.
+check "a CR between two URLs separates them" allow "$sample_dir/y0q.md" \
+  "| https://erpc.global${cr}https://github.com |"
 
 # ...and the one shape the tab rule must NOT break: a tab BETWEEN two URLs
 # separates them. Deleting it would splice them into a host in neither.

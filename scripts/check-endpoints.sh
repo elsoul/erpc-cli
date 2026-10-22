@@ -61,8 +61,15 @@
 #     follows it still carries two dot-separated labels, which is what a
 #     registrable domain needs; a backtick followed by punctuation or by a
 #     method call is a string quote and is trimmed as before.
-#   - Two shapes this gate does NOT see, both stated so that they are
-#     decisions rather than surprises:
+#   - The shapes this gate does NOT see. This list is NOT COMPLETE and must
+#     not be read as if it were: an earlier version of this header said
+#     "two shapes", and the next review found five more. The reason is
+#     structural rather than a series of oversights. The matcher ends the
+#     authority at a fixed set of characters, and that set is narrower than
+#     the set a URL parser accepts, so a character at which the match stops
+#     early can always be looked for. What this gate buys is that adding a
+#     destination costs effort and shows up in a diff; it is not a proof
+#     that none can be written. The ones known today:
 #       * a backtick expression containing a space, as in
 #         https://`cat host`.evil.example.net. The match ends at the space,
 #         and widening the rule far enough to catch it also rejects
@@ -75,6 +82,23 @@
 #         tried and removed: its only unique catch was this unreachable
 #         form, while it also reported url.strip_prefix("https://") and a
 #         declared host followed by ordinary punctuation in a comment.
+#       * a single or double quote inside the host ends the match, and
+#         unlike the colon this one IS reachable:
+#         https://api.github.com'evil.example.net/x resolves to the host
+#         api.github.com'evil.example.net, which a wildcard record under
+#         evil.example.net serves, so the DNS query reaches that zone even
+#         though no public CA will issue a certificate for a label
+#         containing a quote. It is open rather than closed because
+#         admitting quotes to the authority makes ["https://a","https://b"]
+#         -- a JSON array of two URLs with no space between them -- read as
+#         the single host a","https, which is a false positive on a correct
+#         and common line. The quote characters have been excluded since
+#         before this gate was hardened; this entry records it, it is not a
+#         new hole.
+#       * a URL split across two lines by a multi-line string literal. The
+#         Standard deletes LF from its input exactly as it deletes tab and
+#         CR, and normalise() handles those two, but this gate reads one
+#         line at a time and a rejoined URL is not visible to it.
 #   - A host that is not plain ASCII, or one containing a backslash escape
 #     anywhere, is reported: both are literals a reviewer should see, and
 #     neither may be skipped just because the matcher finds them awkward.
@@ -443,40 +467,67 @@ check_url() {
 url_re='(https?|wss?)://(((\$\{\{[^}/]*\}\}|\$\{[^}/]*\}|\{\{[^}/]*\}\}|\$\([^)/]*\)|[^[:space:]"'"'"'<>/?#])*@)?(\[[0-9A-Fa-f:.]*\]|(\$\{\{[^}/]*\}\}|\$\{[^}/]*\}|\{\{[^}/]*\}\}|\$\([^)/]*\)|[^[:space:]"'"'"'<>/?#:@])+)(:[0-9]+)?)'
 
 # The ONE normalisation this gate applies to a line, and the only place it
-# rewrites anything. It reproduces what the WHATWG URL Standard does to its
-# input BEFORE parsing it, so that the text this gate judges is the text the
-# fetching code will act on:
+# rewrites anything. It reproduces what the WHATWG URL Standard does to the
+# same text, so that what this gate judges is what a browser, curl or the
+# Worker's `fetch` would actually contact:
 #
-#   * ASCII tab and CR are DELETED. `ht<TAB>tps://evil.example.net` and
+#   * ASCII tab and CR are DELETED. The Standard strips tab, CR and LF from
+#     its input before parsing, so `ht<TAB>tps://evil.example.net` and
 #     `https://api.github.com<TAB>.evil.example.net` are both live
 #     destinations -- node's `new URL()` resolves them to evil.example.net
 #     and api.github.com.evil.example.net -- while a matcher looking for a
 #     literal `://` sees nothing in the first and stops at the tab in the
-#     second.
-#   * A tab IMMEDIATELY BEFORE a scheme becomes a space instead of being
-#     deleted. There the tab separates two URLs rather than sitting inside
-#     one, and deleting it would splice them into a single host that is in
-#     neither. This cannot be used to hide anything: whatever follows the
-#     tab is then matched as a URL in its own right and answers for itself.
-#   * `\` is accepted where `/` is expected after a special scheme, and runs
-#     of backslashes before a slash collapse to one slash. The Standard
-#     treats `\` as `/` for special schemes, so `https:\\h`, `https:/\h` and
-#     `https:\/\/h` all resolve to h. The collapse is the general form of the
-#     single `\/` that a JSON or TypeScript string literal produces; the
-#     earlier single pass of `s|\\/|/|g` rewrote `\\/\\/` to `\/\/`, leaving
-#     no `://` in the line, so a doubled escape was a complete bypass.
+#     second. A LONE CR, from a classic-Mac line ending or a `\r` in a
+#     string literal, sits mid-line and does the same thing, which is the
+#     case the CR rule is actually for; a trailing CR from a CRLF file is
+#     the case where it does nothing.
+#   * A tab or CR IMMEDIATELY BEFORE a scheme becomes a space instead of
+#     being deleted. There it separates two URLs rather than sitting inside
+#     one, and deleting it would splice them into a host that is in neither.
+#     Nothing can hide behind this: the text after the separator is matched
+#     as a URL in its own right and answers for itself.
+#   * ANY run of `/` after a special scheme -- including a run of length
+#     one, and INCLUDING NONE -- collapses to `://`. This is not cosmetic.
+#     The Standard's special-authority-ignore-slashes state skips any number
+#     of `/` (and of `\`), so `https:h`, `https:/h`, `https:///h` and
+#     `https:////h` all resolve to h exactly as `https://h` does. An earlier
+#     version rewrote only the two-character forms `:\\` and `:/\` plus a
+#     backslash run before a slash, on the belief that the leniency was
+#     about escaped slashes in string literals. It is not, and every shape
+#     above passed this gate without being looked at.
 #
-# CR is deleted unconditionally: it occurs at end of line, where it cannot
-# join two URLs.
+#     A BACKSLASH is deliberately NOT consumed here, although the Standard
+#     skips it in the same state. Resolving it would make this gate name a
+#     host the source does not: in Rust, TypeScript and Python alike
+#     `"https://\x65vil.example.com"` is one compile-time literal whose real
+#     authority is evil.example.com, while skipping the backslash as if it
+#     were a slash yields x65vil.example.com -- a concrete-looking host that
+#     is not the destination, and that would PASS if it were ever declared.
+#     So a backslash anywhere in the authority is reported as a hidden
+#     literal by the check in check_url instead, which refuses rather than
+#     guesses, and covers `https:\h`, `https:/\h`, `https:\\/\\/h` and
+#     `https://\x65vil` alike. Refusing is strictly safer than resolving and
+#     needs no knowledge of which language the file is in -- the machinery
+#     this gate has twice deleted.
+#
+#     The cost, which is real: a JavaScript regex literal written to match
+#     URLs, such as /^https:\/\//, has `https:` followed by no slash, so
+#     `://` is inserted and the host becomes a backslash, which is then
+#     reported. No such line exists in the tree today. Write the pattern
+#     with a character class, or add the file to --print-exceptions.
+# The scheme alternation, spelled with character classes because BSD sed has
+# no portable case-insensitivity modifier for s/// and the matcher below runs
+# `grep -i`. Keeping the two in step matters: a rule that only saw lowercase
+# would normalise `https:` and leave `HTTPS:` for the matcher to miss.
+scheme_re='([Hh][Tt][Tt][Pp][Ss]?|[Ww][Ss][Ss]?)'
 tab=$(printf '\t')
 cr=$(printf '\r')
 normalise() {
-  sed -E -e "s/${tab}(https?|wss?):/ \1:/g" \
+  sed -E -e "s/${tab}${scheme_re}:/ \1:/g" \
+         -e "s/${cr}${scheme_re}:/ \1:/g" \
          -e "s/${tab}//g" \
          -e "s/${cr}//g" \
-         -e 's|\\+/|/|g' \
-         -e 's|:\\\\|://|g' \
-         -e 's|:/\\|://|g'
+         -e "s#${scheme_re}:(/)*#\1://#g"
 }
 
 for f in "${files[@]}"; do

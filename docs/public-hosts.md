@@ -26,27 +26,57 @@ code as authoritative if the two ever disagree.
   balanced expression is skipped, there being nothing to check. The matcher
   looks at the authority only, so a URL cannot be hidden inside another one
   on the same line; the script's header states the bounds that guarantee it.
-  Before matching, the line is normalised once, and only in the ways the
-  WHATWG URL Standard normalises its own input before parsing: ASCII tab and
-  CR are deleted, and `\` is accepted where `/` is expected after a scheme.
-  Those are not cosmetic. `ht<TAB>tps://host`, `https://declared<TAB>.other`
-  and `https:\\host` are live destinations to anything that fetches them, and
-  all three used to pass this gate without being looked at at all.
-  Two shapes are not covered, and the header says so: a backtick expression
-  containing a space ends the match at the space, and a colon not followed by
-  digits ends it too, so in `https://declared:x.other/` the host judged is
-  the part before the colon. No URL parser accepts a non-numeric port, so the
-  second of those is not a reachable destination. A guard over it was tried
-  and removed: its only unique catch was that unreachable shape, while it
-  also reported `url.strip_prefix("https://")` and a declared host followed
-  by ordinary punctuation in a comment.
+  Before matching, the line is normalised once, in `normalise()`, and the
+  script's header is the full statement of what that does. In outline: ASCII
+  tab and CR are deleted, except immediately before a scheme, where they
+  become a space because there they separate two URLs rather than sit inside
+  one; and any run of `/` after a scheme, **including no slash at all**,
+  becomes `://`. These are not cosmetic. `ht<TAB>tps://host`,
+  `https://declared<TAB>.other`, `https:host`, `https:/host` and
+  `https:///host` are all live destinations to anything that fetches them --
+  the URL Standard strips tab, CR and LF before parsing and skips any number
+  of slashes after a special scheme -- and every one of them passed this gate
+  without being looked at. A backslash is refused rather than resolved, since
+  resolving it would name a host the source does not.
+
+  **The list of shapes this gate does not see is not complete, and must not
+  be read as if it were.** An earlier version of this page said "two shapes
+  are not covered"; a later review found five more. The reason is structural:
+  the matcher stops the authority at a fixed set of characters, and that set
+  is narrower than the set a URL parser accepts, so a character at which the
+  match ends early can always be looked for. The ones known today, all stated
+  in the header:
+
+  - a backtick expression containing a space ends the match at the space;
+  - a colon not followed by digits ends it, so in `https://declared:x.other/`
+    the host judged is the part before the colon. No URL parser accepts a
+    non-numeric port, so that one is not a reachable destination;
+  - a single or double quote inside the host ends it, and unlike the colon
+    this one **is** reachable: `https://declared'other.example.net/` resolves
+    to `declared'other.example.net`, which a wildcard record serves, so the
+    DNS lookup reaches the other zone even though no public CA will issue for
+    that label. Admitting quotes to the authority would misread a JSON array
+    of two URLs as one host, which is why it is open rather than closed;
+  - a URL split across two lines by a multi-line string literal. The Standard
+    deletes LF as it deletes tab and CR; this gate reads one line at a time.
+
+  What follows from that: this gate raises the cost of adding a destination
+  and makes one appearing in a diff visible. It is not a proof that none can
+  be written. Treat a URL in a review as something to read, not as something
+  the gate has already cleared.
+
+  A guard over the colon shape was tried and removed. Its only unique catch
+  was that unreachable shape, while it also reported
+  `url.strip_prefix("https://")` and a declared host followed by ordinary
+  punctuation in a comment.
   Some files are not scanned at all. That list is not copied here, because a
   copy drifts: run `scripts/check-endpoints.sh --print-exceptions`.
 - `erpc_core::endpoints::ensure_service_url` is the runtime helper callers
   will use to check a destination. It has **no callers in this version**,
   which performs no network requests at all.
 - `scripts/check-oss-hygiene.sh` additionally blocks cloud account
-  identifiers, bare 1Password vault and item identifiers, bearer-token and
+  identifiers, bare 1Password vault and item identifiers that appear beside
+  the word `vault` or `item` on the same line, bearer-token and
   key-shaped strings, references to the organisation's other repositories,
   and internal documents. Credential *values* are caught by `gitleaks`
   (`.gitleaks.toml`). Read the script for what each rule actually matches.
