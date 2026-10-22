@@ -82,9 +82,9 @@ code as authoritative if the two ever disagree.
   header is the full statement of what that does; this page does not
   paraphrase it, because a paraphrase drifts — an earlier version of this
   paragraph went on describing a slash-collapsing rule for a while after
-  that rule was deleted. There are five rules, and all five are about tab,
-  CR, or separating two adjacent URLs so that neither is read as part of the
-  other.
+  that rule was deleted. It turns a NUL byte into a space, and then applies
+  five rules, all about tab, CR, or separating two adjacent URLs so that
+  neither is read as part of the other.
 
   What matters here is why any normalisation exists at all: the URL Standard
   strips tab, CR and LF from its input *before* parsing, so
@@ -100,37 +100,74 @@ code as authoritative if the two ever disagree.
   **The list of shapes this gate does not see is still not complete, and
   must not be read as if it were.** The rewrite removed the mechanism that
   produced a new one every round; it did not turn a text gate into a parser.
-  Two are known today, both stated in the header:
+  The ones known today are stated in the script header, and each is pinned
+  by a `KNOWN LIMIT` case in the self-test, so closing one means changing a
+  case rather than discovering it:
 
-  - a single or double quote inside the host. This one **is** reachable:
-    `https://declared'other.example.net/` resolves to the host
-    `declared'other.example.net`, which a wildcard record serves, so the DNS
-    query reaches the other zone even though no public CA will issue for a
-    label containing a quote. A quote ends the authority because a quote is
-    how source code delimits a URL: admitting quotes instead would read
-    `["https://a","https://b"]` — a JSON array of two URLs — as the single
-    host `a","https`, which is a false positive on a correct and common
-    line. Left open by choice, not by impossibility.
-  - a URL split across two lines by a multi-line string literal. The
+  - **Shell string concatenation next to a URL, in part.** In a shell word,
+    quoted and unquoted parts and substitutions are joined, so a quote or
+    backtick that ends the authority does not end the host the shell
+    builds:
+
+    ```text
+    $ bash -c 'echo "https://erpc.global`echo .evil.example.net`/p"'
+    https://erpc.global.evil.example.net/p
+    ```
+
+    The reason the terminator set is safe — none of its characters can
+    appear in a real host — is about *literal* text, and runtime joining is
+    exactly what breaks it. Closing the class completely needs a model of
+    how the shell builds a word, which is a parser in a text matcher, so it
+    is closed where the shape is unambiguous and open where it is not.
+
+    Closed: a quote ending the host followed at once by `$` or a backtick,
+    as in `"https://erpc.global"$(cat f)`; and a backtick inside the host
+    followed by a letter or digit, as above. Nothing but an interpolation or
+    a command begins that way.
+
+    Open:
+    - a backtick right after a declared host, then a space —
+      ``https://erpc.global` cat f`/p``. Short of parsing shell quoting it is
+      the same text as a backtick that closes an inline code span before the
+      next word, which is a correct line.
+    - a quote ending the host, then a dot —
+      `'https://api.github.com'.evil.example.net/x`. In shell the words join;
+      in Rust, TypeScript and Python it is a method call, as in
+      `"https://erpc.global".to_string()`, and the two cannot be told apart
+      from the text.
+    - a quote ending the host, then a letter — which includes a quote
+      *inside* the host, as the URL Standard permits.
+      `https://api.github.com'evil.example.net/x` resolves to the host
+      `api.github.com'evil.example.net`, which a wildcard record serves, so
+      the DNS query reaches that zone even though no public CA will issue
+      for the label. Reporting it would also report a possessive in prose,
+      `https://erpc.global's page`; admitting quotes to the authority instead
+      reads `["https://a","https://b"]` as the single host `a","https`.
+
+    The design holds only while every construct that interpolates at
+    runtime, in every file type tracked here, is either tracked as a
+    balanced form or reported. That is a list, kept in the script, and a new
+    file type with a new interpolation syntax needs an entry in it before it
+    is safe.
+
+  - **A URL split across two lines** by a multi-line string literal. The
     Standard deletes LF as it deletes tab and CR; this gate reads one line
     at a time.
 
-  Three shapes this page used to list as limits are now **closed** rather
-  than restated:
+  Shapes this page once listed as limits, and which are now **closed**
+  rather than restated:
 
   - a colon followed by something that is not a port. It no longer ends the
     authority, so `https://declared:x.other/` is reported where it used to
     be judged as `declared`.
-  - a backtick expression containing a space, as in
-    ``https://`cat host`.other/``. The authority does end early there — the
-    backtick is deliberately not paired across a space, because pairing it
-    would swallow ``` `https://semver.org`. ``` and
-    ``` `https://user-api.erpc.global`.trim() ``` to end of line, both
-    correct lines. What changed is the answer: an authority that begins with
-    punctuation has no literal part to judge, and is now reported instead of
-    skipped. It was skipped *silently* until a review found it, and the same
-    commit that introduced the rewrite had removed this entry from the list
-    without closing it.
+  - a backtick expression with **nothing before it**, as in
+    ``https://`cat host`.other/``. An authority that begins with punctuation
+    has no literal part to judge, and is reported instead of skipped. This
+    page described the whole backtick-with-a-space shape as closed when only
+    this part was; the part with a declared host in front is the first open
+    item above.
+  - a NUL byte, which hid the rest of its line from the scan and is now a
+    space by the time the scan sees it.
   - a `,`, `;`, `)` or backtick between a declared host and a second URL,
     which no longer hides that URL because the second scheme occurrence is
     scanned in its own right. This one was never on the list; it was found

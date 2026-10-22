@@ -34,14 +34,21 @@
 #     stripped the expression and checked the prefix alone, which let an
 #     allowlisted prefix vouch for an attacker-chosen suffix.
 #
-#     A BACKTICK expression CONTAINING A SPACE can never be allowed by a
-#     pattern, because the authority ends at the space and the pattern's
-#     declared suffix is past it. It is reported either as a hidden literal,
-#     when nothing precedes the backtick, or as a host not in the allowlist,
-#     when the truncated prefix is all that is left --
-#     https://solana-snapshot-`cat r`.erpc.global is the second of those.
-#     Worth naming because this bullet claimed "is reported" for a while
-#     when the first of those cases was in fact skipped in silence.
+#     The BACKTICK is the exception, because awk does not track it as a
+#     balanced form -- pairing backticks across a space would swallow
+#     `https://semver.org`. and `https://user-api.erpc.global`.trim() to end
+#     of line, both correct lines. So the authority ends at the first space
+#     or terminator inside a backtick expression, and what happens next
+#     depends on what is on either side of the backtick:
+#       * nothing before it -- reported as a hidden literal;
+#       * a letter or digit after it, i.e. a command name -- reported as a
+#         host built at runtime, whatever the prefix is;
+#       * a declared host or HOST_PATTERNS match before it and a SPACE after
+#         it -- ALLOWED. That is a known limit, stated below, and it holds
+#         through a pattern as well: `https://erpc.global` cat f`/p` is
+#         allowed. This bullet has twice claimed more than the code did,
+#         once that every backtick expression was reported and once that
+#         one with a space could never be allowed by a pattern.
 #   - One assumption here is about the allowlist rather than the grammar:
 #     an authority can absorb the LETTERS of a following scheme, and its
 #     colon with them -- the colon is removed by the trailing-punctuation
@@ -54,7 +61,9 @@
 #   - A host that is ENTIRELY one balanced expression, such as ${MIRROR}, is
 #     skipped: there is nothing literal to check. An UNTERMINATED opener is
 #     not that case and is reported, because the text after it is literal
-#     and is usually the registrable domain.
+#     and is usually the registrable domain. That holds for the four forms
+#     awk tracks -- ${{, ${, {{ and $( -- and not for a lone backtick, which
+#     is not a tracked opener; see the bullet above.
 #   - The scan is driven from SCHEME OCCURRENCES, not from URLs, and that is
 #     the one design decision everything else here follows from. See the
 #     block above check_occurrence for why the previous design was replaced:
@@ -68,29 +77,66 @@
 #     and what is left must EQUAL a declared host, an IP-literal or a
 #     HOST_PATTERNS match. Nothing is trimmed into shape, and the default is
 #     to report.
-#   - Two shapes this gate does NOT see. The list is NOT COMPLETE and must
-#     not be read as if it were -- the rewrite removed the mechanism that
+#   - Shapes this gate does NOT see. The list is NOT COMPLETE and must not
+#     be read as if it were -- the rewrite removed the mechanism that
 #     produced a new one every round, it did not turn a text gate into a
-#     parser:
-#       * a single or double quote inside the host, which IS reachable:
-#         https://api.github.com'evil.example.net/x resolves to the host
-#         api.github.com'evil.example.net, served by a wildcard record under
-#         evil.example.net, so the DNS query reaches that zone even though no
-#         public CA will issue for a label containing a quote. A quote ends
-#         the authority because a quote is how source delimits a URL;
-#         admitting quotes instead reads ["https://a","https://b"] as the one
-#         host a","https, a false positive on a correct and common line. Open
-#         by choice, not by impossibility.
+#     parser.
+#
+#       * SHELL STRING CONCATENATION NEXT TO A URL, in part. In a shell word,
+#         quoted and unquoted parts and substitutions are joined, so a quote
+#         or backtick that ends the authority does not end the host the
+#         shell builds: "https://erpc.global"$(cat f)/p contacts erpc.global
+#         with the command's output appended. The terminator set's safety
+#         argument -- none of its characters can appear in a real host -- is
+#         about LITERAL text, and runtime joining is exactly what breaks it.
+#         Closing the class completely needs a model of how the shell builds
+#         a word, which is a parser in a text matcher, the machinery this
+#         gate has twice deleted. So it is closed where the shape is
+#         unambiguous and open where it is not.
+#
+#         Closed: a quote ending the host followed at once by `$` or a
+#         backtick; a backtick inside the host followed by a letter or digit.
+#         Nothing but an interpolation or a command begins that way.
+#
+#         Open, each pinned by a KNOWN LIMIT case in the self-test:
+#           - a backtick right after a declared host, then a space --
+#             https://erpc.global` cat f`/p. Short of parsing shell quoting it
+#             is the same text as a backtick closing an inline code span
+#             before the next word, which is a correct line.
+#           - a quote ending the host, then a dot --
+#             'https://api.github.com'.evil.example.net/x. In shell the words
+#             join; in Rust, TypeScript and Python it is a method call, as in
+#             "https://erpc.global".to_string(), and the two cannot be told
+#             apart from the text.
+#           - a quote ending the host, then a letter, which includes a quote
+#             INSIDE the host as the URL Standard permits:
+#             https://api.github.com'evil.example.net/x resolves to the host
+#             api.github.com'evil.example.net, served by a wildcard record,
+#             so the DNS query reaches that zone even though no public CA
+#             will issue for the label. Reporting it would also report a
+#             possessive in prose, https://erpc.global's page; admitting
+#             quotes to the authority instead reads ["https://a","https://b"]
+#             as the single host a","https.
+#
+#         The design holds only while every construct that interpolates at
+#         runtime, in every file type tracked here, is either tracked by awk
+#         as a balanced form or reported. That is a list, and it lives in
+#         check_occurrence and authority_of; a new file type with a new
+#         interpolation syntax needs an entry there before it is safe.
+#
 #       * a URL split across two lines by a multi-line string literal. The
 #         Standard deletes LF as it deletes tab and CR; this gate is
 #         line-based.
-#   - Two limits this header used to state are now CLOSED rather than
-#     restated. A colon followed by something that is not a port no longer
-#     ends the authority: https://declared:x.evil.example.net/y is reported,
-#     where it used to be judged as the declared prefix. And a `,`, `;`, `)`
-#     or backtick between a declared host and a second URL no longer hides
-#     that URL, because the second scheme occurrence is scanned in its own
-#     right rather than being consumed by the first match.
+#   - Shapes this header once listed as limits, and which are now CLOSED
+#     rather than restated: a colon followed by something that is not a
+#     port, which no longer ends the authority, so
+#     https://declared:x.evil.example.net/y is reported where it used to be
+#     judged as the declared prefix; a backtick expression with nothing
+#     before it; and a NUL byte, which used to hide the rest of its line
+#     from awk and is now a space by the time awk sees it. One shape that
+#     was never on the list is closed too: a `,`, `;`, `)` or backtick
+#     between a declared host and a second URL no longer hides that URL,
+#     because the second scheme occurrence is scanned in its own right.
 #   - A host that is not plain ASCII, or one containing a backslash escape
 #     anywhere, is reported: both are literals a reviewer should see, and
 #     neither may be skipped just because the matcher finds them awkward.
@@ -436,7 +482,7 @@ authority_tail_punct='[];:}!`]'
 # $1 scheme word (with its colon), $2 the rest of the line after that colon,
 # $3 file, $4 line number, $5 prose|code
 check_occurrence() {
-  local scheme="$1" rest="$2" f="$3" ln="$4" kind="$5"
+  local scheme="$1" rest="$2" f="$3" ln="$4" kind="$5" look="${6:-L}"
   local authority host probe paired has_expr tail prefix
 
   scheme=$(printf '%s' "${scheme%:}" | tr '[:upper:]' '[:lower:]')
@@ -450,6 +496,27 @@ check_occurrence() {
   authority="${authority##*@}"
 
   [ -n "$authority" ] || return 0
+
+  # A QUOTE THAT ENDS THE HOST, FOLLOWED AT ONCE BY AN INTERPOLATION. In a
+  # shell word, quoted and unquoted parts are joined, so
+  # `"https://erpc.global"$(cat f)/p` contacts erpc.global with the command's
+  # output appended -- erpc.global.evil.example.net when that output is
+  # `.evil.example.net`. The quote is a terminator here because a quote is
+  # how source delimits a URL, so the text past it was never part of the
+  # authority, and the allowlist was asked about the declared prefix alone.
+  #
+  # Closed for `$` and a backtick only, because those two are unambiguous:
+  # nothing but an interpolation begins that way, and in the other languages
+  # this repository holds the shape is a syntax error, not a correct line.
+  # A quote followed by a `.` or a letter is NOT closed -- see the header --
+  # because `"https://erpc.global".to_string()` is ordinary Rust and the dot
+  # cannot be told apart from shell concatenation without parsing the file.
+  case "${look#L}" in
+    [\"\']\$*|[\"\']\`*)
+      report "$f" "$ln" "a quote ends the host and an interpolation follows it, so the host is built at runtime: $scheme://$authority"
+      return 0
+      ;;
+  esac
 
   # A backslash ANYWHERE in the authority hides the rest of it. In Rust,
   # TypeScript and Python alike `https://github.com\x2eevil.example.net` is
@@ -548,10 +615,12 @@ check_occurrence() {
         # An EMPTY prefix means the punctuation is the first thing in the
         # authority, so there is no literal part before it and nothing to
         # judge -- and falling through to the `[ -n "$host" ]` test below
-        # then RETURNED SUCCESS with real text still unexamined. That was
-        # the one silent pass left in this function, and it covered every
-        # backtick expression containing a space or any terminator
-        # character: `https://`echo evil`.example.net/x` was allowed, in a
+        # then RETURNED SUCCESS with real text still unexamined. This was
+        # described, when it was closed, as the one silent pass left in this
+        # function; it was not -- the case just below, with a declared prefix
+        # in front of the backtick, was found a round later. It covered every
+        # backtick expression containing a space or any terminator character
+        # with nothing before it: `https://`echo evil`.example.net/x` was allowed, in a
         # workflow `run:` step where the backtick really is a command
         # substitution and the host really is contacted.
         #
@@ -565,6 +634,30 @@ check_occurrence() {
           report "$f" "$ln" "the authority begins with punctuation, so the literal is hidden: $scheme://$host"
           return 0
         fi
+        # A BACKTICK FOLLOWED BY A LETTER OR DIGIT, after a declared prefix.
+        # The empty-prefix report above closed one subset of the backtick
+        # case and the header then claimed the whole of it, which a review
+        # measured false: with a non-empty prefix the truncated prefix
+        # answered the allowlist alone, so
+        # `https://erpc.global`echo .evil.example.net`/p` was allowed in
+        # silence while the shell resolves it to
+        # https://erpc.global.evil.example.net/p.
+        #
+        # What distinguishes it from the correct lines that share the shape:
+        # in `` `https://user-api.erpc.global`.trim() `` and
+        # `` `https://semver.org`. `` the backtick CLOSES a quote and is
+        # followed by punctuation, while a command substitution is followed
+        # by the command's name. Closed for that case only. A backtick
+        # followed by a SPACE is not closed and is stated in the header,
+        # since `` `https://erpc.global` now `` and
+        # `` https://erpc.global` cat f` `` are the same text up to the point
+        # where only a shell parser could tell them apart.
+        case "${host#"$prefix"}" in
+          \`[A-Za-z0-9]*)
+            report "$f" "$ln" "a backtick inside the host starts a command, so the host is built at runtime: $scheme://$host"
+            return 0
+            ;;
+        esac
         host="$prefix"
         probe="$host"
         ;;
@@ -603,6 +696,13 @@ check_occurrence() {
 # rewrites anything. It reproduces what the WHATWG URL Standard does to the
 # same text, so that what this gate judges is what a browser, curl or the
 # Worker's `fetch` would actually contact:
+#
+#   * A NUL byte becomes a SPACE, before anything else. This one is not the
+#     Standard's doing -- a NUL in a URL is simply invalid -- it is awk's:
+#     awk ends a record at a NUL, so `x<NUL>curl https://evil.example.net/x`
+#     hid the URL from the scan and was allowed with no output. A space and
+#     not a deletion, so that two tokens on either side of the NUL cannot be
+#     spliced into a scheme.
 #
 #   * ASCII tab and CR are DELETED. The Standard strips tab, CR and LF from
 #     its input before parsing, so `ht<TAB>tps://evil.example.net` and
@@ -664,7 +764,7 @@ cr=$(printf '\r')
 # reading it as a command substitution.
 bt=$(printf '\140')
 normalise() {
-  sed -E -e "s/${tab}${scheme_re}:/ \1:/g" \
+  tr '\000' ' ' | sed -E -e "s/${tab}${scheme_re}:/ \1:/g" \
          -e "s/${cr}${scheme_re}:/ \1:/g" \
          -e "s/${tab}//g" \
          -e "s/${cr}//g" \
@@ -676,7 +776,12 @@ for f in "${files[@]}"; do
   is_excepted "$f" && continue
   if [[ "$f" =~ $prose_re ]]; then kind=prose; else kind=code; fi
 
-  # -a so a stray NUL cannot hide the rest of the file.
+  # The file is read with cat, which passes every byte and fails only when
+  # the file cannot be read. It used to be `grep -a ''`, which exits 1 on a
+  # zero-byte file because it selected nothing; under pipefail that read as
+  # a failed scan, and an empty staged file blocked the pre-commit hook with
+  # a message saying the scanner had failed. A NUL byte is handled in
+  # normalise(), not here.
   #
   # awk emits ONE RECORD PER SCHEME OCCURRENCE: line number, the scheme word,
   # and the rest of the line after its colon. It then continues from just
@@ -699,12 +804,12 @@ for f in "${files[@]}"; do
   # emits __scan_failed__ when any stage of it fails.
   scan_complete=no
   scan_failed=no
-  while IFS="$tab" read -r ln scheme rest; do
+  while IFS="$tab" read -r ln scheme look rest; do
     [ -n "$ln" ] || continue
     if [ "$scheme" = "__scan_failed__" ]; then scan_failed=yes; continue; fi
     if [ "$scheme" = "__scan_complete__" ]; then scan_complete=yes; continue; fi
-    check_occurrence "$scheme" "$rest" "$f" "$ln" "$kind"
-  done < <({ grep -a '' "$f" 2>/dev/null | normalise | awk '
+    check_occurrence "$scheme" "$rest" "$f" "$ln" "$kind" "$look"
+  done < <({ cat -- "$f" | normalise | awk '
     # Where an authority ends. index() rather than a regex, so no character
     # here needs escaping in two languages at once.
     BEGIN {
@@ -740,7 +845,7 @@ for f in "${files[@]}"; do
         if (c2 == "${")  { out = out c2; i += 2; closer = "}";  continue }
         if (c2 == "{{")  { out = out c2; i += 2; closer = "}}"; continue }
         if (c2 == "$(")  { out = out c2; i += 2; closer = ")";  continue }
-        if (index(TERM, c) > 0) break
+        if (index(TERM, c) > 0) { STOP = substr(rest, i, 2); break }
         out = out c; i++
       }
       return out
@@ -750,7 +855,16 @@ for f in "${files[@]}"; do
       while (match(s, re)) {
         tok = substr(s, RSTART, RLENGTH)
         sub(/^[^A-Za-z]/, "", tok)
-        printf "%d\t%s\t%s\n", NR, tok, authority_of(substr(s, RSTART + RLENGTH))
+        # STOP is the terminator that ended the authority and the character
+        # after it, empty when the authority ran to end of line. It travels
+        # with an `L` in front so the field is never empty: the read below
+        # splits on tab, and bash collapses consecutive tabs as IFS
+        # whitespace, so an empty field before the authority would shift
+        # the authority into the wrong variable. The authority goes LAST,
+        # where an empty one is harmless.
+        STOP = ""
+        auth = authority_of(substr(s, RSTART + RLENGTH))
+        printf "%d\t%s\tL%s\t%s\n", NR, tok, STOP, auth
         s = substr(s, RSTART + RLENGTH)
       }
     }

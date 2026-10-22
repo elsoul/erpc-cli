@@ -572,7 +572,10 @@ check "a declared host survives a space inside an expression" allow "$sample_dir
 check "a declared host in a template literal is not an expression" allow "$sample_dir/w9.ts" \
   'const u = `https://user-api.erpc.global`;'
 
-# NO LONGER A LIMIT, and the last silent pass in check_occurrence. This was
+# NO LONGER A LIMIT. Described when it was closed as the last silent pass in
+# check_occurrence, which it was not: the same backtick with a declared host
+# in front of it was found a round later, and is pinned with the shell
+# concatenation cases below. This was
 # `allow` while the authority ended at the space inside the backtick
 # expression, leaving `\x60cat` -- whose mid-punctuation prefix is EMPTY, so
 # the function fell through to the non-empty test and RETURNED SUCCESS with
@@ -811,6 +814,107 @@ check "an exclamation mark is stripped from the end" allow "$sample_dir/t7.md" \
 check "a closing brace is stripped from the end" allow "$sample_dir/t8.yml" \
   'opts: {url: https://erpc.global}'
 
+# --- shell string concatenation next to a URL --------------------------------
+#
+# In a shell word, quoted and unquoted parts and substitutions are JOINED. So
+# a quote or backtick that ends the authority does not end the host the shell
+# builds, and the allowlist was asked about the declared prefix alone:
+#
+#   $ bash -c 'echo "https://erpc.global`echo .evil.example.net`/p"'
+#   https://erpc.global.evil.example.net/p
+#
+# Closing this class completely needs a model of how the shell builds a word,
+# which is a parser written in a text matcher -- the machinery this gate has
+# deleted twice. So it is closed where the shape is unambiguous and stated as
+# a limit where it is not. Both halves are pinned below, so that a change
+# which closes a limit, or reopens a closed one, has to update a case here.
+#
+# CLOSED: a backtick inside the host followed by a letter or digit is the
+# start of a command name, not the end of a quote. The truncated prefix used
+# to answer the allowlist alone and every one of these was allowed in
+# silence, including through a declared HOST_PATTERNS pair.
+check_msg "a backtick then a command after a declared host" "$sample_dir/sc1.sh" \
+  'curl https://erpc.global`echo .evil.example.net`/p' \
+  'a backtick inside the host starts a command'
+
+check_msg "a backtick then a command after a declared pattern" "$sample_dir/sc2.sh" \
+  'curl https://solana-snapshot-x.erpc.global`cat y`/p' \
+  'a backtick inside the host starts a command'
+
+check_msg "a backtick then a command in a workflow step" "$sample_dir/sc3.yml" \
+  '      - run: curl https://erpc.global`echo .evil.example.net`/p' \
+  'a backtick inside the host starts a command'
+
+check_msg "a backtick then a command after userinfo" "$sample_dir/sc4.sh" \
+  'curl https://u@erpc.global`echo .evil.example.net`/p' \
+  'a backtick inside the host starts a command'
+
+# CLOSED: a quote that ends the host, followed at once by `$` or a backtick.
+# Nothing but an interpolation begins that way, and in the other languages
+# here the shape is a syntax error rather than a correct line.
+check_msg "a closing quote then a command substitution" "$sample_dir/sc5.sh" \
+  'curl "https://erpc.global"$(cat f)/p' \
+  'a quote ends the host and an interpolation follows it'
+
+check_msg "a closing quote then a parameter expansion" "$sample_dir/sc6.sh" \
+  'curl "https://erpc.global"${X}/p' \
+  'a quote ends the host and an interpolation follows it'
+
+check_msg "a closing single quote then a variable" "$sample_dir/sc7.sh" \
+  "curl 'https://erpc.global'\$X/p" \
+  'a quote ends the host and an interpolation follows it'
+
+check_msg "a closing quote then a backtick" "$sample_dir/sc8.sh" \
+  'curl "https://erpc.global"`cat f`"/p"' \
+  'a quote ends the host and an interpolation follows it'
+
+# ...and the correct lines that share the shape. The quote rule must not touch
+# a method call on a string literal, and the backtick rule must not touch a
+# backtick that closes a quote and is followed by punctuation.
+check "a method call on a string literal in rust" allow "$sample_dir/sc9.rs" \
+  'let u = "https://erpc.global".to_string();'
+
+check "a declared host closing an inline code span" allow "$sample_dir/sc10.md" \
+  'Run `curl https://erpc.global` now.'
+
+check "a quoted URL followed by a path" allow "$sample_dir/sc11.sh" \
+  'curl "https://erpc.global"/v1'
+
+# KNOWN LIMITS. Allowed today, and each one is a live destination when a
+# shell runs it. They are pinned as `allow` so that they are a decision and
+# not a surprise; a change that closes one should flip its case, not delete
+# it. All three are stated in the header and in docs/public-hosts.md.
+#
+# A backtick right after the host, then a SPACE. Indistinguishable, short of
+# parsing shell quoting, from a backtick closing an inline code span before
+# the next word -- which is the correct line just above.
+check "KNOWN LIMIT: a backtick then a space after a declared host" allow "$sample_dir/sk1.sh" \
+  'curl https://erpc.global` cat f`/p'
+
+# A quote that ends the host, then a DOT. In shell that joins the words; in
+# Rust, TypeScript and Python it is a method or property access, as in the
+# `.to_string()` case above, and the two cannot be told apart from the text.
+check "KNOWN LIMIT: a closing quote then a dot" allow "$sample_dir/sk2.sh" \
+  "curl 'https://api.github.com'.evil.example.net/x"
+
+# A quote that ends the host, then a LETTER -- whether the quote closes a
+# string the shell then concatenates, or sits inside the host as the URL
+# Standard permits. Reporting it would also report a possessive in prose,
+# `https://erpc.global's page`.
+check "KNOWN LIMIT: a closing quote then a letter" allow "$sample_dir/sk3.sh" \
+  'curl "https://erpc.global"evil.example.net/x'
+
+check "KNOWN LIMIT: a quote inside the host" allow "$sample_dir/sk4.sh" \
+  "curl https://api.github.com'evil.example.net/x"
+
+# A URL split across two lines by a multi-line string literal. The Standard
+# deletes LF as it deletes tab and CR, so the two lines are one host to a
+# parser; this gate reads one line at a time and sees a declared host on the
+# first and no scheme on the second. `check` writes with %b, so the \n here
+# is a real line break in the fixture.
+check "KNOWN LIMIT: a URL split across two lines" allow "$sample_dir/sk5.rs" \
+  'let u = "https://api.github.com\n.evil.example.net/x";'
+
 # --- the invariant ------------------------------------------------------
 #
 # Every shape-specific case above pins one bypass. This pins the property
@@ -950,51 +1054,142 @@ invariant "two plain URLs on one line are both named" \
 # produced zero records: no findings, exit 0, every URL in the tree allowed.
 # That is the one failure mode where a gate must not be quiet.
 #
-# Three stages, because fixing one did not fix the others. awk was closed
-# first, with an END sentinel -- and awk's END block runs even on EMPTY
-# INPUT, so a failing `grep` or `sed` left the sentinel intact and the gate
-# still exited 0. Both were measured, not reasoned about. The whole
-# pipeline's status is checked as well now.
-#
-# Each stub fails only for the gate's own use and defers to the real tool
-# otherwise, so the case measures the scanner rather than something earlier:
-# a stub that failed for everything was caught by the allowlist tripwire and
-# passed this case for the wrong reason.
+# The scan pipeline is `cat | tr | sed | awk`, and each of cat, sed and awk is
+# stubbed below so that it fails ONLY for the gate's own scan of the fixture
+# and defers to the real tool for everything else. That restriction is the
+# whole point of these cases, and it took two rounds to get right: a stub
+# that fails for everything is caught earlier by the allowlist tripwire,
+# which also exits 2, so a case that asserted only "exit is not 0" passed for
+# an unrelated reason -- first for awk, then for grep, and the guard that
+# caught the awk instance was deleted when the case was widened to three
+# tools. So every case here asserts the MESSAGE, and a run that stops at the
+# tripwire instead is counted as a failure of the test, not a pass.
 fc_stub_dir="$repo_root/$sample_dir/stub-bin"
 fc_rel="$sample_dir/failclosed.rs"
-for fc_tool in awk sed grep; do
+
+# A stub that fails when any argument matches $2 and otherwise runs the real
+# tool, looked up in the usual places rather than on PATH, where the stub is.
+fc_write_stub() {
+  local tool="$1" match="$2" code="${3:-1}"
   mkdir -p "$fc_stub_dir"
-  case "$fc_tool" in
-    awk)
-      # Fail only for the scanner program; the allowlist extraction also
-      # uses awk and must still work, or this measures the wrong control.
-      {
-        printf '#!/bin/sh\n'
-        printf 'for a in "$@"; do\n'
-        printf '  case "$a" in *authority_of*) exit 1;; esac\n'
-        printf 'done\n'
-        printf 'exec /usr/bin/awk "$@"\n'
-      } > "$fc_stub_dir/awk";;
-    sed)
-      # normalise() is the only sed that reads a tracked file through a
-      # pipe; the allowlist extraction uses sed on a captured string.
-      printf '#!/bin/sh\nexit 1\n' > "$fc_stub_dir/sed";;
-    grep)
-      printf '#!/bin/sh\nexit 1\n' > "$fc_stub_dir/grep";;
-  esac
-  chmod +x "$fc_stub_dir/$fc_tool"
+  {
+    printf '#!/bin/sh\n'
+    printf 'for a in "$@"; do\n'
+    printf '  case "$a" in %s) exit %s;; esac\n' "$match" "$code"
+    printf 'done\n'
+    printf 'for d in /usr/bin /bin; do\n'
+    printf '  [ -x "$d/%s" ] && exec "$d/%s" "$@"\n' "$tool" "$tool"
+    printf 'done\n'
+    printf 'exit 127\n'
+  } > "$fc_stub_dir/$tool"
+  chmod +x "$fc_stub_dir/$tool"
+}
+
+fc_run() {
   printf '%s\n' 'let u = "https://evil.example.net/x";' > "$repo_root/$fc_rel"
   fc_out="$(PATH="$fc_stub_dir:$PATH" "$sh" "$gate" "$fc_rel" 2>&1)"; fc_rc=$?
   rm -rf "$fc_stub_dir" "$repo_root/$fc_rel"
-  if [ "$fc_rc" -eq 0 ]; then
-    fail=$((fail + 1))
-    printf 'FAIL a failing %s makes the gate refuse (exit 0: it passed a known-bad URL)\n' "$fc_tool"
-  else
-    pass=$((pass + 1))
-    printf 'ok   a failing %s makes the gate refuse\n' "$fc_tool"
-  fi
+}
+
+# Each scan stage, with the argument that only the scan's own call carries:
+#   cat  -- the fixture path itself;
+#   sed  -- normalise()'s separator-split expression, which no other sed in
+#           the gate uses;
+#   awk  -- the scanner program, recognised by its function name.
+for fc_case in "cat:*failclosed.rs" "sed:*'\\1 \\2://'*" "awk:*authority_of*"; do
+  fc_tool="${fc_case%%:*}"
+  fc_write_stub "$fc_tool" "${fc_case#*:}"
+  fc_run
+  case "$fc_out" in
+    *"fewer than 5 hosts"*|*"DOCUMENTATION_HOSTS extraction"*)
+      fail=$((fail + 1))
+      printf 'FAIL a failing %s makes the gate refuse (stopped at the allowlist tripwire; the stub is not reaching the scan)\n' "$fc_tool";;
+    *"did not run to completion"*)
+      if [ "$fc_rc" -eq 2 ]; then
+        pass=$((pass + 1)); printf 'ok   a failing %s makes the gate refuse\n' "$fc_tool"
+      else
+        fail=$((fail + 1)); printf 'FAIL a failing %s makes the gate refuse (right message, exit %s)\n' "$fc_tool" "$fc_rc"
+      fi;;
+    *)
+      fail=$((fail + 1))
+      printf 'FAIL a failing %s makes the gate refuse (exit %s, said: %s)\n' "$fc_tool" "$fc_rc" "$fc_out";;
+  esac
 done
+
+# A scanner that SUCCEEDS AND SAYS NOTHING. Every case above makes a stage
+# fail, and the pipeline-status marker catches all of them on its own -- so
+# removing the END-sentinel check left every case passing, and it looked
+# redundant. It is not: an awk that exits 0 without running the program,
+# or a shim on PATH that does the same, leaves the pipeline status clean,
+# emits no __scan_failed__, and produced no findings. Only the sentinel's
+# POSITIVE confirmation -- the scan reached its end -- refuses that. This
+# case is the input that tells the two checks apart, and it was missing.
+fc_write_stub awk '*authority_of*' 0
+fc_run
+case "$fc_out" in
+  *"did not run to completion"*)
+    if [ "$fc_rc" -eq 2 ]; then
+      pass=$((pass + 1)); printf 'ok   a scanner that exits 0 with no output makes the gate refuse\n'
+    else
+      fail=$((fail + 1)); printf 'FAIL a scanner that exits 0 with no output makes the gate refuse (right message, exit %s)\n' "$fc_rc"
+    fi;;
+  *)
+    fail=$((fail + 1))
+    printf 'FAIL a scanner that exits 0 with no output makes the gate refuse (exit %s, said: %s)\n' "$fc_rc" "$fc_out";;
+esac
+
+# grep is not a scan stage any more -- the scan reads the file with cat -- but
+# it is how the allowlist is extracted, and a failing grep must make the
+# TRIPWIRE fire rather than let the gate run with an empty allowlist. Before
+# the count was read as a number, `[ "" -lt 5 ]` raised "integer expression
+# expected" and the tripwire fell through; this case is what makes that
+# guard a control rather than a comment.
+fc_write_stub grep '*'
+fc_run
+case "$fc_out" in
+  *"fewer than 5 hosts"*)
+    pass=$((pass + 1)); printf 'ok   a failing grep makes the allowlist tripwire fire\n';;
+  *)
+    fail=$((fail + 1))
+    printf 'FAIL a failing grep makes the allowlist tripwire fire (exit %s, said: %s)\n' "$fc_rc" "$fc_out";;
+esac
 rmdir -p "$(dirname "$repo_root/$fc_rel")" 2>/dev/null || true
+
+# --- an empty file is not a failed scan --------------------------------------
+#
+# The scan used to read the file with `grep -a ''`, which selects nothing on
+# a zero-byte file and exits 1; under pipefail that read as a failed scan and
+# the gate exited 2. The pre-commit hook runs this gate on staged files, so
+# staging an empty `.gitkeep` or `mod.rs` blocked the commit and said the
+# scanner had failed, which it had not. The file is read with cat now.
+em_rel="$sample_dir/empty.rs"
+mkdir -p "$repo_root/$sample_dir"
+: > "$repo_root/$em_rel"
+em_out="$("$sh" "$gate" "$em_rel" 2>&1)"; em_rc=$?
+rm -f "$repo_root/$em_rel"; rmdir "$repo_root/$sample_dir" 2>/dev/null || true
+if [ "$em_rc" -eq 0 ]; then
+  pass=$((pass + 1)); printf 'ok   an empty file is not a failed scan\n'
+else
+  fail=$((fail + 1)); printf 'FAIL an empty file is not a failed scan (exit %s, said: %s)\n' "$em_rc" "$em_out"
+fi
+
+# --- a NUL on the same line as the URL -------------------------------------
+#
+# The case above puts the NUL on the line AFTER the URL, which protects the
+# rest of the file. awk truncates a record at a NUL, so a NUL BEFORE a URL on
+# the same line hid it: `x<NUL>curl https://evil.example.net/x` was allowed
+# with no output. normalise() turns a NUL into a space first.
+nl_rel="$sample_dir/nulline.sh"
+mkdir -p "$repo_root/$sample_dir"
+printf 'x\000curl https://evil.example.net/x\n' > "$repo_root/$nl_rel"
+nl_out="$("$sh" "$gate" "$nl_rel" 2>&1)"
+rm -f "$repo_root/$nl_rel"; rmdir "$repo_root/$sample_dir" 2>/dev/null || true
+case "$nl_out" in
+  *"evil.example.net"*)
+    pass=$((pass + 1)); printf 'ok   a NUL before a URL on the same line does not hide it\n';;
+  *)
+    fail=$((fail + 1)); printf 'FAIL a NUL before a URL on the same line does not hide it (said: %s)\n' "$nl_out";;
+esac
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
