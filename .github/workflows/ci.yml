@@ -154,6 +154,7 @@ jobs:
           scripts/tests/check-oss-hygiene.test.sh
           scripts/tests/check-endpoints.test.sh
           scripts/tests/build-manifest.test.sh
+          scripts/tests/release-wiring.test.sh
       - name: hygiene gate (all tracked files)
         run: scripts/check-oss-hygiene.sh
       - name: endpoint allowlist (all tracked files)
@@ -180,6 +181,7 @@ jobs:
           /bin/bash scripts/tests/check-oss-hygiene.test.sh
           /bin/bash scripts/tests/check-endpoints.test.sh
           /bin/bash scripts/tests/build-manifest.test.sh
+          /bin/bash scripts/tests/release-wiring.test.sh
 
   zizmor:
     name: zizmor (workflow audit)

@@ -140,9 +140,17 @@ jobs:
           set -euo pipefail
           scripts/release/build-manifest.sh artifacts "$TAG" "$COMMIT" > artifacts/release-manifest.json
           scripts/release/sign-manifest.sh artifacts/release-manifest.json
+      # The name MUST match the `pattern:` the generated release.yml's announce
+      # job downloads with (`artifacts-*`), because that download is the only
+      # thing that puts a file in front of `gh release create`. Named
+      # `signed-manifest`, both files were uploaded, never downloaded, and so
+      # never attached to the release -- while docs/verify-release.md tells the
+      # operator to fetch and verify them. scripts/tests/release-wiring.test.sh
+      # asserts the two sides still agree; nothing else would notice, because
+      # this path does not run in CI.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: signed-manifest
+          name: artifacts-signed-manifest
           path: |
             artifacts/release-manifest.json
             artifacts/release-manifest.json.minisig
