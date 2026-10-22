@@ -5,6 +5,10 @@
 //!
 //! Phase 1 adds the session commands. Wiring only: the decisions live in
 //! `erpc-auth`, and this file turns them into output and exit codes.
+//!
+//! One store is built here rather than in `erpc-auth`, because choosing a
+//! concrete backend needs the machine's own facts -- where `op` is, what
+//! this host is called -- and the library should not go looking for them.
 
 #![forbid(unsafe_code)]
 #![allow(clippy::print_stdout, clippy::print_stderr)]
@@ -12,8 +16,10 @@
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use erpc_auth::store::StoreKind;
+use erpc_auth::store::{StoreError, StoreKind};
 
+mod browser;
+mod commands;
 mod session;
 
 /// Exit codes shared by every command.
@@ -91,111 +97,105 @@ enum Command {
         store: Option<StoreChoice>,
     },
     /// Show who the stored session belongs to.
-    Whoami,
+    Whoami {
+        /// Look in this store instead of the detected one.
+        #[arg(long, value_enum)]
+        store: Option<StoreChoice>,
+    },
 }
 
-fn main() -> ExitCode {
+/// Every store this build can use, behind one object.
+///
+/// Boxed so that the command bodies are written once rather than once per
+/// backend.
+///
+/// # Errors
+///
+/// Returns [`StoreError::Unavailable`] when the chosen backend is not
+/// usable here: `op` missing for a 1Password store, or no vault
+/// configured for it.
+pub fn store_for(kind: StoreKind) -> Result<Box<dyn erpc_auth::CredentialStore>, StoreError> {
+    use erpc_auth::store::one_password::{Mode, OnePassword, OpCli};
+    match kind {
+        StoreKind::File => Ok(Box::new(erpc_auth::store::file::FileStore::new(
+            session::state_dir().join("credentials.toml"),
+        ))),
+        StoreKind::OsKeychain => Ok(Box::new(erpc_auth::store::keychain::OsKeychain::new())),
+        StoreKind::OnePasswordDesktop | StoreKind::OnePasswordServiceAccount => {
+            let mode = if kind == StoreKind::OnePasswordDesktop {
+                Mode::Desktop
+            } else {
+                Mode::ServiceAccount
+            };
+            let runner = OpCli::from_env(mode, |n| std::env::var_os(n))?;
+            let vault =
+                std::env::var("ERPC_CREDENTIAL_VAULT").map_err(|_| StoreError::Unavailable {
+                    kind,
+                    reason: "no vault is configured; set ERPC_CREDENTIAL_VAULT to a 1Password \
+                             vault id, or use --store keychain"
+                        .to_owned(),
+                })?;
+            Ok(Box::new(OnePassword::new(
+                runner,
+                mode,
+                vault,
+                session::host_label(),
+            )))
+        }
+    }
+}
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> ExitCode {
     let cli = Cli::parse();
-    match cli.command {
-        Command::Login { store, no_browser } => login(cli.json, store, no_browser),
-        Command::Logout { store } => logout(cli.json, store),
-        Command::Whoami => whoami(cli.json),
+    let outcome = match cli.command {
+        Command::Login { store, no_browser } => {
+            commands::login(cli.json, store.map(Into::into), no_browser).await
+        }
+        Command::Logout { store } => commands::logout(cli.json, store.map(Into::into)).await,
+        Command::Whoami { store } => commands::whoami(cli.json, store.map(Into::into)).await,
         Command::Version => {
             let info = erpc_core::version::VersionInfo::current();
             if cli.json {
-                match serde_json::to_string_pretty(&info) {
-                    Ok(s) => println!("{s}"),
-                    Err(_) => return ExitCode::from(exit::FAILURE),
-                }
+                print_json(&serde_json::to_value(&info).unwrap_or_default());
             } else {
                 println!("{info}");
             }
+            return ExitCode::from(exit::OK);
+        }
+    };
+
+    match outcome {
+        commands::Outcome::Done(message) => {
+            if !message.is_empty() {
+                println!("{message}");
+            }
             ExitCode::from(exit::OK)
         }
-    }
-}
-
-/// Reports the store a session would go to, and stops.
-///
-/// The device grant's HTTP side is the next piece of this phase. Until it
-/// is here, this says so plainly rather than printing a success it did not
-/// achieve.
-fn login(json: bool, store: Option<StoreChoice>, no_browser: bool) -> ExitCode {
-    let selection = session::plan_store(store.map(Into::into));
-    let report = session::StoreReport::from(selection);
-
-    if !no_browser && !session::has_terminal() {
-        emit_error(
-            json,
-            "erpc login needs a terminal, or --no-browser to print the code instead",
-        );
-        return ExitCode::from(exit::NEEDS_TERMINAL);
-    }
-
-    if json {
-        let body = serde_json::json!({
-            "status": "not-implemented",
-            "audience": session::LOGIN_AUDIENCE.as_str(),
-            "store": report,
-        });
-        print_json(&body);
-    } else {
-        println!("Sign-in would use the {} store.", report.store);
-        println!("  because {}", report.reason);
-        if report.writes_to_disk {
-            println!("  warning: {}", session::DISK_WARNING);
+        commands::Outcome::Failed(message) => {
+            if !message.is_empty() {
+                eprintln!("error: {message}");
+            }
+            ExitCode::from(exit::FAILURE)
         }
-        println!("The sign-in exchange itself is not wired up yet in this build.");
+        commands::Outcome::NoSession(message) => {
+            if !message.is_empty() {
+                println!("{message}");
+            }
+            ExitCode::from(exit::SESSION_EXPIRED)
+        }
+        commands::Outcome::NeedsTerminal(message) => {
+            eprintln!("error: {message}");
+            ExitCode::from(exit::NEEDS_TERMINAL)
+        }
     }
-    ExitCode::from(exit::FAILURE)
-}
-
-/// Removes the stored session.
-fn logout(json: bool, store: Option<StoreChoice>) -> ExitCode {
-    let selection = session::plan_store(store.map(Into::into));
-    let report = session::StoreReport::from(selection);
-    if json {
-        print_json(&serde_json::json!({
-            "status": "not-implemented",
-            "store": report,
-        }));
-    } else {
-        println!(
-            "Sign-out would clear the session from the {} store.",
-            report.store
-        );
-        println!("The sign-out exchange itself is not wired up yet in this build.");
-    }
-    ExitCode::from(exit::FAILURE)
-}
-
-/// Shows who the stored session belongs to.
-fn whoami(json: bool) -> ExitCode {
-    if json {
-        print_json(&serde_json::json!({
-            "status": "no-session",
-            "hint": "run `erpc login`",
-        }));
-    } else {
-        println!("Not signed in. Run `erpc login`.");
-    }
-    ExitCode::from(exit::SESSION_EXPIRED)
 }
 
 /// Prints a JSON body, or fails loudly if it cannot be rendered.
-fn print_json(body: &serde_json::Value) {
+pub fn print_json(body: &serde_json::Value) {
     match serde_json::to_string_pretty(body) {
         Ok(text) => println!("{text}"),
         Err(e) => eprintln!("could not render JSON: {e}"),
-    }
-}
-
-/// Prints an error the same way in both output modes.
-fn emit_error(json: bool, message: &str) {
-    if json {
-        print_json(&serde_json::json!({ "status": "error", "message": message }));
-    } else {
-        eprintln!("error: {message}");
     }
 }
 

@@ -10,6 +10,7 @@
 //! than pretending to have signed anyone in.
 
 use std::io::IsTerminal as _;
+use std::path::PathBuf;
 
 use erpc_auth::credential::Audience;
 use erpc_auth::store::select::{Environment, Selection, choose};
@@ -96,6 +97,57 @@ pub fn has_terminal() -> bool {
     std::io::stdin().is_terminal() && std::io::stderr().is_terminal()
 }
 
+/// The erpc state directory, `~/.erpc/state`.
+///
+/// `ERPC_HOME` overrides the root, which is what makes a test, and a CI
+/// job, able to run without touching the operator's own files.
+#[must_use]
+pub fn state_dir() -> PathBuf {
+    state_dir_from(|name| std::env::var_os(name))
+}
+
+/// The state directory, reading the environment through `var`.
+///
+/// Split out so a test can describe a machine instead of mutating the
+/// process environment, which this workspace forbids anyway: changing a
+/// variable is `unsafe` in this edition because another thread may be
+/// reading it.
+#[must_use]
+pub fn state_dir_from<F>(var: F) -> PathBuf
+where
+    F: Fn(&str) -> Option<std::ffi::OsString>,
+{
+    let root = var("ERPC_HOME").map_or_else(
+        || {
+            var("HOME")
+                .map_or_else(|| PathBuf::from("."), PathBuf::from)
+                .join(".erpc")
+        },
+        PathBuf::from,
+    );
+    root.join("state")
+}
+
+/// The account name a session is filed under.
+///
+/// The operating-system user, which is what distinguishes two accounts on
+/// one machine before anyone has signed in and there is a better name.
+#[must_use]
+pub fn local_account() -> String {
+    std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .unwrap_or_else(|_| "default".to_owned())
+}
+
+/// This machine's name, for the 1Password item title.
+#[must_use]
+pub fn host_label() -> String {
+    std::env::var("ERPC_HOST_LABEL")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .or_else(|_| std::env::var("COMPUTERNAME"))
+        .unwrap_or_else(|_| "unknown-host".to_owned())
+}
+
 /// The audience `erpc login` signs in to.
 pub const LOGIN_AUDIENCE: Audience = Audience::AuthApi;
 
@@ -168,6 +220,30 @@ mod tests {
         };
         let report: StoreReport = selection.into();
         assert!(!report.writes_to_disk);
+    }
+
+    #[test]
+    fn erpc_home_moves_the_state_directory() {
+        let moved = super::state_dir_from(|n| match n {
+            "ERPC_HOME" => Some(std::ffi::OsString::from("/srv/erpc")),
+            _ => None,
+        });
+        assert_eq!(moved, std::path::Path::new("/srv/erpc/state"));
+    }
+
+    #[test]
+    fn without_erpc_home_the_state_directory_is_under_the_home_directory() {
+        let home = super::state_dir_from(|n| match n {
+            "HOME" => Some(std::ffi::OsString::from("/home/alice")),
+            _ => None,
+        });
+        assert_eq!(home, std::path::Path::new("/home/alice/.erpc/state"));
+    }
+
+    #[test]
+    fn an_account_name_is_always_available() {
+        assert!(!super::local_account().is_empty());
+        assert!(!super::host_label().is_empty());
     }
 
     #[test]

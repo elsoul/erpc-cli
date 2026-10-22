@@ -14,6 +14,8 @@ authors.workspace = true
 publish = true
 
 [dependencies]
+tokio = { workspace = true }
+reqwest = { workspace = true }
 erpc-core = { workspace = true }
 erpc-secret = { workspace = true }
 serde = { workspace = true }
