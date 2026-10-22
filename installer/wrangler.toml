@@ -16,8 +16,8 @@ routes = [
 ]
 
 [vars]
+# GitHub Releases is the only source this worker serves from; see src/index.ts.
 GITHUB_REPO = "elsoul/erpc-cli"
-MIRROR_BASE = "https://dl.erpc.global"
 
 [observability]
 enabled = true

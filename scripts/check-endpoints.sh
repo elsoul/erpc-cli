@@ -6,30 +6,61 @@
 #
 # Every host `erpc` may contact is declared once, in
 # crates/erpc-core/src/endpoints.rs. This script extracts that list and refuses
-# any other http/https/ws/wss URL in a tracked text file, so a new outbound
-# destination cannot be introduced without editing the allowlist, which a
-# reviewer sees.
+# any other http/https/ws/wss URL in a tracked file.
 #
-#   scripts/check-endpoints.sh [files...]     # default: all tracked files
+#   scripts/check-endpoints.sh [files...]       # default: all tracked files
+#   scripts/check-endpoints.sh --print-exceptions
 #
-# Coverage: every tracked text file. Prose files (.md, .txt) are the one
-# exception, because documentation legitimately links to the wider web and a
-# prose link cannot make the program connect anywhere — but a prose line that
-# carries a download or execute command (curl, wget, irm, iwr, iex, `| sh`)
-# IS held to the allowlist, since that line is an instruction a reader runs.
-# Generated files and fixtures are listed in skip_re below.
+# WHAT IT COVERS, exactly. Every tracked file is scanned for URLs and every
+# host is held to the allowlist, with two carve-outs:
+#
+#   1. Prose files (.md, .txt, NOTICE, CHANGELOG, AUTHORS) may link anywhere,
+#      because a documentation link cannot make the program connect. A prose
+#      line is still held to the allowlist when it is inside a fenced code
+#      block, contains a code span, or carries a download/install/execute
+#      command — that is, whenever it is an instruction a reader may run.
+#   2. The files listed by --print-exceptions are not scanned at all. Those
+#      are generated artifacts, lockfiles, this gate's own fixtures, and the
+#      files that name hosts on purpose.
+#
+# Any claim in the documentation about this gate's coverage must match
+# --print-exceptions; a self-test asserts that it does.
 #
 # This is a text gate over source, not a sandbox. It cannot stop a dependency
-# from opening its own socket; it stops a destination from entering this
-# repository unreviewed.
+# from opening a socket, and it cannot see a host assembled at runtime from
+# fragments. It stops a destination from entering this repository unreviewed.
 #
 # Written for bash 3.2 (macOS /bin/bash): no mapfile, no associative arrays.
-# CI exercises both bash 3.2 and bash 5.
+# CI exercises bash 3.2 and bash 5.
 set -uo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
 
 allowlist_src="crates/erpc-core/src/endpoints.rs"
+
+# The one list of files this gate does not scan. Kept here so the
+# documentation can be checked against it instead of paraphrasing it.
+print_exceptions() {
+  cat <<'EOF'
+.github/workflows/release.yml
+THIRD_PARTY_NOTICES.md
+crates/erpc-core/src/endpoints.rs
+docs/public-hosts.md
+scripts/check-endpoints.sh
+scripts/tests/check-endpoints.test.sh
+scripts/tests/check-oss-hygiene.test.sh
+*.lock
+*lock.json
+LICENSE
+LICENSES/*
+EOF
+}
+
+if [ "${1:-}" = "--print-exceptions" ]; then
+  print_exceptions
+  exit 0
+fi
+
 [ -f "$allowlist_src" ] || { echo "missing $allowlist_src" >&2; exit 2; }
 
 # Read ONLY the `pub const ... = &[ ... ];` arrays, stopping at the test module
@@ -44,10 +75,7 @@ consts=$(awk '
 
 [ -n "$consts" ] || { echo "could not read the allowlist from $allowlist_src" >&2; exit 2; }
 
-# Exact hosts: a line whose only content is a quoted literal (with optional
-# comma), or an inline array of such literals. Anything else is ignored.
 allowed=$(printf '%s\n' "$consts" | grep -v '("' | grep -oE '"[^"]+"' | tr -d '"' | sort -u)
-# Wildcard entries: ("prefix", ".suffix") -> "prefix<TAB>.suffix"
 patterns=$(printf '%s\n' "$consts" | grep -oE '\("[A-Za-z0-9.-]+",[[:space:]]*"[A-Za-z0-9.-]+"\)' \
   | sed -E 's/^\("([^"]+)",[[:space:]]*"([^"]+)"\)$/\1	\2/')
 
@@ -65,20 +93,32 @@ else
   while IFS= read -r f; do files+=("$f"); done < <(git ls-files)
 fi
 
-# Vendored, generated and fixture files. release.yml and THIRD_PARTY_NOTICES.md
-# are generated (cargo-dist, cargo-about) and reviewed when their generator is
-# upgraded; the two self-tests hold deliberately bad samples.
-skip_re='(\.lock$|lock\.json$|^LICENSES/|^LICENSE$|/node_modules/|^target/|^scripts/tests/[a-z-]+\.test\.sh$|^\.github/workflows/release\.yml$|^THIRD_PARTY_NOTICES\.md$)'
 prose_re='(\.(md|txt)$|^(NOTICE|CHANGELOG|AUTHORS)$)'
-# Prose lines that are instructions to run something are held to the allowlist.
-command_re='(curl|wget|iwr|irm|iex|Invoke-WebRequest|Invoke-RestMethod|\| *(ba)?sh)'
+# Verbs that fetch, install or execute from a URL. Prose lines carrying one of
+# these are held to the allowlist even outside a code block.
+command_re='(curl|wget|iwr|irm|iex|Invoke-WebRequest|Invoke-RestMethod|Start-BitsTransfer|\| *(ba)?sh|cargo +(install|add)|pip +install|pipx +install|npm +(install|i|exec)|pnpm +(add|dlx)|yarn +add|go +(install|get)|gem +install|brew +install|apt-get +install|docker +(run|pull)|nix +(run|shell)|git +clone)'
 
 status=0
 report() { printf '%s:%s: %s\n' "$1" "$2" "$3" >&2; status=1; }
 
+is_excepted() {
+  local f="$1" pat
+  while IFS= read -r pat; do
+    [ -n "$pat" ] || continue
+    case "$f" in
+      $pat) return 0;;
+    esac
+  done <<EOF
+$(print_exceptions)
+EOF
+  case "$f" in */node_modules/*|target/*) return 0;; esac
+  return 1
+}
+
 host_allowed() {
   local host prefix suffix mid a
-  host=$(printf '%s' "${1%.}" | tr '[:upper:]' '[:lower:]')
+  host=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  while [ "${host%.}" != "$host" ]; do host="${host%.}"; done
   while IFS= read -r a; do
     [ -n "$a" ] && [ "$host" = "$a" ] && return 0
   done <<EOF
@@ -98,68 +138,77 @@ EOF
   return 1
 }
 
-# Emits "line:url" for every URL on lines matching the optional filter.
-scan_urls() {
-  local file="$1" filter="${2:-}"
-  if [ -n "$filter" ]; then
-    grep -noiE "$filter[^\"']*((https?|wss?)://[A-Za-z0-9._~:/?#@!\$&*+,;=%\${}()-]+)" "$file" 2>/dev/null \
-      | grep -oiE '^[0-9]+:|(https?|wss?)://[A-Za-z0-9._~:/?#@!$&*+,;=%${}()-]+' \
-      | paste -d: - - 2>/dev/null
-  else
-    grep -noiE '(https?|wss?)://[A-Za-z0-9._~:/?#@!$&*+,;=%${}()-]+' "$file" 2>/dev/null
-  fi
-}
-
-check_url_line() {
-  local f="$1" ln="$2" url="$3" scheme hostport host
+check_url() {
+  local f="$1" ln="$2" url="$3" scheme rest hostport host
   scheme="${url%%://*}"
-  hostport="${url#*://}"; hostport="${hostport%%/*}"
-  hostport="${hostport%%\?*}"; hostport="${hostport%%#*}"
+  rest="${url#*://}"
+  # A template expression immediately after :// means the host itself is
+  # computed, so there is no literal to check. Anywhere else the expression is
+  # stripped and the remaining literal host IS checked, because appending an
+  # expression must not become a way past this gate.
+  case "$rest" in
+    '${'*|'{{'*|'$('*) return 0;;
+  esac
+  hostport="${rest%%/*}"; hostport="${hostport%%\?*}"; hostport="${hostport%%#*}"
   hostport="${hostport##*@}"
+  # Cut the host at the first template delimiter; what precedes it is literal.
+  hostport="${hostport%%\$\{*}"; hostport="${hostport%%\{\{*}"; hostport="${hostport%%\$(*}"
   case "$hostport" in
     \[*\]*) host="${hostport%%\]*}]";;
     *) host="${hostport%%:*}";;
   esac
   # Prose and code wrap URLs in punctuation; it is not part of the host.
-  host="${host%%[)\",\';]*}"
-  while [ "${host%.}" != "$host" ]; do host="${host%.}"; done
-  # Template expressions resolve at runtime; there is no literal host here.
-  case "$host" in *'${'*|*'{{'*|*'$('*|'') return 0;; esac
+  host="${host%%[)\",\';\`]*}"
+  [ -n "$host" ] || return 0
   if ! host_allowed "$host"; then
     report "$f" "$ln" "endpoint not in the allowlist: $scheme://$host  (declare it in $allowlist_src if it is intended)"
   fi
 }
 
+check_line() {
+  local f="$1" ln="$2" line="$3" url
+  for url in $(printf '%s' "$line" | grep -oiE '(https?|wss?)://[A-Za-z0-9._~:/?#@!$&*+,;=%${}()`-]+'); do
+    check_url "$f" "$ln" "$url"
+  done
+}
+
 for f in "${files[@]}"; do
   [ -f "$f" ] || continue
-  [[ "$f" =~ $skip_re ]] && continue
-  # This script, the allowlist and the published host list name hosts on purpose.
-  case "$f" in
-    scripts/check-endpoints.sh|"$allowlist_src"|docs/public-hosts.md) continue;;
-  esac
-  # Skip binary files.
-  grep -Iq . "$f" 2>/dev/null || continue
+  is_excepted "$f" && continue
 
   if [[ "$f" =~ $prose_re ]]; then
-    # Insecure schemes anywhere in prose.
-    while IFS=: read -r ln url; do
-      [ -z "$ln" ] && continue
-      report "$f" "$ln" "insecure URL in documentation: $url"
-    done < <(grep -noiE '(http|ws)://[A-Za-z0-9._~:/?#@!$&*+,;=%-]+' "$f" 2>/dev/null \
-      | grep -viE '://(127\.0\.0\.1|localhost|\[::1\])')
-    # Lines that instruct the reader to fetch or execute something.
-    while IFS= read -r hit; do
-      [ -z "$hit" ] && continue
-      ln="${hit%%:*}"; rest="${hit#*:}"
-      for url in $(printf '%s' "$rest" | grep -oiE '(https?|wss?)://[A-Za-z0-9._~:/?#@!$&*+,;=%${}()-]+'); do
-        check_url_line "$f" "$ln" "$url"
-      done
-    done < <(grep -noiE ".*$command_re.*" "$f" 2>/dev/null | grep -iE '(https?|wss?)://')
+    # grep -a so a stray NUL cannot hide the rest of the file.
+    ln=0
+    fenced=0
+    while IFS= read -r line; do
+      ln=$((ln + 1))
+      case "$line" in
+        '```'*|'~~~'*) fenced=$((1 - fenced)); continue;;
+      esac
+      case "$line" in
+        *'://'*) ;;
+        *) continue;;
+      esac
+      # Insecure scheme anywhere in prose. The host must end at a delimiter so
+      # that localhost.evil.com is not mistaken for loopback.
+      if printf '%s' "$line" | grep -qiE '(http|ws)://' \
+        && ! printf '%s' "$line" | grep -qiE '(http|ws)://(127\.0\.0\.1|localhost|\[::1\])([:/?#"'"'"'`)]|$)'; then
+        if printf '%s' "$line" | grep -qiE '(http|ws)://[A-Za-z0-9]'; then
+          report "$f" "$ln" "insecure URL in documentation: $(printf '%s' "$line" | grep -oiE '(http|ws)://[A-Za-z0-9._~:/?#@!$&*+,;=%-]+' | head -1)"
+        fi
+      fi
+      # Instructions a reader may run are held to the allowlist: inside a
+      # fenced block, inside a code span, or carrying a command verb.
+      if [ "$fenced" = 1 ] || printf '%s' "$line" | grep -q '`' \
+        || printf '%s' "$line" | grep -qiE "$command_re"; then
+        check_line "$f" "$ln" "$line"
+      fi
+    done < <(grep -a '' "$f" 2>/dev/null)
   else
-    while IFS=: read -r ln url; do
+    while IFS=: read -r ln rest; do
       [ -z "$ln" ] && continue
-      check_url_line "$f" "$ln" "$url"
-    done < <(grep -noiE '(https?|wss?)://[A-Za-z0-9._~:/?#@!$&*+,;=%${}()-]+' "$f" 2>/dev/null)
+      check_url "$f" "$ln" "$rest"
+    done < <(grep -naoiE '(https?|wss?)://[A-Za-z0-9._~:/?#@!$&*+,;=%${}()`-]+' "$f" 2>/dev/null)
   fi
 done
 

@@ -14,21 +14,24 @@
  * keys, and it verifies no signatures: WebCrypto has no BLAKE2b, so minisign
  * cannot be checked here.
  *
- * Because of that, **the latest tag is resolved from GitHub only**. The R2
- * mirror is a fallback for downloading an installer whose tag is already
- * fixed, never for deciding which tag that is. Letting the mirror name the
- * tag would allow anyone able to write to the bucket, or to interpose on
- * dl.erpc.global, to pin every `curl … | bash` to an older release. The
- * response carries `x-erpc-source` saying which source answered.
+ * Because it cannot verify anything, **everything it serves comes from GitHub
+ * Releases and nothing else** — both the tag it resolves and the installer
+ * body it returns. There is deliberately no R2 fallback: the body is piped
+ * straight into a shell, so serving it from a source this worker cannot
+ * verify would hand arbitrary code execution to anyone able to write to that
+ * bucket or interpose on it. When GitHub is unreachable, this worker fails.
  *
- * The convenience path therefore trusts DNS, TLS, this worker and GitHub
+ * The convenience path therefore trusts DNS, TLS, this worker, and GitHub
  * Releases. Operators who need more follow the high-assurance path in
- * docs/verify-release.md.
+ * docs/verify-release.md, which does not involve this worker at all.
+ *
+ * The R2 mirror still serves release *archives*, whose integrity is pinned by
+ * the hashes in the signed manifest. That is a different trust question and
+ * is handled by the client that checks those hashes, not here.
  */
 
 export interface Env {
   GITHUB_REPO: string; // "elsoul/erpc-cli"
-  MIRROR_BASE: string; // "https://dl.erpc.global"
 }
 
 const TAG_RE = /^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
@@ -83,7 +86,12 @@ export default {
 
     const file = flavor === "sh" ? "erpc-installer.sh" : "erpc-installer.ps1";
     const got = await fetchInstaller(env, tag, file);
-    if (!got) return text(`installer not found for ${tag}`, 502);
+    if (!got) {
+      return text(
+        `could not fetch the installer for ${tag} from GitHub Releases; there is no fallback source for an executable script`,
+        502,
+      );
+    }
 
     const res = new Response(got.body, {
       status: 200,
@@ -108,32 +116,33 @@ function text(msg: string, status: number): Response {
   });
 }
 
+/**
+ * Fetch an installer script from the GitHub Release for `tag`.
+ *
+ * GitHub only, by design: this body is executed by the caller and this worker
+ * cannot verify a signature, so there is no second source to fall back to.
+ */
 async function fetchInstaller(
   env: Env,
   tag: string,
   file: string,
 ): Promise<{ body: string; source: string } | null> {
-  const candidates: Array<[string, string]> = [
-    ["github", `https://github.com/${env.GITHUB_REPO}/releases/download/${tag}/${file}`],
-    ["mirror", `${env.MIRROR_BASE}/${tag}/${file}`],
-  ];
-  for (const [source, u] of candidates) {
-    try {
-      const r = await fetch(u, {
-        redirect: "follow",
-        headers: { "user-agent": UA },
-        cf: { cacheTtl: CACHE_TTL },
-      });
-      if (r.ok) {
-        const body = await r.text();
-        // cargo-dist installers start with a shebang or a PowerShell comment.
-        if (body.startsWith("#!") || body.startsWith("#") || body.startsWith("<#")) {
-          return { body, source };
-        }
+  const url = `https://github.com/${env.GITHUB_REPO}/releases/download/${tag}/${file}`;
+  try {
+    const r = await fetch(url, {
+      redirect: "follow",
+      headers: { "user-agent": UA },
+      cf: { cacheTtl: CACHE_TTL },
+    });
+    if (r.ok) {
+      const body = await r.text();
+      // cargo-dist installers start with a shebang or a PowerShell comment.
+      if (body.startsWith("#!") || body.startsWith("#") || body.startsWith("<#")) {
+        return { body, source: "github" };
       }
-    } catch {
-      // try the next source
     }
+  } catch {
+    // fall through to the error below
   }
   return null;
 }

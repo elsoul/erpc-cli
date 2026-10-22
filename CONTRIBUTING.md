@@ -48,14 +48,19 @@ under `crates/` and the discussion on the pull request you are working from.
    `pull_request_target` or `workflow_run`.
 8. **Outbound destinations.** Every host `erpc` contacts is declared in
    `crates/erpc-core/src/endpoints.rs`, and nowhere else.
-   `scripts/check-endpoints.sh` fails a URL in any tracked text file whose
-   host is not on that list; prose files are the one exception, and even
-   there a line carrying a download or execute command is held to the list.
+   `scripts/check-endpoints.sh` fails a URL whose host is not on that list.
+   For its exact coverage, including the files it does not scan, read the
+   header of that script and run `scripts/check-endpoints.sh
+   --print-exceptions`; do not rely on a summary. Prose files may link
+   anywhere, but a prose line inside a code block, in a code span, or
+   carrying an install or download command is held to the list, because a
+   reader may run it.
    Because ERPC endpoints are compile-time constants and are never read from
    configuration or environment variables, a tampered config cannot redirect
    traffic. This is a source gate, not a sandbox: it does not constrain what a
-   malicious dependency does at runtime. `ensure_service_url` is the helper
-   callers will use once the HTTP client lands; it has no callers today.
+   malicious dependency does at runtime, and it cannot see a host assembled
+   from fragments. `ensure_service_url` is the helper callers will use once
+   the HTTP client lands; it has no callers today.
 9. **Gates must be tested.** Any check that can block a commit needs a case in
    `scripts/tests/` proving it blocks a known-bad sample and passes a
    known-good one. A gate that silently stops matching is worse than none.
@@ -79,12 +84,14 @@ Optional local tools: `cargo install cargo-deny cargo-dist`,
 - Branch from `main`; one topic per PR.
 - Fill in the PR template checklist. The "no internal identifiers" items are
   mandatory.
-- **Every pull request is reviewed by this repository's review gate before it
-  merges**, whatever its size. Maintainers run it with `/review`; it judges
+- **Maintainers run this repository's review gate on every pull request
+  before merging it**, whatever its size, with `/review`. It judges
   correctness, security, supply chain and whether the change is safe to
   publish, and returns PASS or FAIL. A FAIL is fixed and the gate re-run; it
   is not argued past, and green CI does not substitute for it. The gate's
-  criteria are the rules above, written out in the agent definition.
+  criteria are the rules above, written out in the agent definition. This is
+  a maintainer practice: the branch ruleset on `main` requires a pull request
+  and the CI checks, but it cannot require the gate's verdict.
 - Releases are cut by maintainers from tags `v*` through the reviewed
   `release.yml` workflow and a protected `release` environment. Contributors
   do not publish.

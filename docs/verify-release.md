@@ -11,10 +11,18 @@ SPDX-License-Identifier: Apache-2.0
 > procedure that the release workflow implements, so that it can be reviewed
 > before it is used.
 
-Two paths are offered. The convenience path (`curl | bash`) trusts DNS, TLS,
-the `install.erpc.global` worker and GitHub Releases at install time; `erpc`
-then verifies every later update with the signatures below. Operators of
-mainnet validators should use the high-assurance path.
+Two paths are offered.
+
+The convenience path (`curl | bash`) trusts DNS, TLS, the
+`install.erpc.global` worker and GitHub Releases. That worker serves the
+installer only from GitHub Releases, because it cannot verify a signature and
+the script it returns is executed. It verifies nothing itself, and neither
+does the installer script it serves. A self-updating command that would check
+the signatures below does not exist yet, so nothing on this path is verified
+at any point.
+
+The high-assurance path below is therefore the only one that verifies
+anything today. Operators of mainnet validators should use it.
 
 ## High-assurance path
 
@@ -50,12 +58,12 @@ mainnet validators should use the high-assurance path.
 
 `release-manifest.json` contains `version`, `tag`, `commit`, `build_time`, and
 the `sha256` and `size` of every archive, plus the SBOM hash. `latest.json` is
-signed separately and carries an expiry so a stale copy cannot freeze you on
-an old version.
+signed separately and carries an expiry, so that a client which checks it
+cannot be frozen on an old version by a stale copy. No client checks it yet.
 
 The manifest also carries a `revoked_versions_url`. **Nothing publishes that
-file yet**, and no command consumes it; it is a field reserved for a
-revocation list, not a list that exists.
+file and nothing reads it**; the field is reserved for a revocation list that
+does not exist.
 
 ## Reproducible build check
 
@@ -66,5 +74,4 @@ macOS and Windows builds are not yet compared; the release notes say so.
 ## Key rotation
 
 If the signing key is rotated, the new public key is announced in a release
-signed by the old key and in the repository. Revoked versions are listed in
-the signed revocation file referenced by the manifest.
+signed by the old key and in the repository.

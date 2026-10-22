@@ -7,8 +7,10 @@
 #   scripts/release/build-manifest.sh <artifacts-dir> <tag> <commit> > release-manifest.json
 #
 # The manifest is what minisign signs (scripts/release/sign-manifest.sh) and
-# what `erpc upgrade` verifies: version, tag, commit, build time, per-target
-# archive sha256/size, SBOM hash and the URL of the signed revocation list.
+# what docs/verify-release.md tells an operator to check: version, tag, commit,
+# build time, per-target archive sha256/size and the SBOM hash. It also carries
+# a `revoked_versions_url` field, reserved for a revocation list that nothing
+# publishes or consumes yet.
 set -euo pipefail
 
 dir="${1:?artifacts dir}"
@@ -43,10 +45,20 @@ done
 # it would be mirrored and presented to users as a verification artifact.
 [ -n "$targets_json" ] || { echo "no release archives found in $dir; refusing to emit an empty manifest" >&2; exit 1; }
 [ -n "$sbom_sha" ] || { echo "no CycloneDX SBOM found in $dir; refusing to emit a manifest without one" >&2; exit 1; }
-target_count=$(printf '%s' "$targets_json" | tr ',' '\n' | grep -c '"archive"')
-expected_targets=$(grep -cE '^  "[a-z0-9_]+-[a-z0-9_-]+",$' "$(git rev-parse --show-toplevel)/dist-workspace.toml" 2>/dev/null || echo 0)
-if [ "$expected_targets" -gt 0 ] && [ "$target_count" -ne "$expected_targets" ]; then
-  echo "manifest covers $target_count targets but dist-workspace.toml configures $expected_targets" >&2
+target_count=$(printf '%s' "$targets_json" | tr ',' '\n' | grep -c '"archive"' || true)
+dist_config="$(git rev-parse --show-toplevel)/dist-workspace.toml"
+[ -f "$dist_config" ] || { echo "cannot read $dist_config to check the target count" >&2; exit 1; }
+# `grep -c` exits 1 when it matches nothing while still printing 0, so `|| true`
+# rather than `|| echo 0`, which would append a second line and make the
+# numeric comparison error out and skip the check.
+expected_targets=$(grep -cE '^[[:space:]]*"[a-z0-9_]+-[a-z0-9_-]+",$' "$dist_config" || true)
+[ -n "$expected_targets" ] || expected_targets=0
+if [ "$expected_targets" -le 0 ]; then
+  echo "could not determine the configured target list from $dist_config" >&2
+  exit 1
+fi
+if [ "$target_count" -ne "$expected_targets" ]; then
+  echo "manifest covers $target_count targets but $dist_config configures $expected_targets" >&2
   exit 1
 fi
 

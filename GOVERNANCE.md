@@ -11,8 +11,9 @@ SPDX-License-Identifier: Apache-2.0
   requests, triage issues and security reports, and own the roadmap.
 - **Release approvers** are the required reviewers of the GitHub environment
   `release`. A release is published only after an approver accepts the
-  release checklist (CI green, dependency audit, SBOM diff review, changelog,
-  reproducible-build comparison, secret scan).
+  release checklist: CI green, dependency audit, SBOM diff review, changelog,
+  secret scan, and a reproducible-build comparison that currently covers the
+  two Linux targets only.
 - **Contributors** are anyone who opens a pull request under the terms of
   `CONTRIBUTING.md`.
 

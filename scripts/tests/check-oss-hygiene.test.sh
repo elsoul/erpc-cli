@@ -74,6 +74,12 @@ check "sibling private repository reference" block "$sample_dir/h.md" \
 check "this repository is not an internal reference" allow "$sample_dir/h2.md" \
   'Clone it from https://github.com/elsoul/erpc-cli'
 
+check "reviewer team is not an internal reference" allow "$sample_dir/h2b.md" \
+  'Reviewers: @elsoul/erpc-cli-maintainers'
+
+check "a sibling sharing this repository's prefix is still blocked" block "$sample_dir/h2c.md" \
+  'See elsoul/erpc-cli-internal for the runbook.'
+
 check "mixed-case internal host" block "$sample_dir/h3.rs" \
   'const U: &str = "https://ops-internal.ERPC.global/";'
 

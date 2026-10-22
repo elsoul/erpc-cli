@@ -376,4 +376,51 @@ mod tests {
             "not described in docs/public-hosts.md: {missing:?}"
         );
     }
+
+    /// The other direction: a host documented as allowed but absent from the
+    /// code would tell a reader the gate permits something it does not.
+    #[test]
+    fn the_page_documents_no_host_the_code_lacks() {
+        let doc = include_str!("../../../docs/public-hosts.md");
+        let hosts = all_hosts();
+        let undeclared: Vec<&str> = doc
+            .lines()
+            // Only the table rows list hosts; prose names files and commands.
+            .filter(|l| l.starts_with('|'))
+            .flat_map(|l| l.split('`'))
+            .filter(|t| {
+                (t.contains(".erpc.global")
+                    || t.contains("github")
+                    || t.contains("crates.io")
+                    || t.contains("npmjs")
+                    || t.contains("rustup"))
+                    && !t.contains(' ')
+            })
+            .filter(|t| {
+                !hosts.contains(t)
+                    && !super::HOST_PATTERNS
+                        .iter()
+                        .any(|(p, s)| t.starts_with(p) && t.ends_with(s))
+            })
+            .collect();
+        assert!(
+            undeclared.is_empty(),
+            "documented in docs/public-hosts.md but not declared in this module: {undeclared:?}"
+        );
+    }
+
+    /// Any claim about what `scripts/check-endpoints.sh` skips must match what
+    /// it actually skips. The script prints that list; the page must not claim
+    /// a narrower one, so it is required to point at the command instead of
+    /// paraphrasing it.
+    #[test]
+    fn the_page_defers_to_the_script_for_its_exception_list() {
+        let doc = include_str!("../../../docs/public-hosts.md");
+        assert!(
+            doc.contains("--print-exceptions"),
+            "docs/public-hosts.md must point readers at \
+             `scripts/check-endpoints.sh --print-exceptions` rather than \
+             restating the exception list, which drifts"
+        );
+    }
 }

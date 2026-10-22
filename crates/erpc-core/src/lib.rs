@@ -97,8 +97,18 @@ pub mod version {
             "x86_64-apple-darwin"
         } else if cfg!(all(target_arch = "aarch64", target_os = "macos")) {
             "aarch64-apple-darwin"
-        } else if cfg!(all(target_arch = "x86_64", target_os = "windows")) {
+        } else if cfg!(all(
+            target_arch = "x86_64",
+            target_os = "windows",
+            target_env = "msvc"
+        )) {
             "x86_64-pc-windows-msvc"
+        } else if cfg!(all(
+            target_arch = "x86_64",
+            target_os = "windows",
+            target_env = "gnu"
+        )) {
+            "x86_64-pc-windows-gnu"
         } else {
             "unknown"
         }
@@ -113,6 +123,30 @@ pub mod version {
             let v = VersionInfo::current();
             assert_eq!(v.version, env!("CARGO_PKG_VERSION"));
             assert!(!v.target.is_empty());
+        }
+
+        /// A build must not claim to be a release artifact it is not: the
+        /// triple goes into the output `SECURITY.md` asks reporters to paste,
+        /// and `musl` there would send a maintainer looking at the wrong build.
+        #[test]
+        fn target_triple_matches_the_compiled_environment() {
+            let t = super::target_triple();
+            if cfg!(target_os = "linux") {
+                if cfg!(target_env = "musl") {
+                    assert!(t.ends_with("-linux-musl"), "{t}");
+                } else if cfg!(target_env = "gnu") {
+                    assert!(t.ends_with("-linux-gnu"), "{t}");
+                }
+            } else if cfg!(target_os = "macos") {
+                assert!(t.ends_with("-apple-darwin"), "{t}");
+            } else if cfg!(all(target_os = "windows", target_env = "gnu")) {
+                assert!(t.ends_with("-windows-gnu"), "{t}");
+            } else if cfg!(all(target_os = "windows", target_env = "msvc")) {
+                assert!(t.ends_with("-windows-msvc"), "{t}");
+            }
+            if cfg!(target_arch = "aarch64") {
+                assert!(t.starts_with("aarch64-") || t == "unknown", "{t}");
+            }
         }
 
         #[test]
