@@ -32,7 +32,16 @@ keyring = { workspace = true, features = ["apple-native"] }
 keyring = { workspace = true, features = ["windows-native"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-keyring = { workspace = true, features = ["sync-secret-service", "crypto-rust", "vendored"] }
+keyring = { workspace = true, features = ["sync-secret-service"] }
+# crypto-rust and vendored are enabled on dbus-secret-service directly, not
+# through keyring's features of the same name. Those forward to
+# `secret-service?/crypto-rust` and `openssl?/vendored`, and a weak feature
+# reference is enough to put both crates in Cargo.lock even though no target
+# compiles them -- which cargo-audit then reports advisories for.
+dbus-secret-service = { version = "4.1", default-features = false, features = [
+  "crypto-rust",
+  "vendored",
+] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
