@@ -37,14 +37,17 @@
 #     skipped: there is nothing literal to check. An UNTERMINATED opener is
 #     not that case and is reported, because the text after it is literal
 #     and is usually the registrable domain.
-#   - The matcher reads each line as written and never rewrites it. A URL is
-#     a run of non-space characters or whole balanced ${ }, ${{ }}, {{ }} and
-#     $( ) expressions, so a space inside one of those does not end it.
-#     Backticks are excluded on purpose: a backtick is also a string quote,
-#     and pairing them across a space would splice a URL to unrelated text.
-#     The cost is the one case this gate does NOT see: a backtick expression
-#     containing a space, as in https://`cat host`.evil.example.net, is cut
-#     at the space and its domain is never checked.
+#   - The matcher reads each line as written and never rewrites it. It
+#     matches the AUTHORITY only, stopping at the first / ? or #, and within
+#     it a run of non-space characters or whole balanced ${ }, ${{ }}, {{ }}
+#     and $( ) expressions, none of which may contain a /. A space inside
+#     one of those does not end the match; nothing in the path is matched,
+#     because the authority is all this gate judges. Both bounds exist so
+#     that a match can never reach a later URL on the same line and hide it.
+#   - Backticks are not one of the balanced forms: a backtick is also a
+#     string quote, and pairing them across a space would splice a URL to
+#     unrelated text. A backtick inside a host is instead reported whenever
+#     anything follows it, so it cannot truncate a host silently.
 #   - A host that is not plain ASCII, or one containing a backslash escape
 #     anywhere, is reported: both are literals a reviewer should see, and
 #     neither may be skipped just because the matcher finds them awkward.
@@ -270,7 +273,7 @@ EOF
 
 # $1 file, $2 line number, $3 url, $4 kind
 check_url() {
-  local f="$1" ln="$2" url="$3" kind="$4" scheme rest hostport host has_expr probe
+  local f="$1" ln="$2" url="$3" kind="$4" scheme rest hostport host has_expr probe paired bt_tail
   scheme=$(printf '%s' "${url%%://*}" | tr '[:upper:]' '[:lower:]')
   rest="${url#*://}"
   hostport="${rest%%/*}"; hostport="${hostport%%\?*}"; hostport="${hostport%%#*}"
@@ -302,6 +305,24 @@ check_url() {
       return 0
       ;;
   esac
+
+  # A LONE backtick is treated as a string quote above, which is right for
+  # `https://user-api.erpc.global`; -- but only while nothing host-like
+  # follows it. When it does, trimming there would drop the registrable
+  # domain and allow the host on the strength of what came before, which is
+  # the same mechanism as the backslash check. Report instead.
+  if [ "$has_expr" = no ]; then
+    case "$host" in
+      *'`'*)
+        bt_tail="${host#*\`}"
+        bt_tail="${bt_tail%%[)\",\';\`]*}"
+        if [ -n "$bt_tail" ]; then
+          report "$f" "$ln" "backtick inside the host hides the rest of it: $scheme://$host"
+          return 0
+        fi
+        ;;
+    esac
+  fi
 
   # `probe` is the host's literal skeleton: the same string with every
   # expression removed, so the checks below read the parts the author wrote
@@ -363,14 +384,31 @@ for f in "${files[@]}"; do
   # Escaped slashes (\/\/) are normalised so a JSON or TypeScript string
   # cannot hide a URL from the matcher.
   #
-  # A URL is a run of non-space characters OR whole balanced expressions,
+  # The match is the AUTHORITY only -- it stops at the first / ? or # -- and
+  # within it a run of non-space characters or whole balanced expressions,
   # so a space inside `${{ ... }}` or `{{ ... }}` does not end it and
-  # `https://{{ host }}.evil.example.net` is seen whole. An earlier version
-  # got this by rewriting expressions to space-free placeholders before
-  # matching, which is the one thing a gate must not do: `[^}]*` ran to the
-  # next closer anywhere on the line, so an unbalanced `${` before a URL and
-  # a `}` after it replaced the URL itself, and nothing downstream ever saw
-  # it. The matcher now reads the line as written and edits nothing.
+  # `https://{{ host }}.evil.example.net` is seen whole. Nothing else of the
+  # URL is matched, because the authority is all this gate judges.
+  #
+  # Both bounds are load-bearing, and each replaced a defect that let a URL
+  # escape the gate entirely:
+  #
+  #   * Stopping at / keeps the balanced branches out of the path. When they
+  #     could start after a /, `https://github.com/x$(echo https://evil…)`
+  #     was ONE match whose host was the declared github.com, and the inner
+  #     URL -- a real destination -- was inside it, so `grep -o` never
+  #     emitted it. Allowed, silently.
+  #   * Forbidding / INSIDE an expression keeps `://` out of one, so a
+  #     balanced span cannot contain a URL even in the authority.
+  #
+  # The version before that rewrote expressions to placeholders first, which
+  # is the one thing a gate must not do: an unbalanced `${` before a URL and
+  # a `}` after it replaced the URL itself. Three rounds of this had the one
+  # cause -- treating "find the URLs" as a regex over a whole line of
+  # arbitrary source. Bounding the match to the authority removes the only
+  # freedom the extension had. The invariant to hold on to is not "no
+  # rewriting" but: no URL in a tracked file escapes evaluation. The suite
+  # asserts that directly.
   #
   # Backticks are deliberately NOT one of the balanced forms here. A backtick
   # is also a JavaScript string quote, so pairing them across a space would
@@ -381,7 +419,7 @@ for f in "${files[@]}"; do
     [ -z "$ln" ] && continue
     check_url "$f" "$ln" "$url" "$kind"
   done < <(grep -a '' "$f" 2>/dev/null | sed 's|\\/|/|g' \
-    | grep -naoiE '(https?|wss?)://(\$\{\{[^}]*\}\}|\$\{[^}]*\}|\{\{[^}]*\}\}|\$\([^)]*\)|[^[:space:]"'"'"'<>])+' 2>/dev/null)
+    | grep -naoiE '(https?|wss?)://(\$\{\{[^}/]*\}\}|\$\{[^}/]*\}|\{\{[^}/]*\}\}|\$\([^)/]*\)|[^[:space:]"'"'"'<>/?#])+' 2>/dev/null)
 done
 
 if [ "$status" -ne 0 ]; then

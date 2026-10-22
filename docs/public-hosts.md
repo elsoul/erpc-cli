@@ -23,10 +23,10 @@ code as authoritative if the two ever disagree.
   request goes. This holds wherever the expression sits: a host that *starts*
   with one still carries the registrable domain as a literal, and that is the
   part that decides the destination. Only a host that is entirely one
-  balanced expression is skipped, there being nothing to check. One case is
-  not covered: a backtick expression containing a space ends the match at the
-  space, so the domain after it is not seen. The script's header says why
-  backticks cannot be paired across a space.
+  balanced expression is skipped, there being nothing to check. The matcher
+  looks at the authority only and never rewrites the line, so a URL cannot be
+  hidden inside another one on the same line; the script's header states the
+  two bounds that guarantee it.
   Some files are not scanned at all. That list is not copied here, because a
   copy drifts: run `scripts/check-endpoints.sh --print-exceptions`.
 - `erpc_core::endpoints::ensure_service_url` is the runtime helper callers

@@ -61,6 +61,28 @@ allowlist_src="$repo_root/crates/erpc-core/src/endpoints.rs"
 
 pass=0
 fail=0
+# Like `check`, but asserts WHY the gate blocked. Needed where two different
+# checks would both block the same sample: an exit code then proves nothing
+# about the one under test. `w7` below is the case that taught this -- it
+# passed with the balanced-expression matcher deleted, because the truncated
+# host `{{` is not allowlisted either.
+check_msg() {
+  local name="$1" rel="$2" content="$3" want="$4"
+  local abs="$repo_root/$rel"
+  mkdir -p "$(dirname "$abs")"
+  printf '%s\n' "$content" > "$abs"
+  local out rc
+  out="$("$sh" "$gate" "$rel" 2>&1)"; rc=$?
+  rm -f "$abs"; rmdir -p "$(dirname "$abs")" 2>/dev/null || true
+  case "$out" in
+    *"$want"*)
+      pass=$((pass + 1)); printf 'ok   %s\n' "$name";;
+    *)
+      fail=$((fail + 1))
+      printf 'FAIL %s (exit %s, wanted a report saying "%s")\n%s\n' "$name" "$rc" "$want" "$out";;
+  esac
+}
+
 sample_dir="tmp-endpoint-test"
 
 check() {
@@ -396,8 +418,12 @@ check "unterminated handlebars keeps its domain checked" block "$sample_dir/w6.t
   'const u = `https://{{x.evil.example.net`;'
 
 # A space inside a balanced expression must not end the URL.
-check "a space inside handlebars does not end the URL" block "$sample_dir/w7.yml" \
-  '      - run: curl https://{{ host }}.evil.example.net/x'
+# Asserted on the MESSAGE: with the balanced branch removed the host becomes
+# `{{`, which is not allowlisted either, so a block proves nothing. Only the
+# whole-authority read produces "expression in host".
+check_msg "a space inside handlebars does not end the URL" "$sample_dir/w7.yml" \
+  '      - run: curl https://{{ host }}.evil.example.net/x' \
+  'expression in host'
 
 check "a declared host survives a space inside an expression" allow "$sample_dir/w8.yml" \
   '      - run: curl -sSfL "https://${{ env.X }}@user-api.erpc.global/v1"'
@@ -407,11 +433,58 @@ check "a declared host survives a space inside an expression" allow "$sample_dir
 check "a declared host in a template literal is not an expression" allow "$sample_dir/w9.ts" \
   'const u = `https://user-api.erpc.global`;'
 
-# The documented limit, pinned so it is a decision and not a surprise: a
-# backtick expression containing a space ends the match at the space. If a
-# future change makes this block, this case should be updated, not deleted.
-check "KNOWN LIMIT: backtick expression with a space is not seen" allow "$sample_dir/w10.sh" \
+# This was a documented limit until the authority-only matcher landed: the
+# match ends at the space, leaving `\x60cat` as the host, and a backtick with
+# anything host-like after it is now reported rather than trimmed away. So
+# the domain is no longer reachable this way either.
+check "backtick expression with a space is reported" block "$sample_dir/w10.sh" \
   'curl https://\x60cat host\x60.evil.example.net/x'
+
+# --- the invariant ------------------------------------------------------
+#
+# Every shape-specific case above pins one bypass. This pins the property
+# they all violated: a line holding N URLs must yield N findings' worth of
+# scrutiny, never fewer. Three rounds running, the defect was that one match
+# absorbed a second URL and `grep -o` then never emitted it -- the gate saw
+# one host, approved it, and the absorbed destination was never evaluated.
+#
+# The check is deliberately on the GATE's output, not the matcher's: it
+# counts how many distinct undeclared hosts the gate names on a line that
+# contains several. A matcher change that starts swallowing again fails here
+# even if nobody thought to add a case for its particular shape.
+invariant() {
+  local name="$1" content="$2" expect="$3"
+  local rel="$sample_dir/inv.txt" abs="$repo_root/$sample_dir/inv.txt"
+  mkdir -p "$(dirname "$abs")"
+  printf '%s\n' "$content" > "$abs"
+  local got
+  got=$("$sh" "$gate" "$rel" 2>&1 | grep -c 'evil\.example\.net' || true)
+  rm -f "$abs"; rmdir -p "$(dirname "$abs")" 2>/dev/null || true
+  if [ "$got" -ge "$expect" ]; then
+    pass=$((pass + 1)); printf 'ok   %s\n' "$name"
+  else
+    fail=$((fail + 1))
+    printf 'FAIL %s (named %s undeclared hosts, expected at least %s)\n' "$name" "$got" "$expect"
+  fi
+}
+
+invariant "a second URL inside a command substitution is still judged" \
+  'curl "https://github.com/x$(echo https://evil.example.net/y)"' 1
+
+invariant "a second URL inside handlebars is still judged" \
+  'a https://github.com/{{ x https://evil.example.net/y }} b' 1
+
+invariant "a second URL spliced across two string literals is still judged" \
+  'const a = "https://github.com/${x"; const b = "https://evil.example.net/y}";' 1
+
+invariant "a second URL inside a GitHub Actions expression is still judged" \
+  'a https://github.com/${{ x https://evil.example.net/y }} b' 1
+
+invariant "nested command substitutions do not hide a URL" \
+  'curl "https://github.com/$(a $(b https://evil.example.net/y))"' 1
+
+invariant "two undeclared hosts on one line are both named" \
+  'const a = "https://evil.example.net/1"; const b = "https://other.evil.example.net/2";' 2
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
