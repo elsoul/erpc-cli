@@ -286,7 +286,18 @@ check_url() {
   hostport="${hostport##*@}"
   case "$hostport" in
     \[*\]*) host="${hostport%%\]*}]";;
-    *) host="${hostport%%:*}";;
+    *)
+      # Strip a TRAILING :digits, which is the only port the matcher admits.
+      # Cutting at the first colon instead reached inside an expression:
+      # `https://solana-snapshot-${a:-b}.erpc.global` became the host
+      # `solana-snapshot-${a`, reported for an unexpected character rather
+      # than recognised as the declared pattern it is.
+      if printf '%s' "$hostport" | LC_ALL=C grep -qE ':[0-9]+$'; then
+        host="${hostport%:*}"
+      else
+        host="$hostport"
+      fi
+      ;;
   esac
 
   # An expression is present when removing the balanced ones changed the
@@ -415,14 +426,25 @@ for f in "${files[@]}"; do
   #     emitted it. Allowed, silently.
   #   * Forbidding / INSIDE an expression keeps `://` out of one, so a
   #     balanced span cannot contain a URL even in the authority.
-  #   * Excluding a bare : stops a match from eating the SCHEME of a later
-  #     URL. "No match contains a second ://" is not enough on its own:
-  #     `https://user-api.erpc.global:https://evil.example.net/x` put the
-  #     second scheme in the first authority's port position, the host was
-  #     the declared one, and the second URL was never emitted. An IPv6
-  #     authority keeps its colons through the bracket branch, and a port is
-  #     simply not matched -- harmless, since the port is split off and
-  #     discarded before the host is judged anyway.
+  #   * The authority is spelled out rather than approximated:
+  #     [ userinfo "@" ] ( IP-literal | host ) [ ":" digits ]. Earlier
+  #     versions matched one undifferentiated run and let check_url trim it
+  #     into a host afterwards, and every trim was a silent assumption about
+  #     where the authority ended. Each time the run was tightened, one of
+  #     those assumptions broke somewhere else:
+  #
+  #       - a bare : was excluded to stop a match eating the scheme of a
+  #         later URL, which also cut the match before the @, so
+  #         `https://github.com:x@evil.example.net/x` was read as the
+  #         declared github.com and the real destination vanished. A colon
+  #         is legal in userinfo, so userinfo now carries its own.
+  #       - the IP-literal branch was one element of the run, so
+  #         `https://[::1]https://evil.example.net/x` absorbed the next
+  #         scheme's letters and the `]` trim then discarded them. It is a
+  #         terminal alternative now: a bracketed authority ends at the ].
+  #
+  #     Spelling the grammar out is what keeps the matcher and the three
+  #     derivations in check_url talking about the same thing.
   #
   # The version before that rewrote expressions to placeholders first, which
   # is the one thing a gate must not do: an unbalanced `${` before a URL and
@@ -442,7 +464,7 @@ for f in "${files[@]}"; do
     [ -z "$ln" ] && continue
     check_url "$f" "$ln" "$url" "$kind"
   done < <(grep -a '' "$f" 2>/dev/null | sed 's|\\/|/|g' \
-    | grep -naoiE '(https?|wss?)://(\[[0-9A-Fa-f:.]*\]|\$\{\{[^}/]*\}\}|\$\{[^}/]*\}|\{\{[^}/]*\}\}|\$\([^)/]*\)|[^[:space:]"'"'"'<>/?#:])+' 2>/dev/null)
+    | grep -naoiE '(https?|wss?)://(((\$\{\{[^}/]*\}\}|\$\{[^}/]*\}|\{\{[^}/]*\}\}|\$\([^)/]*\)|[^[:space:]"'"'"'<>/?#@])*@)?(\[[0-9A-Fa-f:.]*\]|(\$\{\{[^}/]*\}\}|\$\{[^}/]*\}|\{\{[^}/]*\}\}|\$\([^)/]*\)|[^[:space:]"'"'"'<>/?#:@])+)(:[0-9]+)?)' 2>/dev/null)
 done
 
 if [ "$status" -ne 0 ]; then
