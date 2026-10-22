@@ -248,8 +248,9 @@ pub async fn current_session(
 ///
 /// # Errors
 ///
-/// Returns [`SessionError::Store`] when the lock cannot be taken or the
-/// session cannot be removed.
+/// Returns [`SessionError::Store`] when the lock cannot be taken, or when
+/// either the stored session or the parked file could not be removed --
+/// after both removals have been attempted.
 pub async fn sign_out<R: Revoker>(
     client: &R,
     store: &dyn CredentialStore,
@@ -258,9 +259,9 @@ pub async fn sign_out<R: Revoker>(
 ) -> Result<bool, SessionError> {
     let _guard =
         crate::lock::ExclusiveLock::acquire(&refresh_lock_path(state_dir, key.audience()))?;
-    let mut revoked = match store.load(key)? {
-        Some(existing) => client.revoke(key.audience(), &existing.refresh_token).await,
-        None => false,
+    let stored_revoked = match store.load(key)? {
+        Some(existing) => Some(client.revoke(key.audience(), &existing.refresh_token).await),
+        None => None,
     };
 
     // A parked session is a live refresh token in cleartext on this
@@ -268,13 +269,33 @@ pub async fn sign_out<R: Revoker>(
     // logout` reports success while leaving a usable session on disk that
     // the next command would reinstate.
     let parked_at = parked_path(state_dir, key.audience());
-    if let Ok(Some(parked)) = crate::lock::read_parked(&parked_at) {
-        revoked |= client.revoke(key.audience(), &parked.refresh_token).await;
-    }
-    crate::lock::clear_parked(&parked_at)?;
+    let parked_revoked = match crate::lock::read_parked(&parked_at) {
+        Ok(Some(parked)) => Some(client.revoke(key.audience(), &parked.refresh_token).await),
+        _ => None,
+    };
 
-    store.delete(key)?;
-    Ok(revoked)
+    // Both removals are attempted whatever the other one does. Stopping
+    // at the first failure meant a parked file that could not be unlinked
+    // -- a read-only state directory does it -- also left the session in
+    // the store, so `erpc logout` reported a failure having removed
+    // nothing. The failure is still returned afterwards: something is
+    // left on this machine and the operator has to be told.
+    let cleared = crate::lock::clear_parked(&parked_at);
+    let deleted = store.delete(key);
+    cleared?;
+    deleted?;
+
+    // Every revocation this attempted has to have been accepted before
+    // the caller may say the session was revoked at the issuer. Reporting
+    // the disjunction let a failed revocation of the session the operator
+    // was actually using be masked by a successful one of a parked
+    // leftover: `erpc logout` said the session was revoked while it
+    // stayed valid.
+    let attempted: Vec<bool> = [stored_revoked, parked_revoked]
+        .into_iter()
+        .flatten()
+        .collect();
+    Ok(!attempted.is_empty() && !attempted.contains(&false))
 }
 
 /// Stores a freshly obtained session, revoking whatever it replaces.
@@ -312,7 +333,15 @@ pub async fn store_new_session<R: Revoker>(
     if let Ok(Some(parked)) = crate::lock::read_parked(&parked_at) {
         client.revoke(key.audience(), &parked.refresh_token).await;
     }
-    crate::lock::clear_parked(&parked_at)?;
+    // The session is durable the moment `store.save` returns, so nothing
+    // after that point may turn this into an error. `login` answers an
+    // error by revoking the token it just obtained, which would leave the
+    // operator told the sign-in failed, a revoked token in the store, and
+    // the previous session alive with nobody holding it. A file that
+    // cannot be unlinked -- a read-only state directory, or a directory
+    // sitting where the file belongs -- stays, and `erpc doctor` reports
+    // it.
+    let _ = crate::lock::clear_parked(&parked_at);
 
     if let Some(previous) = previous {
         client.revoke(key.audience(), &previous.refresh_token).await;
@@ -540,6 +569,164 @@ mod tests {
         assert!(confirmed);
         assert!(!at.exists(), "no live token may survive a sign-out on disk");
         assert!(store.refresh_token().is_none());
+        let seen = revoker.seen.borrow().clone();
+        assert!(seen.contains(&"ref.PARKED.s".to_owned()), "{seen:?}");
+        assert!(seen.contains(&"ref.STORED.s".to_owned()), "{seen:?}");
+    }
+
+    /// Agrees to everything except the tokens it was told to refuse.
+    struct ChoosyRevoker {
+        refuse: Vec<String>,
+    }
+
+    impl super::Revoker for ChoosyRevoker {
+        fn revoke(
+            &self,
+            _audience: Audience,
+            refresh_token: &SecretString,
+        ) -> impl Future<Output = bool> {
+            let token = refresh_token.expose_secret().to_owned();
+            core::future::ready(!self.refuse.contains(&token))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_sign_out_claims_a_revocation_only_if_every_attempt_was_accepted() {
+        // The operator's session is the one in the store. A parked file is
+        // a leftover. Reporting the disjunction meant the leftover's
+        // successful revocation spoke for the session that was actually
+        // refused, and `erpc logout` printed "revoked at the issuer" over
+        // a session that stayed valid.
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let at = parked_path(dir.path(), Audience::AuthApi);
+        park_credential(&at, &cred("PARKED")).expect("parked");
+
+        let store = FlakyStore::new();
+        store.save(&key(), &cred("STORED")).expect("save");
+        let revoker = ChoosyRevoker {
+            refuse: vec!["ref.STORED.s".to_owned()],
+        };
+
+        let confirmed = super::sign_out(&revoker, &store, &key(), dir.path())
+            .await
+            .expect("signed out");
+        assert!(
+            !confirmed,
+            "the session the operator was using was not revoked, so nothing may say it was"
+        );
+        // The local removals happen either way.
+        assert!(store.refresh_token().is_none());
+        assert!(!at.exists());
+    }
+
+    #[tokio::test]
+    async fn a_sign_out_that_revokes_nothing_at_all_claims_nothing() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let store = FlakyStore::new();
+        let revoker = ChoosyRevoker { refuse: Vec::new() };
+        assert!(
+            !super::sign_out(&revoker, &store, &key(), dir.path())
+                .await
+                .expect("signed out"),
+            "there was no session, so there is no revocation to report"
+        );
+    }
+
+    /// Makes `dir` one whose files can be read but not unlinked, which is
+    /// what leaves a parked file behind after the attempt to clear it.
+    ///
+    /// Returns false when the mode is not enforced for this user -- root
+    /// ignores it -- because then there is nothing to reproduce.
+    #[cfg(unix)]
+    fn hold_files_down(dir: &Path) -> bool {
+        use std::os::unix::fs::PermissionsExt as _;
+        let probe = dir.join("probe");
+        std::fs::write(&probe, "x").expect("write the probe");
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o500))
+            .expect("make the directory read-only");
+        if std::fs::remove_file(&probe).is_ok() {
+            release_files(dir);
+            return false;
+        }
+        true
+    }
+
+    #[cfg(unix)]
+    fn release_files(dir: &Path) {
+        use std::os::unix::fs::PermissionsExt as _;
+        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_parked_file_that_cannot_be_cleared_does_not_undo_a_sign_in() {
+        // The session is durable the moment the store accepts it. Letting
+        // the unlink that follows fail the whole call made `login` revoke
+        // the token it had just stored: the operator was told the sign-in
+        // failed, the store held a dead token, and the previous session
+        // was left alive with nobody holding it.
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let at = parked_path(dir.path(), Audience::AuthApi);
+        park_credential(&at, &cred("OLD-PARKED")).expect("parked");
+        // The lock lives under the state directory and has to be takeable
+        // once the directory stops accepting new entries.
+        std::fs::create_dir_all(dir.path().join("locks")).expect("the lock directory");
+
+        let store = FlakyStore::new();
+        store.save(&key(), &cred("PREVIOUS")).expect("save");
+        let revoker = RecordingRevoker::default();
+
+        if !hold_files_down(dir.path()) {
+            return;
+        }
+        let outcome =
+            super::store_new_session(&revoker, &store, &key(), dir.path(), &cred("NEW-LOGIN"))
+                .await;
+        release_files(dir.path());
+
+        outcome.expect("a session the store accepted is a session, whatever the unlink does");
+        assert_eq!(
+            store.refresh_token().as_deref(),
+            Some("ref.NEW-LOGIN.s"),
+            "and it is the new one"
+        );
+        assert!(at.exists(), "the file stays, for doctor to report");
+        // The revocations after the unlink still happen: the `?` skipped
+        // the previous session's, leaving it live and unreachable.
+        let seen = revoker.seen.borrow().clone();
+        assert!(seen.contains(&"ref.OLD-PARKED.s".to_owned()), "{seen:?}");
+        assert!(seen.contains(&"ref.PREVIOUS.s".to_owned()), "{seen:?}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_parked_file_that_cannot_be_cleared_still_removes_the_session() {
+        // Stopping at the first failed removal meant the session stayed in
+        // the store as well, so `erpc logout` reported a failure having
+        // removed nothing at all.
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let at = parked_path(dir.path(), Audience::AuthApi);
+        park_credential(&at, &cred("PARKED")).expect("parked");
+        std::fs::create_dir_all(dir.path().join("locks")).expect("the lock directory");
+
+        let store = FlakyStore::new();
+        store.save(&key(), &cred("STORED")).expect("save");
+        let revoker = RecordingRevoker::default();
+
+        if !hold_files_down(dir.path()) {
+            return;
+        }
+        let outcome = super::sign_out(&revoker, &store, &key(), dir.path()).await;
+        release_files(dir.path());
+
+        assert!(
+            outcome.is_err(),
+            "a live token left on disk is a failure and has to be reported"
+        );
+        assert!(
+            store.refresh_token().is_none(),
+            "the removal that could be done was done"
+        );
         let seen = revoker.seen.borrow().clone();
         assert!(seen.contains(&"ref.PARKED.s".to_owned()), "{seen:?}");
         assert!(seen.contains(&"ref.STORED.s".to_owned()), "{seen:?}");

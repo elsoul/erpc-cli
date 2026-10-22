@@ -248,6 +248,22 @@ fn first_line(text: &str) -> String {
 /// Deliberately crude and deliberately wide: three dot-separated runs of
 /// base64url with a long first run. A false positive costs a less helpful
 /// error message; a false negative puts a session token in a log.
+///
+/// What counts as that shape is [`crate::credential::check_token_shape`]'s
+/// answer, not a second opinion. Two pieces of code holding different
+/// views of one shape, with the difference in the leaking direction, is
+/// how a token got through before: this required three non-empty parts
+/// while the shape check accepts an empty signature, so a token erpc was
+/// willing to store was one its own redaction did not recognise.
+///
+/// It is not the whole of that answer, and is not claimed to be: the
+/// first run has to be at least eight characters or ordinary prose with
+/// two dots in it would be eaten, while the shape check has no such
+/// floor. Real tokens clear it -- a JWT header is twenty characters
+/// before it is anything -- but a short-headed one the shape check
+/// accepts would pass through here. That gap is why the save path matches
+/// the two values it holds exactly, in [`without_the_tokens`], rather
+/// than relying on this.
 fn redact_tokens(text: &str) -> String {
     let is_b64 = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '=';
     let mut out = String::with_capacity(text.len());
@@ -258,17 +274,50 @@ fn redact_tokens(text: &str) -> String {
             .next()
             .map_or(0, str::len);
         let candidate = &rest[..token_len];
-        let parts: Vec<&str> = candidate.split('.').collect();
-        let looks_like_a_jwt = parts.len() == 3
+        // A token in the last position of a sentence drags the full stop
+        // into the run. Counting that as a fourth, empty part made the
+        // run stop looking like a JWT and printed the whole of it --
+        // which is the commonest position of all for a token to be in.
+        let core = candidate.trim_end_matches('.');
+        let parts: Vec<&str> = core.split('.').collect();
+        // Three parts, or two and a separator: the signature is the only
+        // part `check_token_shape` lets be empty, so it is the only one
+        // allowed to be missing here.
+        let unsecured = parts.len() == 2 && core.len() < candidate.len();
+        let looks_like_a_jwt = (parts.len() == 3 || unsecured)
             && parts[0].len() >= 8
             && parts.iter().all(|p| !p.is_empty() && p.chars().all(is_b64));
         if looks_like_a_jwt {
             out.push_str("<redacted>");
-            rest = &rest[token_len..];
+            // The empty signature's separator belongs to the token; any
+            // further dots are the sentence's and stay in the message.
+            rest = &rest[core.len() + usize::from(unsecured)..];
         } else {
             let step = rest.chars().next().map_or(1, char::len_utf8);
             out.push_str(&rest[..step]);
             rest = &rest[step..];
+        }
+    }
+    out
+}
+
+/// Replaces the exact token values with a marker.
+///
+/// [`redact_tokens`] guesses at a shape because it runs where the values
+/// are not known. Here they are: the only reason `op` can echo a token
+/// back at all is that this process just handed it one on stdin, so the
+/// values can be matched exactly and the shape left as the insurance it
+/// is. A token `op` mangles, wraps or quotes in a way the heuristic does
+/// not recognise is still caught, as long as the value itself survives in
+/// the message.
+fn without_the_tokens(reason: String, cred: &Credential) -> String {
+    let mut out = reason;
+    for value in [
+        cred.access_token.expose_secret(),
+        cred.refresh_token.expose_secret(),
+    ] {
+        if !value.is_empty() {
+            out = out.replace(value, "<redacted>");
         }
     }
     out
@@ -528,7 +577,7 @@ impl<R: OpRunner> CredentialStore for OnePassword<R> {
             return if edit.success {
                 Ok(())
             } else {
-                Err(self.backend("update the item", edit.stderr))
+                Err(self.backend("update the item", without_the_tokens(edit.stderr, cred)))
             };
         }
 
@@ -539,7 +588,7 @@ impl<R: OpRunner> CredentialStore for OnePassword<R> {
         if create.success {
             Ok(())
         } else {
-            Err(self.backend("create the item", create.stderr))
+            Err(self.backend("create the item", without_the_tokens(create.stderr, cred)))
         }
     }
 
@@ -571,8 +620,8 @@ mod tests {
 
     use secrecy::{ExposeSecret as _, SecretString};
 
-    use super::{Mode, OnePassword, OpCli, OpOutput, OpRunner, first_line};
-    use crate::credential::{Audience, CredKey, Credential};
+    use super::{Mode, OnePassword, OpCli, OpOutput, OpRunner, first_line, redact_tokens};
+    use crate::credential::{Audience, CredKey, Credential, check_token_shape};
     use crate::store::{CredentialStore as _, StoreError, StoreKind};
 
     /// Records the commands it is given and replies from a script.
@@ -979,6 +1028,100 @@ mod tests {
             cleaned.contains("unable to process"),
             "the message survives"
         );
+    }
+
+    /// A JWT-shaped value, assembled rather than written out.
+    ///
+    /// Same accommodation as the fixture above and the URL fixtures: a
+    /// test for redacting token-shaped strings has to contain one, and a
+    /// literal would be a finding for `gitleaks`, correctly, since it
+    /// cannot tell a fixture from the real thing.
+    fn token_shaped(signature: &str) -> String {
+        let mut parts = ["eyJhbGciOiJIUzI1NiJ9", "eyJzdWIiOiJhbGljZSJ9"].join(".");
+        parts.push('.');
+        parts.push_str(signature);
+        parts
+    }
+
+    #[test]
+    fn a_token_in_the_last_position_of_a_sentence_is_redacted() {
+        // The commonest position of all, and the one that leaked: the full
+        // stop joined the run, made a fourth and empty part, and the whole
+        // run was printed as it stood.
+        let token = token_shaped("c2lnbmF0dXJl");
+        let noisy = format!("[ERROR] unable to process line 1: near {token}.");
+        let cleaned = first_line(&noisy);
+        assert!(!cleaned.contains(&token), "{cleaned}");
+        assert!(cleaned.contains("<redacted>"), "{cleaned}");
+        assert!(
+            cleaned.ends_with('.'),
+            "the sentence keeps its stop: {cleaned}"
+        );
+    }
+
+    #[test]
+    fn a_token_with_an_empty_signature_is_redacted_as_the_shape_check_accepts_it() {
+        // An unsecured JWT is a token erpc stores, so it is one the
+        // redaction has to recognise. Where the two differed -- the shape
+        // check accepts an empty signature, the redaction required three
+        // non-empty parts -- erpc would store a token its own redaction
+        // printed in the clear.
+        for signature in ["c2lnbmF0dXJl", ""] {
+            let token = token_shaped(signature);
+            assert!(
+                check_token_shape(&token).is_ok(),
+                "erpc would store this: {token}"
+            );
+            let cleaned = redact_tokens(&token);
+            assert!(!cleaned.contains(&token), "and prints it: {cleaned}");
+            assert_eq!(cleaned, "<redacted>", "{cleaned}");
+        }
+    }
+
+    #[test]
+    fn a_token_op_echoes_back_is_matched_by_value_not_only_by_shape() {
+        // The heuristic is insurance. The caller knows both values -- it
+        // handed them over on stdin a moment ago -- and these two are not
+        // of a shape the heuristic recognises, so only an exact match
+        // keeps them out of the message.
+        assert_eq!(
+            redact_tokens(ACCESS),
+            ACCESS,
+            "the fixture has to be one the shape check misses, or this proves nothing"
+        );
+        let fake = FakeOp::new(vec![
+            list_of(&["ERPC CLI session alice@mac-001 (auth-api)"]),
+            failed(&format!(
+                "[ERROR] unable to process line 1: near \"{ACCESS}\""
+            )),
+        ]);
+        let store = OnePassword::new(&fake, Mode::Desktop, VAULT, "mac-001");
+        let err = store
+            .save(&key(), &session())
+            .expect_err("op refused the edit");
+        let rendered = err.to_string();
+        assert!(!rendered.contains(ACCESS), "{rendered}");
+        assert!(rendered.contains("<redacted>"), "{rendered}");
+        assert!(
+            rendered.contains("unable to process"),
+            "the message survives: {rendered}"
+        );
+    }
+
+    #[test]
+    fn a_token_op_echoes_back_from_a_create_is_matched_too() {
+        // The create path carries the same template as the edit path.
+        let fake = FakeOp::new(vec![
+            list_of(&[]),
+            failed(&format!("[ERROR] could not create item: {REFRESH}")),
+        ]);
+        let store = OnePassword::new(&fake, Mode::Desktop, VAULT, "mac-001");
+        let rendered = store
+            .save(&key(), &session())
+            .expect_err("op refused the create")
+            .to_string();
+        assert!(!rendered.contains(REFRESH), "{rendered}");
+        assert!(rendered.contains("<redacted>"), "{rendered}");
     }
 
     #[test]
