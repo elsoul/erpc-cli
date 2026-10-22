@@ -69,15 +69,24 @@ impl User {
             .unwrap_or(&self.uid)
     }
 
-    /// [`Self::label`] with control characters replaced, for a terminal.
+    /// [`Self::label`] for a terminal: control characters and the
+    /// characters that reorder text replaced.
     ///
-    /// The value comes from the server; a control character in it could be
-    /// an escape sequence by the time it is printed.
+    /// The value comes from the server. A control character in it could be
+    /// an escape sequence by the time it is printed, and a bidirectional
+    /// override can make it read as something else. JSON output uses
+    /// [`Self::label`], which the encoder escapes.
     #[must_use]
     pub fn label_for_display(&self) -> String {
         self.label()
             .chars()
-            .map(|c| if c.is_control() { '?' } else { c })
+            .map(|c| {
+                let reorders = matches!(
+                    c,
+                    '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+                );
+                if c.is_control() || reorders { '?' } else { c }
+            })
             .collect()
     }
 }
@@ -174,6 +183,9 @@ mod tests {
         let shown = user.label_for_display();
         assert!(!shown.contains('\u{1b}'), "{shown}");
         assert!(shown.starts_with("al"), "{shown}");
+        let user: super::User =
+            serde_json::from_str(r#"{"uid":"u5","username":"alice\u202eroot"}"#).expect("parses");
+        assert!(!user.label_for_display().contains('\u{202e}'));
     }
 
     #[test]

@@ -164,7 +164,7 @@ pub async fn login(json: bool, requested: Option<StoreKind>, no_browser: bool) -
     if json {
         crate::print_json(&serde_json::json!({
             "status": "signed-in",
-            "account": user.label_for_display(),
+            "account": user.label(),
             "uid": user.uid,
             "store": report,
             "previous_session_unreadable": leftover.previous_unreadable,
@@ -260,7 +260,7 @@ pub async fn whoami(json: bool, requested: Option<StoreKind>) -> Outcome {
             if json {
                 crate::print_json(&serde_json::json!({
                     "status": "signed-in",
-                    "account": user.label_for_display(),
+                    "account": user.label(),
                     "uid": user.uid,
                     "email": user.email,
                     "store": StoreReport::from(selection),
@@ -466,6 +466,12 @@ mod tests {
         assert_eq!(warnings.len(), 1);
         assert!(
             warnings[0].contains("without being revoked"),
+            "{warnings:?}"
+        );
+        // The reason is what tells the operator how much went with it --
+        // for the file store, the whole file -- so it has to be printed.
+        assert!(
+            warnings[0].contains("the stored session is version 9"),
             "{warnings:?}"
         );
     }

@@ -75,10 +75,12 @@ fn withheld(names: impl Iterator<Item = std::ffi::OsString>) -> Vec<std::ffi::Os
     names
         // Without regard to case: Windows looks variables up that way, so
         // `op_service_account_token` is the same variable there.
+        // By bytes, so a name that is not valid Unicode is not let through
+        // on that account.
         .filter(|name| {
-            name.to_str()
-                .and_then(|n| n.get(..3))
-                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("OP_"))
+            name.as_encoded_bytes()
+                .get(..3)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"OP_"))
         })
         .collect()
 }
@@ -138,6 +140,14 @@ mod tests {
     use std::ffi::OsString;
 
     use super::{NoBrowser, decide, open, withheld};
+
+    #[cfg(unix)]
+    #[test]
+    fn a_name_that_is_not_unicode_is_withheld_too() {
+        use std::os::unix::ffi::OsStringExt as _;
+        let odd = OsString::from_vec(b"OP_\xffTOKEN".to_vec());
+        assert_eq!(withheld([odd.clone()].into_iter()), vec![odd]);
+    }
 
     #[test]
     fn a_browser_does_not_inherit_a_1password_credential() {

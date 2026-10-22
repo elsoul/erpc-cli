@@ -587,7 +587,17 @@ impl<R: OpRunner> CredentialStore for OnePassword<R> {
                  build reads",
             ));
         };
-        let version = raw_version.parse::<u32>().unwrap_or(0);
+        // And a version that is empty or not a number is the same thing: a
+        // renamed `value` leaves the field found by its label with nothing
+        // in it. Only a well-formed number other than this build's is a
+        // record from another build.
+        let Ok(version) = raw_version.parse::<u32>() else {
+            return Err(self.backend(
+                "read op's output",
+                "the item's store_version is not a number, so op's output is not in a shape \
+                 this build reads",
+            ));
+        };
         if version != STORE_VERSION {
             return Err(StoreError::UnknownVersion {
                 found: version,
@@ -1294,6 +1304,35 @@ mod tests {
         assert!(matches!(err, StoreError::Backend { .. }), "{err:?}");
         let shown = err.to_string();
         assert!(!shown.contains("U0VDUkVUUEFZTE9BRA"), "{shown}");
+    }
+
+    #[test]
+    fn an_item_whose_values_moved_stops_a_sign_in_too() {
+        // `value` renamed: every field is still found by its label, and
+        // every value is empty.
+        let json = r#"{"fields":[
+            {"id":"a","label":"access_token","val":"x"},
+            {"id":"b","label":"refresh_token","val":"y"},
+            {"id":"c","label":"expires_at","val":"1700000000"},
+            {"id":"d","label":"store_version","val":"1"}
+        ]}"#;
+        let fake = FakeOp::new(vec![ok(json)]);
+        let store = OnePassword::new(&fake, Mode::Desktop, VAULT, "mac-001");
+        let err = store
+            .load(&key())
+            .expect_err("not an item this build reads");
+        assert!(matches!(err, StoreError::Backend { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn a_version_from_another_build_is_still_a_record() {
+        let json = r#"{"fields":[{"id":"d","label":"store_version","value":"9"}]}"#;
+        let fake = FakeOp::new(vec![ok(json)]);
+        let store = OnePassword::new(&fake, Mode::Desktop, VAULT, "mac-001");
+        assert!(matches!(
+            store.load(&key()),
+            Err(StoreError::UnknownVersion { found: 9, .. })
+        ));
     }
 
     #[test]

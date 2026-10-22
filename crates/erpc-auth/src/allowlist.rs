@@ -16,9 +16,11 @@
 //! only ever sees the refresh token. The `mcp-user-api` host is both the
 //! issuer and the API, so both of its tokens go there.
 //!
-//! `docs/public-hosts.md` restates this per host, and a test below reads
-//! that table and checks it against these lists, so the two cannot drift
-//! apart unnoticed again.
+//! `docs/public-hosts.md` restates this per host. A test below reads that
+//! table and holds every row to these lists: only an issuer may list the
+//! device code or the refresh token, only a destination may list the access
+//! token, and each must list what it receives and not put it after
+//! "never". It checks words, not meaning, and says so where it is defined.
 //!
 //! A token is disclosed to whoever receives it, so both sets are
 //! compile-time constants rather than anything a configuration file, an
@@ -407,34 +409,145 @@ mod tests {
         );
     }
 
-    /// The row for `host` in the public hosts table.
-    fn row<'a>(table: &'a str, host: &str) -> &'a str {
-        let start = format!("| `{host}` |");
-        table
+    /// Every way the public hosts table contradicts the token lists.
+    ///
+    /// Each credentials cell is split at its first "never" into what may be
+    /// sent and what never is, and each host in the row is held to:
+    ///
+    /// * an issuer may receive the device code and the refresh token, and no
+    ///   other host may;
+    /// * an access-token destination may receive the access token and does
+    ///   not say it never does, and no other host may receive it;
+    /// * an issuer that is not also a destination says it never receives
+    ///   the access token.
+    ///
+    /// Words, not meaning: it catches a row that names the wrong token, or
+    /// moves one to the wrong side of "never". It cannot tell which
+    /// audience's token a row means; the hosts are distinct per audience,
+    /// so the host does that.
+    fn table_errors(table: &str) -> Vec<String> {
+        let issuers: Vec<&str> = Audience::all().iter().map(|a| a.issuer_host()).collect();
+        let destinations: Vec<&str> = Audience::all()
+            .iter()
+            .flat_map(|a| super::destinations(*a).iter().copied())
+            .collect();
+        let mut errors = Vec::new();
+        let mut seen = Vec::new();
+        let rows = table
             .lines()
-            .find(|line| line.starts_with(&start))
-            .unwrap_or_else(|| panic!("docs/public-hosts.md has no row for {host}"))
+            .skip_while(|l| !l.starts_with("| Host | Purpose | Credentials"))
+            .skip(2)
+            .take_while(|l| l.starts_with('|'));
+        for line in rows {
+            let cells: Vec<&str> = line.split('|').map(str::trim).collect();
+            let (Some(hosts), Some(credentials)) = (cells.get(1), cells.get(3)) else {
+                errors.push(format!("a row without three cells: {line}"));
+                continue;
+            };
+            let (may, never) = credentials.split_once("never").unwrap_or((credentials, ""));
+            for host in hosts.split('`').skip(1).step_by(2) {
+                seen.push(host.to_owned());
+                let issuer = issuers.contains(&host);
+                let destination = destinations.contains(&host);
+                let mut fail = |why: &str| errors.push(format!("{host}: {why}: {credentials}"));
+                for term in ["device code", "refresh token"] {
+                    if issuer && !may.contains(term) {
+                        fail(&format!("an issuer that does not list the {term}"));
+                    }
+                    if !issuer && may.contains(term) {
+                        fail(&format!("not an issuer, and lists the {term}"));
+                    }
+                }
+                if destination && !may.contains("access token") {
+                    fail("an access-token destination that does not list it");
+                }
+                if destination && never.contains("access token") {
+                    fail("an access-token destination that says it never receives it");
+                }
+                if !destination && may.contains("access token") {
+                    fail("not an access-token destination, and lists the access token");
+                }
+                if issuer && !destination && !never.contains("access token") {
+                    fail("an issuer that does not say it never receives the access token");
+                }
+            }
+        }
+        for host in issuers.iter().chain(&destinations) {
+            if !seen.iter().any(|s| s == host) {
+                errors.push(format!("{host}: no row"));
+            }
+        }
+        errors
+    }
+
+    const TABLE: &str = include_str!("../../../docs/public-hosts.md");
+
+    /// The table with one row's credentials cell replaced.
+    fn with_cell(host: &str, cell: &str) -> String {
+        let start = format!("| `{host}` |");
+        TABLE
+            .lines()
+            .map(|line| {
+                if line.starts_with(&start) {
+                    let cells: Vec<&str> = line.split('|').collect();
+                    format!("|{}|{}| {cell} |", cells[1], cells[2])
+                } else {
+                    line.to_owned()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     #[test]
     fn the_public_hosts_table_says_where_each_token_goes() {
         // The credentials column was written by hand and checked by
         // nothing, and twice it said something these lists contradict.
-        let table = include_str!("../../../docs/public-hosts.md");
-        for audience in Audience::all() {
-            let issuer = row(table, audience.issuer_host());
-            assert!(issuer.contains("refresh token"), "{issuer}");
-            assert!(issuer.contains("device code"), "{issuer}");
-            for host in super::destinations(*audience) {
-                let api = row(table, host);
-                assert!(api.contains("access token"), "{api}");
-            }
-            if !super::destinations(*audience).contains(&audience.issuer_host()) {
-                assert!(
-                    issuer.contains("never the access token"),
-                    "an issuer that does not receive the access token says so: {issuer}"
-                );
-            }
+        assert_eq!(table_errors(TABLE), Vec::<String>::new());
+    }
+
+    #[test]
+    fn the_table_check_rejects_the_contradictions_it_exists_for() {
+        // Each of these passed an earlier version of the check, which only
+        // looked for words being present.
+        for (host, cell) in [
+            (
+                "mcp-user-api.erpc.global",
+                "the device code, and the MCP refresh token to the token and revoke endpoints \
+                 only; never the access token",
+            ),
+            (
+                "user-api.erpc.global",
+                "auth-api access token, the device code and the auth-api refresh token",
+            ),
+            ("x402.erpc.global", "the MCP access token"),
+            // An access-token destination that does not admit to it.
+            ("user-api.erpc.global", "none"),
+            // Silent about the access token, which this issuer never gets.
+            (
+                "auth-api.erpc.global",
+                "the device code, and the refresh token to the token and revoke endpoints only",
+            ),
+            // Says both; the second half is the one a reader acts on.
+            (
+                "user-api.erpc.global",
+                "the auth-api access token; never the access token",
+            ),
+            (
+                "auth-api.erpc.global",
+                "the device code, the refresh token and the access token",
+            ),
+            (
+                "auth-api.erpc.global",
+                "the refresh token; never the access token",
+            ),
+        ] {
+            let bad = with_cell(host, cell);
+            assert_ne!(bad, TABLE, "the mutation must change the table: {host}");
+            assert!(
+                !table_errors(&bad).is_empty(),
+                "{host} with \"{cell}\" was accepted"
+            );
         }
     }
 }
