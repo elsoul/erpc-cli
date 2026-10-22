@@ -30,7 +30,7 @@ pre-push:
     endpoints-all:
       run: scripts/check-endpoints.sh
     gate-self-tests:
-      run: scripts/tests/check-oss-hygiene.test.sh && scripts/tests/check-endpoints.test.sh
+      run: scripts/tests/check-oss-hygiene.test.sh && scripts/tests/check-endpoints.test.sh && scripts/tests/build-manifest.test.sh
     clippy:
       run: cargo clippy --workspace --all-targets -- -D warnings
     test:

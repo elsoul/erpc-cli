@@ -37,3 +37,10 @@ rustc-ice-*.txt
 *.key
 *.pem
 minisign.key
+
+# Editor and merge leftovers: never commit them. They would otherwise be
+# scanned as ordinary files, and a stale copy of a config is a leak risk.
+*.bak
+*.orig
+*.rej
+*.swp

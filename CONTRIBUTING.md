@@ -13,8 +13,9 @@ under `crates/` and the discussion on the pull request you are working from.
 
 1. **No secrets, ever.** Never commit tokens, private keys or mnemonics of any
    chain, `.env` files, 1Password vault or item identifiers, cloud account
-   identifiers, or internal hostnames. Only the public endpoints listed in
-   `docs/public-hosts.md` may appear in code or docs. Install the hooks with
+   identifiers, or internal hostnames. Every URL must name a host declared in
+   `crates/erpc-core/src/endpoints.rs`, which `docs/public-hosts.md`
+   explains. Install the hooks with
    `lefthook install`: `gitleaks` scans for credential values and
    `scripts/check-oss-hygiene.sh` blocks non-public hosts, infrastructure
    identifiers, key-shaped strings and internal documents. CI runs both again,
@@ -46,15 +47,14 @@ under `crates/` and the discussion on the pull request you are working from.
 7. **Workflows.** GitHub Actions are pinned to full commit SHAs, run with
    `permissions: contents: read` by default, and never use
    `pull_request_target` or `workflow_run`.
-8. **Outbound destinations.** Every host `erpc` contacts is declared in
-   `crates/erpc-core/src/endpoints.rs`, and nowhere else.
-   `scripts/check-endpoints.sh` fails a URL whose host is not on that list.
-   For its exact coverage, including the files it does not scan, read the
-   header of that script and run `scripts/check-endpoints.sh
-   --print-exceptions`; do not rely on a summary. Prose files may link
-   anywhere, but a prose line inside a code block, in a code span, or
-   carrying an install or download command is held to the list, because a
-   reader may run it.
+8. **Outbound destinations.** One rule:
+   `scripts/check-endpoints.sh` fails any URL whose host is not declared in
+   `crates/erpc-core/src/endpoints.rs`. Destinations `erpc` contacts go in the
+   host lists; a link that only appears in documentation goes in
+   `DOCUMENTATION_HOSTS`, which is refused in code. Plaintext `http`/`ws` is
+   refused outside loopback. For the files the gate does not scan, run
+   `scripts/check-endpoints.sh --print-exceptions`, and read the script's
+   header for its stated limits rather than a summary.
    Because ERPC endpoints are compile-time constants and are never read from
    configuration or environment variables, a tampered config cannot redirect
    traffic. This is a source gate, not a sandbox: it does not constrain what a

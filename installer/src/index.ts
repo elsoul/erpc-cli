@@ -136,8 +136,10 @@ async function fetchInstaller(
     });
     if (r.ok) {
       const body = await r.text();
-      // cargo-dist installers start with a shebang or a PowerShell comment.
-      if (body.startsWith("#!") || body.startsWith("#") || body.startsWith("<#")) {
+      // A sanity check only, not a security control: cargo-dist's shell
+      // installer starts with a shebang and its PowerShell one with a block
+      // comment. It exists to turn an HTML error page into a clear 502.
+      if (body.startsWith("#!") || body.startsWith("<#")) {
         return { body, source: "github" };
       }
     }

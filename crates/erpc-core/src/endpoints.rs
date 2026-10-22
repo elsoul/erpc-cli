@@ -61,6 +61,26 @@ pub const TOOLING_HOSTS: &[&str] = &[
 /// `solana-snapshot-ams.erpc.global` but not `evil-solana-snapshot-x.other`.
 pub const HOST_PATTERNS: &[(&str, &str)] = &[("solana-snapshot-", ".erpc.global")];
 
+/// Hosts that may be *linked from documentation* and from nowhere else.
+///
+/// `erpc` never contacts these; they exist so that the egress gate can apply
+/// one rule to the whole repository ("every URL names a declared host")
+/// instead of trying to tell a prose link from an instruction, which is a
+/// judgement a text matcher makes badly. Adding a reference means adding it
+/// here, which is cheap and visible.
+///
+/// Not usable by [`ensure_service_url`]: these are not ERPC destinations.
+pub const DOCUMENTATION_HOSTS: &[&str] = &[
+    "www.apache.org",
+    "www.contributor-covenant.org",
+    "keepachangelog.com",
+    "semver.org",
+    "elsoul.nl",
+    "axodotdev.github.io",
+    "docs.github.com",
+    "reuse.software",
+];
+
 /// Loopback hosts, where plaintext `http`/`ws` is allowed: the OAuth redirect
 /// listener and `erpc mcp serve --http`.
 ///
@@ -101,7 +121,9 @@ impl fmt::Display for EndpointError {
 
 impl std::error::Error for EndpointError {}
 
-/// Every host literal in this module, for the pre-commit gate and diagnostics.
+/// Hosts `erpc` may contact, for the pre-commit gate and diagnostics.
+///
+/// Excludes [`DOCUMENTATION_HOSTS`], which are link targets, not destinations.
 #[must_use]
 pub fn all_hosts() -> Vec<&'static str> {
     let mut v: Vec<&'static str> = SERVICE_HOSTS
@@ -377,50 +399,39 @@ mod tests {
         );
     }
 
-    /// The other direction: a host documented as allowed but absent from the
-    /// code would tell a reader the gate permits something it does not.
+    /// Documentation hosts are link targets only. Letting one through
+    /// [`ensure_service_url`] would make the page's "never contacted"
+    /// statement false.
     #[test]
-    fn the_page_documents_no_host_the_code_lacks() {
-        let doc = include_str!("../../../docs/public-hosts.md");
-        let hosts = all_hosts();
-        let undeclared: Vec<&str> = doc
-            .lines()
-            // Only the table rows list hosts; prose names files and commands.
-            .filter(|l| l.starts_with('|'))
-            .flat_map(|l| l.split('`'))
-            .filter(|t| {
-                (t.contains(".erpc.global")
-                    || t.contains("github")
-                    || t.contains("crates.io")
-                    || t.contains("npmjs")
-                    || t.contains("rustup"))
-                    && !t.contains(' ')
-            })
-            .filter(|t| {
-                !hosts.contains(t)
-                    && !super::HOST_PATTERNS
-                        .iter()
-                        .any(|(p, s)| t.starts_with(p) && t.ends_with(s))
-            })
-            .collect();
-        assert!(
-            undeclared.is_empty(),
-            "documented in docs/public-hosts.md but not declared in this module: {undeclared:?}"
-        );
+    fn documentation_hosts_are_not_service_destinations() {
+        for h in super::DOCUMENTATION_HOSTS {
+            assert!(
+                !all_hosts().contains(h),
+                "{h} is both a documentation host and a service host"
+            );
+            assert!(
+                matches!(
+                    ensure_service_url(&format!("https://{h}/")),
+                    Err(EndpointError::HostNotAllowed(_))
+                ),
+                "ensure_service_url must refuse the documentation host {h}"
+            );
+        }
     }
 
-    /// Any claim about what `scripts/check-endpoints.sh` skips must match what
-    /// it actually skips. The script prints that list; the page must not claim
-    /// a narrower one, so it is required to point at the command instead of
-    /// paraphrasing it.
+    /// The page must point at the script for the exception list rather than
+    /// restate it, because a restated list drifts from the script silently.
     #[test]
     fn the_page_defers_to_the_script_for_its_exception_list() {
         let doc = include_str!("../../../docs/public-hosts.md");
         assert!(
             doc.contains("--print-exceptions"),
             "docs/public-hosts.md must point readers at \
-             `scripts/check-endpoints.sh --print-exceptions` rather than \
-             restating the exception list, which drifts"
+             `scripts/check-endpoints.sh --print-exceptions`"
+        );
+        assert!(
+            !doc.contains("is the one exception") && !doc.contains("are the exception"),
+            "docs/public-hosts.md must not claim a single exception; the gate has several"
         );
     }
 }

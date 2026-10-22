@@ -45,10 +45,12 @@ before it is relied on.
 ## Contributing and security
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md), [`SECURITY.md`](SECURITY.md) and
-[`GOVERNANCE.md`](GOVERNANCE.md). Only the public hosts in
-[`docs/public-hosts.md`](docs/public-hosts.md) may appear in this repository;
-`lefthook install` wires the pre-commit gates that enforce it. If a secret
-ever lands here, follow
+[`GOVERNANCE.md`](GOVERNANCE.md). Every URL in this repository must name a
+host declared in `crates/erpc-core/src/endpoints.rs`, which
+[`docs/public-hosts.md`](docs/public-hosts.md) explains;
+`lefthook install` wires the pre-commit gates that check it, alongside a
+secret scan. Those gates are a mechanical aid, not the whole rule: review is.
+If a secret ever lands here, follow
 [`docs/secret-exposure-response.md`](docs/secret-exposure-response.md) and
 rotate it before rewriting any history.
 

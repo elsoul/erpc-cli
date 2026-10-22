@@ -42,14 +42,14 @@ anything today. Operators of mainnet validators should use it.
    then compare the archive hash:
 
    ```bash
-   sha256sum erpc-x86_64-unknown-linux-musl.tar.gz
+   sha256sum erpc-x86_64-unknown-linux-musl.tar.xz
    jq -r '.targets["x86_64-unknown-linux-musl"].sha256' release-manifest.json
    ```
 
 4. Optionally verify GitHub build provenance:
 
    ```bash
-   gh attestation verify erpc-x86_64-unknown-linux-musl.tar.gz --repo elsoul/erpc-cli
+   gh attestation verify erpc-x86_64-unknown-linux-musl.tar.xz --repo elsoul/erpc-cli
    ```
 
 5. Extract and place the binary on your `PATH`.
@@ -67,9 +67,10 @@ does not exist.
 
 ## Reproducible build check
 
-Each release rebuilds the Linux musl targets on an independent runner with a
-fixed `SOURCE_DATE_EPOCH` and compares the binary hashes before publishing.
-macOS and Windows builds are not yet compared; the release notes say so.
+Each release rebuilds the two Linux musl targets on an independent runner
+with a fixed `SOURCE_DATE_EPOCH` and compares the binary hashes before
+publishing. The macOS and Windows builds are **not** compared. Treat this
+page, not the release notes, as the statement of what is checked.
 
 ## Key rotation
 
