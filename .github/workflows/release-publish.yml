@@ -5,11 +5,10 @@
 # (publish-jobs = ["./release-publish"]). It runs after dist built and
 # attested the artifacts and BEFORE the GitHub Release is created (announce).
 #
-#   release-gate -> rebuild-compare -> sign (env `release`) -> upload-r2 -> publish-crates
+#   release-gate -> rebuild-compare -> sign (env `release`) -> publish-crates
 #
 # Secrets (GitHub environment `release`, values held by ELSOUL LABO B.V.):
 #   MINISIGN_SECRET_KEY, MINISIGN_PASSWORD      minisign signing key
-#   R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ENDPOINT   bucket-scoped, write-only token
 # crates.io uses Trusted Publishing (OIDC): no token.
 
 name: release-publish
@@ -130,8 +129,8 @@ jobs:
           pattern: artifacts-*
           path: artifacts
           merge-multiple: true
-      - run: sudo apt-get update -q && sudo apt-get install -y -q minisign jq
-      - name: build and sign release-manifest.json and latest.json
+      - run: sudo apt-get update -q && sudo apt-get install -y -q minisign
+      - name: build and sign release-manifest.json
         env:
           MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
           MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
@@ -140,51 +139,22 @@ jobs:
         run: |
           set -euo pipefail
           scripts/release/build-manifest.sh artifacts "$TAG" "$COMMIT" > artifacts/release-manifest.json
-          msum=$(sha256sum artifacts/release-manifest.json | cut -d' ' -f1)
-          now=$(date -u +%Y-%m-%dT%H:%M:%SZ); exp=$(date -u -d '+14 days' +%Y-%m-%dT%H:%M:%SZ)
-          jq -n --arg v "${TAG#v}" --arg t "$TAG" --arg m "$msum" --arg i "$now" --arg e "$exp" \
-            '{schema:1, version:$v, tag:$t, manifest_sha256:$m, issued_at:$i, expires_at:$e}' > artifacts/latest.json
-          scripts/release/sign-manifest.sh artifacts/release-manifest.json artifacts/latest.json
+          scripts/release/sign-manifest.sh artifacts/release-manifest.json
+      # The name MUST match the `pattern:` the generated release.yml's announce
+      # job downloads with (`artifacts-*`), because that download is the only
+      # thing that puts a file in front of `gh release create`. Named
+      # `signed-manifest`, both files were uploaded, never downloaded, and so
+      # never attached to the release -- while docs/verify-release.md tells the
+      # operator to fetch and verify them. scripts/tests/release-wiring.test.sh
+      # asserts the two sides still agree; nothing else would notice, because
+      # this path does not run in CI.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: signed-manifest
+          name: artifacts-signed-manifest
           path: |
             artifacts/release-manifest.json
             artifacts/release-manifest.json.minisig
-            artifacts/latest.json
-            artifacts/latest.json.minisig
           if-no-files-found: error
-
-  upload-r2:
-    name: mirror to dl.erpc.global
-    needs: [release-gate, sign]
-    runs-on: ubuntu-latest
-    environment: release
-    steps:
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          pattern: artifacts-*
-          path: artifacts
-          merge-multiple: true
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: signed-manifest
-          path: artifacts
-      - name: upload to R2 (bucket-scoped write-only token)
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: auto
-          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          TAG: ${{ needs.release-gate.outputs.tag }}
-        run: |
-          set -euo pipefail
-          aws s3 cp artifacts/ "s3://erpc-dl/$TAG/" --recursive --endpoint-url "$R2_ENDPOINT" --only-show-errors
-          # latest.json is only advanced for stable releases.
-          case "$TAG" in *-*) echo "prerelease: not advancing latest.json";; *)
-            aws s3 cp artifacts/latest.json "s3://erpc-dl/latest.json" --endpoint-url "$R2_ENDPOINT" --cache-control "max-age=300"
-            aws s3 cp artifacts/latest.json.minisig "s3://erpc-dl/latest.json.minisig" --endpoint-url "$R2_ENDPOINT" --cache-control "max-age=300";;
-          esac
 
   publish-crates:
     name: crates.io (trusted publishing)

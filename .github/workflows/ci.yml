@@ -131,11 +131,30 @@ jobs:
           rm -f gitleaks gitleaks.tar.gz
       - name: gitleaks (full history)
         run: '"$RUNNER_TEMP/gitleaks" git --redact --config .gitleaks.toml --exit-code 1 .'
+      # The self-tests run every case twice, in the C locale and in a
+      # dictionary-collation UTF-8 one, because that is where bash ranges
+      # change meaning. They refuse to run if no such locale exists rather
+      # than quietly checking half of what their name claims, so generate it.
+      - name: ensure a dictionary-collation UTF-8 locale exists
+        run: |
+          set -euo pipefail
+          sudo locale-gen en_US.UTF-8
+          # Captured, not piped into `grep -q`: under `set -o pipefail` the
+          # -q exit closes the pipe, the producer dies of SIGPIPE and the
+          # pipeline reports failure. That is the pattern the self-test
+          # harness had to stop using for exactly this reason.
+          have=$(locale -a || true)
+          printf '%s\n' "$have" | grep -qi '^en_US\.utf-\?8$' || {
+            echo "locale-gen did not produce en_US.UTF-8; the suite needs a"
+            echo "dictionary-collation locale to check what its name claims."
+            exit 1
+          }
       - name: gate self-tests
         run: |
           scripts/tests/check-oss-hygiene.test.sh
           scripts/tests/check-endpoints.test.sh
           scripts/tests/build-manifest.test.sh
+          scripts/tests/release-wiring.test.sh
       - name: hygiene gate (all tracked files)
         run: scripts/check-oss-hygiene.sh
       - name: endpoint allowlist (all tracked files)
@@ -149,7 +168,12 @@ jobs:
         with:
           persist-credentials: false
       - name: confirm the shell really is bash 3.2
-        run: /bin/bash --version | head -1
+        run: |
+          /bin/bash --version | head -1
+          /bin/bash --version | head -1 | grep -q 'version 3\.2\.' || {
+            echo "macos-latest no longer ships bash 3.2; this job no longer tests what its name claims"
+            exit 1
+          }
       - name: gates and their self-tests under /bin/bash
         run: |
           /bin/bash scripts/check-oss-hygiene.sh
@@ -157,6 +181,7 @@ jobs:
           /bin/bash scripts/tests/check-oss-hygiene.test.sh
           /bin/bash scripts/tests/check-endpoints.test.sh
           /bin/bash scripts/tests/build-manifest.test.sh
+          /bin/bash scripts/tests/release-wiring.test.sh
 
   zizmor:
     name: zizmor (workflow audit)

@@ -7,7 +7,7 @@
 # secret key to the repository or to a persistent path.
 #
 #   MINISIGN_SECRET_KEY="$(cat minisign.key)" MINISIGN_PASSWORD=... \
-#     scripts/release/sign-manifest.sh release-manifest.json latest.json
+#     scripts/release/sign-manifest.sh release-manifest.json
 #
 # Produces <file>.minisig next to each input and verifies each signature
 # against crates/erpc-release/pubkey.txt before exiting.

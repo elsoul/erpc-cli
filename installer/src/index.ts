@@ -24,10 +24,6 @@
  * The convenience path therefore trusts DNS, TLS, this worker, and GitHub
  * Releases. Operators who need more follow the high-assurance path in
  * docs/verify-release.md, which does not involve this worker at all.
- *
- * The R2 mirror still serves release *archives*, whose integrity is pinned by
- * the hashes in the signed manifest. That is a different trust question and
- * is handled by the client that checks those hashes, not here.
  */
 
 export interface Env {
@@ -117,14 +113,10 @@ function text(msg: string, status: number): Response {
 }
 
 /**
- * Fetch an installer script from the GitHub Release for `tag`.
- *
- * GitHub only, by design: this body is executed by the caller and this worker
- * cannot verify a signature, so there is no second source to fall back to.
- */
-/**
- * A sanity check, not a security control: it turns a 404 page or an empty
- * body into a clear 502 instead of piping markup into a shell.
+ * A sanity check, not a security control: it rejects markup and an empty
+ * body, so a 404 page becomes a clear 502 rather than being piped into a
+ * shell. A plain-text or markdown error body opening with `#` is accepted
+ * for the PowerShell flavour, because the real installer opens that way too.
  *
  * The shapes are those of the installers cargo-dist actually generates, taken
  * from `dist build --artifacts=global` output rather than from the template:
@@ -142,6 +134,12 @@ export function looksLikeInstaller(body: string, flavor: "sh" | "ps1"): boolean 
   return head.startsWith("#") || head.startsWith("<#");
 }
 
+/**
+ * Fetch an installer script from the GitHub Release for `tag`.
+ *
+ * GitHub only, by design: this body is executed by the caller and this worker
+ * cannot verify a signature, so there is no second source to fall back to.
+ */
 async function fetchInstaller(
   env: Env,
   tag: string,
@@ -170,10 +168,9 @@ async function fetchInstaller(
 /**
  * Latest stable tag, from GitHub only.
  *
- * There is deliberately no mirror fallback here: this worker cannot verify
- * the mirror's signed `latest.json`, so accepting it would let whoever can
- * write to the bucket choose which version every reader installs. If GitHub
- * is unreachable we serve an error rather than a version we cannot vouch for.
+ * GitHub is the only place release artifacts are published, so there is no
+ * second source to consult. If GitHub is unreachable we serve an error
+ * rather than a version we cannot vouch for.
  */
 async function resolveLatest(env: Env): Promise<{ tag: string; source: string } | null> {
   try {
