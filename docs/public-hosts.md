@@ -74,8 +74,10 @@ an instruction a reader will run.
 | `semver.org` | `CHANGELOG.md` |
 | `elsoul.nl` | `NOTICE` |
 
-Each row names a file that links the host today. A grant for a host nothing
-links is removed, not kept "in case": four were removed for that reason.
+Each row names a file that links the host today. Four hosts were removed from
+this list: every URL for them sits in a file the gate never scans (the licence
+texts, the generated third-party notices and the generated release workflow),
+so the grant bought nothing. A grant is not kept "in case".
 
 This is a standing grant: once a host is here, a later change can turn a prose
 link into an install command without the gate objecting. Keep the list short,

@@ -24,10 +24,6 @@
  * The convenience path therefore trusts DNS, TLS, this worker, and GitHub
  * Releases. Operators who need more follow the high-assurance path in
  * docs/verify-release.md, which does not involve this worker at all.
- *
- * The R2 mirror still serves release *archives*, whose integrity is pinned by
- * the hashes in the signed manifest. That is a different trust question and
- * is handled by the client that checks those hashes, not here.
  */
 
 export interface Env {
@@ -172,10 +168,9 @@ async function fetchInstaller(
 /**
  * Latest stable tag, from GitHub only.
  *
- * There is deliberately no mirror fallback here: this worker cannot verify
- * the mirror's signed `latest.json`, so accepting it would let whoever can
- * write to the bucket choose which version every reader installs. If GitHub
- * is unreachable we serve an error rather than a version we cannot vouch for.
+ * GitHub is the only place release artifacts are published, so there is no
+ * second source to consult. If GitHub is unreachable we serve an error
+ * rather than a version we cannot vouch for.
  */
 async function resolveLatest(env: Env): Promise<{ tag: string; source: string } | null> {
   try {

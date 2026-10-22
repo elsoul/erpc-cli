@@ -95,8 +95,23 @@ check "bare 1Password vault identifier" block "$sample_dir/op1.md" \
 check "bare 1Password item identifier" block "$sample_dir/op2.md" \
   'Rotate item gk2m9r4xtp7vn6bq3zdw8scylh after use.'
 
-check "an op:// reference is a pointer, not an identifier" allow "$sample_dir/op3.toml" \
+check "1Password dashboard URL with both identifiers" block "$sample_dir/op2b.md" \
+  'See https://my.1password.com/vaults/4xq7zj2mn8d5r3vb6kwth9pcyf/items/gk2m9r4xtp7vn6bq3zdw8scylh'
+
+check "the words vault ID before the identifier" block "$sample_dir/op2c.md" \
+  '1Password vault ID 4xq7zj2mn8d5r3vb6kwth9pcyf.'
+
+check "an op:// reference carrying both ids is a pointer, not a leak" allow "$sample_dir/op3.toml" \
   'identity_ref = "op://abcdefghijklmnopqrstuvwxyz/abcdefghijklmnopqrstuvwxyz/keypair"'
+
+check "an op:// reference with a hyphenated item name" allow "$sample_dir/op3b.toml" \
+  'ref = "op://myvault/myitem-abcdefghijklmnopqrstuvwxyz/field"'
+
+check "uppercase base32 beside the word vault is not an identifier" allow "$sample_dir/op4.md" \
+  'A base32 blob vault = MFRGGZDFMZTWQ2LKNNWG23TPOB is in prose.'
+
+check "a commit hash beside the word vault is not an identifier" allow "$sample_dir/op5.md" \
+  'vault at commit 3f2a9c1e4b7d8a6f5c2e0b9d4a1f6c3e8b5d2a70 today.'
 
 check "committed dotenv" block "$sample_dir/.env" \
   'TOKEN=abc'

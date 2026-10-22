@@ -65,7 +65,7 @@ dist_config="$(git rev-parse --show-toplevel)/dist-workspace.toml"
 # valid TOML and would have aborted every release with a confusing message.
 expected_targets=$(awk '
   /^[[:space:]]*targets[[:space:]]*=/ { inside = 1 }
-  inside { n += gsub(/"[a-z0-9_]+-[a-z0-9_-]+"/, "&") }
+  inside { line = $0; sub(/#.*/, "", line); n += gsub(/"[a-z0-9_]+-[a-z0-9_-]+"/, "&", line) }
   inside && /\]/ { print n; exit }
 ' "$dist_config" || true)
 [ -n "$expected_targets" ] || expected_targets=0

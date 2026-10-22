@@ -149,7 +149,12 @@ jobs:
         with:
           persist-credentials: false
       - name: confirm the shell really is bash 3.2
-        run: /bin/bash --version | head -1
+        run: |
+          /bin/bash --version | head -1
+          /bin/bash --version | head -1 | grep -q 'version 3\.2\.' || {
+            echo "macos-latest no longer ships bash 3.2; this job no longer tests what its name claims"
+            exit 1
+          }
       - name: gates and their self-tests under /bin/bash
         run: |
           /bin/bash scripts/check-oss-hygiene.sh

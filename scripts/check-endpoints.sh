@@ -194,14 +194,18 @@ check_url() {
     \[*\]*) host="${hostport%%\]*}]";;
     *) host="${hostport%%:*}";;
   esac
-  # An escape sequence at the start of the host (\x65, \u{65}, \065) is a
-  # compile-time literal in Rust, TypeScript and Python alike, so the URL is
-  # real. Report it instead of truncating it away to an empty host.
-  if [ "$host" != "${host#\\}" ]; then
-    report "$f" "$ln" "escape sequence in host, so the literal is hidden: $scheme://$host"
-    return 0
-  fi
-  host="${host%%[)\",\';\`\\]*}"
+  # A backslash ANYWHERE in the host hides the rest of it. In Rust,
+  # TypeScript and Python alike `https://github.com\x2eevil.example.net` is
+  # one compile-time literal under evil.example.net, and trimming at the
+  # backslash would leave the allowlisted prefix and pass. Checking only
+  # position 0 catches the shape that would have been caught anyway.
+  case "$host" in
+    *\\*)
+      report "$f" "$ln" "escape sequence in host, so the literal is hidden: $scheme://$host"
+      return 0
+      ;;
+  esac
+  host="${host%%[)\",\';\`]*}"
   [ -n "$host" ] || return 0
 
   # A host that is not plain ASCII is a homograph risk and must be seen, not

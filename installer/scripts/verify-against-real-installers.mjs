@@ -65,13 +65,23 @@ const testSrc = readFileSync(resolve(here, "..", "src", "index.test.ts"), "utf8"
 for (const { file } of cases) {
   const path = resolve(distrib, file);
   if (!existsSync(path)) continue;
-  const firstLine = readFileSync(path, "utf8").split("\n")[0];
-  if (testSrc.includes(firstLine)) {
-    console.log(`ok   the fixture for ${file} still matches its first line`);
+  // Compare several lines, not one: the shell installer's first line is
+  // `#!/bin/sh`, which would match forever and prove nothing. Lines carrying
+  // a URL are skipped, because the fixture redacts them to keep the endpoint
+  // allowlist out of it.
+  const lines = readFileSync(path, "utf8").split("\n").slice(0, 6);
+  const comparable = lines.filter((l) => l.trim().length > 0 && !l.includes("://"));
+  if (comparable.length < 2) {
+    fail(`${file} has too few comparable lines to check the fixture against`);
+    continue;
+  }
+  const missing = comparable.filter((l) => !testSrc.includes(l));
+  if (missing.length === 0) {
+    console.log(`ok   the fixture for ${file} matches its first ${comparable.length} lines`);
   } else {
     fail(
       `the fixture for ${file} no longer matches the generated artifact. ` +
-        `Its first line is now ${JSON.stringify(firstLine)}; update index.test.ts.`,
+        `These lines are not in index.test.ts: ${JSON.stringify(missing)}`,
     );
   }
 }

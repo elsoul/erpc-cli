@@ -190,6 +190,15 @@ check "backslash escape in a typescript host" block "$sample_dir/z2.ts" \
 check "backslash escape in a rust host" block "$sample_dir/z3.rs" \
   'const U: &str = "https://\\u{65}vil.example.com/x";'
 
+check "escape after an allowlisted prefix (typescript)" block "$sample_dir/z1b.ts" \
+  'const u = "https://github.com\\x2eevil.example.net/c";'
+
+check "escape after an allowlisted prefix (python)" block "$sample_dir/z2b.py" \
+  'U = "https://install.erpc.global\\x2eevil.example.net/x"'
+
+check "escape after an allowlisted prefix (rust)" block "$sample_dir/z3b.rs" \
+  'const U: &str = "https://github.com\\u{2e}evil.example.net/x";'
+
 check "plaintext ws outside loopback" block "$sample_dir/z4.rs" \
   'const W: &str = "ws://relay.example.net/";'
 

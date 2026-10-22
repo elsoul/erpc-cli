@@ -31,7 +31,7 @@ github-attestations = true
 # bucket, a custom domain and a write token to hold and rotate.
 hosting = ["github"]
 # One custom publish workflow (.github/workflows/release-publish.yml) runs, in order:
-# release-gate -> rebuild-compare -> sign (environment `release`, human approval) -> upload-r2 -> publish-crates.
+# release-gate -> rebuild-compare -> sign (environment `release`, human approval) -> publish-crates.
 # The GitHub Release itself is created in the `announce` phase, i.e. only after all of that succeeded.
 publish-jobs = ["./release-publish"]
 github-custom-job-permissions = { "release-publish" = { id-token = "write", contents = "read" } }
