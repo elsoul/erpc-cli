@@ -76,7 +76,8 @@ impl User {
     /// an escape sequence by the time it is printed, and a bidirectional
     /// override can make it read as something else. JSON output uses
     /// [`Self::label`] unchanged: it is data for a program, and the encoder
-    /// escapes only the C0 control characters in it.
+    /// escapes quotes, backslashes and the C0 control characters in it,
+    /// and nothing else.
     #[must_use]
     pub fn label_for_display(&self) -> String {
         self.label()

@@ -228,6 +228,7 @@ pub fn read_parked(path: &Path) -> Result<Option<Parked>, StoreError> {
             expected: PARKED_VERSION,
         });
     }
+    crate::store::non_empty(&stored.access_token, &stored.refresh_token)?;
     Ok(Some(Parked {
         credential: Credential {
             access_token: SecretString::from(stored.access_token.clone()),
@@ -421,6 +422,19 @@ pub(crate) mod tests {
     /// for `gitleaks`, correctly.
     pub(crate) fn token_fixture() -> String {
         ["eyJhbGciOiJIUzI1NiJ9", "U0VDUkVUUEFZTE9BRA", "c2ln"].join(".")
+    }
+
+    #[test]
+    fn a_parked_session_with_an_empty_token_is_not_one() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let path = dir.path().join("pending-credentials.auth-api");
+        let empty = Credential {
+            access_token: SecretString::from(""),
+            refresh_token: SecretString::from("d.e.f"),
+            expires_at: 1,
+        };
+        park_credential(&path, &empty, &spent()).expect("parked");
+        assert!(matches!(read_parked(&path), Err(StoreError::Corrupt(_))));
     }
 
     #[test]

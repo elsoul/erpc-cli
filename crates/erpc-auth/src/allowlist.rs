@@ -16,12 +16,13 @@
 //! only ever sees the refresh token. The `mcp-user-api` host is both the
 //! issuer and the API, so both of its tokens go there.
 //!
-//! `docs/public-hosts.md` restates this per host. Tests below pin the
-//! credentials cell of every issuer and access-token destination word for
-//! word, require that set of hosts to be exactly the one these lists and
-//! the issuer hosts produce, and reject the words "access", "refresh" and
-//! "device", in any case, in every other row's credentials. Whether a
-//! pinned sentence is true is for the reader of the diff that changes it.
+//! `docs/public-hosts.md` restates this per host. A test below pins every
+//! line of that document that contains a `|`, exactly and in order, so no
+//! row can be added, reworded or written in another form without the test
+//! changing in the same diff; it also refuses an HTML table and text run on
+//! from a table's last row. A second test requires the hosts whose token
+//! rows are pinned to be exactly the issuers and destinations here. Whether
+//! a pinned sentence is true is for the reader of the diff that changes it.
 //!
 //! A token is disclosed to whoever receives it, so both sets are
 //! compile-time constants rather than anything a configuration file, an
@@ -410,15 +411,51 @@ mod tests {
         );
     }
 
-    /// What `docs/public-hosts.md` says each issuer and access-token
-    /// destination receives, word for word.
+    /// Every line of `docs/public-hosts.md` that contains a `|`, in order,
+    /// exactly as it must be.
     ///
-    /// Pinned rather than matched. Two rounds of matching words in the
-    /// prose were each beaten by a sentence that used the words and said
-    /// the opposite. A pinned cell cannot drift: changing the table, or
-    /// the set of hosts the code sends a token to, fails a test until this
-    /// list is changed in the same diff, where a reader checks the text.
-    /// What the text means is that reader's job, not this test's.
+    /// Fail-closed, after three rounds of reading the table and each time
+    /// missing a row written in a form the reader did not expect: a line
+    /// with an extra cell, one without a leading pipe, one with an escaped
+    /// pipe, a second table. Whatever a line looks like, if it has a pipe
+    /// in it, it is one of these or the test fails. Changing the table
+    /// means changing this list in the same diff, where a reader checks
+    /// what the rows say; what they mean is that reader's job.
+    const PIPED_LINES: &[&str] = &[
+        "| Host | Purpose | Credentials that may be sent |",
+        "|---|---|---|",
+        "| `auth-api.erpc.global` | OAuth device flow: issue, refresh, revoke; its verification page is opened in the browser | the device code, and the refresh token to the token and revoke endpoints only; never the access token |",
+        "| `user-api.erpc.global` | ERPC account API | auth-api access token only |",
+        "| `mcp-user-api.erpc.global` | ERPC User MCP server, and the issuer of its own tokens | the device code, the MCP refresh token to the token and revoke endpoints, and the MCP access token; never the auth-api tokens |",
+        "| `x402.erpc.global` | x402 payments and credit top-up | x402 billing session token and payment headers only; never auth-api/MCP tokens, never ERPC API keys |",
+        "| `edge.erpc.global` | RPC endpoint, for the planned `check` command | RPC API key supplied by the operator |",
+        "| `dashboard.erpc.global` | opened in the browser for signup and payment setup | none |",
+        "| `erpc.global` | project home page, linked from package metadata | none |",
+        "| `solana-snapshot-*.erpc.global` | snapshot mirrors | none |",
+        "| `dl.erpc.global` | release mirror (R2) | none |",
+        "| `install.erpc.global` | installer script | none |",
+        "| `github.com`, `api.github.com` | releases, attestations | none |",
+        "| `objects.githubusercontent.com`, `release-assets.githubusercontent.com` | release artifact downloads | none |",
+        "| `crates.io`, `index.crates.io`, `static.crates.io` | dependencies (cargo, build time) | none |",
+        "| `registry.npmjs.org` | installer worker dependencies (npm, build time) | none |",
+        "| `sh.rustup.rs` | toolchain installation in CI | none |",
+        "| `127.0.0.1`, `localhost`, `[::1]` | planned OAuth redirect listener and local MCP server; plaintext `http`/`ws` allowed here only | session token for the local MCP server |",
+        "| Host | Linked from |",
+        "|---|---|",
+        "| `www.apache.org` | the licence text and headers |",
+        "| `www.contributor-covenant.org` | `CODE_OF_CONDUCT.md` |",
+        "| `keepachangelog.com` | `CHANGELOG.md` |",
+        "| `semver.org` | `CHANGELOG.md` |",
+        "| `elsoul.nl` | `NOTICE` |",
+        "| `axodotdev.github.io` | the cargo-dist configuration comment |",
+        "| `docs.github.com` | contributor documentation |",
+        "| `reuse.software` | licensing documentation |",
+    ];
+
+    /// The credentials cell of every host a session token goes to, which
+    /// must be the cell of that host's line in [`PIPED_LINES`]. Kept apart
+    /// so that [`the_pinned_hosts_are_exactly_the_hosts_a_token_goes_to`]
+    /// can tie the set of such hosts to the code.
     const PINNED: &[(&str, &str)] = &[
         (
             "auth-api.erpc.global",
@@ -433,53 +470,52 @@ mod tests {
         ),
     ];
 
-    /// Words that name a session credential. No row outside [`PINNED`] may
-    /// use any of them, in any case and in any position.
-    const SESSION_WORDS: &[&str] = &["access", "refresh", "device"];
+    /// Every way the document departs from [`PIPED_LINES`] and [`PINNED`].
+    fn table_errors(doc: &str) -> Vec<String> {
+        table_errors_against(doc, PIPED_LINES)
+    }
 
-    /// Every way the public hosts table disagrees with [`PINNED`].
-    ///
-    /// Reads every row in the file with three cells and a host in the
-    /// first, in any table, so a second table cannot hide a row: a pinned
-    /// host repeated there is held to its pin, and any other host to the
-    /// word rule, wherever the row is.
-    fn table_errors(table: &str) -> Vec<String> {
+    /// [`table_errors`] against a given list of pinned lines, so a test can
+    /// change the list and the document together and reach the
+    /// cross-check with [`PINNED`] on its own.
+    fn table_errors_against(doc: &str, pinned_lines: &[&str]) -> Vec<String> {
         let mut errors = Vec::new();
-        let mut seen: Vec<String> = Vec::new();
-        for line in table.lines().filter(|l| l.starts_with("| `")) {
-            let cells: Vec<&str> = line.split('|').map(str::trim).collect();
-            // `| a | b | c |` splits into five pieces; the documentation
-            // table has two columns and four pieces.
-            if cells.len() != 5 {
-                continue;
-            }
-            let credentials = cells[3];
-            for host in cells[1].split('`').skip(1).step_by(2) {
-                seen.push(host.to_owned());
-                match PINNED.iter().find(|(h, _)| *h == host) {
-                    Some((_, pinned)) if credentials != *pinned => {
-                        errors.push(format!(
-                            "{host}: says \"{credentials}\", pinned \"{pinned}\""
-                        ));
-                    }
-                    Some(_) => {}
-                    None => {
-                        let lower = credentials.to_ascii_lowercase();
-                        for word in SESSION_WORDS {
-                            if lower.contains(word) {
-                                errors.push(format!(
-                                    "{host}: receives no session credential, and says \"{word}\": \
-                                     {credentials}"
-                                ));
-                            }
-                        }
-                    }
-                }
+        let lines: Vec<&str> = doc.lines().collect();
+        let piped: Vec<&str> = lines.iter().copied().filter(|l| l.contains('|')).collect();
+        if piped != pinned_lines {
+            let at = piped
+                .iter()
+                .zip(pinned_lines)
+                .position(|(a, b)| a != b)
+                .unwrap_or_else(|| piped.len().min(pinned_lines.len()));
+            errors.push(format!(
+                "the lines with a pipe differ from the pinned ones at {at}: found {:?}, pinned {:?}",
+                piped.get(at),
+                pinned_lines.get(at)
+            ));
+        }
+        // A table ends at a blank line. A line of text straight after the
+        // last row is read by GitHub as one more row, pipe or not.
+        for (n, pair) in lines.windows(2).enumerate() {
+            if pair[0].contains('|') && !pair[1].contains('|') && !pair[1].trim().is_empty() {
+                errors.push(format!(
+                    "line {}: a table row followed by text, not a blank line",
+                    n + 1
+                ));
             }
         }
-        for (host, _) in PINNED {
-            if !seen.iter().any(|s| s == host) {
-                errors.push(format!("{host}: no row"));
+        // And a table can be written in HTML, with no pipe at all.
+        if doc.to_ascii_lowercase().contains("<table") {
+            errors.push("an HTML table".to_owned());
+        }
+        for (host, cell) in PINNED {
+            let start = format!("| `{host}` |");
+            let row = pinned_lines.iter().find(|l| l.starts_with(&start));
+            let found = row.and_then(|l| l.split('|').nth(3)).map(str::trim);
+            if found != Some(*cell) {
+                errors.push(format!(
+                    "{host}: pinned \"{cell}\", the pinned table says {found:?}"
+                ));
             }
         }
         errors
@@ -502,106 +538,120 @@ mod tests {
         assert_eq!(pinned, from_code);
     }
 
-    const TABLE: &str = include_str!("../../../docs/public-hosts.md");
-
-    /// The table with one row's credentials cell replaced.
-    fn with_cell(host: &str, cell: &str) -> String {
-        let start = format!("| `{host}` |");
-        TABLE
-            .lines()
-            .map(|line| {
-                if line.starts_with(&start) {
-                    let cells: Vec<&str> = line.split('|').collect();
-                    format!("|{}|{}| {cell} |", cells[1], cells[2])
-                } else {
-                    line.to_owned()
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
+    const DOC: &str = include_str!("../../../docs/public-hosts.md");
 
     #[test]
     fn the_public_hosts_table_says_where_each_token_goes() {
-        assert_eq!(table_errors(TABLE), Vec::<String>::new());
+        assert_eq!(table_errors(DOC), Vec::<String>::new());
     }
 
     #[test]
-    fn the_table_check_rejects_the_contradictions_it_exists_for() {
-        // Every one of these was accepted by an earlier version of the
-        // check, which matched words in the prose.
-        for (host, cell) in [
+    fn a_row_in_any_form_is_held_to_the_pinned_lines() {
+        // The forms round 11 of the review used to slip a row past a
+        // reader that parsed the table, each one rendered by GitHub as an
+        // ordinary row, and the word games an earlier check fell for.
+        let x402 = PIPED_LINES
+            .iter()
+            .find(|l| l.starts_with("| `x402.erpc.global` |"))
+            .expect("the x402 row");
+        let replace = |from: &str, to: &str| -> String {
+            assert_eq!(DOC.matches(from).count(), 1, "{from}");
+            DOC.replacen(from, to, 1)
+        };
+        let after_last_row = |extra: &str| -> String {
+            let last = PIPED_LINES
+                .iter()
+                .find(|l| l.starts_with("| `127.0.0.1`"))
+                .expect("the loopback row");
+            replace(last, &format!("{last}\n{extra}"))
+        };
+        for (name, bad) in [
             (
-                "mcp-user-api.erpc.global",
-                "the device code, and the MCP refresh token to the token and revoke endpoints \
-                 only; never the access token",
+                "an extra trailing cell",
+                replace(x402, &format!("{x402} |")),
             ),
             (
-                "user-api.erpc.global",
-                "auth-api access token, the device code and the auth-api refresh token",
-            ),
-            ("x402.erpc.global", "the MCP access token"),
-            ("x402.erpc.global", "Access token for the MCP server"),
-            (
-                "x402.erpc.global",
-                "the MCP Access Token and payment headers",
-            ),
-            ("dashboard.erpc.global", "the auth-api Refresh Token"),
-            ("edge.erpc.global", "the access-token"),
-            ("dl.erpc.global", "never a device code"),
-            (
-                "auth-api.erpc.global",
-                "the device code and the refresh token, never to anything but the token and \
-                 revoke endpoints; also the access token",
+                "a compact second table",
+                format!(
+                    "{DOC}\n|Host|Purpose|Credentials|\n|-|-|-|\n\
+                     |`user-api.erpc.global`|ERPC account API|auth-api refresh token|\n"
+                ),
             ),
             (
-                "auth-api.erpc.global",
-                "the device code, and the refresh token to the token and revoke endpoints only",
+                "an indented repeated row",
+                after_last_row(" | `user-api.erpc.global` | x | the auth-api refresh token |"),
             ),
             (
-                "user-api.erpc.global",
-                "auth-api access token only; never the device code, but the refresh token as well",
+                "no leading pipe",
+                after_last_row("`x402.erpc.global` | x402 payments | the MCP access token"),
             ),
-            ("user-api.erpc.global", "no access token"),
-            ("user-api.erpc.global", "the MCP access token only"),
-            ("user-api.erpc.global", "none"),
             (
-                "mcp-user-api.erpc.global",
-                "the device code, the MCP refresh token to the token and revoke endpoints, the \
-                 auth-api refresh token and the auth-api access token",
+                "a host out of backticks",
+                replace(
+                    x402,
+                    &x402.replacen("`x402.erpc.global`", "x402.erpc.global", 1),
+                ),
+            ),
+            (
+                "an escaped pipe",
+                replace(
+                    x402,
+                    &x402.replacen("x402 payments", "x402 payments \\| top-up", 1),
+                ),
+            ),
+            (
+                "a synonym",
+                replace(
+                    x402,
+                    &x402.replacen(
+                        "never auth-api/MCP tokens",
+                        "the auth-api and MCP tokens",
+                        1,
+                    ),
+                ),
+            ),
+            (
+                "an entity",
+                replace(
+                    x402,
+                    &x402.replacen("payment headers", "acc&#101;ss tokens", 1),
+                ),
+            ),
+            (
+                "text straight after the table",
+                after_last_row("the auth-api refresh token"),
+            ),
+            (
+                "an HTML table",
+                format!(
+                    "{DOC}\n<table><tr><td>user-api.erpc.global</td><td>refresh token</td></tr></table>\n"
+                ),
             ),
         ] {
-            let bad = with_cell(host, cell);
-            assert_ne!(bad, TABLE, "the case must change the table: {host}");
-            assert!(
-                !table_errors(&bad).is_empty(),
-                "{host} with \"{cell}\" was accepted"
-            );
+            assert_ne!(bad, DOC, "the case must change the document: {name}");
+            assert!(!table_errors(&bad).is_empty(), "{name} was accepted");
         }
     }
 
     #[test]
-    fn a_row_cannot_be_hidden_or_dropped() {
-        // A second table with the same header, repeating a pinned host with
-        // a different cell. Read like the first, so held to the pin.
-        let second = format!(
-            "{TABLE}\n\n| Host | Purpose | Credentials that may be sent |\n|---|---|---|\n\
-             | `user-api.erpc.global` | ERPC account API | auth-api refresh token |\n"
-        );
+    fn a_pinned_cell_must_agree_with_the_pinned_table() {
+        // The document and the pinned lines changed together, so the line
+        // comparison is satisfied; only the cross-check with PINNED is left
+        // to notice that user-api no longer admits to the access token.
+        let from = "| `user-api.erpc.global` | ERPC account API | auth-api access token only |";
+        let to = "| `user-api.erpc.global` | ERPC account API | none |";
+        let lines: Vec<&str> = PIPED_LINES
+            .iter()
+            .map(|l| if *l == from { to } else { *l })
+            .collect();
+        assert_ne!(lines, PIPED_LINES, "the row is in the pinned lines");
+        let doc = DOC.replacen(from, to, 1);
+        assert_ne!(doc, DOC);
+        let errors = table_errors_against(&doc, &lines);
+        assert_eq!(errors.len(), 1, "{errors:?}");
         assert!(
-            !table_errors(&second).is_empty(),
-            "a second table was not read"
-        );
-        // A pinned host with no row at all.
-        let dropped: String = TABLE
-            .lines()
-            .filter(|l| !l.starts_with("| `user-api.erpc.global` |"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert_ne!(dropped, TABLE);
-        assert!(
-            table_errors(&dropped).iter().any(|e| e.ends_with("no row")),
-            "a missing row was not noticed"
+            errors[0].starts_with("user-api.erpc.global: pinned"),
+            "{errors:?}"
         );
     }
 }

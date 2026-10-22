@@ -613,13 +613,7 @@ impl<R: OpRunner> CredentialStore for OnePassword<R> {
                 "the item does not have the expected fields".to_owned(),
             ));
         };
-        // An empty token is not a session, and handing one on would send
-        // an empty bearer header and an empty refresh grant.
-        if access.is_empty() || refresh.is_empty() {
-            return Err(StoreError::Corrupt(
-                "the item has an empty token field".to_owned(),
-            ));
-        }
+        super::non_empty(access, refresh)?;
         let expires_at = expires
             .parse::<i64>()
             .map_err(|e| StoreError::Corrupt(format!("expires_at is not a timestamp: {e}")))?;

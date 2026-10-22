@@ -155,6 +155,24 @@ pub trait CredentialStore {
     fn kind(&self) -> StoreKind;
 }
 
+/// Refuses a session whose access or refresh token is empty.
+///
+/// Every store reads its record back through this, so they agree: an
+/// empty token is not a session, and handing one on would send an empty
+/// bearer header and an empty refresh grant.
+///
+/// # Errors
+///
+/// Returns [`StoreError::Corrupt`] naming the empty field.
+pub(crate) fn non_empty(access: &str, refresh: &str) -> Result<(), StoreError> {
+    if access.is_empty() || refresh.is_empty() {
+        return Err(StoreError::Corrupt(
+            "the record has an empty token field".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 /// A record that would not parse, described by where and never by what.
 ///
 /// The parsers' own messages quote the text they choke on -- `toml` prints

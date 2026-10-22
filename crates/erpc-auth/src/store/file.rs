@@ -175,6 +175,7 @@ impl CredentialStore for FileStore {
                 expected: STORE_VERSION,
             });
         }
+        super::non_empty(&stored.access_token, &stored.refresh_token)?;
         Ok(Some(Credential {
             access_token: SecretString::from(stored.access_token.clone()),
             refresh_token: SecretString::from(stored.refresh_token.clone()),
@@ -240,6 +241,15 @@ mod tests {
     use crate::credential::{Audience, CredKey, Credential};
     use crate::store::{CredentialStore as _, StoreError, StoreKind};
     use secrecy::{ExposeSecret as _, SecretString};
+
+    #[test]
+    fn a_record_with_an_empty_token_is_not_a_session() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let store = FileStore::new(dir.path().join("credentials.toml"));
+        let key = CredKey::new(Audience::AuthApi, "alice");
+        store.save(&key, &cred("")).expect("save");
+        assert!(matches!(store.load(&key), Err(StoreError::Corrupt(_))));
+    }
 
     #[test]
     fn a_broken_credentials_file_does_not_quote_its_token() {

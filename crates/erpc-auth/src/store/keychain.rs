@@ -68,6 +68,7 @@ fn parse_entry(raw: &str) -> Result<Credential, StoreError> {
             expected: STORE_VERSION,
         });
     }
+    super::non_empty(&stored.access_token, &stored.refresh_token)?;
     Ok(Credential {
         access_token: SecretString::from(stored.access_token.clone()),
         refresh_token: SecretString::from(stored.refresh_token.clone()),
@@ -137,6 +138,15 @@ mod tests {
     use super::{OsKeychain, SERVICE, parse_entry};
     use crate::credential::{Audience, CredKey};
     use crate::store::{CredentialStore as _, StoreKind};
+
+    #[test]
+    fn an_entry_with_an_empty_token_is_not_a_session() {
+        let raw = r#"{"store_version":1,"access_token":"a.b.c","refresh_token":"","expires_at":1}"#;
+        assert!(matches!(
+            parse_entry(raw),
+            Err(crate::store::StoreError::Corrupt(_))
+        ));
+    }
 
     #[test]
     fn a_malformed_entry_is_reported_without_quoting_it() {
