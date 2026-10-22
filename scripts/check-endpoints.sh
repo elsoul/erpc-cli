@@ -94,29 +94,42 @@
 #         gate has twice deleted. So it is closed where the shape is
 #         unambiguous and open where it is not.
 #
-#         Closed: a quote ending the host followed at once by `$` or a
-#         backtick; a backtick inside the host followed by a letter or digit.
-#         Nothing but an interpolation or a command begins that way.
+#         CLOSED -- reported:
+#           - a quote right after the scheme, followed by anything that can
+#             begin a host or an interpolation: https://"evil.example.net"/x
+#             is https://evil.example.net/x and needs no declared host.
+#           - a quote ending a host, followed at once by `$`, a backtick,
+#             `@`, `{`, a digit, `_` or the same quote again.
+#           - a backtick inside a host followed by a letter or a digit.
 #
-#         Open, each pinned by a KNOWN LIMIT case in the self-test:
-#           - a backtick right after a declared host, then a space --
-#             https://erpc.global` cat f`/p. Short of parsing shell quoting it
-#             is the same text as a backtick closing an inline code span
-#             before the next word, which is a correct line.
-#           - a quote ending the host, then a dot --
-#             'https://api.github.com'.evil.example.net/x. In shell the words
-#             join; in Rust, TypeScript and Python it is a method call, as in
-#             "https://erpc.global".to_string(), and the two cannot be told
-#             apart from the text.
-#           - a quote ending the host, then a letter, which includes a quote
-#             INSIDE the host as the URL Standard permits:
-#             https://api.github.com'evil.example.net/x resolves to the host
-#             api.github.com'evil.example.net, served by a wildcard record,
-#             so the DNS query reaches that zone even though no public CA
-#             will issue for the label. Reporting it would also report a
-#             possessive in prose, https://erpc.global's page; admitting
-#             quotes to the authority instead reads ["https://a","https://b"]
-#             as the single host a","https.
+#         OPEN -- EVERYTHING ELSE in the class, stated as the complement of
+#         the closed set so that the list cannot leave a shape out. An
+#         earlier version listed the open shapes one by one, and the next
+#         review found members of the class that were on neither list.
+#         Precisely:
+#           - a quote ending a host, followed by any character not in the
+#             closed set above. That includes `.`, which is a method call in
+#             Rust, TypeScript and Python ("https://erpc.global".to_string()),
+#             and a letter, which includes a quote INSIDE the host as the URL
+#             Standard permits -- https://api.github.com'evil.example.net/x
+#             resolves to that host, served by a wildcard record -- and which
+#             would also report a possessive in prose. It includes `,` `]`
+#             `}` `-` `!` `=` and the OTHER quote, each of which begins a
+#             correct line somewhere.
+#           - a backtick after a declared host followed by anything other
+#             than a letter or digit, INCLUDING when it is the last
+#             character of the authority -- a space, `/`, `(`, `{`, `.`, a
+#             quote or the end of the line. Under a shell that backtick may
+#             OPEN a command substitution; in Markdown and JavaScript it
+#             CLOSES an inline code span or a template literal, and only a
+#             parser could tell which.
+#         Representative members of both are pinned as KNOWN LIMIT cases in
+#         the self-test.
+#
+#         The two closes also report some correct lines, and fail loudly
+#         when they do: a regex end anchor after a quoted URL
+#         ('"https://erpc.global"$'), and in Markdown a word run straight
+#         on from inline code (`https://erpc.global`s docs).
 #
 #         The design holds only while every construct that interpolates at
 #         runtime, in every file type tracked here, is either tracked by awk
@@ -225,6 +238,21 @@ patterns=$(printf '%s\n' "$all_consts" | grep -oE '\("[A-Za-z0-9.-]+",[[:space:]
 
 # A broken extraction would make this gate reject everything, which looks
 # strict and is useless. Fail loudly instead.
+#
+# Both counts below read a non-numeric result as zero rather than leave it to
+# `[` to reject. With a failing `grep` on PATH the substitution is empty,
+# `[ "" -lt 5 ]` raises "integer expression expected", and the tripwire
+# falls through instead of firing. There are TWO such guards, and they are
+# not equally tested, which an earlier version of this comment blurred:
+#
+#   * this one, on the service-host count, IS a tested control. The case
+#     that stubs grep asserts the tripwire's own message, and removing this
+#     guard fails it -- the run then goes on with an empty allowlist and
+#     reports every URL as undeclared, with a different message.
+#   * the one on the documentation-host count, below, is defensive
+#     redundancy. Removing it fails no case, because with grep failing this
+#     first tripwire has already fired. It is kept so that the second
+#     tripwire never raises a shell error of its own.
 service_host_count=$(printf '%s\n' "$service_hosts" | grep -c . || true)
 case "$service_host_count" in ''|*[!0-9]*) service_host_count=0;; esac
 if [ "$service_host_count" -lt 5 ]; then
@@ -236,17 +264,7 @@ fi
 # above would never fire — the opposite of the intended failure.
 doc_host_count=$(printf '%s\n' "$doc_hosts" | grep -c . || true)
 case "$doc_host_count" in ''|*[!0-9]*) doc_host_count=0;; esac
-# A non-numeric count is treated as zero rather than left to `[` to reject:
-# with a failing `grep` on PATH the substitution was empty, `[ "" -lt 1 ]`
-# raised "integer expression expected", and the tripwire fell through
-# instead of firing.
-#
-# This is DEFENSIVE REDUNDANCY, not a tested control, and the difference is
-# worth stating. Removing it fails no case, because the only way the count
-# goes non-numeric is a failing `grep`, and the scan's own pipeline check
-# then refuses the run anyway -- so the exit code is 2 either way. What this
-# buys is that the tripwire fires with its own message instead of emitting
-# a shell error and falling through to a less specific one.
+# Defensive redundancy -- see the comment above the first tripwire.
 if [ "$doc_host_count" -lt 1 ]; then
   echo "DOCUMENTATION_HOSTS extraction is empty; the gate is broken" >&2
   exit 2
@@ -339,25 +357,25 @@ strip_expressions() {
 }
 
 template_host_matches_pattern() {
-  local host prefix suffix lit_pre lit_suf opener closerr after best d c o cl mid tail
+  local host prefix suffix lit_pre lit_suf opener closer after best d c o cl mid tail
   host=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
 
-  # Find the EARLIEST template delimiter and pair it with ITS OWN closerr.
+  # Find the EARLIEST template delimiter and pair it with ITS OWN closer.
   # Pairing matters: a backtick is both a template delimiter and a JavaScript
   # string quote, so "after the last closing delimiter" reads the text after
   # the string's closing backtick and loses the real suffix.
-  best=""; opener=""; closerr=""
+  best=""; opener=""; closer=""
   for d in '${:}' '{{:}}' '$(:)' '`:`'; do
     o="${d%%:*}"; cl="${d##*:}"
     c="${host%%$o*}"
     [ "$c" = "$host" ] && continue
-    if [ -z "$opener" ] || [ ${#c} -lt ${#best} ]; then best="$c"; opener="$o"; closerr="$cl"; fi
+    if [ -z "$opener" ] || [ ${#c} -lt ${#best} ]; then best="$c"; opener="$o"; closer="$cl"; fi
   done
   [ -n "$opener" ] || return 1
   lit_pre="$best"
 
   after="${host#*$opener}"
-  case "$after" in *"$closerr"*) lit_suf="${after#*$closerr}";; *) return 1;; esac
+  case "$after" in *"$closer"*) lit_suf="${after#*$closer}";; *) return 1;; esac
   # The suffix is literal text, so the same trailing punctuation the caller
   # strips applies here.
   lit_suf="${lit_suf%%[)\",\';\`]*}"
@@ -413,7 +431,7 @@ EOF
 #   2. There is no "how far does the authority run" question answered by a
 #      character class. The authority ends where it cannot continue, and what
 #      is left must EQUAL a declared host. Nothing is trimmed into shape.
-#   3. The default is REPORT. A shape nobody has thought of fails closerd
+#   3. The default is REPORT. A shape nobody has thought of fails closed
 #      instead of passing silently, which inverts the one property that cost
 #      four rounds.
 #
@@ -462,11 +480,20 @@ authority_end='[/?#"'"'"'<> ]'
 # what let `https://api.github.com,evil.example.net` be judged as
 # api.github.com.
 #
-# Why this cannot move a destination, which is the argument the list rests
-# on: no character in it can form a DNS label. Stripping a run of them off
-# the end therefore cannot change the registrable domain; the only two that
-# alter the host string at all are `:` (an empty port) and, before it was
-# removed, a trailing root dot -- both the same host.
+# Why this cannot move a destination, for LITERAL text, which is the
+# argument the list rests on: no character in it can form a DNS label.
+# Stripping a run of them off the end therefore cannot change the
+# registrable domain; the only two that alter the host string at all are
+# `:` (an empty port) and, before it was removed, a trailing root dot --
+# both the same host.
+#
+# The backtick is the exception, and the argument does not cover it. Under a
+# shell a backtick at the end of a host may OPEN a command substitution
+# whose output becomes part of the host -- https://erpc.global`/bin/echo
+# .evil.example.net`/p -- and stripping it then hides exactly that. It is in
+# the list because in Markdown and JavaScript the same backtick CLOSES an
+# inline code span or a template literal, which is the common case. That is
+# the disclosed backtick limit in the header, not a property of this list.
 #
 # SIX entries, and each has a case: `]` `;` `:` `}` `!` and a backtick.
 # Four more were removed as redundant, after checking that dropping all
@@ -481,6 +508,25 @@ authority_tail_punct='[];:}!`]'
 
 # $1 scheme word (with its colon), $2 the rest of the line after that colon,
 # $3 file, $4 line number, $5 prose|code
+# True when what follows an EMPTY authority is a quote and then something
+# that can begin a host or an interpolation. In a shell word quoted and
+# unquoted parts are joined, so `https://"evil.example.net"/x` is the URL
+# https://evil.example.net/x -- a plain destination, needing no declared
+# host at all -- while awk, which stops the authority at the quote, hands
+# over an empty one. The empty authority used to return success before the
+# terminator was ever looked at.
+#
+# What stays allowed is what source code writes when it builds a URL from a
+# runtime host, which is the wholly-templated case the header already
+# states: `url.strip_prefix("https://")` (a quote, then `)`),
+# `"https://".len()` (then `.`) and `'https://' + host` (then a space).
+quoted_host_after_scheme() {
+  case "${1#L}" in
+    [\"\'][A-Za-z0-9\$\`\"\'\{_]*) return 0;;
+  esac
+  return 1
+}
+
 check_occurrence() {
   local scheme="$1" rest="$2" f="$3" ln="$4" kind="$5" look="${6:-L}"
   local authority host probe paired has_expr tail prefix
@@ -495,25 +541,39 @@ check_occurrence() {
   # declared host in the middle vouches for nothing.
   authority="${authority##*@}"
 
-  [ -n "$authority" ] || return 0
+  if [ -z "$authority" ]; then
+    if quoted_host_after_scheme "$look"; then
+      report "$f" "$ln" "a quote follows the scheme, so the host is outside the literal: $scheme://${look#L}..."
+    fi
+    return 0
+  fi
 
-  # A QUOTE THAT ENDS THE HOST, FOLLOWED AT ONCE BY AN INTERPOLATION. In a
-  # shell word, quoted and unquoted parts are joined, so
+  # A QUOTE THAT ENDS THE HOST, FOLLOWED AT ONCE BY SOMETHING THE SHELL
+  # JOINS ON. In a shell word, quoted and unquoted parts are joined, so
   # `"https://erpc.global"$(cat f)/p` contacts erpc.global with the command's
-  # output appended -- erpc.global.evil.example.net when that output is
-  # `.evil.example.net`. The quote is a terminator here because a quote is
+  # output appended, and `"https://erpc.global"@evil.example.net/x` contacts
+  # evil.example.net outright. The quote is a terminator because a quote is
   # how source delimits a URL, so the text past it was never part of the
   # authority, and the allowlist was asked about the declared prefix alone.
   #
-  # Closed for `$` and a backtick only, because those two are unambiguous:
-  # nothing but an interpolation begins that way, and in the other languages
-  # this repository holds the shape is a syntax error, not a correct line.
-  # A quote followed by a `.` or a letter is NOT closed -- see the header --
-  # because `"https://erpc.global".to_string()` is ordinary Rust and the dot
-  # cannot be told apart from shell concatenation without parsing the file.
+  # CLOSED for exactly these followers: `$`, a backtick, `@`, `{`, a digit,
+  # `_`, and the same quote again. Each is joined by the shell, and none
+  # begins a correct line in Rust, TypeScript, YAML, JSON or Markdown in that
+  # position. `$` does have one correct use that this reports: a regex end
+  # anchor written after a quoted URL, as in grep -x '"https://x"$'. That
+  # fails loudly, and the earlier claim here that nothing but an
+  # interpolation begins with `$` was wrong.
+  #
+  # EVERY OTHER FOLLOWER IS OPEN, and the header says so in those words
+  # rather than by listing them -- a list of open shapes was found incomplete
+  # in the round after it was written. Among them: `.`, which is a method
+  # call in Rust/TS/Python (`"https://erpc.global".to_string()`); a letter,
+  # which is a possessive in prose; `,` `]` `}` `-` `!` `=` and the OTHER
+  # quote, each a correct line somewhere (a JSON array, an index, a nested
+  # jq filter).
   case "${look#L}" in
-    [\"\']\$*|[\"\']\`*)
-      report "$f" "$ln" "a quote ends the host and an interpolation follows it, so the host is built at runtime: $scheme://$authority"
+    [\"\'][\$\`@\{0-9_]*|\"\"*|\'\'*)
+      report "$f" "$ln" "a quote ends the host and the shell would join what follows it, so the host is built at runtime: $scheme://$authority${look#L}"
       return 0
       ;;
   esac
@@ -579,7 +639,15 @@ check_occurrence() {
       ;;
   esac
 
-  [ -n "$host" ] || return 0
+  # Stripping trailing punctuation can empty the host -- `https://}"x"` --
+  # and the same reasoning applies: what is past the terminator may be the
+  # whole host. This return was the second silent pass of the same shape.
+  if [ -z "$host" ]; then
+    if quoted_host_after_scheme "$look"; then
+      report "$f" "$ln" "a quote follows the scheme, so the host is outside the literal: $scheme://$authority${look#L}..."
+    fi
+    return 0
+  fi
 
   # An expression means the destination is not fixed by what is written.
   # Detected BEFORE the punctuation test below, because a `)` that closes a

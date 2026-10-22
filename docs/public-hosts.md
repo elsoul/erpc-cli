@@ -120,29 +120,47 @@ code as authoritative if the two ever disagree.
     how the shell builds a word, which is a parser in a text matcher, so it
     is closed where the shape is unambiguous and open where it is not.
 
-    Closed: a quote ending the host followed at once by `$` or a backtick,
-    as in `"https://erpc.global"$(cat f)`; and a backtick inside the host
-    followed by a letter or digit, as above. Nothing but an interpolation or
-    a command begins that way.
+    **Closed** — reported:
+    - a quote right after the scheme, followed by anything that can begin a
+      host or an interpolation. `https://"evil.example.net"/x` is the URL
+      `https://evil.example.net/x` and needs no declared host at all; it was
+      allowed until a review found it, because the scan stops the authority
+      at the quote and an empty authority returned before anything else was
+      looked at.
+    - a quote ending a host, followed at once by `$`, a backtick, `@`, `{`,
+      a digit, `_`, or the same quote again. `@` replaces the host outright:
+      `"https://erpc.global"@evil.example.net/x` resolves to
+      `evil.example.net`.
+    - a backtick inside a host followed by a letter or a digit, which is a
+      command name.
 
-    Open:
-    - a backtick right after a declared host, then a space —
-      ``https://erpc.global` cat f`/p``. Short of parsing shell quoting it is
-      the same text as a backtick that closes an inline code span before the
-      next word, which is a correct line.
-    - a quote ending the host, then a dot —
-      `'https://api.github.com'.evil.example.net/x`. In shell the words join;
-      in Rust, TypeScript and Python it is a method call, as in
-      `"https://erpc.global".to_string()`, and the two cannot be told apart
-      from the text.
-    - a quote ending the host, then a letter — which includes a quote
-      *inside* the host, as the URL Standard permits.
-      `https://api.github.com'evil.example.net/x` resolves to the host
-      `api.github.com'evil.example.net`, which a wildcard record serves, so
-      the DNS query reaches that zone even though no public CA will issue
-      for the label. Reporting it would also report a possessive in prose,
-      `https://erpc.global's page`; admitting quotes to the authority instead
-      reads `["https://a","https://b"]` as the single host `a","https`.
+    **Open** — *everything else in the class*. This is stated as the
+    complement of the closed set rather than as a list of open shapes,
+    because a list was written once and the next review found members of
+    the class that were on neither side of it. Precisely:
+    - a quote ending a host, followed by any character not listed as closed
+      above. That includes `.`, which is a method call in Rust, TypeScript
+      and Python (`"https://erpc.global".to_string()`), and a letter, which
+      includes a quote *inside* the host as the URL Standard permits —
+      `https://api.github.com'evil.example.net/x` resolves to that host,
+      which a wildcard record serves — and which would also report a
+      possessive in prose. It includes `,` `]` `}` `-` `!` `=` and the
+      *other* quote, each of which begins a correct line somewhere: a JSON
+      array, an index, a jq filter nested in a shell argument.
+    - a backtick after a declared host followed by anything other than a
+      letter or digit, *including* when it is the last character of the
+      authority — a space, `/`, `(`, `{`, `.`, a quote or the end of the
+      line. Under a shell that backtick may open a command substitution:
+      ``https://erpc.global`/bin/echo .evil.example.net`/p`` resolves to
+      `erpc.global.evil.example.net`. In Markdown and JavaScript the same
+      backtick closes an inline code span or a template literal, and only a
+      parser could tell which.
+
+    Representative members of both are pinned as `KNOWN LIMIT` cases in the
+    self-test. The two closes also report some correct lines, loudly: a
+    regex end anchor written after a quoted URL, `'"https://erpc.global"$'`,
+    and in Markdown a word run straight on from inline code,
+    ``` `https://erpc.global`s docs ```.
 
     The design holds only while every construct that interpolates at
     runtime, in every file type tracked here, is either tracked as a
