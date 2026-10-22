@@ -945,54 +945,56 @@ invariant "two plain URLs on one line are both named" \
 
 # --- the gate must fail CLOSED ---------------------------------------------
 #
-# The scan runs in a process substitution, so neither pipefail nor an exit
-# status reaches the gate's own status variable. An awk that cannot start
-# therefore produced zero records: no findings, exit 0, every URL in the tree
-# allowed. That is the one failure mode where a gate must not be quiet, and
-# it is not hypothetical -- this scanner's first draft named a variable
-# `close`, which awk reserves, and the gate passed everything while saying
-# nothing.
+# The scan runs in a process substitution, so an exit status does not reach
+# the gate's own on its own account. A stage that cannot run therefore
+# produced zero records: no findings, exit 0, every URL in the tree allowed.
+# That is the one failure mode where a gate must not be quiet.
 #
-# This runs the gate with an `awk` on PATH that fails, and asserts it refuses
-# rather than reporting a clean result. Asserted on the MESSAGE as well as
-# the code, because exit 2 is also what a missing allowlist produces.
-awk_stub_dir="$repo_root/$sample_dir/stub-bin"
-mkdir -p "$awk_stub_dir"
-# The stub fails ONLY for the scanner program, and defers to the real awk
-# otherwise. A stub that failed for everything would be caught earlier by
-# the allowlist tripwire -- which is worth knowing: a wholly broken awk was
-# never the exposure. The exposure is an awk that runs the simple programs
-# in this file and chokes on the scanner, which is exactly what a reserved
-# word in the scanner produces.
-{
-  printf '#!/bin/sh\n'
-  printf 'for a in "$@"; do\n'
-  printf '  case "$a" in *authority_of*) exit 1;; esac\n'
-  printf 'done\n'
-  printf 'exec /usr/bin/awk "$@"\n'
-} > "$awk_stub_dir/awk"
-chmod +x "$awk_stub_dir/awk"
+# Three stages, because fixing one did not fix the others. awk was closed
+# first, with an END sentinel -- and awk's END block runs even on EMPTY
+# INPUT, so a failing `grep` or `sed` left the sentinel intact and the gate
+# still exited 0. Both were measured, not reasoned about. The whole
+# pipeline's status is checked as well now.
+#
+# Each stub fails only for the gate's own use and defers to the real tool
+# otherwise, so the case measures the scanner rather than something earlier:
+# a stub that failed for everything was caught by the allowlist tripwire and
+# passed this case for the wrong reason.
+fc_stub_dir="$repo_root/$sample_dir/stub-bin"
 fc_rel="$sample_dir/failclosed.rs"
-printf '%s\n' 'let u = "https://evil.example.net/x";' > "$repo_root/$fc_rel"
-fc_out="$(PATH="$awk_stub_dir:$PATH" "$sh" "$gate" "$fc_rel" 2>&1)"; fc_rc=$?
-rm -rf "$awk_stub_dir" "$repo_root/$fc_rel"
-rmdir -p "$(dirname "$repo_root/$fc_rel")" 2>/dev/null || true
-case "$fc_rc:$fc_out" in
-  *"fewer than 5 hosts"*)
-    # The stub is not discriminating on this machine, so the case would pass
-    # for the wrong reason. Say so rather than counting it.
+for fc_tool in awk sed grep; do
+  mkdir -p "$fc_stub_dir"
+  case "$fc_tool" in
+    awk)
+      # Fail only for the scanner program; the allowlist extraction also
+      # uses awk and must still work, or this measures the wrong control.
+      {
+        printf '#!/bin/sh\n'
+        printf 'for a in "$@"; do\n'
+        printf '  case "$a" in *authority_of*) exit 1;; esac\n'
+        printf 'done\n'
+        printf 'exec /usr/bin/awk "$@"\n'
+      } > "$fc_stub_dir/awk";;
+    sed)
+      # normalise() is the only sed that reads a tracked file through a
+      # pipe; the allowlist extraction uses sed on a captured string.
+      printf '#!/bin/sh\nexit 1\n' > "$fc_stub_dir/sed";;
+    grep)
+      printf '#!/bin/sh\nexit 1\n' > "$fc_stub_dir/grep";;
+  esac
+  chmod +x "$fc_stub_dir/$fc_tool"
+  printf '%s\n' 'let u = "https://evil.example.net/x";' > "$repo_root/$fc_rel"
+  fc_out="$(PATH="$fc_stub_dir:$PATH" "$sh" "$gate" "$fc_rel" 2>&1)"; fc_rc=$?
+  rm -rf "$fc_stub_dir" "$repo_root/$fc_rel"
+  if [ "$fc_rc" -eq 0 ]; then
     fail=$((fail + 1))
-    printf 'FAIL a scanner that cannot run makes the gate refuse (the stub broke the allowlist too; test is not measuring the scanner)\n';;
-  0:*)
-    fail=$((fail + 1))
-    printf 'FAIL a scanner that cannot run makes the gate refuse (exit 0: it passed a known-bad URL)\n';;
-  *"did not run to completion"*)
+    printf 'FAIL a failing %s makes the gate refuse (exit 0: it passed a known-bad URL)\n' "$fc_tool"
+  else
     pass=$((pass + 1))
-    printf 'ok   a scanner that cannot run makes the gate refuse\n';;
-  *)
-    fail=$((fail + 1))
-    printf 'FAIL a scanner that cannot run makes the gate refuse (exit %s, said: %s)\n' "$fc_rc" "$fc_out";;
-esac
+    printf 'ok   a failing %s makes the gate refuse\n' "$fc_tool"
+  fi
+done
+rmdir -p "$(dirname "$repo_root/$fc_rel")" 2>/dev/null || true
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -179,14 +179,29 @@ patterns=$(printf '%s\n' "$all_consts" | grep -oE '\("[A-Za-z0-9.-]+",[[:space:]
 
 # A broken extraction would make this gate reject everything, which looks
 # strict and is useless. Fail loudly instead.
-if [ "$(printf '%s\n' "$service_hosts" | grep -c .)" -lt 5 ]; then
+service_host_count=$(printf '%s\n' "$service_hosts" | grep -c . || true)
+case "$service_host_count" in ''|*[!0-9]*) service_host_count=0;; esac
+if [ "$service_host_count" -lt 5 ]; then
   echo "allowlist extraction produced fewer than 5 hosts; the gate is broken" >&2
   exit 2
 fi
 # And an empty documentation list would make `grep -vxF ""` pass everything
 # through, so service_hosts would grow rather than shrink and the tripwire
 # above would never fire — the opposite of the intended failure.
-if [ "$(printf '%s\n' "$doc_hosts" | grep -c .)" -lt 1 ]; then
+doc_host_count=$(printf '%s\n' "$doc_hosts" | grep -c . || true)
+case "$doc_host_count" in ''|*[!0-9]*) doc_host_count=0;; esac
+# A non-numeric count is treated as zero rather than left to `[` to reject:
+# with a failing `grep` on PATH the substitution was empty, `[ "" -lt 1 ]`
+# raised "integer expression expected", and the tripwire fell through
+# instead of firing.
+#
+# This is DEFENSIVE REDUNDANCY, not a tested control, and the difference is
+# worth stating. Removing it fails no case, because the only way the count
+# goes non-numeric is a failing `grep`, and the scan's own pipeline check
+# then refuses the run anyway -- so the exit code is 2 either way. What this
+# buys is that the tripwire fires with its own message instead of emitting
+# a shell error and falling through to a less specific one.
+if [ "$doc_host_count" -lt 1 ]; then
   echo "DOCUMENTATION_HOSTS extraction is empty; the gate is broken" >&2
   exit 2
 fi
@@ -674,12 +689,22 @@ for f in "${files[@]}"; do
   # gate does not judge -- it is not special, so no parser applies the
   # slash-skipping rule to it and no client fetches it over TLS -- and
   # matching the tail of a word instead reported `let flows:u32 = 1;`.
+  # TWO markers, because one was not enough. The sentinel below is emitted
+  # by awk's END block, which runs even when awk receives no input -- so a
+  # failing `grep` or a failing `normalise` left the sentinel intact and the
+  # gate still reported nothing and exited 0. Measured, not reasoned: with a
+  # `sed` that exits 1 on PATH, a file containing an undeclared host was
+  # allowed. So the whole pipeline's status is checked as well, which
+  # `pipefail` (set at the top of this file) makes meaningful: the group
+  # emits __scan_failed__ when any stage of it fails.
   scan_complete=no
+  scan_failed=no
   while IFS="$tab" read -r ln scheme rest; do
     [ -n "$ln" ] || continue
+    if [ "$scheme" = "__scan_failed__" ]; then scan_failed=yes; continue; fi
     if [ "$scheme" = "__scan_complete__" ]; then scan_complete=yes; continue; fi
     check_occurrence "$scheme" "$rest" "$f" "$ln" "$kind"
-  done < <(grep -a '' "$f" 2>/dev/null | normalise | awk '
+  done < <({ grep -a '' "$f" 2>/dev/null | normalise | awk '
     # Where an authority ends. index() rather than a regex, so no character
     # here needs escaping in two languages at once.
     BEGIN {
@@ -736,9 +761,10 @@ for f in "${files[@]}"; do
     # in the tree allowed. Demonstrated by renaming a variable to one of
     # awk reserved words, which is exactly the mistake that produced this
     # scanner s first draft.
-    END { printf "0\t__scan_complete__\t\n" }')
+    END { printf "0\t__scan_complete__\t\n" }'; } \
+    || printf '0\t__scan_failed__\t\n')
 
-  if [ "$scan_complete" != yes ]; then
+  if [ "$scan_failed" = yes ] || [ "$scan_complete" != yes ]; then
     echo "the scanner did not run to completion on $f; refusing to report a clean result" >&2
     exit 2
   fi
