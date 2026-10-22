@@ -9,9 +9,12 @@ use std::io::Write as _;
 use std::path::Path;
 
 use fs2::FileExt as _;
-use secrecy::ExposeSecret as _;
+use secrecy::{ExposeSecret as _, SecretString};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
+use zeroize::Zeroize;
 
-use crate::credential::{Credential, STORE_VERSION, StoredCredential};
+use crate::credential::{Credential, STORE_VERSION};
 use crate::store::{StoreError, StoreKind};
 
 /// The permission bits on anything this module creates.
@@ -57,6 +60,66 @@ impl ExclusiveLock {
     }
 }
 
+/// A parked session as it sits in the file.
+///
+/// Not a [`crate::credential::StoredCredential`]: a parked session is only
+/// newer than the store while the store still holds the session it
+/// replaced, so the record has to say which one that was. Without that the
+/// file was unconditional authority, and a leftover that a sign-in had
+/// already revoked but could not unlink was written back over that sign-in
+/// by the next command.
+#[derive(Serialize, Deserialize, Zeroize)]
+#[zeroize(drop)]
+struct ParkedRecord {
+    store_version: u32,
+    access_token: String,
+    refresh_token: String,
+    #[zeroize(skip)]
+    expires_at: i64,
+    /// [`fingerprint`] of the refresh token the rotation replaced.
+    #[zeroize(skip)]
+    replaces: String,
+}
+
+/// A session read back from the parked file.
+pub struct Parked {
+    /// The session the rotation produced.
+    pub credential: Credential,
+    replaces: String,
+}
+
+impl Parked {
+    /// Whether this should be filed over `held`, what the store has now.
+    ///
+    /// Only when `held` is exactly the session the rotation replaced. Any
+    /// other value means something has written the store since -- a
+    /// sign-in, which revoked this parked token, or a different store
+    /// altogether, whose session this is not -- and putting the parked
+    /// one back would overwrite a newer session with an older or a foreign
+    /// one. An empty store is not the replaced session either: the stores
+    /// replace a session atomically, so a failed save leaves the old one
+    /// in place, and an empty store means it was signed out of.
+    #[must_use]
+    pub fn supersedes(&self, held: Option<&Credential>) -> bool {
+        held.is_some_and(|h| fingerprint(&h.refresh_token) == self.replaces)
+    }
+}
+
+/// Names a refresh token without writing it down.
+///
+/// SHA-256, hex. The token is a long random value, so the digest cannot be
+/// turned back into it, and the file holds no token beyond the one it was
+/// always going to hold.
+fn fingerprint(token: &SecretString) -> String {
+    Sha256::digest(token.expose_secret().as_bytes())
+        .iter()
+        .fold(String::with_capacity(64), |mut out, byte| {
+            use core::fmt::Write as _;
+            let _ = write!(out, "{byte:02x}");
+            out
+        })
+}
+
 /// Writes a rotated session to a file so it is not lost.
 ///
 /// Only called when the issuer has already rotated and the store has
@@ -64,15 +127,24 @@ impl ExclusiveLock {
 /// this is the only copy of the new one. Written 0600, and replaced
 /// atomically so a concurrent reader sees one version or the other.
 ///
+/// `replaces` is the session the store still holds, which the rotation
+/// spent. It is recorded by [`fingerprint`] only, so that a later reader
+/// can tell whether the store has moved on.
+///
 /// # Errors
 ///
 /// Returns [`StoreError::Backend`] when the file cannot be written.
-pub fn park_credential(path: &Path, cred: &Credential) -> Result<(), StoreError> {
-    let stored = StoredCredential {
+pub fn park_credential(
+    path: &Path,
+    cred: &Credential,
+    replaces: &Credential,
+) -> Result<(), StoreError> {
+    let stored = ParkedRecord {
         store_version: STORE_VERSION,
         access_token: cred.access_token.expose_secret().to_owned(),
         refresh_token: cred.refresh_token.expose_secret().to_owned(),
         expires_at: cred.expires_at,
+        replaces: fingerprint(&replaces.refresh_token),
     };
     let text = toml::to_string_pretty(&stored).map_err(|e| backend("serialise the session", &e))?;
 
@@ -110,19 +182,23 @@ pub fn park_credential(path: &Path, cred: &Credential) -> Result<(), StoreError>
 /// whole mechanism exists to prevent. The caller clears it with
 /// [`clear_parked`] once the session is somewhere durable.
 ///
-/// Returns `Ok(None)` when there is nothing parked.
+/// Returns `Ok(None)` when there is nothing parked. Whether what is parked
+/// should be filed away is [`Parked::supersedes`]'s question, not this
+/// function's.
 ///
 /// # Errors
 ///
 /// Returns [`StoreError`] when the file exists but cannot be read, or is
-/// in a format this build does not know.
-pub fn read_parked(path: &Path) -> Result<Option<Credential>, StoreError> {
+/// in a format this build does not know -- including a parked file written
+/// before records said what they replace, which cannot be told apart from
+/// a stale leftover and so is not trusted.
+pub fn read_parked(path: &Path) -> Result<Option<Parked>, StoreError> {
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(backend("read the parked session", &e)),
     };
-    let stored: StoredCredential =
+    let stored: ParkedRecord =
         toml::from_str(&text).map_err(|e| StoreError::Corrupt(e.to_string()))?;
     if stored.store_version != STORE_VERSION {
         return Err(StoreError::UnknownVersion {
@@ -130,10 +206,13 @@ pub fn read_parked(path: &Path) -> Result<Option<Credential>, StoreError> {
             expected: STORE_VERSION,
         });
     }
-    Ok(Some(Credential {
-        access_token: secrecy::SecretString::from(stored.access_token.clone()),
-        refresh_token: secrecy::SecretString::from(stored.refresh_token.clone()),
-        expires_at: stored.expires_at,
+    Ok(Some(Parked {
+        credential: Credential {
+            access_token: SecretString::from(stored.access_token.clone()),
+            refresh_token: SecretString::from(stored.refresh_token.clone()),
+            expires_at: stored.expires_at,
+        },
+        replaces: stored.replaces.clone(),
     }))
 }
 
@@ -177,6 +256,55 @@ mod tests {
         }
     }
 
+    fn spent() -> Credential {
+        Credential {
+            access_token: SecretString::from("old.access.s"),
+            refresh_token: SecretString::from("old.refresh.s"),
+            expires_at: 1_600_000_000,
+        }
+    }
+
+    #[test]
+    fn a_parked_session_supersedes_only_the_session_it_replaced() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let path = dir.path().join("pending-credentials.auth-api");
+        park_credential(&path, &cred(), &spent()).expect("parked");
+        let parked = read_parked(&path).expect("read").expect("present");
+
+        assert!(
+            parked.supersedes(Some(&spent())),
+            "the store still holds what it replaced"
+        );
+        // A sign-in since, or another store's session: either way not this
+        // rotation's predecessor, and overwriting it would lose a newer one.
+        assert!(!parked.supersedes(Some(&cred())));
+        assert!(!parked.supersedes(None), "an empty store was signed out of");
+    }
+
+    #[test]
+    fn the_replaced_token_is_not_written_down() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let path = dir.path().join("pending-credentials.auth-api");
+        park_credential(&path, &cred(), &spent()).expect("parked");
+        let text = std::fs::read_to_string(&path).expect("read the file");
+        assert!(!text.contains("old.refresh.s"), "{text}");
+        assert!(!text.contains("old.access.s"), "{text}");
+    }
+
+    #[test]
+    fn a_parked_file_that_does_not_say_what_it_replaced_is_not_trusted() {
+        // The format before this one. It cannot be told apart from a stale
+        // leftover, so reading it is an error and nothing files it away.
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let path = dir.path().join("pending-credentials.auth-api");
+        std::fs::write(
+            &path,
+            "store_version = 1\naccess_token = \"a\"\nrefresh_token = \"b\"\nexpires_at = 1\n",
+        )
+        .expect("write the fixture");
+        assert!(matches!(read_parked(&path), Err(StoreError::Corrupt(_))));
+    }
+
     #[test]
     fn a_lock_can_be_taken_and_released() {
         let dir = tempfile::tempdir().expect("a temporary directory");
@@ -193,11 +321,11 @@ mod tests {
     fn a_parked_session_round_trips_and_reading_does_not_remove_it() {
         let dir = tempfile::tempdir().expect("a temporary directory");
         let path = dir.path().join("pending-credentials.auth-api");
-        park_credential(&path, &cred()).expect("parked");
+        park_credential(&path, &cred(), &spent()).expect("parked");
 
         let taken = read_parked(&path).expect("read").expect("present");
-        assert_eq!(taken.access_token.expose_secret(), "a.b.c");
-        assert_eq!(taken.expires_at, 1_700_000_000);
+        assert_eq!(taken.credential.access_token.expose_secret(), "a.b.c");
+        assert_eq!(taken.credential.expires_at, 1_700_000_000);
         assert!(
             path.exists(),
             "reading must not remove it: the caller may still fail to store it, and this \
@@ -239,7 +367,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt as _;
         let dir = tempfile::tempdir().expect("a temporary directory");
         let path = dir.path().join("pending-credentials.auth-api");
-        park_credential(&path, &cred()).expect("parked");
+        park_credential(&path, &cred(), &spent()).expect("parked");
         let mode = std::fs::metadata(&path)
             .expect("exists")
             .permissions()

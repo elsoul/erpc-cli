@@ -64,7 +64,12 @@ pub struct OpOutput {
     pub success: bool,
     /// Standard output.
     pub stdout: String,
-    /// Standard error, already shortened for display.
+    /// Standard error, as `op` printed it.
+    ///
+    /// Not shortened or redacted here: the store does both when it turns
+    /// this into an error, after it has replaced the exact token values it
+    /// knows. Cutting it first could leave half a token, which neither the
+    /// exact match nor the shape check recognises.
     pub stderr: String,
 }
 
@@ -218,7 +223,7 @@ impl OpRunner for OpCli {
         Ok(OpOutput {
             success: output.status.success(),
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: first_line(&String::from_utf8_lossy(&output.stderr)),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         })
     }
 }
@@ -442,18 +447,21 @@ impl<R: OpRunner> OnePassword<R> {
             None,
         )?;
         if !out.success {
-            return Err(self.backend("list the vault", out.stderr));
+            return Err(self.backend("list the vault", &out.stderr));
         }
         let items: Vec<OpListEntry> =
             serde_json::from_str(&out.stdout).map_err(|e| StoreError::Corrupt(e.to_string()))?;
         Ok(items.iter().any(|i| i.title == title))
     }
 
-    fn backend(&self, operation: &'static str, reason: String) -> StoreError {
+    /// Every one of `op`'s diagnostics becomes an error here, and only
+    /// here, so this is where it is redacted by shape and cut to a line.
+    /// Callers that know the token values replace them first.
+    fn backend(&self, operation: &'static str, reason: &str) -> StoreError {
         StoreError::Backend {
             kind: self.mode.kind(),
             operation,
-            reason,
+            reason: first_line(reason),
         }
     }
 }
@@ -514,7 +522,7 @@ impl<R: OpRunner> CredentialStore for OnePassword<R> {
             // login and strand the session already in the vault. Ask
             // instead of guessing.
             if self.item_exists(&title)? {
-                return Err(self.backend("read the item", out.stderr));
+                return Err(self.backend("read the item", &out.stderr));
             }
             return Ok(None);
         }
@@ -577,7 +585,7 @@ impl<R: OpRunner> CredentialStore for OnePassword<R> {
             return if edit.success {
                 Ok(())
             } else {
-                Err(self.backend("update the item", without_the_tokens(edit.stderr, cred)))
+                Err(self.backend("update the item", &without_the_tokens(edit.stderr, cred)))
             };
         }
 
@@ -588,7 +596,7 @@ impl<R: OpRunner> CredentialStore for OnePassword<R> {
         if create.success {
             Ok(())
         } else {
-            Err(self.backend("create the item", without_the_tokens(create.stderr, cred)))
+            Err(self.backend("create the item", &without_the_tokens(create.stderr, cred)))
         }
     }
 
@@ -603,7 +611,7 @@ impl<R: OpRunner> CredentialStore for OnePassword<R> {
         if out.success {
             Ok(())
         } else {
-            Err(self.backend("remove the item", out.stderr))
+            Err(self.backend("remove the item", &out.stderr))
         }
     }
 
@@ -1122,6 +1130,30 @@ mod tests {
             .to_string();
         assert!(!rendered.contains(REFRESH), "{rendered}");
         assert!(rendered.contains("<redacted>"), "{rendered}");
+    }
+
+    #[test]
+    fn a_token_is_replaced_whole_before_the_message_is_cut() {
+        // Cutting to 200 bytes first left the front half of a token that
+        // straddled the cut, which the exact match no longer recognised
+        // and the shape check never would: the fixture is one it misses.
+        // Placed so the value starts five bytes before the cut. The
+        // padding is not base64url: padding that is joins the token into
+        // one long run, which the shape check then catches by accident and
+        // the test proves nothing -- which is what it did at first.
+        let noisy = format!("{}{ACCESS} and the rest of the line", "~".repeat(195));
+        assert_eq!(redact_tokens(&noisy), noisy, "the shape check must miss it");
+        let fake = FakeOp::new(vec![
+            list_of(&["ERPC CLI session alice@mac-001 (auth-api)"]),
+            failed(&noisy),
+        ]);
+        let store = OnePassword::new(&fake, Mode::Desktop, VAULT, "mac-001");
+        let rendered = store
+            .save(&key(), &session())
+            .expect_err("op refused the edit")
+            .to_string();
+        assert!(!rendered.contains(&ACCESS[..5]), "{rendered}");
+        assert!(rendered.contains("<reda"), "{rendered}");
     }
 
     #[test]

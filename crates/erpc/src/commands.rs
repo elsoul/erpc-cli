@@ -123,7 +123,7 @@ pub async fn login(json: bool, requested: Option<StoreKind>, no_browser: bool) -
     // once the new one is safely in place. A failure to read what was
     // there is reported rather than passed over: it means an old refresh
     // token is live and about to become unreachable.
-    if let Err(e) = auth_session::store_new_session(
+    let leftover = match auth_session::store_new_session(
         &client,
         store.as_ref(),
         &key,
@@ -132,22 +132,25 @@ pub async fn login(json: bool, requested: Option<StoreKind>, no_browser: bool) -
     )
     .await
     {
-        // Nothing is holding the new tokens either, so do not leave them
-        // live. Whether the issuer accepted the revocation is reported,
-        // because an operator whose failed sign-in left a live token has
-        // no other way to find out.
-        let revoked = client
-            .revoke(session::LOGIN_AUDIENCE, &credential.refresh_token)
-            .await;
-        return Outcome::Failed(if revoked {
-            format!("{e}; the new session was revoked at the issuer")
-        } else {
-            format!(
-                "{e}; the new session could NOT be revoked at the issuer and may stay valid \
+        Ok(leftover) => leftover,
+        Err(e) => {
+            // Nothing is holding the new tokens either, so do not leave them
+            // live. Whether the issuer accepted the revocation is reported,
+            // because an operator whose failed sign-in left a live token has
+            // no other way to find out.
+            let revoked = client
+                .revoke(session::LOGIN_AUDIENCE, &credential.refresh_token)
+                .await;
+            return Outcome::Failed(if revoked {
+                format!("{e}; the new session was revoked at the issuer")
+            } else {
+                format!(
+                    "{e}; the new session could NOT be revoked at the issuer and may stay valid \
                  until it expires"
-            )
-        });
-    }
+                )
+            });
+        }
+    };
 
     if json {
         crate::print_json(&serde_json::json!({
@@ -155,6 +158,7 @@ pub async fn login(json: bool, requested: Option<StoreKind>, no_browser: bool) -
             "account": user.label(),
             "uid": user.uid,
             "store": report,
+            "undeleted_file": leftover.as_ref().map(|p| p.display().to_string()),
         }));
         Outcome::Done(String::new())
     } else {
@@ -162,6 +166,17 @@ pub async fn login(json: bool, requested: Option<StoreKind>, no_browser: bool) -
         lines.push(format!("  session kept in the {} store", report.store));
         if report.writes_to_disk {
             lines.push(format!("  warning: {}", session::DISK_WARNING));
+        }
+        // Said now, not left to `erpc doctor`: the sign-in is fine, but a
+        // file holding a token is still on disk and erpc could not remove
+        // it.
+        if let Some(path) = &leftover {
+            lines.push(format!(
+                "  warning: could not delete {}. It holds an older session, revoked just now, \
+                 and erpc will not use it; check the permissions on its directory and delete \
+                 it yourself.",
+                path.display()
+            ));
         }
         Outcome::Done(lines.join("\n"))
     }

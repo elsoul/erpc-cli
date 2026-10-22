@@ -24,6 +24,7 @@ toml = { workspace = true }
 thiserror = { workspace = true }
 secrecy = { workspace = true }
 zeroize = { workspace = true }
+sha2 = { workspace = true }
 fs2 = { workspace = true }
 tempfile = { workspace = true }
 

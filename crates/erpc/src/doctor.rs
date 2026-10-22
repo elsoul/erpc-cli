@@ -116,15 +116,25 @@ pub fn findings(selection: Selection, on_disk: &[OnDisk]) -> Vec<Finding> {
         };
         let detail = if parked {
             if stale {
+                // Either the store has refused it ever since, and it is a
+                // live token in cleartext, or a sign-in or sign-out revoked
+                // it and could not unlink it. This command cannot tell
+                // which without the store, so it says both, and the one
+                // instruction that is right for both.
                 format!(
-                    "{} — a session parked after a store write failed, more than a day ago. \
-                     Run `erpc login` to replace it; it is a live refresh token in cleartext.",
+                    "{} — a session parked more than a day ago. It may be a live refresh token \
+                     in cleartext. Run `erpc login`, which revokes it and replaces the session; \
+                     if the file is still here afterwards, erpc could not delete it, so check \
+                     the permissions on its directory and delete it yourself.",
                     item.path.display()
                 )
             } else {
                 format!(
-                    "{} — a session parked after a store write failed. The next `erpc whoami` \
-                     files it away and deletes it.",
+                    "{} — a session parked when a store write failed. If the store still holds \
+                     the session it replaced, the next `erpc whoami` files it away and deletes \
+                     it. If you have signed in or out since, it was revoked then and erpc \
+                     ignores it; it is here only because it could not be deleted, so check the \
+                     permissions on its directory and delete it yourself.",
                     item.path.display()
                 )
             }
