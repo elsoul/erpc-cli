@@ -43,7 +43,12 @@
 #     skipped: there is nothing literal to check. An UNTERMINATED opener is
 #     not that case and is reported, because the text after it is literal
 #     and is usually the registrable domain.
-#   - The matcher reads each line as written and never rewrites it. It
+#   - The matcher applies ONE normalisation to the line, in normalise()
+#     below, and nothing else: it reproduces what the WHATWG URL Standard
+#     does to its input BEFORE parsing, because that is what a browser,
+#     curl and the Worker's fetch all do. Claiming the line was read "as
+#     written" was wrong in both directions -- one rewrite was already
+#     there, and it was too narrow to be faithful. It then
 #     matches the AUTHORITY only, stopping at the first / ? or #, and within
 #     it a run of non-space characters or whole balanced ${ }, ${{ }}, {{ }}
 #     and $( ) expressions, none of which may contain a /. A space inside
@@ -56,18 +61,35 @@
 #     follows it still carries two dot-separated labels, which is what a
 #     registrable domain needs; a backtick followed by punctuation or by a
 #     method call is a string quote and is trimmed as before.
-#   - The one shape this gate does NOT see: a backtick expression containing
-#     a space, as in https://`cat host`.evil.example.net. The match ends at
-#     the space, and widening the rule far enough to catch it also rejects
-#     `https://semver.org`. in prose, which is a correct line.
+#   - Two shapes this gate does NOT see, both stated so that they are
+#     decisions rather than surprises:
+#       * a backtick expression containing a space, as in
+#         https://`cat host`.evil.example.net. The match ends at the space,
+#         and widening the rule far enough to catch it also rejects
+#         `https://semver.org`. in prose, which is a correct line.
+#       * a colon not followed by digits ends the match, so in
+#         https://declared:x.evil.example.net/y the host judged is the part
+#         before the colon. No URL parser accepts a non-numeric port --
+#         node's new URL() raises ERR_INVALID_URL, curl refuses it -- so
+#         this is not a reachable destination. A guard over this shape was
+#         tried and removed: its only unique catch was this unreachable
+#         form, while it also reported url.strip_prefix("https://") and a
+#         declared host followed by ordinary punctuation in a comment.
 #   - A host that is not plain ASCII, or one containing a backslash escape
 #     anywhere, is reported: both are literals a reviewer should see, and
 #     neither may be skipped just because the matcher finds them awkward.
 #     These checks, and the plaintext one above, run on every URL before the
 #     allowlist question is answered, so no host can reach an "allowed"
 #     verdict without passing them first.
-#   - Escaped slashes (\/\/) are normalised before matching, so a URL in a
-#     JSON or TypeScript string cannot hide from the pattern.
+#   - normalise() deletes ASCII tab and CR, accepts \ where / is expected
+#     after a scheme, and collapses runs of backslashes before a slash.
+#     Each form resolves for real: the URL Standard DELETES tab/CR/LF from
+#     its input before parsing, and treats \ as / for a special scheme, so
+#     ht<TAB>tps://h, https://declared<TAB>.evil.example.net, https:\\h and
+#     https:\/\/h are all live destinations that a text matcher looking for
+#     a literal :// does not see. The predecessor of this rule was a single
+#     pass of s|\\/|/|g, which turned \\/\\/ into \/\/ and so left no ://
+#     in the line at all -- a double escape was a complete bypass.
 #   - A host assembled at runtime from fragments is invisible to this gate.
 #     This is a text gate over source, not a sandbox, and it does not
 #     constrain a dependency.
@@ -420,9 +442,42 @@ check_url() {
 # approved on the declared middle component while resolving elsewhere.
 url_re='(https?|wss?)://(((\$\{\{[^}/]*\}\}|\$\{[^}/]*\}|\{\{[^}/]*\}\}|\$\([^)/]*\)|[^[:space:]"'"'"'<>/?#])*@)?(\[[0-9A-Fa-f:.]*\]|(\$\{\{[^}/]*\}\}|\$\{[^}/]*\}|\{\{[^}/]*\}\}|\$\([^)/]*\)|[^[:space:]"'"'"'<>/?#:@])+)(:[0-9]+)?)'
 
-# The characters that can legally end an authority. Anything else following
-# a match means the matcher stopped inside one.
-url_end_re='[[:space:]"'"'"'<>/?#)]'
+# The ONE normalisation this gate applies to a line, and the only place it
+# rewrites anything. It reproduces what the WHATWG URL Standard does to its
+# input BEFORE parsing it, so that the text this gate judges is the text the
+# fetching code will act on:
+#
+#   * ASCII tab and CR are DELETED. `ht<TAB>tps://evil.example.net` and
+#     `https://api.github.com<TAB>.evil.example.net` are both live
+#     destinations -- node's `new URL()` resolves them to evil.example.net
+#     and api.github.com.evil.example.net -- while a matcher looking for a
+#     literal `://` sees nothing in the first and stops at the tab in the
+#     second.
+#   * A tab IMMEDIATELY BEFORE a scheme becomes a space instead of being
+#     deleted. There the tab separates two URLs rather than sitting inside
+#     one, and deleting it would splice them into a single host that is in
+#     neither. This cannot be used to hide anything: whatever follows the
+#     tab is then matched as a URL in its own right and answers for itself.
+#   * `\` is accepted where `/` is expected after a special scheme, and runs
+#     of backslashes before a slash collapse to one slash. The Standard
+#     treats `\` as `/` for special schemes, so `https:\\h`, `https:/\h` and
+#     `https:\/\/h` all resolve to h. The collapse is the general form of the
+#     single `\/` that a JSON or TypeScript string literal produces; the
+#     earlier single pass of `s|\\/|/|g` rewrote `\\/\\/` to `\/\/`, leaving
+#     no `://` in the line, so a doubled escape was a complete bypass.
+#
+# CR is deleted unconditionally: it occurs at end of line, where it cannot
+# join two URLs.
+tab=$(printf '\t')
+cr=$(printf '\r')
+normalise() {
+  sed -E -e "s/${tab}(https?|wss?):/ \1:/g" \
+         -e "s/${tab}//g" \
+         -e "s/${cr}//g" \
+         -e 's|\\+/|/|g' \
+         -e 's|:\\\\|://|g' \
+         -e 's|:/\\|://|g'
+}
 
 for f in "${files[@]}"; do
   [ -f "$f" ] || continue
@@ -486,40 +541,9 @@ for f in "${files[@]}"; do
   while IFS=: read -r ln url; do
     [ -z "$ln" ] && continue
     check_url "$f" "$ln" "$url" "$kind"
-  done < <(grep -a '' "$f" 2>/dev/null | sed 's|\\/|/|g' \
+  done < <(grep -a '' "$f" 2>/dev/null | normalise \
     | grep -naoiE "$url_re" 2>/dev/null)
 
-  # Maximal-munch guard. The grammar proves that no URL goes unevaluated; it
-  # does not prove that the host evaluated is the host that would be
-  # contacted. A match that stops in the middle of an authority hides
-  # nothing and hands over a PREFIX of the real host, which is how
-  # `https://a@user-api.erpc.global@evil.example.net/x` and
-  # `https://user-api.erpc.global:x.evil.example.net/y` both read as a
-  # declared host.
-  #
-  # So: every scheme occurrence on a line must yield a match that ends at a
-  # character which can legally end an authority. That is a statement about
-  # the boundary rather than the contents, and it is the only check here
-  # that does not depend on the grammar being a complete model of a URL --
-  # which, after four rounds of corrections to it, is worth one grep.
-  # Code files only. In prose a colon or a bracket after a URL is ordinary
-  # punctuation -- `[ERPC](https://erpc.global): ...` in this README was the
-  # first thing this guard reported -- and teaching it to tell prose from
-  # an instruction is the machinery this gate deleted. A prose file also
-  # cannot run, so the shape that matters is the one in code.
-  if [ "$kind" = code ]; then
-  gln=0
-  while IFS= read -r gline; do
-    gln=$((gln + 1))
-    case "$gline" in *://*) ;; *) continue;; esac
-    n_sch=$(printf '%s ' "$gline" | grep -oiE '(https?|wss?)://' 2>/dev/null | grep -c . || true)
-    [ "${n_sch:-0}" -gt 0 ] || continue
-    n_end=$(printf '%s ' "$gline" | grep -oiE "$url_re$url_end_re" 2>/dev/null | grep -c . || true)
-    if [ "${n_end:-0}" -lt "${n_sch:-0}" ]; then
-      report "$f" "$gln" "a URL's authority ends in the middle of itself, so the host checked is only a prefix of it"
-    fi
-  done < <(grep -a '' "$f" 2>/dev/null | sed 's|\\/|/|g')
-  fi
 done
 
 if [ "$status" -ne 0 ]; then

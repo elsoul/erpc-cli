@@ -85,6 +85,10 @@ check_msg() {
 
 sample_dir="tmp-endpoint-test"
 
+# A literal tab, for the normalisation cases below. check_msg writes its
+# fixture with %s, so an escape in the argument would stay an escape.
+tab=$(printf '\t')
+
 check() {
   local name="$1" expect="$2" rel="$3" content="$4"
   local abs="$repo_root/$rel"
@@ -231,8 +235,46 @@ check "loopback lookalike is not treated as loopback" block "$sample_dir/y.md" \
 check "documentation host is not allowed in code" block "$sample_dir/y2.rs" \
   'const U: &str = "https://keepachangelog.com/";'
 
-check "escaped slashes do not hide a URL" block "$sample_dir/y0.json" \
-  '{"u": "https:\\/\\/evil.example.com/x"}'
+# normalise(). Each of these resolves to an attacker-controlled host under
+# the WHATWG parser -- verified with node's `new URL()` -- while a matcher
+# looking for a literal `://` in the line as written sees nothing, or stops
+# at the tab. check_msg, because the point is WHICH host comes out.
+#
+# check_msg writes with %s, so a backslash here is one backslash on disk.
+# The predecessor of this case used `check`, which writes with %b and
+# halved them, so it only ever tested the single-escape form below.
+check_msg "a single escaped slash pair does not hide a URL" "$sample_dir/y0.json" \
+  '{"u": "https:\/\/evil.example.com/x"}' \
+  'evil.example.com'
+
+check_msg "a doubled escaped slash pair does not either" "$sample_dir/y0b.json" \
+  '{"u": "https:\\/\\/evil.example.com/x"}' \
+  'evil.example.com'
+
+check_msg "a backslash authority resolves and is judged" "$sample_dir/y0c.ts" \
+  'const u = "https:\\evil.example.net/x";' \
+  'evil.example.net'
+
+check_msg "a mixed slash-backslash authority too" "$sample_dir/y0d.ts" \
+  'const u = "https:/\\evil.example.net/x";' \
+  'evil.example.net'
+
+check_msg "a tab inside the host does not end it" "$sample_dir/y0e.ts" \
+  "const r = await fetch(\"https://api.github.com${tab}.evil.example.net/x\");" \
+  'api.github.com.evil.example.net'
+
+check_msg "a tab inside the scheme does not hide the URL" "$sample_dir/y0f.ts" \
+  "const r = await fetch(\"ht${tab}tps://evil.example.net/x\");" \
+  'evil.example.net'
+
+check_msg "a tab inside the host, in prose" "$sample_dir/y0g.md" \
+  "Fetch https://api.github.com${tab}.evil.example.net/x to update." \
+  'api.github.com.evil.example.net'
+
+# ...and the one shape the tab rule must NOT break: a tab BETWEEN two URLs
+# separates them. Deleting it would splice them into a host in neither.
+check "a tab between two URLs separates them" allow "$sample_dir/y0h.md" \
+  "| https://erpc.global${tab}https://github.com |"
 
 check "non-ASCII host is reported, not silently unmatched" block "$sample_dir/y3.rs" \
   'const U: &str = "https://\xd0\xb5vil.example.com/x";'
@@ -474,20 +516,54 @@ check "an expression in userinfo does not hide the host" block "$sample_dir/a3.y
 # `${hostport##*@}` is written to that rule, so a grammar that stopped at
 # the first @ handed over the middle component -- a declared host vouching
 # for a destination that is not it.
-check "a declared host between two @ signs does not vouch" block "$sample_dir/a7.sh" \
-  'curl "https://a@user-api.erpc.global@evil.example.net/x"'
+# These assert the HOST NAMED, not the exit code, and one of each pair is
+# prose. Both were .sh asserting `block` only, and in a code file the
+# boundary guard that used to live here reported them for a different
+# reason -- so they passed with the userinfo rule reverted to stopping at
+# the first @, which is the defect they exist for. Prose never had that
+# second control, and check_msg pins which host the gate resolved.
+check_msg "a declared host between two @ signs does not vouch" "$sample_dir/a7.sh" \
+  'curl "https://a@user-api.erpc.global@evil.example.net/x"' \
+  'evil.example.net'
 
-check "a password before two @ signs does not vouch either" block "$sample_dir/a8.sh" \
-  'curl "https://u:p@user-api.erpc.global@evil.example.net/x"'
+check_msg "the same shape in prose names the real host too" "$sample_dir/a7b.md" \
+  'Run `curl "https://a@user-api.erpc.global@evil.example.net/x"` to fetch it.' \
+  'evil.example.net'
 
-# The boundary guard: in a code file the match must end where an authority
-# legally can. A non-numeric port is not a port, so the match stops short
-# and the host is a prefix of what a reader sees.
-check "a match that stops inside an authority is reported" block "$sample_dir/a9.sh" \
+check_msg "a password before two @ signs does not vouch either" "$sample_dir/a8.sh" \
+  'curl "https://u:p@user-api.erpc.global@evil.example.net/x"' \
+  'evil.example.net'
+
+check_msg "a password before two @ signs, in prose" "$sample_dir/a8b.md" \
+  'See https://u:p@user-api.erpc.global@evil.example.net/x for the form.' \
+  'evil.example.net'
+
+# A STATED LIMIT, asserted so that it is a decision and not a surprise: a
+# colon that is not followed by digits ends the match, so the host judged is
+# the part before it. No URL parser accepts a non-numeric port -- node's
+# `new URL()` raises ERR_INVALID_URL and curl refuses it -- so the shape is
+# not a reachable destination, which is why this is `allow` rather than a
+# control. The maximal-munch guard that used to report it also reported
+# `url.strip_prefix("https://")` and `# see https://erpc.global: the home
+# page`, and its only unique catch was this unreachable shape.
+check "a non-numeric port ends the match, by stated limit" allow "$sample_dir/a9.sh" \
   'curl "https://user-api.erpc.global:x.evil.example.net/y"'
 
-check "the same shape in prose is left alone" allow "$sample_dir/a10.md" \
+# The false positives that limit buys back. Each is a correct line.
+check "a bare scheme is not a truncated authority" allow "$sample_dir/a10.rs" \
+  'let rest = url.strip_prefix("https://")?;'
+
+check "a declared host followed by a colon in code" allow "$sample_dir/a11.sh" \
+  '# See https://erpc.global: the project home page'
+
+check "a declared host followed by a colon in prose" allow "$sample_dir/a12.md" \
   'See [ERPC](https://erpc.global): the multi-chain endpoint.'
+
+check "a templated port on the loopback callback" allow "$sample_dir/a13.sh" \
+  'curl "http://127.0.0.1:${PORT}/callback"'
+
+check "a templated port on a declared host" allow "$sample_dir/a14.rs" \
+  'let u = format!("https://user-api.erpc.global:{port}/v1");'
 
 # IP-literal. The brackets are terminal: anything after the ] is a new
 # token, never part of this host.
