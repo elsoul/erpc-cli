@@ -131,6 +131,10 @@ for f in "${files[@]}"; do
     op_ln=$((op_ln + 1))
     case "$op_line" in *[Vv][Aa][Uu][Ll][Tt]*|*[Ii][Tt][Ee][Mm]*) ;; *) continue;; esac
     stripped=$(printf '%s' "$op_line" | sed 's|op://[A-Za-z0-9._/-]*||g')
+    # `set -f` because the loop word-splits the match on purpose but must
+    # not also glob it against the repository root: a `*` or `?` inside the
+    # matched separator would otherwise expand to filenames.
+    set -f
     for tok in $(printf '%s' "$stripped" | grep -oiE '(vault|item)s?([^A-Za-z0-9]{1,8}(id|identifier))?[^A-Za-z0-9]{1,8}[A-Za-z0-9]{26}([^A-Za-z0-9]|$)' 2>/dev/null); do
       id=$(printf '%s' "$tok" | grep -oE '[A-Za-z0-9]{26}$|[A-Za-z0-9]{26}' | tail -1)
       [ -n "$id" ] || continue
@@ -140,8 +144,8 @@ for f in "${files[@]}"; do
       case "$id" in *[[:upper:]]*) continue;; esac
       report "$f" "$op_ln" "bare 1Password identifier: $id"
     done
+    set +f
   done < <(grep -a '' "$f" 2>/dev/null)
-
 
   # 3. Bearer token literals.
   while IFS=: read -r ln match; do

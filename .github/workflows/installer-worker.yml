@@ -10,10 +10,10 @@ name: installer-worker
 
 on:
   pull_request:
-    paths: ["installer/**", ".github/workflows/installer-worker.yml", "dist-workspace.toml"]
+    paths: ["installer/**", ".github/workflows/installer-worker.yml", "dist-workspace.toml", "Cargo.toml"]
   push:
     branches: [main]
-    paths: ["installer/**", ".github/workflows/installer-worker.yml", "dist-workspace.toml"]
+    paths: ["installer/**", ".github/workflows/installer-worker.yml", "dist-workspace.toml", "Cargo.toml"]
   workflow_dispatch:
 
 permissions:

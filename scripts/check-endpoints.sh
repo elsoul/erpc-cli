@@ -183,6 +183,55 @@ is_loopback_host() {
   return 1
 }
 
+# True when a host containing a template is pinned by a declared
+# HOST_PATTERNS pair: the literal text before the template starts with the
+# pattern's prefix, the literal text after it ends with the pattern's suffix,
+# and neither literal part introduces a dot of its own, so the registrable
+# domain cannot move. `solana-snapshot-${REGION}.erpc.global` qualifies;
+# `github.com${X}.evil.example.net` does not.
+template_host_matches_pattern() {
+  local host prefix suffix lit_pre lit_suf opener closer after best d c o cl mid tail
+  host=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+
+  # Find the EARLIEST template delimiter and pair it with ITS OWN closer.
+  # Pairing matters: a backtick is both a template delimiter and a JavaScript
+  # string quote, so "after the last closing delimiter" reads the text after
+  # the string's closing backtick and loses the real suffix.
+  best=""; opener=""; closer=""
+  for d in '${:}' '{{:}}' '$(:)' '`:`'; do
+    o="${d%%:*}"; cl="${d##*:}"
+    c="${host%%$o*}"
+    [ "$c" = "$host" ] && continue
+    if [ -z "$opener" ] || [ ${#c} -lt ${#best} ]; then best="$c"; opener="$o"; closer="$cl"; fi
+  done
+  [ -n "$opener" ] || return 1
+  lit_pre="$best"
+
+  after="${host#*$opener}"
+  case "$after" in *"$closer"*) lit_suf="${after#*$closer}";; *) return 1;; esac
+  # The suffix is literal text, so the same trailing punctuation the caller
+  # strips applies here.
+  lit_suf="${lit_suf%%[)\",\';\`]*}"
+  # A second template in the suffix means the tail is not literal either.
+  case "$lit_suf" in *'${'*|*'{{'*|*'$('*|*'`'*) return 1;; esac
+  [ -n "$lit_suf" ] || return 1
+
+  while IFS=$'\t' read -r prefix suffix; do
+    [ -n "$prefix" ] || continue
+    case "$lit_pre" in "$prefix"*) ;; *) continue;; esac
+    case "$lit_suf" in *"$suffix") ;; *) continue;; esac
+    mid="${lit_pre#"$prefix"}"
+    tail="${lit_suf%"$suffix"}"
+    # Neither literal part may introduce a dot: the registrable domain has to
+    # stay where the declared pattern puts it.
+    case "$mid$tail" in *.*) continue;; esac
+    return 0
+  done <<EOF
+$patterns
+EOF
+  return 1
+}
+
 # $1 file, $2 line number, $3 url, $4 kind
 check_url() {
   local f="$1" ln="$2" url="$3" kind="$4" scheme rest hostport host
@@ -196,11 +245,31 @@ check_url() {
   esac
   hostport="${rest%%/*}"; hostport="${hostport%%\?*}"; hostport="${hostport%%#*}"
   hostport="${hostport##*@}"
-  # Cut at the first template delimiter; what precedes it is literal.
-  hostport="${hostport%%\$\{*}"; hostport="${hostport%%\{\{*}"; hostport="${hostport%%\$(*}"
   case "$hostport" in
     \[*\]*) host="${hostport%%\]*}]";;
     *) host="${hostport%%:*}";;
+  esac
+
+  # A template anywhere but position 0 of the host leaves an allowlisted
+  # literal prefix in front of a suffix the author chooses. It is the same
+  # mechanism as the backslash below: `https://github.com${""}.evil.example.net`
+  # is one string whose prefix is allowlisted and whose registrable domain is
+  # not, and cutting at the template to check the prefix passes it.
+  #
+  # Such a host is allowed only when its literal prefix and literal suffix
+  # match a declared HOST_PATTERNS pair, which is exactly what that list is
+  # for (`solana-snapshot-${REGION}.erpc.global`). Anything else is reported:
+  # the gate cannot know what the expression expands to, and the one thing it
+  # must not do is vouch for a host on the strength of its first few bytes.
+  # A template AT position 0 was already returned above: there is no literal.
+  case "$host" in
+    *'${'*|*'{{'*|*'$('*|*'`'*)
+      if template_host_matches_pattern "$host"; then
+        return 0
+      fi
+      report "$f" "$ln" "expression in host, so the literal prefix does not fix the destination: $scheme://$host"
+      return 0
+      ;;
   esac
   # A backslash ANYWHERE in the host hides the rest of it. In Rust,
   # TypeScript and Python alike `https://github.com\x2eevil.example.net` is

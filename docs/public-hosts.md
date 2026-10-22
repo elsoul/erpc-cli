@@ -17,6 +17,11 @@ code as authoritative if the two ever disagree.
   `DOCUMENTATION_HOSTS` are accepted in prose files only. There is no
   heuristic about code blocks or command verbs; earlier versions had one and
   every review round found both a bypass and a false positive in it.
+  A URL whose host is built from an expression is reported unless the literal
+  text on both sides of the expression matches a declared `HOST_PATTERNS`
+  pair, because an allowlisted prefix on its own says nothing about where the
+  request goes. A host that is *entirely* an expression carries no literal to
+  check and is skipped; nothing in this repository builds one.
   Some files are not scanned at all. That list is not copied here, because a
   copy drifts: run `scripts/check-endpoints.sh --print-exceptions`.
 - `erpc_core::endpoints::ensure_service_url` is the runtime helper callers

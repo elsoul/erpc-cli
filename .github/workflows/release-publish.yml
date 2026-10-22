@@ -129,7 +129,7 @@ jobs:
           pattern: artifacts-*
           path: artifacts
           merge-multiple: true
-      - run: sudo apt-get update -q && sudo apt-get install -y -q minisign jq
+      - run: sudo apt-get update -q && sudo apt-get install -y -q minisign
       - name: build and sign release-manifest.json
         env:
           MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}

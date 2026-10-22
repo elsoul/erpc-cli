@@ -54,14 +54,47 @@ for (const { file, flavor } of cases) {
     );
   }
 
-  // The other flavour's filename is never requested, but a shell installer
-  // accepted as PowerShell would hide a mix-up, so record the asymmetry.
+  // Assert the asymmetry rather than printing it. A PowerShell installer must
+  // never pass as a shell one, because the shell check is the stricter of the
+  // two (`#!`), and a predicate that accepted it would mean the shebang check
+  // had been lost. The reverse direction is expected to be true: a `#!` line
+  // also starts with `#`, which is all the PowerShell check requires, and the
+  // flavour comes from the request path, so it is recorded, not asserted.
   const other = flavor === "sh" ? "ps1" : "sh";
-  console.log(`     (as ${other}: ${looksLikeInstaller(body, other)})`);
+  const cross = looksLikeInstaller(body, other);
+  if (flavor === "ps1" && cross) {
+    fail(`${file} is accepted as a SHELL installer; the shebang check is gone`);
+  } else {
+    console.log(`     (as ${other}: ${cross}${flavor === "sh" ? ", expected" : ", correctly rejected"})`);
+  }
 }
 
 // The unit-test fixtures must still look like the real thing.
+//
+// Compared POSITIONALLY against the fixture constants, not with
+// `testSrc.includes(line)`. A substring search over the whole test file lets
+// a line match anywhere, in any order, including inside the OTHER flavour's
+// fixture or a comment, so it would report a match the fixture does not
+// actually make.
+const fixtures = {
+  "erpc-installer.sh": "REAL_SH",
+  "erpc-installer.ps1": "REAL_PS1",
+};
 const testSrc = readFileSync(resolve(here, "..", "src", "index.test.ts"), "utf8");
+
+/** Pull the template-literal body of `const <name> = \`...\`;` out of the test file. */
+function fixtureLines(name) {
+  const m = new RegExp("const " + name + " = `([^`]*)`").exec(testSrc);
+  if (!m) return null;
+  // Drop the redacted line too. The real file has a URL there and the URL
+  // filter removes it; the placeholder carries no "://" and would survive,
+  // putting the two lists one line out of step. The loose substring check
+  // this replaced could not see that.
+  return m[1]
+    .split("\n")
+    .filter((l) => l.trim().length > 0 && !l.includes("://") && !l.includes("REDACTED"));
+}
+
 for (const { file } of cases) {
   const path = resolve(distrib, file);
   if (!existsSync(path)) continue;
@@ -69,19 +102,34 @@ for (const { file } of cases) {
   // `#!/bin/sh`, which would match forever and prove nothing. Lines carrying
   // a URL are skipped, because the fixture redacts them to keep the endpoint
   // allowlist out of it.
-  const lines = readFileSync(path, "utf8").split("\n").slice(0, 6);
-  const comparable = lines.filter((l) => l.trim().length > 0 && !l.includes("://"));
-  if (comparable.length < 2) {
+  const real = readFileSync(path, "utf8")
+    .split("\n")
+    .slice(0, 6)
+    .filter((l) => l.trim().length > 0 && !l.includes("://"));
+  if (real.length < 2) {
     fail(`${file} has too few comparable lines to check the fixture against`);
     continue;
   }
-  const missing = comparable.filter((l) => !testSrc.includes(l));
-  if (missing.length === 0) {
-    console.log(`ok   the fixture for ${file} matches its first ${comparable.length} lines`);
+  const fixture = fixtureLines(fixtures[file]);
+  if (fixture === null) {
+    fail(`${fixtures[file]} is not a plain template literal in index.test.ts any more`);
+    continue;
+  }
+  const n = Math.min(real.length, fixture.length);
+  if (n < 2) {
+    fail(`${fixtures[file]} has fewer than 2 comparable lines, so it pins nothing`);
+    continue;
+  }
+  const diff = [];
+  for (let i = 0; i < n; i += 1) {
+    if (real[i] !== fixture[i]) diff.push({ line: i + 1, real: real[i], fixture: fixture[i] });
+  }
+  if (diff.length === 0) {
+    console.log(`ok   ${fixtures[file]} matches ${file} line for line (${n} lines)`);
   } else {
     fail(
-      `the fixture for ${file} no longer matches the generated artifact. ` +
-        `These lines are not in index.test.ts: ${JSON.stringify(missing)}`,
+      `${fixtures[file]} no longer matches ${file}. In order, the first ${n} ` +
+        `comparable lines differ at: ${JSON.stringify(diff)}`,
     );
   }
 }

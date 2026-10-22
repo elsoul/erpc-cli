@@ -293,5 +293,36 @@ check "leading command substitution host is skipped" allow "$sample_dir/z7.sh" \
 check "documentation host in a .txt file" allow "$sample_dir/z8.txt" \
   'See https://semver.org for the versioning scheme.'
 
+# An expression after an allowlisted prefix. This is the mechanism the
+# backslash case covers, in its other form: the literal prefix is declared,
+# the expression can be empty, and the registrable domain is the attacker's.
+# The existing template cases all use evil.example.com as the PREFIX, so they
+# block on the prefix alone and would pass with the suffix check removed.
+check "empty template after an allowlisted prefix (typescript)" block "$sample_dir/t1.ts" \
+  'const a = `https://github.com${""}.evil.example.net/x`;'
+
+check "template after an allowlisted prefix (github actions)" block "$sample_dir/t2.yml" \
+  '      - run: curl https://github.com${{ env.NOTHING }}.evil.example.net/x'
+
+check "command substitution after an allowlisted prefix (shell)" block "$sample_dir/t3.sh" \
+  'curl "https://github.com$(true).evil.example.net/x"'
+
+check "backtick substitution after an allowlisted prefix (shell)" block "$sample_dir/t4.sh" \
+  'curl "https://github.com`true`.evil.example.net/x"'
+
+check "a second template hides the suffix too" block "$sample_dir/t5.ts" \
+  'const a = `https://solana-snapshot-${a}x${b}.erpc.global`;'
+
+check "the literal parts may not add a dot of their own" block "$sample_dir/t6.ts" \
+  'const a = `https://solana-snapshot-${r}.evil.example.net.erpc.global.x`;'
+
+# ... and the shape HOST_PATTERNS exists to permit must still pass, or the
+# rule above is just a ban on templates.
+check "declared host pattern with a template label" allow "$sample_dir/t7.ts" \
+  'const u = `https://solana-snapshot-${region}.erpc.global`;'
+
+check "template in the path of a declared host" allow "$sample_dir/t8.sh" \
+  'curl "https://user-api.erpc.global/v1/${id}"'
+
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
