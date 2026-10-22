@@ -145,6 +145,14 @@ pub async fn current_session(
     let lock_path = refresh_lock_path(state_dir, key.audience());
     let _guard = crate::lock::ExclusiveLock::acquire(&lock_path)?;
 
+    // A session parked by an earlier rotation is the newest one there is:
+    // the token it replaced is already spent. File it away before reading,
+    // or the store's older copy would be used and then refreshed with a
+    // token the issuer has already rotated, which revokes the family.
+    if let Some(parked) = crate::lock::take_parked(&parked_path(state_dir, key.audience()))? {
+        store.save(key, &parked)?;
+    }
+
     // Read inside the lock, not before it. A session read before waiting
     // is a session that may already have been replaced.
     let Some(existing) = store.load(key)? else {
@@ -186,22 +194,66 @@ pub async fn current_session(
 /// signed out of is worse than one revoked at the issuer but still on
 /// disk, and the reverse order risks exactly that.
 ///
+/// Holds the same lock a refresh does, for the whole load-revoke-delete
+/// sequence. Without it, a refresh running concurrently rotates the token
+/// this function is about to revoke: sign-out then revokes the spent one,
+/// reports success, and leaves the rotated token live at the issuer with
+/// nobody holding it -- or writes it back into the store after the delete,
+/// so a sign-out that reported success leaves a usable session behind.
+///
 /// Returns whether the issuer confirmed the revocation.
 ///
 /// # Errors
 ///
-/// Returns [`SessionError::Store`] when the session cannot be removed.
+/// Returns [`SessionError::Store`] when the lock cannot be taken or the
+/// session cannot be removed.
 pub async fn sign_out(
     client: &AuthClient,
     store: &dyn CredentialStore,
     key: &CredKey,
+    state_dir: &Path,
 ) -> Result<bool, SessionError> {
+    let _guard =
+        crate::lock::ExclusiveLock::acquire(&refresh_lock_path(state_dir, key.audience()))?;
     let revoked = match store.load(key)? {
         Some(existing) => client.revoke(key.audience(), &existing.refresh_token).await,
         None => false,
     };
     store.delete(key)?;
     Ok(revoked)
+}
+
+/// Stores a freshly obtained session, revoking whatever it replaces.
+///
+/// Under the same lock as a refresh and a sign-out, for the same reason:
+/// these are the three writers of one key, and a sign-in that overlaps a
+/// refresh can otherwise overwrite the rotated token and strand it live at
+/// the issuer.
+///
+/// The previous session is revoked only after the new one is stored. The
+/// other order risks leaving the operator with neither.
+///
+/// # Errors
+///
+/// Returns [`SessionError`] when the lock cannot be taken or the session
+/// cannot be stored. A failure to read what was there before is reported
+/// rather than passed over: it means an old refresh token is still live
+/// and is about to become unreachable.
+pub async fn store_new_session(
+    client: &AuthClient,
+    store: &dyn CredentialStore,
+    key: &CredKey,
+    state_dir: &Path,
+    credential: &Credential,
+) -> Result<(), SessionError> {
+    let _guard =
+        crate::lock::ExclusiveLock::acquire(&refresh_lock_path(state_dir, key.audience()))?;
+    let previous = store.load(key)?;
+    store.save(key, credential)?;
+    if let Some(previous) = previous {
+        client.revoke(key.audience(), &previous.refresh_token).await;
+    }
+    Ok(())
 }
 
 /// Turns an approved grant into a credential with an absolute expiry.

@@ -90,6 +90,15 @@ impl AuthClient {
             // one that is not. The allowlist is checked before the
             // request; following a redirect would move the destination
             // afterwards, where nothing checks it again.
+            //
+            // NOT covered by a test, and worth saying so rather than
+            // implying otherwise: observing it needs a TLS server on
+            // loopback, and this client validates certificates against
+            // the system roots, so a self-signed one would be refused
+            // before the redirect could be seen. What is tested is the
+            // setting beside it -- plaintext is refused outright, so a
+            // redirect to an `http://` URL cannot be followed either --
+            // and the allowlist check this backs up.
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| HttpError::Client(e.to_string()))?;
@@ -213,6 +222,26 @@ impl AuthClient {
             reason: e.to_string(),
         })?;
         body.into_credential(host, now)
+    }
+
+    /// Sends a GET with no token and returns only the status.
+    ///
+    /// Exists so a test can observe what the client does with a redirect
+    /// without going through the allowlist, which would refuse a loopback
+    /// address before the client was reached. Carries no credential, so
+    /// it cannot disclose one.
+    #[cfg(test)]
+    pub(crate) async fn probe_for_test(&self, url: &str) -> Result<u16, HttpError> {
+        let response = self
+            .inner
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| HttpError::Transport {
+                host: "probe",
+                reason: e.to_string(),
+            })?;
+        Ok(response.status().as_u16())
     }
 
     /// Sends an authenticated GET and returns the status and body.
@@ -494,6 +523,66 @@ mod tests {
         assert!(matches!(
             body.into_credential(HOST, 1_000),
             Err(HttpError::Malformed { .. })
+        ));
+    }
+}
+
+/// Tests that need a server. Each one removes the doubt that a client
+/// setting is only a comment: every control here fails the test when the
+/// builder line is deleted.
+#[cfg(test)]
+mod client_tests {
+    use super::{AuthClient, HttpError};
+    use crate::credential::Audience;
+    use secrecy::SecretString;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use tokio::net::TcpListener;
+
+    /// Serves one request with the given response, and returns its port.
+    async fn serve_once(response: &'static str) -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a loopback port");
+        let port = listener.local_addr().expect("an address").port();
+        tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0_u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.flush().await;
+            }
+        });
+        port
+    }
+
+    #[tokio::test]
+    async fn the_client_refuses_plaintext_even_to_a_server_that_answers() {
+        // `.https_only(true)`. The server here really does answer, so a
+        // client without that setting returns 200 and this test fails;
+        // with it, the request is refused before a byte leaves. That is
+        // what makes this a test of the setting and not of the network.
+        let port = serve_once("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}").await;
+        let client = AuthClient::new().expect("a client");
+        let url = format!("{}127.0.0.1:{port}/", "http://");
+        assert!(
+            client.probe_for_test(&url).await.is_err(),
+            "plaintext must not be sent at all"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_allowed_host_over_plaintext_still_carries_no_token() {
+        let client = AuthClient::new().expect("a client");
+        let url = format!("{}user-api.erpc.global/v3/user/get", "http://");
+        assert!(matches!(
+            client
+                .get_with_token(
+                    Audience::AuthApi,
+                    &url,
+                    &SecretString::from("a.b.c".to_owned()),
+                )
+                .await,
+            Err(HttpError::Allowlist(_))
         ));
     }
 }

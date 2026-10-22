@@ -20,6 +20,7 @@ use erpc_auth::store::{StoreError, StoreKind};
 
 mod browser;
 mod commands;
+mod doctor;
 mod session;
 
 /// Exit codes shared by every command.
@@ -96,6 +97,8 @@ enum Command {
         #[arg(long, value_enum)]
         store: Option<StoreChoice>,
     },
+    /// Report what this machine is doing with your session.
+    Doctor,
     /// Show who the stored session belongs to.
     Whoami {
         /// Look in this store instead of the detected one.
@@ -154,6 +157,7 @@ async fn main() -> ExitCode {
         }
         Command::Logout { store } => commands::logout(cli.json, store.map(Into::into)).await,
         Command::Whoami { store } => commands::whoami(cli.json, store.map(Into::into)).await,
+        Command::Doctor => commands::doctor(cli.json),
         Command::Version => {
             let info = erpc_core::version::VersionInfo::current();
             if cli.json {

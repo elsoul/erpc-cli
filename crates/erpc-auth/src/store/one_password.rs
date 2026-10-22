@@ -878,6 +878,49 @@ mod tests {
         assert!(matches!(err, StoreError::Unavailable { .. }));
     }
 
+    /// Runs `/usr/bin/env` through the real `OpCli` and returns what the
+    /// child saw.
+    ///
+    /// The only way to test `env_clear`: the map this store builds is one
+    /// thing, and what the child actually inherits is another. A test of
+    /// the map stays green with `env_clear()` deleted, which is exactly
+    /// how that control could be removed without anyone noticing.
+    #[cfg(unix)]
+    fn child_environment() -> Vec<String> {
+        use std::collections::BTreeMap;
+
+        let mut env = BTreeMap::new();
+        env.insert("HOME".to_owned(), OsString::from("/home/alice"));
+        env.insert("OP_CACHE".to_owned(), OsString::from("false"));
+        let cli = OpCli::at("/usr/bin/env", env).expect("an absolute path");
+        let out = cli.run(&[], None).expect("env runs");
+        out.stdout.lines().map(ToOwned::to_owned).collect()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn op_does_not_inherit_this_process_environment() {
+        // This process has plenty of variables; the child must see only
+        // the two it was given.
+        assert!(
+            std::env::vars_os().count() > 3,
+            "the test is meaningless if the parent environment is empty"
+        );
+        let seen = child_environment();
+        let names: Vec<&str> = seen
+            .iter()
+            .filter_map(|l| l.split('=').next())
+            .filter(|n| !n.is_empty())
+            .collect();
+        assert!(names.contains(&"HOME"), "{names:?}");
+        assert!(names.contains(&"OP_CACHE"), "{names:?}");
+        assert_eq!(
+            names.len(),
+            2,
+            "op must see only what it was given, saw {names:?}"
+        );
+    }
+
     #[test]
     fn diagnostics_are_cut_to_one_line() {
         assert_eq!(first_line("one\ntwo\nthree"), "one");

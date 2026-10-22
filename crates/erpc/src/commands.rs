@@ -110,40 +110,43 @@ pub async fn login(json: bool, requested: Option<StoreKind>, no_browser: bool) -
     // the operator's next step here is `erpc signup`, not `erpc login`.
     let user = match erpc_api::get_user(&client, &credential.access_token).await {
         Ok(user) => user,
-        Err(e) => {
-            // Nothing is holding these tokens, so do not leave them live.
-            client
-                .revoke(session::LOGIN_AUDIENCE, &credential.refresh_token)
-                .await;
-            return Outcome::Failed(e.to_string());
-        }
+        Err(e) => return Outcome::Failed(revoke_and_report(&client, &credential, e).await),
     };
 
     let key = CredKey::new(session::LOGIN_AUDIENCE, session::local_account());
     let store = match store_for(selection.kind) {
         Ok(store) => store,
-        Err(e) => {
-            client
-                .revoke(session::LOGIN_AUDIENCE, &credential.refresh_token)
-                .await;
-            return Outcome::Failed(e.to_string());
-        }
+        Err(e) => return Outcome::Failed(revoke_and_report(&client, &credential, e).await),
     };
 
-    // Revoke whatever was there before, but only after the new session is
-    // safely stored: revoking first and then failing to save would leave
-    // the operator with neither.
-    let previous = store.load(&key).ok().flatten();
-    if let Err(e) = store.save(&key, &credential) {
-        client
+    // Store under the refresh lock, and revoke the previous session only
+    // once the new one is safely in place. A failure to read what was
+    // there is reported rather than passed over: it means an old refresh
+    // token is live and about to become unreachable.
+    if let Err(e) = auth_session::store_new_session(
+        &client,
+        store.as_ref(),
+        &key,
+        &session::state_dir(),
+        &credential,
+    )
+    .await
+    {
+        // Nothing is holding the new tokens either, so do not leave them
+        // live. Whether the issuer accepted the revocation is reported,
+        // because an operator whose failed sign-in left a live token has
+        // no other way to find out.
+        let revoked = client
             .revoke(session::LOGIN_AUDIENCE, &credential.refresh_token)
             .await;
-        return Outcome::Failed(e.to_string());
-    }
-    if let Some(previous) = previous {
-        client
-            .revoke(session::LOGIN_AUDIENCE, &previous.refresh_token)
-            .await;
+        return Outcome::Failed(if revoked {
+            format!("{e}; the new session was revoked at the issuer")
+        } else {
+            format!(
+                "{e}; the new session could NOT be revoked at the issuer and may stay valid \
+                 until it expires"
+            )
+        });
     }
 
     if json {
@@ -177,7 +180,7 @@ pub async fn logout(json: bool, requested: Option<StoreKind>) -> Outcome {
         Ok(client) => client,
         Err(e) => return Outcome::Failed(e.to_string()),
     };
-    match auth_session::sign_out(&client, store.as_ref(), &key).await {
+    match auth_session::sign_out(&client, store.as_ref(), &key, &session::state_dir()).await {
         Ok(revoked) => {
             if json {
                 crate::print_json(&serde_json::json!({
@@ -260,6 +263,29 @@ pub async fn whoami(json: bool, requested: Option<StoreKind>) -> Outcome {
     }
 }
 
+/// Revokes a session nobody will hold, and says whether that worked.
+///
+/// Attempting a revocation and not checking it would let a failed sign-in
+/// leave a live token with no sign of it. The caller's error is kept
+/// first, because that is what the operator has to fix.
+async fn revoke_and_report(
+    client: &AuthClient,
+    credential: &erpc_auth::credential::Credential,
+    cause: impl core::fmt::Display,
+) -> String {
+    let revoked = client
+        .revoke(session::LOGIN_AUDIENCE, &credential.refresh_token)
+        .await;
+    if revoked {
+        format!("{cause}; the sign-in was revoked at the issuer")
+    } else {
+        format!(
+            "{cause}; the sign-in could NOT be revoked at the issuer and may stay valid until \
+             it expires"
+        )
+    }
+}
+
 /// Builds the "no session" outcome in both output modes.
 fn no_session(json: bool, reason: &str) -> Outcome {
     if json {
@@ -282,6 +308,42 @@ fn now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+}
+
+/// Reports what this machine is doing with your session.
+///
+/// Synchronous on purpose: it looks at this machine and asks nothing of
+/// the network, so it works when nothing else does.
+pub fn doctor(json: bool) -> Outcome {
+    let selection = session::plan_store(None);
+    let state_dir = session::state_dir();
+    let on_disk = crate::doctor::secrets_on_disk(&state_dir);
+    let found = crate::doctor::findings(selection, &on_disk);
+    let worst = crate::doctor::worst(&found);
+
+    if json {
+        crate::print_json(&serde_json::json!({
+            "status": match worst {
+                crate::doctor::Level::Ok => "ok",
+                crate::doctor::Level::Note => "note",
+                crate::doctor::Level::Warn => "warn",
+            },
+            "state_dir": state_dir,
+            "findings": found,
+        }));
+        return Outcome::Done(String::new());
+    }
+
+    let mut lines = Vec::new();
+    for finding in &found {
+        lines.push(format!(
+            "{} {}: {}",
+            crate::doctor::marker(finding.level),
+            finding.subject,
+            finding.detail
+        ));
+    }
+    Outcome::Done(lines.join("\n"))
 }
 
 #[cfg(test)]

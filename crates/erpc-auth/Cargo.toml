@@ -47,6 +47,7 @@ dbus-secret-service = { version = "4.1", default-features = false, features = [
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros", "net", "io-util", "time"] }
 
 [lints]
 workspace = true

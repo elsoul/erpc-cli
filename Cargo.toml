@@ -37,7 +37,7 @@ clap = { version = "4.6", features = ["derive", "env", "wrap_help"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
-tokio = { version = "1.54", features = ["rt", "macros", "time", "process", "fs"] }
+tokio = { version = "1.53", features = ["rt", "macros", "time", "process", "fs"] }
 # rustls only: the Linux release targets are static musl, and linking
 # OpenSSL there is what "no system libraries" exists to avoid.
 reqwest = { version = "0.13", default-features = false, features = [

@@ -75,30 +75,28 @@ pub fn ensure_token_destination(audience: Audience, url: &str) -> Result<(), All
     })
 }
 
-/// The lowercase host of an absolute `https` URL, with no userinfo and no
-/// port.
+/// The host of an absolute `https` URL, as the parser that will build the
+/// request reads it.
 ///
-/// Deliberately strict and deliberately small: anything it cannot read with
-/// certainty returns `None`, which refuses the request. The host is taken
-/// after the last `@` because that is where every URL parser splits an
-/// authority, and taking it from the first `@` would read userinfo as the
-/// host.
+/// `reqwest::Url` is `url::Url`, which implements the WHATWG URL Standard,
+/// and `AuthClient` hands the same string to the same parser a moment
+/// later. Using it here is what makes the check and the request agree.
+///
+/// A hand-written parser stood here and was wrong in the direction that
+/// attaches the token. It split the authority on `/`, `?` and `#` only,
+/// while the Standard also ends it at a backslash, so
+/// `https://evil.example.net\@user-api.erpc.global/x` read as the declared
+/// host to the gate and as the attacker's host to the request. Two parsers
+/// that disagree about where the authority ends is the whole bug class,
+/// and there is only one way to retire it.
 fn https_host(url: &str) -> Option<String> {
-    let rest = url.strip_prefix("https://")?;
-    let authority = rest
-        .split(['/', '?', '#'])
-        .next()
-        .filter(|a| !a.is_empty())?;
-    let after_userinfo = authority.rsplit('@').next()?;
-    let host = match after_userinfo.strip_prefix('[') {
-        // An IPv6 literal keeps its colons; the port is after the bracket.
-        Some(inner) => inner.split(']').next()?,
-        None => after_userinfo.split(':').next()?,
-    };
-    if host.is_empty() {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    if parsed.scheme() != "https" {
         return None;
     }
-    Some(host.to_ascii_lowercase())
+    // `host_str` is already lowercased and percent-decoded by the parser,
+    // and brackets an IPv6 literal exactly as the request will.
+    parsed.host_str().map(ToOwned::to_owned)
 }
 
 #[cfg(test)]
@@ -233,13 +231,69 @@ mod tests {
             (url("h.example", ""), Some("h.example")),
             (url("h.example:8443", "/x"), Some("h.example")),
             (url("u:p@h.example", "/x"), Some("h.example")),
-            (url("[::1]:8899", "/x"), Some("::1")),
-            (url("", "/x"), None),
+            (url("[::1]:8899", "/x"), Some("[::1]")),
+            // An empty authority is not "no host": the parser collapses it
+            // and reads the first path segment as the host, which is where
+            // the request would actually go. The hand-written parser said
+            // None here and would have waved it through to a later check
+            // that never ran.
+            (url("", "/x"), Some("x")),
         ] {
             assert_eq!(https_host(&raw), expected.map(ToOwned::to_owned), "{raw}");
         }
+        assert!(
+            ensure_token_destination(Audience::AuthApi, &url("", "/x")).is_err(),
+            "and it is refused, because `x` is not a destination"
+        );
         assert_eq!(https_host("ftp://h.example/x"), None);
         assert_eq!(https_host("h.example"), None);
+    }
+
+    #[test]
+    fn a_backslash_ends_the_authority_as_the_request_parser_says_it_does() {
+        // The bypass a hand-written parser allowed: it split on / ? # only,
+        // so this read as the declared host to the gate and as the
+        // attacker's host to the request, and the token went with it.
+        let disguised = url("evil.example.net", r"\@user-api.erpc.global/v3/user/get");
+        assert_eq!(
+            https_host(&disguised).as_deref(),
+            Some("evil.example.net"),
+            "the authority ends at the backslash"
+        );
+        match ensure_token_destination(Audience::AuthApi, &disguised)
+            .expect_err("no token may be attached to this")
+        {
+            AllowlistError::HostNotAllowed { host, .. } => assert_eq!(host, "evil.example.net"),
+            other => panic!("expected HostNotAllowed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_gate_and_the_request_builder_agree_on_every_shape() {
+        // The property the previous parser broke, stated directly: for any
+        // URL, what this gate judges is what reqwest will connect to.
+        for raw in [
+            url("user-api.erpc.global", "/v3/user/get"),
+            url("evil.example.net", r"\@user-api.erpc.global/x"),
+            url("a@user-api.erpc.global@evil.example.net", "/x"),
+            url("u:p@user-api.erpc.global", "/x"),
+            url("[::1]:8899", "/x"),
+            // Uppercase built at run time, for the same reason as above:
+            // the hygiene gate reads literals and an erpc.global string
+            // that is not in the declared list is what it is there to
+            // catch.
+            url(
+                &format!("{}:443", AUTH_API_TOKEN_DESTINATIONS[0].to_uppercase()),
+                "/x",
+            ),
+        ] {
+            let built = reqwest::Url::parse(&raw).expect("parses");
+            assert_eq!(
+                https_host(&raw).as_deref(),
+                built.host_str(),
+                "the gate and the request disagree about {raw}"
+            );
+        }
     }
 
     #[test]

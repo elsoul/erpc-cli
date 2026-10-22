@@ -139,7 +139,9 @@ impl Context {
             ai_tool_path: false,
             service_account: false,
             op_env_session: false,
-            biometric_unlock: false,
+            // Absent means available: 1Password desktop unlock is only
+            // off when something says so. `from_env` overwrites this.
+            biometric_unlock: true,
         }
     }
 
@@ -149,25 +151,43 @@ impl Context {
     /// The terminal and node checks are passed in rather than probed here
     /// so that this stays testable and free of I/O.
     #[must_use]
-    pub fn from_env<F>(has_tty: bool, on_node: bool, var: F) -> Self
+    pub fn from_env<I>(has_tty: bool, on_node: bool, vars: I) -> Self
     where
-        F: Fn(&str) -> Option<String>,
+        I: IntoIterator<Item = (String, String)>,
     {
-        let present = |name: &str| var(name).is_some_and(|v| !v.is_empty());
-        let execution_context = var("ERPC_EXECUTION_CONTEXT").unwrap_or_default();
-        Self {
+        // Takes the whole environment rather than a lookup function,
+        // because one of the things to detect is a PREFIX. `op signin`
+        // exports `OP_SESSION_<account>`, never a bare `OP_SESSION`, so a
+        // by-name lookup for "OP_SESSION" never fired and the mainnet row
+        // that refuses a 1Password session environment did not refuse the
+        // environment it was written for.
+        let mut ctx = Self {
             has_tty,
-            in_ssh_session: present("SSH_CONNECTION") || present("SSH_TTY"),
             on_node,
-            ai_console: execution_context == "ai-console",
-            ai_tool_path: execution_context == "ai-tool",
-            service_account: present("OP_SERVICE_ACCOUNT_TOKEN"),
-            op_env_session: present("OP_CONNECT_HOST")
-                || present("OP_CONNECT_TOKEN")
-                || present("OP_SESSION"),
-            biometric_unlock: var("OP_BIOMETRIC_UNLOCK_ENABLED")
-                .is_none_or(|v| !v.eq_ignore_ascii_case("false")),
+            ..Self::empty()
+        };
+        for (name, value) in vars {
+            if value.is_empty() {
+                continue;
+            }
+            match name.as_str() {
+                "SSH_CONNECTION" | "SSH_TTY" => ctx.in_ssh_session = true,
+                "ERPC_EXECUTION_CONTEXT" => {
+                    ctx.ai_console = value == "ai-console";
+                    ctx.ai_tool_path = value == "ai-tool";
+                }
+                "OP_SERVICE_ACCOUNT_TOKEN" => ctx.service_account = true,
+                "OP_CONNECT_HOST" | "OP_CONNECT_TOKEN" => ctx.op_env_session = true,
+                "OP_BIOMETRIC_UNLOCK_ENABLED" => {
+                    ctx.biometric_unlock = !value.eq_ignore_ascii_case("false");
+                }
+                other if other.starts_with("OP_SESSION_") || other == "OP_SESSION" => {
+                    ctx.op_env_session = true;
+                }
+                _ => {}
+            }
         }
+        ctx
     }
 }
 
@@ -290,6 +310,15 @@ fn human_wallet(allow_ai: bool, operation: Operation, context: &Context) -> Deci
     if context.service_account {
         return Decision::Deny(Denial::ServiceAccount);
     }
+    // `allow_ai` decides whether an AI tool path may ask at all, so it is
+    // checked before the shortcut below rather than after it. Asking and
+    // being told no is the whole protection for a wallet not marked for
+    // AI use; letting the request through as far as "prepare" and
+    // refusing only the signature is a different, weaker rule than the
+    // one this flag is documented to be.
+    if context.ai_tool_path && !allow_ai {
+        return Decision::Deny(Denial::AiNotPermittedForWallet);
+    }
     // Drafting a payment reveals nothing, so the AI console may do it. The
     // signature is the step that needs the operator.
     if operation == Operation::Prepare {
@@ -297,9 +326,6 @@ fn human_wallet(allow_ai: bool, operation: Operation, context: &Context) -> Deci
     }
     if context.ai_console {
         return Decision::Deny(Denial::FromAiConsole);
-    }
-    if context.ai_tool_path && !allow_ai {
-        return Decision::Deny(Denial::AiNotPermittedForWallet);
     }
     if !context.has_tty {
         return Decision::Deny(Denial::NoTerminal);
@@ -654,6 +680,84 @@ mod tests {
     }
 
     #[test]
+    fn the_ai_console_may_not_resolve_a_validator_identity() {
+        // Both networks. Without this the AI console child process could
+        // reach a mainnet staked identity key.
+        for network in [Network::Mainnet, Network::Testnet] {
+            let ctx = Context {
+                ai_console: true,
+                ..at_a_desk()
+            };
+            assert_eq!(
+                evaluate(
+                    Profile::ValidatorIdentity { network },
+                    Operation::Resolve,
+                    &ctx
+                ),
+                Decision::Deny(Denial::FromAiConsole),
+                "{network:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_ai_console_may_not_resolve_node_resident_material() {
+        let ctx = Context {
+            ai_console: true,
+            ..at_a_desk()
+        };
+        assert_eq!(
+            evaluate(
+                Profile::NodeResident {
+                    network: Network::Testnet
+                },
+                Operation::Resolve,
+                &ctx
+            ),
+            Decision::Deny(Denial::FromAiConsole)
+        );
+    }
+
+    #[test]
+    fn a_mainnet_validator_key_needs_a_terminal_even_with_everything_else_in_place() {
+        // Everything the mainnet row asks for except a person: desktop
+        // unlock on, not SSH, not on a node, no service account.
+        let ctx = Context {
+            has_tty: false,
+            biometric_unlock: true,
+            ..Context::empty()
+        };
+        assert_eq!(
+            evaluate(
+                Profile::ValidatorIdentity {
+                    network: Network::Mainnet
+                },
+                Operation::Resolve,
+                &ctx
+            ),
+            Decision::Deny(Denial::NoTerminal)
+        );
+    }
+
+    #[test]
+    fn a_testnet_validator_key_refuses_an_ssh_session_without_a_service_account() {
+        let ctx = Context {
+            in_ssh_session: true,
+            ..at_a_desk()
+        };
+        assert_eq!(
+            evaluate(
+                Profile::ValidatorIdentity {
+                    network: Network::Testnet
+                },
+                Operation::Resolve,
+                &ctx
+            ),
+            Decision::Deny(Denial::SshSession)
+        );
+    }
+
+    #[test]
     fn every_profile_but_the_session_token_refuses_an_empty_context() {
         // The deny-by-default property: with nothing available, only the
         // two profiles whose rows say so get through.
@@ -678,39 +782,114 @@ mod tests {
         }
     }
 
+    /// Turns pairs into the iterator `from_env` wants.
+    fn env(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect()
+    }
+
     #[test]
     fn from_env_reads_the_facts_it_is_given() {
-        let ctx = Context::from_env(true, false, |name| match name {
-            "ERPC_EXECUTION_CONTEXT" => Some("ai-console".to_owned()),
-            "SSH_CONNECTION" => Some("10.0.0.1 1 10.0.0.2 22".to_owned()),
-            "OP_SERVICE_ACCOUNT_TOKEN" => Some("ops_token".to_owned()),
-            _ => None,
-        });
+        let ctx = Context::from_env(
+            true,
+            false,
+            env(&[
+                ("ERPC_EXECUTION_CONTEXT", "ai-console"),
+                ("SSH_CONNECTION", "10.0.0.1 1 10.0.0.2 22"),
+                ("OP_SERVICE_ACCOUNT_TOKEN", "ops_token"),
+            ]),
+        );
         assert!(ctx.has_tty);
         assert!(ctx.ai_console);
         assert!(ctx.in_ssh_session);
         assert!(ctx.service_account);
         assert!(!ctx.op_env_session);
-        // Absent means available: 1Password desktop unlock is only off when
-        // it is explicitly set to false.
+        // Absent means available: desktop unlock is only off when
+        // something says it is.
         assert!(ctx.biometric_unlock);
     }
 
     #[test]
     fn from_env_treats_an_empty_variable_as_absent() {
-        let ctx = Context::from_env(false, false, |name| match name {
-            "OP_SERVICE_ACCOUNT_TOKEN" => Some(String::new()),
-            _ => None,
-        });
+        let ctx = Context::from_env(false, false, env(&[("OP_SERVICE_ACCOUNT_TOKEN", "")]));
         assert!(!ctx.service_account);
     }
 
     #[test]
     fn from_env_reads_the_desktop_unlock_switch() {
-        let off = Context::from_env(true, false, |name| match name {
-            "OP_BIOMETRIC_UNLOCK_ENABLED" => Some("false".to_owned()),
-            _ => None,
-        });
+        let off = Context::from_env(
+            true,
+            false,
+            env(&[("OP_BIOMETRIC_UNLOCK_ENABLED", "false")]),
+        );
         assert!(!off.biometric_unlock);
+    }
+
+    #[test]
+    fn a_real_1password_session_variable_is_detected() {
+        // `op signin` exports OP_SESSION_<account>, never a bare
+        // OP_SESSION. Looking up the bare name found nothing, so the
+        // mainnet row that refuses a 1Password session environment did
+        // not refuse the one it was written for.
+        let ctx = Context::from_env(
+            true,
+            false,
+            env(&[("OP_SESSION_mycompany", "eyJzZXNzaW9u")]),
+        );
+        assert!(ctx.op_env_session, "OP_SESSION_<account> is a session");
+        assert_eq!(
+            evaluate(
+                Profile::ValidatorIdentity {
+                    network: Network::Mainnet
+                },
+                Operation::Resolve,
+                &ctx
+            ),
+            Decision::Deny(Denial::OpEnvSession)
+        );
+    }
+
+    #[test]
+    fn op_connect_variables_are_detected_too() {
+        for name in ["OP_CONNECT_HOST", "OP_CONNECT_TOKEN", "OP_SESSION"] {
+            let ctx = Context::from_env(true, false, env(&[(name, "x")]));
+            assert!(ctx.op_env_session, "{name}");
+        }
+    }
+
+    #[test]
+    fn an_unmarked_wallet_refuses_an_ai_tool_path_before_it_can_even_prepare() {
+        // `allow_ai` is documented as deciding whether the request may be
+        // made at all. Allowing Prepare first made it decide only whether
+        // the signature could be skipped, which is a weaker rule.
+        let ctx = Context {
+            ai_tool_path: true,
+            ..at_a_desk()
+        };
+        for operation in [Operation::Prepare, Operation::Resolve] {
+            assert_eq!(
+                evaluate(Profile::HumanWallet { allow_ai: false }, operation, &ctx),
+                Decision::Deny(Denial::AiNotPermittedForWallet),
+                "{operation:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_marked_wallet_may_still_be_prepared_by_an_ai_tool_path() {
+        let ctx = Context {
+            ai_tool_path: true,
+            ..at_a_desk()
+        };
+        assert_eq!(
+            evaluate(
+                Profile::HumanWallet { allow_ai: true },
+                Operation::Prepare,
+                &ctx
+            ),
+            Decision::Allow(Confirmation::None)
+        );
     }
 }

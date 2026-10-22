@@ -3,11 +3,10 @@
 
 //! `erpc login`, `erpc logout` and `erpc whoami`.
 //!
-//! What is wired here is the part that does not need the network: which
-//! store a session goes to, what the operator is told, and what each exit
-//! code means. The HTTP side of the device grant is the next piece of this
-//! phase; until it lands, `login` reports what it would do and stops rather
-//! than pretending to have signed anyone in.
+//! What is wired here is the machine's own facts: which store a session
+//! goes to, where the state directory is, and what this host and account
+//! are called. The library does not go looking for those; a CLI is the
+//! right place to know them.
 
 use std::io::IsTerminal as _;
 use std::path::PathBuf;
