@@ -35,13 +35,17 @@ validators should follow the high-assurance path in that document.
 | `crates/erpc-*` | library crates (core, auth, api, secret, ssh, ops, chain, chain-solana, ai, wallet, x402, skills, mcp-server, release) |
 | `installer/` | Cloudflare Worker serving `install.erpc.global` |
 | `scripts/` | hygiene and release helpers |
-| `docs/` | release verification, compliance index, public hosts |
+| `docs/` | release verification, compliance index, public hosts, incident response |
 
 ## Contributing and security
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md), [`SECURITY.md`](SECURITY.md) and
 [`GOVERNANCE.md`](GOVERNANCE.md). Only the public hosts in
-[`docs/public-hosts.md`](docs/public-hosts.md) may appear in this repository.
+[`docs/public-hosts.md`](docs/public-hosts.md) may appear in this repository;
+`lefthook install` wires the pre-commit gates that enforce it. If a secret
+ever lands here, follow
+[`docs/secret-exposure-response.md`](docs/secret-exposure-response.md) and
+rotate it before rewriting any history.
 
 ## License
 

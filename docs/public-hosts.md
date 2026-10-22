@@ -6,10 +6,12 @@ SPDX-License-Identifier: Apache-2.0
 # Public hosts allowed in this repository
 
 Only the hosts below may appear in source, tests, docs or workflows.
-`scripts/check-public-hosts.sh` enforces this list in pre-commit and CI.
-Anything else under `erpc.global`, any Cloudflare account identifier, any
-1Password vault or item identifier outside the `op://` reference format, and
-any bearer-token-looking string fails the check.
+`scripts/check-oss-hygiene.sh` enforces this list in pre-commit and CI.
+Anything else under `erpc.global`, any cloud account identifier, any
+1Password vault or item identifier outside the `op://` reference format, any
+bearer-token-looking string, any key-shaped string, any reference into the
+company's private repositories, and any internal document also fail the check.
+Credential *values* are caught separately by `gitleaks` (`.gitleaks.toml`).
 
 | Host | Purpose | Credentials that may be sent |
 |---|---|---|

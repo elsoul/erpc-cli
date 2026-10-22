@@ -131,7 +131,10 @@ jobs:
           rm -f gitleaks gitleaks.tar.gz
       - name: gitleaks (full history)
         run: '"$RUNNER_TEMP/gitleaks" git --redact --config .gitleaks.toml --exit-code 1 .'
-      - run: scripts/check-public-hosts.sh
+      - name: hygiene gate self-test
+        run: scripts/tests/check-oss-hygiene.test.sh
+      - name: hygiene gate (all tracked files)
+        run: scripts/check-oss-hygiene.sh
 
   zizmor:
     name: zizmor (workflow audit)

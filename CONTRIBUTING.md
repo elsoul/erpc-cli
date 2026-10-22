@@ -11,11 +11,17 @@ under `crates/` and the discussion on the pull request you are working from.
 
 ## Ground rules
 
-1. **No secrets, ever.** Never commit tokens, keys, `.env` files, 1Password
-   vault or item identifiers, Cloudflare account identifiers, or internal
-   hostnames. Only the public endpoints listed in `docs/public-hosts.md` may
-   appear in code or docs. `lefthook` runs `gitleaks` and
-   `scripts/check-public-hosts.sh` before every commit; CI runs them again.
+1. **No secrets, ever.** Never commit tokens, private keys or mnemonics of any
+   chain, `.env` files, 1Password vault or item identifiers, cloud account
+   identifiers, or internal hostnames. Only the public endpoints listed in
+   `docs/public-hosts.md` may appear in code or docs. Install the hooks with
+   `lefthook install`: `gitleaks` scans for credential values and
+   `scripts/check-oss-hygiene.sh` blocks non-public hosts, infrastructure
+   identifiers, key-shaped strings and internal documents. CI runs both again,
+   plus the gate's own self-test. Never commit with `--no-verify`; if a rule
+   is wrong, change the rule in the same commit and say why.
+   If something slipped through, follow `docs/secret-exposure-response.md`
+   and rotate the credential before touching the history.
 2. **Secret types.** Secret material is held only in `secrecy::SecretBox` /
    `SecretString`. Never derive `Debug` output that prints it, never log it,
    never put it in an error message.
@@ -27,10 +33,16 @@ under `crates/` and the discussion on the pull request you are working from.
    `REUSE.toml`. `reuse lint` must pass. Contributions are accepted under
    Apache-2.0 with a Developer Certificate of Origin sign-off:
    `git commit -s`.
-5. **Toolchain.** `rust-toolchain.toml` pins the compiler. `cargo fmt`,
+5. **Documents.** This repository carries what a user or contributor needs:
+   README, policies, release verification, the compliance index and the
+   public-host list. Design documents, internal assessments and operational
+   records stay in ELSOUL LABO B.V.'s private documentation, so that a
+   revision of them cannot leak internal context here. The hygiene gate
+   refuses files such as `docs/architecture.md` by name for this reason.
+6. **Toolchain.** `rust-toolchain.toml` pins the compiler. `cargo fmt`,
    `cargo clippy --all-targets -- -D warnings` and `cargo test --workspace`
    must pass on Linux, macOS and Windows.
-6. **Workflows.** GitHub Actions are pinned to full commit SHAs, run with
+7. **Workflows.** GitHub Actions are pinned to full commit SHAs, run with
    `permissions: contents: read` by default, and never use
    `pull_request_target` or `workflow_run`.
 
