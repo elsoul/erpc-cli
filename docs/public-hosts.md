@@ -19,9 +19,17 @@ code as authoritative if the two ever disagree.
   every review round found both a bypass and a false positive in it.
   Some files are not scanned at all. That list is not copied here, because a
   copy drifts: run `scripts/check-endpoints.sh --print-exceptions`.
-- `erpc_core::endpoints::ensure_service_url` is the runtime helper callers
-  will use to check a destination. It has **no callers in this version**,
-  which performs no network requests at all.
+- `erpc_core::endpoints::ensure_service_url` accepts a URL on any host
+  declared in the code, of any kind: `https` or `wss` with no explicit
+  port, or any of `http`, `https`, `ws` and `wss` with any port on loopback.
+  - Every request URL `erpc` builds is a constant, and a test runs each one
+    through it.
+  - At runtime it is called before `erpc` opens a page in a browser. The only
+    such page is the issuer's verification page, and `erpc-auth` has already
+    required that to be an `https` URL on the issuer's own host, made of a
+    narrow set of characters.
+  - Where the access token and the refresh token may each be sent is
+    narrower than this list, and is set out in `SECURITY.md`.
 - `scripts/check-oss-hygiene.sh` additionally blocks cloud account
   identifiers, 1Password identifiers outside the `op://` reference format,
   bearer-token and key-shaped strings, references to the organisation's other
@@ -40,9 +48,9 @@ scheme and shape only.
 
 | Host | Purpose | Credentials that may be sent |
 |---|---|---|
-| `auth-api.erpc.global` | OAuth device flow: issue, refresh, revoke | none (public client `erpc-cli`) |
+| `auth-api.erpc.global` | OAuth device flow: issue, refresh, revoke; its verification page is opened in the browser | the device code, and the refresh token to the token and revoke endpoints only; never the access token |
 | `user-api.erpc.global` | ERPC account API | auth-api access token only |
-| `mcp-user-api.erpc.global` | ERPC User MCP server | MCP access token only |
+| `mcp-user-api.erpc.global` | ERPC User MCP server, and the issuer of its own tokens | the device code, the MCP refresh token to the token and revoke endpoints, and the MCP access token; never the auth-api tokens |
 | `x402.erpc.global` | x402 payments and credit top-up | x402 billing session token and payment headers only; never auth-api/MCP tokens, never ERPC API keys |
 | `edge.erpc.global` | RPC endpoint, for the planned `check` command | RPC API key supplied by the operator |
 | `dashboard.erpc.global` | opened in the browser for signup and payment setup | none |
@@ -57,8 +65,11 @@ scheme and shape only.
 | `sh.rustup.rs` | toolchain installation in CI | none |
 | `127.0.0.1`, `localhost`, `[::1]` | planned OAuth redirect listener and local MCP server; plaintext `http`/`ws` allowed here only | session token for the local MCP server |
 
-Every row except the loopback one describes a destination a future version
-will contact. This version contacts nothing.
+This version of `erpc` contacts `auth-api.erpc.global` and
+`user-api.erpc.global`, and opens the verification page on
+`auth-api.erpc.global` in a browser during `erpc login`. The other rows are
+contacted by a later version, by the release pipeline, or at build time, as
+their purpose says.
 
 ## Documentation links
 
