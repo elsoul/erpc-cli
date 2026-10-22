@@ -613,6 +613,13 @@ impl<R: OpRunner> CredentialStore for OnePassword<R> {
                 "the item does not have the expected fields".to_owned(),
             ));
         };
+        // An empty token is not a session, and handing one on would send
+        // an empty bearer header and an empty refresh grant.
+        if access.is_empty() || refresh.is_empty() {
+            return Err(StoreError::Corrupt(
+                "the item has an empty token field".to_owned(),
+            ));
+        }
         let expires_at = expires
             .parse::<i64>()
             .map_err(|e| StoreError::Corrupt(format!("expires_at is not a timestamp: {e}")))?;
@@ -1322,6 +1329,19 @@ mod tests {
             .load(&key())
             .expect_err("not an item this build reads");
         assert!(matches!(err, StoreError::Backend { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn an_item_with_an_empty_token_is_not_a_session() {
+        let json = r#"{"fields":[
+            {"id":"a","label":"access_token","value":""},
+            {"id":"b","label":"refresh_token","value":"d.e.f"},
+            {"id":"c","label":"expires_at","value":"1700000000"},
+            {"id":"d","label":"store_version","value":"1"}
+        ]}"#;
+        let fake = FakeOp::new(vec![ok(json)]);
+        let store = OnePassword::new(&fake, Mode::Desktop, VAULT, "mac-001");
+        assert!(matches!(store.load(&key()), Err(StoreError::Corrupt(_))));
     }
 
     #[test]

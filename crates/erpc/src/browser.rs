@@ -120,8 +120,30 @@ pub fn open(url: &str) -> Result<(), String> {
         ("xdg-open", &[])
     };
 
+    opener(
+        program,
+        args,
+        url,
+        std::env::vars_os().map(|(name, _)| name),
+    )
+    .spawn()
+    .map(|_| ())
+    .map_err(|e| format!("could not start {program}: {e}"))
+}
+
+/// The opener's command, built but not started, with everything in
+/// `environment` that [`withheld`] names removed from what it inherits.
+///
+/// Apart from `open` so a test can read back what the child would be given
+/// without starting a browser.
+fn opener(
+    program: &str,
+    args: &[&str],
+    url: &str,
+    environment: impl Iterator<Item = std::ffi::OsString>,
+) -> Command {
     let mut command = Command::new(program);
-    for name in withheld(std::env::vars_os().map(|(name, _)| name)) {
+    for name in withheld(environment) {
         command.env_remove(name);
     }
     command
@@ -129,17 +151,50 @@ pub fn open(url: &str) -> Result<(), String> {
         .arg(url)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| format!("could not start {program}: {e}"))
+        .stderr(Stdio::null());
+    command
 }
 
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
 
-    use super::{NoBrowser, decide, open, withheld};
+    use super::{NoBrowser, decide, open, opener, withheld};
+
+    #[test]
+    fn the_command_that_opens_the_browser_removes_what_is_withheld() {
+        // The loop that applies `withheld`, read back from the command it
+        // built: a removal shows up as a variable set to nothing.
+        let environment =
+            ["OP_SERVICE_ACCOUNT_TOKEN", "op_session_x", "DISPLAY"].map(OsString::from);
+        let command = opener(
+            "xdg-open",
+            &[],
+            "https://auth-api.erpc.global/oauth/device",
+            environment.into_iter(),
+        );
+        let removed: Vec<&std::ffi::OsStr> = command
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(name, _)| name)
+            .collect();
+        assert!(
+            removed
+                .iter()
+                .any(|n| n.eq_ignore_ascii_case("OP_SERVICE_ACCOUNT_TOKEN")),
+            "{removed:?}"
+        );
+        assert!(
+            removed
+                .iter()
+                .any(|n| n.eq_ignore_ascii_case("op_session_x")),
+            "{removed:?}"
+        );
+        assert!(
+            !removed.iter().any(|n| n.eq_ignore_ascii_case("DISPLAY")),
+            "{removed:?}"
+        );
+    }
 
     #[cfg(unix)]
     #[test]

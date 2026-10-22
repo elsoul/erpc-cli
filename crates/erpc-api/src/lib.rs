@@ -75,7 +75,8 @@ impl User {
     /// The value comes from the server. A control character in it could be
     /// an escape sequence by the time it is printed, and a bidirectional
     /// override can make it read as something else. JSON output uses
-    /// [`Self::label`], which the encoder escapes.
+    /// [`Self::label`] unchanged: it is data for a program, and the encoder
+    /// escapes only the C0 control characters in it.
     #[must_use]
     pub fn label_for_display(&self) -> String {
         self.label()
@@ -83,7 +84,11 @@ impl User {
             .map(|c| {
                 let reorders = matches!(
                     c,
-                    '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+                    '\u{061C}'
+                        | '\u{200E}'
+                        | '\u{200F}'
+                        | '\u{202A}'..='\u{202E}'
+                        | '\u{2066}'..='\u{2069}'
                 );
                 if c.is_control() || reorders { '?' } else { c }
             })
@@ -186,6 +191,9 @@ mod tests {
         let user: super::User =
             serde_json::from_str(r#"{"uid":"u5","username":"alice\u202eroot"}"#).expect("parses");
         assert!(!user.label_for_display().contains('\u{202e}'));
+        let user: super::User =
+            serde_json::from_str(r#"{"uid":"u6","username":"a\u061cb"}"#).expect("parses");
+        assert!(!user.label_for_display().contains('\u{061c}'));
     }
 
     #[test]

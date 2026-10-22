@@ -16,11 +16,12 @@
 //! only ever sees the refresh token. The `mcp-user-api` host is both the
 //! issuer and the API, so both of its tokens go there.
 //!
-//! `docs/public-hosts.md` restates this per host. A test below reads that
-//! table and holds every row to these lists: only an issuer may list the
-//! device code or the refresh token, only a destination may list the access
-//! token, and each must list what it receives and not put it after
-//! "never". It checks words, not meaning, and says so where it is defined.
+//! `docs/public-hosts.md` restates this per host. Tests below pin the
+//! credentials cell of every issuer and access-token destination word for
+//! word, require that set of hosts to be exactly the one these lists and
+//! the issuer hosts produce, and reject the words "access", "refresh" and
+//! "device", in any case, in every other row's credentials. Whether a
+//! pinned sentence is true is for the reader of the diff that changes it.
 //!
 //! A token is disclosed to whoever receives it, so both sets are
 //! compile-time constants rather than anything a configuration file, an
@@ -409,75 +410,96 @@ mod tests {
         );
     }
 
-    /// Every way the public hosts table contradicts the token lists.
+    /// What `docs/public-hosts.md` says each issuer and access-token
+    /// destination receives, word for word.
     ///
-    /// Each credentials cell is split at its first "never" into what may be
-    /// sent and what never is, and each host in the row is held to:
+    /// Pinned rather than matched. Two rounds of matching words in the
+    /// prose were each beaten by a sentence that used the words and said
+    /// the opposite. A pinned cell cannot drift: changing the table, or
+    /// the set of hosts the code sends a token to, fails a test until this
+    /// list is changed in the same diff, where a reader checks the text.
+    /// What the text means is that reader's job, not this test's.
+    const PINNED: &[(&str, &str)] = &[
+        (
+            "auth-api.erpc.global",
+            "the device code, and the refresh token to the token and revoke endpoints only; \
+             never the access token",
+        ),
+        ("user-api.erpc.global", "auth-api access token only"),
+        (
+            "mcp-user-api.erpc.global",
+            "the device code, the MCP refresh token to the token and revoke endpoints, and the \
+             MCP access token; never the auth-api tokens",
+        ),
+    ];
+
+    /// Words that name a session credential. No row outside [`PINNED`] may
+    /// use any of them, in any case and in any position.
+    const SESSION_WORDS: &[&str] = &["access", "refresh", "device"];
+
+    /// Every way the public hosts table disagrees with [`PINNED`].
     ///
-    /// * an issuer may receive the device code and the refresh token, and no
-    ///   other host may;
-    /// * an access-token destination may receive the access token and does
-    ///   not say it never does, and no other host may receive it;
-    /// * an issuer that is not also a destination says it never receives
-    ///   the access token.
-    ///
-    /// Words, not meaning: it catches a row that names the wrong token, or
-    /// moves one to the wrong side of "never". It cannot tell which
-    /// audience's token a row means; the hosts are distinct per audience,
-    /// so the host does that.
+    /// Reads every row in the file with three cells and a host in the
+    /// first, in any table, so a second table cannot hide a row: a pinned
+    /// host repeated there is held to its pin, and any other host to the
+    /// word rule, wherever the row is.
     fn table_errors(table: &str) -> Vec<String> {
-        let issuers: Vec<&str> = Audience::all().iter().map(|a| a.issuer_host()).collect();
-        let destinations: Vec<&str> = Audience::all()
-            .iter()
-            .flat_map(|a| super::destinations(*a).iter().copied())
-            .collect();
         let mut errors = Vec::new();
-        let mut seen = Vec::new();
-        let rows = table
-            .lines()
-            .skip_while(|l| !l.starts_with("| Host | Purpose | Credentials"))
-            .skip(2)
-            .take_while(|l| l.starts_with('|'));
-        for line in rows {
+        let mut seen: Vec<String> = Vec::new();
+        for line in table.lines().filter(|l| l.starts_with("| `")) {
             let cells: Vec<&str> = line.split('|').map(str::trim).collect();
-            let (Some(hosts), Some(credentials)) = (cells.get(1), cells.get(3)) else {
-                errors.push(format!("a row without three cells: {line}"));
+            // `| a | b | c |` splits into five pieces; the documentation
+            // table has two columns and four pieces.
+            if cells.len() != 5 {
                 continue;
-            };
-            let (may, never) = credentials.split_once("never").unwrap_or((credentials, ""));
-            for host in hosts.split('`').skip(1).step_by(2) {
+            }
+            let credentials = cells[3];
+            for host in cells[1].split('`').skip(1).step_by(2) {
                 seen.push(host.to_owned());
-                let issuer = issuers.contains(&host);
-                let destination = destinations.contains(&host);
-                let mut fail = |why: &str| errors.push(format!("{host}: {why}: {credentials}"));
-                for term in ["device code", "refresh token"] {
-                    if issuer && !may.contains(term) {
-                        fail(&format!("an issuer that does not list the {term}"));
+                match PINNED.iter().find(|(h, _)| *h == host) {
+                    Some((_, pinned)) if credentials != *pinned => {
+                        errors.push(format!(
+                            "{host}: says \"{credentials}\", pinned \"{pinned}\""
+                        ));
                     }
-                    if !issuer && may.contains(term) {
-                        fail(&format!("not an issuer, and lists the {term}"));
+                    Some(_) => {}
+                    None => {
+                        let lower = credentials.to_ascii_lowercase();
+                        for word in SESSION_WORDS {
+                            if lower.contains(word) {
+                                errors.push(format!(
+                                    "{host}: receives no session credential, and says \"{word}\": \
+                                     {credentials}"
+                                ));
+                            }
+                        }
                     }
-                }
-                if destination && !may.contains("access token") {
-                    fail("an access-token destination that does not list it");
-                }
-                if destination && never.contains("access token") {
-                    fail("an access-token destination that says it never receives it");
-                }
-                if !destination && may.contains("access token") {
-                    fail("not an access-token destination, and lists the access token");
-                }
-                if issuer && !destination && !never.contains("access token") {
-                    fail("an issuer that does not say it never receives the access token");
                 }
             }
         }
-        for host in issuers.iter().chain(&destinations) {
+        for (host, _) in PINNED {
             if !seen.iter().any(|s| s == host) {
                 errors.push(format!("{host}: no row"));
             }
         }
         errors
+    }
+
+    #[test]
+    fn the_pinned_hosts_are_exactly_the_hosts_a_token_goes_to() {
+        // So a new destination or issuer in the code cannot go undescribed,
+        // and a pinned row cannot outlive the code that justified it.
+        let mut from_code: Vec<&str> = Audience::all()
+            .iter()
+            .flat_map(|a| {
+                core::iter::once(a.issuer_host()).chain(super::destinations(*a).iter().copied())
+            })
+            .collect();
+        from_code.sort_unstable();
+        from_code.dedup();
+        let mut pinned: Vec<&str> = PINNED.iter().map(|(h, _)| *h).collect();
+        pinned.sort_unstable();
+        assert_eq!(pinned, from_code);
     }
 
     const TABLE: &str = include_str!("../../../docs/public-hosts.md");
@@ -501,15 +523,13 @@ mod tests {
 
     #[test]
     fn the_public_hosts_table_says_where_each_token_goes() {
-        // The credentials column was written by hand and checked by
-        // nothing, and twice it said something these lists contradict.
         assert_eq!(table_errors(TABLE), Vec::<String>::new());
     }
 
     #[test]
     fn the_table_check_rejects_the_contradictions_it_exists_for() {
-        // Each of these passed an earlier version of the check, which only
-        // looked for words being present.
+        // Every one of these was accepted by an earlier version of the
+        // check, which matched words in the prose.
         for (host, cell) in [
             (
                 "mcp-user-api.erpc.global",
@@ -521,33 +541,67 @@ mod tests {
                 "auth-api access token, the device code and the auth-api refresh token",
             ),
             ("x402.erpc.global", "the MCP access token"),
-            // An access-token destination that does not admit to it.
-            ("user-api.erpc.global", "none"),
-            // Silent about the access token, which this issuer never gets.
+            ("x402.erpc.global", "Access token for the MCP server"),
+            (
+                "x402.erpc.global",
+                "the MCP Access Token and payment headers",
+            ),
+            ("dashboard.erpc.global", "the auth-api Refresh Token"),
+            ("edge.erpc.global", "the access-token"),
+            ("dl.erpc.global", "never a device code"),
+            (
+                "auth-api.erpc.global",
+                "the device code and the refresh token, never to anything but the token and \
+                 revoke endpoints; also the access token",
+            ),
             (
                 "auth-api.erpc.global",
                 "the device code, and the refresh token to the token and revoke endpoints only",
             ),
-            // Says both; the second half is the one a reader acts on.
             (
                 "user-api.erpc.global",
-                "the auth-api access token; never the access token",
+                "auth-api access token only; never the device code, but the refresh token as well",
             ),
+            ("user-api.erpc.global", "no access token"),
+            ("user-api.erpc.global", "the MCP access token only"),
+            ("user-api.erpc.global", "none"),
             (
-                "auth-api.erpc.global",
-                "the device code, the refresh token and the access token",
-            ),
-            (
-                "auth-api.erpc.global",
-                "the refresh token; never the access token",
+                "mcp-user-api.erpc.global",
+                "the device code, the MCP refresh token to the token and revoke endpoints, the \
+                 auth-api refresh token and the auth-api access token",
             ),
         ] {
             let bad = with_cell(host, cell);
-            assert_ne!(bad, TABLE, "the mutation must change the table: {host}");
+            assert_ne!(bad, TABLE, "the case must change the table: {host}");
             assert!(
                 !table_errors(&bad).is_empty(),
                 "{host} with \"{cell}\" was accepted"
             );
         }
+    }
+
+    #[test]
+    fn a_row_cannot_be_hidden_or_dropped() {
+        // A second table with the same header, repeating a pinned host with
+        // a different cell. Read like the first, so held to the pin.
+        let second = format!(
+            "{TABLE}\n\n| Host | Purpose | Credentials that may be sent |\n|---|---|---|\n\
+             | `user-api.erpc.global` | ERPC account API | auth-api refresh token |\n"
+        );
+        assert!(
+            !table_errors(&second).is_empty(),
+            "a second table was not read"
+        );
+        // A pinned host with no row at all.
+        let dropped: String = TABLE
+            .lines()
+            .filter(|l| !l.starts_with("| `user-api.erpc.global` |"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_ne!(dropped, TABLE);
+        assert!(
+            table_errors(&dropped).iter().any(|e| e.ends_with("no row")),
+            "a missing row was not noticed"
+        );
     }
 }
