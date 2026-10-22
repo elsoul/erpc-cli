@@ -39,6 +39,11 @@ for archive in "$dir"/erpc-*.tar.xz "$dir"/erpc-*.tar.gz "$dir"/erpc-*.tar.zst "
     *-*-*|*-*) ;;
     *) continue;;
   esac
+  # The manifest is signed and operators are told to trust it, so refuse a
+  # filename that would need JSON escaping rather than emitting broken JSON.
+  case "$name$target" in
+    *[!A-Za-z0-9._-]*) echo "unexpected character in artifact name: $name" >&2; exit 1;;
+  esac
   entry=$(printf '"%s": {"archive": "%s", "sha256": "%s", "size": %s}' "$target" "$name" "$(sha256 "$archive")" "$(fsize "$archive")")
   targets_json="${targets_json:+$targets_json, }$entry"
 done
@@ -57,10 +62,14 @@ done
 target_count=$(printf '%s' "$targets_json" | tr ',' '\n' | grep -c '"archive"' || true)
 dist_config="$(git rev-parse --show-toplevel)/dist-workspace.toml"
 [ -f "$dist_config" ] || { echo "cannot read $dist_config to check the target count" >&2; exit 1; }
-# `grep -c` exits 1 when it matches nothing while still printing 0, so `|| true`
-# rather than `|| echo 0`, which would append a second line and make the
-# numeric comparison error out and skip the check.
-expected_targets=$(grep -cE '^[[:space:]]*"[a-z0-9_]+-[a-z0-9_-]+",$' "$dist_config" || true)
+# Count the entries of the `targets = [ ... ]` array itself. Counting
+# comma-terminated lines broke on a trailing comma being dropped, which is
+# valid TOML and would have aborted every release with a confusing message.
+expected_targets=$(awk '
+  /^[[:space:]]*targets[[:space:]]*=/ { inside = 1 }
+  inside { n += gsub(/"[a-z0-9_]+-[a-z0-9_-]+"/, "&") }
+  inside && /\]/ { print n; exit }
+' "$dist_config" || true)
 [ -n "$expected_targets" ] || expected_targets=0
 if [ "$expected_targets" -le 0 ]; then
   echo "could not determine the configured target list from $dist_config" >&2

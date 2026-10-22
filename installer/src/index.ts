@@ -85,7 +85,7 @@ export default {
     }
 
     const file = flavor === "sh" ? "erpc-installer.sh" : "erpc-installer.ps1";
-    const got = await fetchInstaller(env, tag, file);
+    const got = await fetchInstaller(env, tag, file, flavor);
     if (!got) {
       return text(
         `could not fetch the installer for ${tag} from GitHub Releases; there is no fallback source for an executable script`,
@@ -122,10 +122,31 @@ function text(msg: string, status: number): Response {
  * GitHub only, by design: this body is executed by the caller and this worker
  * cannot verify a signature, so there is no second source to fall back to.
  */
+/**
+ * A sanity check, not a security control: it turns a 404 page or an empty
+ * body into a clear 502 instead of piping markup into a shell.
+ *
+ * The shapes are those of the installers cargo-dist actually generates, taken
+ * from `dist build --artifacts=global` output rather than from the template:
+ * the shell installer starts with `#!/bin/sh`, and the PowerShell one starts
+ * with a run of `#` licence comments, reaching its `<#` block several lines
+ * in. An earlier version of this function required `<#` at position 0 and
+ * would have rejected every real PowerShell installer.
+ */
+export function looksLikeInstaller(body: string, flavor: "sh" | "ps1"): boolean {
+  const head = body.slice(0, 512).trimStart();
+  if (head.length === 0) return false;
+  // Any markup is an error page, whatever it claims to be.
+  if (/^<(!|html|\?xml)/i.test(head)) return false;
+  if (flavor === "sh") return head.startsWith("#!");
+  return head.startsWith("#") || head.startsWith("<#");
+}
+
 async function fetchInstaller(
   env: Env,
   tag: string,
   file: string,
+  flavor: "sh" | "ps1",
 ): Promise<{ body: string; source: string } | null> {
   const url = `https://github.com/${env.GITHUB_REPO}/releases/download/${tag}/${file}`;
   try {
@@ -136,10 +157,7 @@ async function fetchInstaller(
     });
     if (r.ok) {
       const body = await r.text();
-      // A sanity check only, not a security control: cargo-dist's shell
-      // installer starts with a shebang and its PowerShell one with a block
-      // comment. It exists to turn an HTML error page into a clear 502.
-      if (body.startsWith("#!") || body.startsWith("<#")) {
+      if (looksLikeInstaller(body, flavor)) {
         return { body, source: "github" };
       }
     }

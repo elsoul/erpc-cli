@@ -25,11 +25,13 @@
 # Scope and limits, stated exactly:
 #   - Files listed by --print-exceptions are not scanned at all.
 #   - Plaintext http:// and ws:// are refused outside loopback, per URL.
-#   - A URL whose host begins with a template expression is skipped, because
-#     there is no literal to check. An expression anywhere else is stripped
-#     and the literal prefix IS checked.
-#   - A host that is not plain ASCII, or a URL written with escaped slashes,
-#     is reported rather than skipped: it is a literal a reviewer should see.
+#   - A URL whose host begins with a shell or template expression (${, {{,
+#     $(, backtick) is skipped, because there is no literal to check. An
+#     expression anywhere else is stripped and the literal prefix IS checked.
+#   - A host that is not plain ASCII is reported, so a homograph cannot slip
+#     past by not matching the URL pattern.
+#   - Escaped slashes (\/\/) are normalised before matching, so a URL in a
+#     JSON or TypeScript string cannot hide from the pattern.
 #   - A host assembled at runtime from fragments is invisible to this gate.
 #     This is a text gate over source, not a sandbox, and it does not
 #     constrain a dependency.
@@ -87,7 +89,10 @@ extract_hosts() { grep -v '("' | grep -oE '"[^"]+"' | tr -d '"' | sort -u; }
 doc_hosts=$(read_consts DOCUMENTATION_HOSTS | extract_hosts)
 all_consts=$(read_consts ALL)
 # Service hosts are everything declared except the documentation-only list.
-service_hosts=$(printf '%s\n' "$all_consts" | extract_hosts | grep -vxF "$doc_hosts" 2>/dev/null || printf '%s\n' "$all_consts" | extract_hosts)
+# No `|| <fallback>`: grep exits 1 when it selects nothing, and a fallback
+# here would quietly make every declared host, documentation hosts included,
+# allowed in code. An empty result is caught by the tripwire below instead.
+service_hosts=$(printf '%s\n' "$all_consts" | extract_hosts | grep -vxF "$doc_hosts")
 patterns=$(printf '%s\n' "$all_consts" | grep -oE '\("[A-Za-z0-9.-]+",[[:space:]]*"[A-Za-z0-9.-]+"\)' \
   | sed -E 's/^\("([^"]+)",[[:space:]]*"([^"]+)"\)$/\1	\2/')
 
@@ -167,9 +172,11 @@ check_url() {
   local f="$1" ln="$2" url="$3" kind="$4" scheme rest hostport host
   scheme=$(printf '%s' "${url%%://*}" | tr '[:upper:]' '[:lower:]')
   rest="${url#*://}"
-  # The host itself is computed: there is no literal to check.
+  # The host itself is computed, so there is no literal to check. A backtick
+  # command substitution counts: `https://`h`.example.com/` has no literal
+  # host either. One appearing after a literal prefix is handled below.
   case "$rest" in
-    '${'*|'{{'*|'$('*) return 0;;
+    '${'*|'{{'*|'$('*|'`'*) return 0;;
   esac
   hostport="${rest%%/*}"; hostport="${hostport%%\?*}"; hostport="${hostport%%#*}"
   hostport="${hostport##*@}"
@@ -184,7 +191,10 @@ check_url() {
 
   # A host that is not plain ASCII is a homograph risk and must be seen, not
   # silently skipped because the matcher's character class missed it.
-  if printf '%s' "$host" | LC_ALL=C grep -q '[^A-Za-z0-9.:_[-]-\]'; then
+  # Deliberately `tr -d` and not a bracket expression: a class containing
+  # `[` and `]` is read differently by different greps, and two attempts at
+  # writing one here produced a check that silently matched nothing.
+  if [ -n "$(printf '%s' "$host" | LC_ALL=C tr -d 'A-Za-z0-9.:_[]-')" ]; then
     report "$f" "$ln" "non-ASCII or unexpected character in host: $scheme://$host"
     return 0
   fi

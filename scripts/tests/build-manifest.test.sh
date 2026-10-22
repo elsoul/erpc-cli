@@ -35,8 +35,10 @@ make_artifacts() {
     esac
   done
   printf '{"bomFormat":"CycloneDX"}\n' > "$dir/erpc.cdx.json"
-  # Artifacts that are not release targets and must not be counted.
-  printf 'src\n' > "$dir/source.tar.gz"
+  # Artifacts that DO reach the glob and must be rejected by the name filter.
+  # A name without the erpc- prefix never reaches it, so it proves nothing.
+  printf 'src\n' > "$dir/erpc-source.tar.gz"
+  printf 'x\n' > "$dir/erpc-installer.tar.gz"
   printf '#!/bin/sh\n' > "$dir/erpc-installer.sh"
 }
 
@@ -57,7 +59,8 @@ if out=$("$script" "$tmp/good" v1.2.3 abc123 2>"$tmp/err"); then
   printf '%s' "$out" | grep -q '"tag": "v1.2.3"' && ok "carries the tag" || bad "carries the tag"
   printf '%s' "$out" | grep -q '"commit": "abc123"' && ok "carries the commit" || bad "carries the commit"
   printf '%s' "$out" | grep -q '"sbom_sha256": "[0-9a-f]\{64\}"' && ok "carries the SBOM hash" || bad "carries the SBOM hash"
-  printf '%s' "$out" | grep -q 'source.tar.gz' && bad "excludes the source archive" "source.tar.gz counted" || ok "excludes the source archive"
+  printf '%s' "$out" | grep -q 'erpc-source' && bad "excludes the source archive" "counted" || ok "excludes the source archive"
+  printf '%s' "$out" | grep -q 'erpc-installer' && bad "excludes the installer archive" "counted" || ok "excludes the installer archive"
   if command -v python3 >/dev/null 2>&1; then
     printf '%s' "$out" | python3 -c 'import json,sys; json.load(sys.stdin)' >/dev/null 2>&1 \
       && ok "emits valid JSON" || bad "emits valid JSON"

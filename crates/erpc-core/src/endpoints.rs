@@ -384,8 +384,12 @@ mod tests {
     #[test]
     fn every_host_is_documented() {
         let doc = include_str!("../../../docs/public-hosts.md");
+        // Documentation hosts are a standing grant to link from prose, so the
+        // page that explains the lists must show them too; `all_hosts()`
+        // deliberately excludes them, which once left them invisible.
         let mut missing: Vec<&str> = all_hosts()
             .into_iter()
+            .chain(super::DOCUMENTATION_HOSTS.iter().copied())
             .filter(|h| !doc.contains(h))
             .collect();
         for (prefix, suffix) in super::HOST_PATTERNS {

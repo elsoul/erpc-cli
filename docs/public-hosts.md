@@ -7,9 +7,9 @@ SPDX-License-Identifier: Apache-2.0
 
 The machine-readable source of truth is `crates/erpc-core/src/endpoints.rs`.
 This page explains it. The gates read the code, never this page. A unit test
-fails if a host declared in the code is missing from the table below; the
-reverse direction is not checked, so treat the code as authoritative if the
-two ever disagree.
+fails if a host declared in the code is missing from this page, including the
+documentation hosts below; the reverse direction is not checked, so treat the
+code as authoritative if the two ever disagree.
 
 - `scripts/check-endpoints.sh` applies **one rule**: every `http`, `https`,
   `ws` or `wss` URL in a tracked file must name a host declared in the code,
@@ -64,6 +64,22 @@ will contact. This version contacts nothing.
 
 `DOCUMENTATION_HOSTS` in the same module lists hosts that may be linked from
 prose (`.md`, `.txt`, `NOTICE`, `CHANGELOG`, `AUTHORS`) and nowhere else.
-`erpc` never contacts them. They exist so the gate can apply one rule to the
-whole repository instead of guessing whether a link is an instruction. Adding
-a reference means adding the host there.
+`erpc` never contacts them, and the gate refuses them in code. They exist so
+one rule can cover the whole repository instead of guessing whether a link is
+an instruction a reader will run.
+
+| Host | Linked from |
+|---|---|
+| `www.apache.org` | the licence text and headers |
+| `www.contributor-covenant.org` | `CODE_OF_CONDUCT.md` |
+| `keepachangelog.com` | `CHANGELOG.md` |
+| `semver.org` | `CHANGELOG.md` |
+| `elsoul.nl` | `NOTICE` |
+| `axodotdev.github.io` | the cargo-dist configuration comment |
+| `docs.github.com` | contributor documentation |
+| `reuse.software` | licensing documentation |
+
+This is a standing grant: once a host is here, a later change can turn a prose
+link into an install command without the gate objecting. Keep the list short,
+and treat an addition as a review question rather than a formality. The same
+unit test that checks the table above also checks this one.

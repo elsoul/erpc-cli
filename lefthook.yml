@@ -31,6 +31,8 @@ pre-push:
       run: scripts/check-endpoints.sh
     gate-self-tests:
       run: scripts/tests/check-oss-hygiene.test.sh && scripts/tests/check-endpoints.test.sh && scripts/tests/build-manifest.test.sh
+    installer-tests:
+      run: cd installer && npm test
     clippy:
       run: cargo clippy --workspace --all-targets -- -D warnings
     test:

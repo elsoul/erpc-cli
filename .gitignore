@@ -44,3 +44,6 @@ minisign.key
 *.orig
 *.rej
 *.swp
+
+# cargo-dist build output
+/target/distrib/

@@ -35,6 +35,7 @@ jobs:
           node-version: "24"
       - run: npm ci
       - run: npm run typecheck
+      - run: npm test
 
   deploy:
     if: github.event_name != 'pull_request'

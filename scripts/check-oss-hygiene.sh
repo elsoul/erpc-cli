@@ -29,7 +29,7 @@ fi
 skip_re='(\.lock$|\.png$|\.jpg$|\.gif$|\.ico$|\.woff2?$|^LICENSES/|^LICENSE$|/node_modules/|^target/)'
 
 # Files that quote these patterns on purpose.
-self_re='^(scripts/check-oss-hygiene\.sh|scripts/tests/check-(oss-hygiene|endpoints|build-manifest)\.test\.sh|docs/public-hosts\.md|docs/secret-exposure-response\.md|\.gitleaks\.toml|crates/erpc-core/src/endpoints\.rs)$'
+self_re='^(scripts/check-oss-hygiene\.sh|scripts/tests/(check-oss-hygiene|check-endpoints|build-manifest)\.test\.sh|docs/public-hosts\.md|docs/secret-exposure-response\.md|\.gitleaks\.toml|crates/erpc-core/src/endpoints\.rs)$'
 
 # erpc.global hosts come from the one allowlist, so this gate and
 # check-endpoints.sh cannot drift apart. Only the const arrays are read; the
