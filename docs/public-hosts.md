@@ -26,7 +26,8 @@ code as authoritative if the two ever disagree.
   balanced expression is skipped, there being nothing to check. The matcher
   looks at the authority only and never rewrites the line, so a URL cannot be
   hidden inside another one on the same line; the script's header states the
-  two bounds that guarantee it.
+  bounds that guarantee it. One shape is not covered, and the header says so:
+  a backtick expression containing a space ends the match at the space.
   Some files are not scanned at all. That list is not copied here, because a
   copy drifts: run `scripts/check-endpoints.sh --print-exceptions`.
 - `erpc_core::endpoints::ensure_service_url` is the runtime helper callers
