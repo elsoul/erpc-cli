@@ -5,13 +5,24 @@ SPDX-License-Identifier: Apache-2.0
 
 # Public hosts allowed in this repository
 
-Only the hosts below may appear in source, tests, docs or workflows.
-`scripts/check-oss-hygiene.sh` enforces this list in pre-commit and CI.
-Anything else under `erpc.global`, any cloud account identifier, any
-1Password vault or item identifier outside the `op://` reference format, any
-bearer-token-looking string, any key-shaped string, any reference into the
-company's private repositories, and any internal document also fail the check.
-Credential *values* are caught separately by `gitleaks` (`.gitleaks.toml`).
+The machine-readable source of truth is `crates/erpc-core/src/endpoints.rs`.
+This page explains it; the code is what the gates read, so the two cannot
+drift. Three checks share it:
+
+- `scripts/check-endpoints.sh` refuses any URL in the tree whose host is not
+  declared there, in pre-commit and in CI.
+- `erpc_core::endpoints::ensure_service_url` refuses the same at runtime, so a
+  compromised dependency or a tampered configuration cannot redirect ERPC
+  traffic. Endpoints are never read from configuration or environment.
+- `scripts/check-oss-hygiene.sh` additionally blocks cloud account
+  identifiers, 1Password identifiers outside the `op://` reference format,
+  bearer-token and key-shaped strings, references into the company's private
+  repositories, and internal documents. Credential *values* are caught by
+  `gitleaks` (`.gitleaks.toml`).
+
+Node endpoints the operator names themselves, such as `erpc check rpc --url`,
+are not on this list: they are the user's own targets and are validated for
+scheme and shape only.
 
 | Host | Purpose | Credentials that may be sent |
 |---|---|---|

@@ -3,10 +3,12 @@
 
 //! `erpc-core`: shared config, inventory, output and error types for the erpc CLI.
 //!
-//! Phase 0 provides only [`version`]. Config (`~/.erpc`), inventory, output
-//! formatting, guards and redaction land in Phase 1.
+//! Phase 0 provides [`version`] and [`endpoints`]. Config (`~/.erpc`),
+//! inventory, output formatting, guards and redaction land in Phase 1.
 
 #![forbid(unsafe_code)]
+
+pub mod endpoints;
 
 /// Crate name, used by `erpc version --json` to list workspace components.
 pub const CRATE_NAME: &str = "erpc-core";

@@ -45,6 +45,15 @@ under `crates/` and the discussion on the pull request you are working from.
 7. **Workflows.** GitHub Actions are pinned to full commit SHAs, run with
    `permissions: contents: read` by default, and never use
    `pull_request_target` or `workflow_run`.
+8. **Outbound destinations.** Every host `erpc` contacts is declared in
+   `crates/erpc-core/src/endpoints.rs`, and nowhere else. A URL anywhere in
+   the tree that is not on that list fails `scripts/check-endpoints.sh`. ERPC
+   service endpoints are never read from configuration or environment
+   variables, so a compromised dependency or a tampered config cannot redirect
+   traffic. At runtime, `ensure_service_url` enforces the same list.
+9. **Gates must be tested.** Any check that can block a commit needs a case in
+   `scripts/tests/` proving it blocks a known-bad sample and passes a
+   known-good one. A gate that silently stops matching is worse than none.
 
 ## Development setup
 
@@ -65,6 +74,12 @@ Optional local tools: `cargo install cargo-deny cargo-dist`,
 - Branch from `main`; one topic per PR.
 - Fill in the PR template checklist. The "no internal identifiers" items are
   mandatory.
+- **Every pull request is reviewed by this repository's review gate before it
+  merges**, whatever its size. Maintainers run it with `/review`; it judges
+  correctness, security, supply chain and whether the change is safe to
+  publish, and returns PASS or FAIL. A FAIL is fixed and the gate re-run; it
+  is not argued past, and green CI does not substitute for it. The gate's
+  criteria are the rules above, written out in the agent definition.
 - Releases are cut by maintainers from tags `v*` through the reviewed
   `release.yml` workflow and a protected `release` environment. Contributors
   do not publish.

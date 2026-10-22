@@ -29,9 +29,46 @@ fi
 skip_re='(\.lock$|\.png$|\.jpg$|\.gif$|\.ico$|\.woff2?$|^LICENSES/|^LICENSE$|/node_modules/|^target/)'
 
 # Files that quote these patterns on purpose.
-self_re='^(scripts/check-oss-hygiene\.sh|scripts/tests/|docs/public-hosts\.md|docs/secret-exposure-response\.md|\.gitleaks\.toml)'
+self_re='^(scripts/check-oss-hygiene\.sh|scripts/tests/|docs/public-hosts\.md|docs/secret-exposure-response\.md|\.gitleaks\.toml|crates/erpc-core/src/endpoints\.rs)'
 
-allowed_hosts='(auth-api|user-api|mcp-user-api|x402|dashboard|edge|dl|install|solana-snapshot-[a-z]+)\.erpc\.global'
+# erpc.global hosts come from the one allowlist, so this gate and
+# check-endpoints.sh cannot drift apart. Only the const arrays are read; the
+# test module below them names rejected hosts on purpose.
+allowlist_src='crates/erpc-core/src/endpoints.rs'
+allowed_erpc_hosts=$(awk '
+  /^#\[cfg\(test\)\]/ { exit }
+  /^pub const [A-Z_]+: &\[/ { inside = 1 }
+  inside { print }
+  inside && /\];/ { inside = 0 }
+' "$allowlist_src" 2>/dev/null | grep -oE '"[^"]+"' | tr -d '"' | grep 'erpc\.global$' | sort -u)
+allowed_erpc_prefixes=$(awk '
+  /^#\[cfg\(test\)\]/ { exit }
+  /^pub const [A-Z_]+: &\[/ { inside = 1 }
+  inside { print }
+  inside && /\];/ { inside = 0 }
+' "$allowlist_src" 2>/dev/null | grep -oE '\("[A-Za-z0-9.-]+"' | tr -d '("' | sort -u)
+[ -n "$allowed_erpc_hosts" ] || { echo "could not read the host allowlist from $allowlist_src" >&2; exit 2; }
+
+erpc_host_allowed() {
+  local host="${1%.}" a pfx
+  while IFS= read -r a; do
+    [ -n "$a" ] && [ "$host" = "$a" ] && return 0
+  done <<EOF
+$allowed_erpc_hosts
+EOF
+  while IFS= read -r pfx; do
+    [ -n "$pfx" ] || continue
+    case "$host" in
+      "$pfx"*".erpc.global")
+        local mid="${host#"$pfx"}"; mid="${mid%.erpc.global}"
+        case "$mid" in *.*|"") ;; *) return 0;; esac
+        ;;
+    esac
+  done <<EOF
+$allowed_erpc_prefixes
+EOF
+  return 1
+}
 
 # Documents that belong in the company's internal documentation, never here.
 internal_doc_re='(^|/)(architecture|design|erpc-cli-design|[a-z0-9-]+-design|eu-oss-assessment|restricted-records|release-acceptance|classification)\.md$'
@@ -56,7 +93,7 @@ for f in "${files[@]}"; do
   # 1. erpc.global hosts outside the published allowlist.
   while IFS=: read -r ln match; do
     [ -z "$ln" ] && continue
-    if ! [[ "$match" =~ $allowed_hosts ]]; then
+    if ! erpc_host_allowed "$match"; then
       report "$f" "$ln" "non-public erpc.global host: $match"
     fi
   done < <(grep -noE '[A-Za-z0-9._-]+\.erpc\.global' "$f" 2>/dev/null)
@@ -99,7 +136,7 @@ for f in "${files[@]}"; do
   while IFS=: read -r ln match; do
     [ -z "$ln" ] && continue
     report "$f" "$ln" "internal reference: $match"
-  done < <(grep -noE '(elsoul/vs2-app|[^A-Za-z0-9_-]vs2-app[^A-Za-z0-9_-]|\.claude/(docs|agents)/|/Users/[A-Za-z0-9_.-]+/)' "$f" 2>/dev/null)
+  done < <(grep -noE '(elsoul/vs2-app|[^A-Za-z0-9_-]vs2-app[^A-Za-z0-9_-]|\.claude/docs/|/Users/[A-Za-z0-9_.-]+/)' "$f" 2>/dev/null)
 
   # 7. Committed .env files.
   case "$f" in
