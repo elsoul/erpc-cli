@@ -24,10 +24,22 @@ code as authoritative if the two ever disagree.
   with one still carries the registrable domain as a literal, and that is the
   part that decides the destination. Only a host that is entirely one
   balanced expression is skipped, there being nothing to check. The matcher
-  looks at the authority only and never rewrites the line, so a URL cannot be
-  hidden inside another one on the same line; the script's header states the
-  bounds that guarantee it. One shape is not covered, and the header says so:
-  a backtick expression containing a space ends the match at the space.
+  looks at the authority only, so a URL cannot be hidden inside another one
+  on the same line; the script's header states the bounds that guarantee it.
+  Before matching, the line is normalised once, and only in the ways the
+  WHATWG URL Standard normalises its own input before parsing: ASCII tab and
+  CR are deleted, and `\` is accepted where `/` is expected after a scheme.
+  Those are not cosmetic. `ht<TAB>tps://host`, `https://declared<TAB>.other`
+  and `https:\\host` are live destinations to anything that fetches them, and
+  all three used to pass this gate without being looked at at all.
+  Two shapes are not covered, and the header says so: a backtick expression
+  containing a space ends the match at the space, and a colon not followed by
+  digits ends it too, so in `https://declared:x.other/` the host judged is
+  the part before the colon. No URL parser accepts a non-numeric port, so the
+  second of those is not a reachable destination. A guard over it was tried
+  and removed: its only unique catch was that unreachable shape, while it
+  also reported `url.strip_prefix("https://")` and a declared host followed
+  by ordinary punctuation in a comment.
   Some files are not scanned at all. That list is not copied here, because a
   copy drifts: run `scripts/check-endpoints.sh --print-exceptions`.
 - `erpc_core::endpoints::ensure_service_url` is the runtime helper callers
@@ -86,9 +98,11 @@ an instruction a reader will run.
 | `elsoul.nl` | `NOTICE` |
 
 Each row names a file that links the host today. Four hosts were removed from
-this list: every URL for them sits in a file the gate never scans (the licence
-texts, the generated third-party notices and the generated release workflow),
-so the grant bought nothing. A grant is not kept "in case".
+this list, for two different reasons, neither of them "we might need it".
+Two were linked only from files the gate never scans -- the licence texts and
+generated third-party notices for one, the generated release workflow for the
+other -- so the grant covered nothing it was asked to cover. The other two
+had no URL anywhere in the repository at all.
 
 This is a standing grant: once a host is here, a later change can turn a prose
 link into an install command without the gate objecting. Keep the list short,

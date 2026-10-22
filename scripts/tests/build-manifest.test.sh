@@ -156,5 +156,31 @@ case "$name_err" in
         "the name filter never fired; it said: $name_err";;
 esac
 
+# 6. A `]` inside a comment in the `targets` array must not end the count.
+# The array is read with awk, and the terminator used to test the raw line
+# while the counting used the comment-stripped one, so a commented `]`
+# stopped the count early and the script aborted the release with a target
+# mismatch. The fixture is the repository's own config with one comment line
+# inserted, so the expected count is unchanged by construction; a fourth
+# argument points the script at it.
+mkdir -p "$tmp/comment"
+make_artifacts "$tmp/comment"
+awk '
+  { print }
+  /^targets[[:space:]]*=[[:space:]]*\[/ && !done {
+    print "  # the 32-bit target [retired in 0.1] is kept here for reference"
+    done = 1
+  }
+' "$repo_root/dist-workspace.toml" > "$tmp/dist-comment.toml"
+grep -q 'retired in 0.1' "$tmp/dist-comment.toml" \
+  || bad "a ] inside a comment does not end the target count" \
+         "the fixture was not built; the targets array was not found"
+comment_err="$("$sh" "$script" "$tmp/comment" v1.2.3 abc123 "$tmp/dist-comment.toml" 2>&1 >/dev/null)"
+if [ -z "$comment_err" ]; then
+  ok "a ] inside a comment does not end the target count"
+else
+  bad "a ] inside a comment does not end the target count" "it said: $comment_err"
+fi
+
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

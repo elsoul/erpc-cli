@@ -148,7 +148,6 @@ jobs:
             artifacts/release-manifest.json.minisig
           if-no-files-found: error
 
-
   publish-crates:
     name: crates.io (trusted publishing)
     needs: [release-gate, sign]
