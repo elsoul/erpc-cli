@@ -38,27 +38,56 @@ impl From<Selection> for StoreReport {
 
 /// Reads the facts the store choice is made from.
 ///
-/// `op account list` is not run here: starting a subprocess to answer a
-/// question nobody asked would make `erpc --help` slower and could pop a
-/// biometric prompt. Presence of the binary is what this checks, and the
-/// first real use is what discovers whether the app answers.
+/// `probe_desktop` says whether to run `op account list`. It is false for
+/// anything that only wants to report, because starting a subprocess to
+/// answer a question nobody asked would slow every command down and could
+/// raise a biometric prompt; it is true when a session is about to be
+/// written and the answer decides where.
+///
+/// Without the probe `op_account_usable` stays false, so an installed `op`
+/// alone never selects the desktop store. The binary being on disk says
+/// nothing about whether the app is running, signed in, or has CLI
+/// integration switched on.
 #[must_use]
-pub fn detect_environment() -> Environment {
+pub fn detect_environment(probe_desktop: bool) -> Environment {
     let op_present = OpCli::discover().is_some();
     Environment {
         service_account_token: std::env::var_os("OP_SERVICE_ACCOUNT_TOKEN")
             .is_some_and(|v| !v.is_empty()),
         op_present,
-        op_account_usable: op_present,
+        op_account_usable: op_present && probe_desktop && desktop_app_answers(),
         keychain_available: cfg!(any(target_os = "macos", target_os = "windows"))
             || std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some(),
     }
 }
 
+/// Runs `op account list` and reports whether it succeeded.
+///
+/// The only thing that can establish that the desktop app is reachable.
+/// Any failure -- not installed, signed out, integration off, prompt
+/// dismissed -- is a no, and the caller falls through to the keychain.
+fn desktop_app_answers() -> bool {
+    let Some(path) = OpCli::discover() else {
+        return false;
+    };
+    std::process::Command::new(path)
+        .args(["account", "list", "--format", "json"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
 /// Chooses the store for this machine, honouring an explicit request.
+///
+/// `probe_desktop` is passed through to [`detect_environment`]. An explicit
+/// request skips the probe entirely: the operator has already decided, and
+/// a subprocess would only delay them.
 #[must_use]
 pub fn plan_store(requested: Option<StoreKind>) -> Selection {
-    choose(&detect_environment(), requested)
+    let probe_desktop = requested.is_none();
+    choose(&detect_environment(probe_desktop), requested)
 }
 
 /// Whether a person can be prompted right now.
@@ -90,6 +119,37 @@ mod tests {
     fn an_explicit_store_is_honoured_whatever_the_machine_has() {
         let selection = plan_store(Some(StoreKind::File));
         assert_eq!(selection.kind, StoreKind::File);
+    }
+
+    #[test]
+    fn an_installed_op_alone_does_not_select_the_desktop_store() {
+        // The binary being on disk says nothing about whether the app is
+        // running, signed in, or has CLI integration on. Without the probe
+        // the fact stays false and the choice falls through.
+        let env = Environment {
+            op_present: true,
+            op_account_usable: false,
+            keychain_available: true,
+            service_account_token: false,
+        };
+        let chosen = choose(&env, None);
+        assert_eq!(chosen.kind, StoreKind::OsKeychain);
+    }
+
+    #[test]
+    fn the_reason_for_falling_through_does_not_claim_the_app_answered() {
+        let env = Environment {
+            op_present: true,
+            op_account_usable: false,
+            keychain_available: true,
+            service_account_token: false,
+        };
+        let report: StoreReport = choose(&env, None).into();
+        assert!(
+            !report.reason.contains("answered") || report.reason.contains("did not answer"),
+            "a fall-through must not read as success: {}",
+            report.reason
+        );
     }
 
     #[test]

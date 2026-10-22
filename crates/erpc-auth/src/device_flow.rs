@@ -29,8 +29,13 @@ pub const MIN_INTERVAL: Duration = Duration::from_secs(5);
 /// How much `slow_down` adds to the interval, per RFC 8628 section 3.5.
 pub const SLOW_DOWN_STEP: Duration = Duration::from_secs(5);
 
-/// The longest the client will wait between polls after repeated network
-/// errors, so that a doubling backoff stays bounded.
+/// The longest wait this client will choose for itself.
+///
+/// A ceiling on the client's own backoff, never on what the server asked
+/// for. RFC 8628 section 3.5 says `slow_down` raises the interval by five
+/// seconds for this and every later request, so capping a server interval
+/// that is already above this would poll MORE often exactly when the
+/// server asked for less.
 pub const MAX_INTERVAL: Duration = Duration::from_secs(60);
 
 /// The client identifier `erpc` presents. A public client: it has no
@@ -148,6 +153,17 @@ pub struct Approved {
     pub expires_in: Duration,
 }
 
+/// The client's own backoff, bounded by [`MAX_INTERVAL`] and never below
+/// `current`.
+///
+/// Two bounds, both one-directional. The ceiling keeps a doubling backoff
+/// from running away; the floor keeps that ceiling from ever *reducing* an
+/// interval the server asked for, which would be backing off by polling
+/// more often.
+fn back_off(current: Duration, proposed: Duration) -> Duration {
+    proposed.min(MAX_INTERVAL).max(current)
+}
+
 impl Poller {
     /// Starts from what the authorization endpoint said.
     ///
@@ -207,7 +223,12 @@ impl Poller {
             }
             PollOutcome::SlowDown => {
                 self.consecutive_network_errors = 0;
-                self.interval = (self.interval + SLOW_DOWN_STEP).min(MAX_INTERVAL);
+                // Always +5, with no ceiling. This is the server asking
+                // for less traffic, and RFC 8628 section 3.5 says the
+                // increase applies to this and every later request. A cap
+                // here would poll more often than before the signal
+                // whenever the server's interval is already above it.
+                self.interval = self.interval.saturating_add(SLOW_DOWN_STEP);
                 self.advance()
             }
             PollOutcome::NetworkError => {
@@ -215,7 +236,7 @@ impl Poller {
                 // Double, rather than retry at once: a connection that is
                 // down stays down for a while, and hammering it is both
                 // useless and noisy.
-                self.interval = (self.interval * 2).min(MAX_INTERVAL);
+                self.interval = back_off(self.interval, self.interval.saturating_mul(2));
                 self.advance()
             }
         }
@@ -350,6 +371,29 @@ mod tests {
         assert_eq!(
             poller.next_wait(PollOutcome::NetworkError),
             Next::Wait(Duration::from_secs(20))
+        );
+    }
+
+    #[test]
+    fn slow_down_never_lowers_a_server_interval_above_the_cap() {
+        // A server asking for 90 seconds and then sending slow_down is
+        // asking for less traffic, not more. Capping at 60 here would
+        // poll half again as often as it did before the signal.
+        let mut poller = Poller::new(&auth(90, 86_400));
+        assert_eq!(poller.interval(), Duration::from_secs(90));
+        let next = poller.next_wait(PollOutcome::SlowDown);
+        assert_eq!(next, Next::Wait(Duration::from_secs(95)));
+        assert_eq!(poller.interval(), Duration::from_secs(95));
+    }
+
+    #[test]
+    fn a_network_error_does_not_lower_a_server_interval_above_the_cap_either() {
+        let mut poller = Poller::new(&auth(90, 86_400));
+        let _ = poller.next_wait(PollOutcome::NetworkError);
+        assert!(
+            poller.interval() >= Duration::from_secs(90),
+            "backing off must not become backing on: {:?}",
+            poller.interval()
         );
     }
 

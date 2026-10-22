@@ -24,7 +24,12 @@ pub struct Environment {
     pub service_account_token: bool,
     /// `op` was found at an absolute path.
     pub op_present: bool,
-    /// `op account list` succeeded, so the desktop app is reachable.
+    /// `op account list` succeeded, so the desktop app really answered.
+    ///
+    /// Only ever set by running that command. A caller that has not run it
+    /// leaves this false, and the choice then falls through to the
+    /// keychain rather than sending a session to an app that may be signed
+    /// out, have integration switched off, or not be running at all.
     pub op_account_usable: bool,
     /// An OS keychain is available on this machine.
     pub keychain_available: bool,
@@ -67,9 +72,12 @@ impl core::fmt::Display for Reason {
                 "OP_SERVICE_ACCOUNT_TOKEN is set, so this is treated as a headless context"
             }
             Self::OnePasswordDesktopReachable => {
-                "op is installed and the 1Password app answered, so the desktop app holds the session"
+                "op is installed and `op account list` answered, so the desktop app holds the \
+                 session"
             }
-            Self::NoOpSoKeychain => "op is not usable here, so the OS keychain holds the session",
+            Self::NoOpSoKeychain => {
+                "the 1Password desktop app did not answer, so the OS keychain holds the session"
+            }
             Self::NothingElseAvailable => {
                 "neither op nor an OS keychain is available, so the session goes to a file on disk"
             }

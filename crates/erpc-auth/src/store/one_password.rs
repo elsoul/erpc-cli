@@ -31,7 +31,7 @@ use super::{CredentialStore, StoreError, StoreKind};
 use crate::credential::{CredKey, Credential, STORE_VERSION};
 
 /// The 1Password item category sessions are stored under.
-pub const ITEM_CATEGORY: &str = "API Credential";
+pub const ITEM_CATEGORY: &str = "API_CREDENTIAL";
 
 /// The field names inside the item.
 mod field {
@@ -298,6 +298,48 @@ impl<R: OpRunner> OnePassword<R> {
         )
     }
 
+    /// The JSON document `op` is given on stdin.
+    ///
+    /// Built here rather than formatted into arguments so that no token
+    /// ever appears in a process listing.
+    fn template(title: &str, cred: &Credential) -> Result<String, StoreError> {
+        let doc = serde_json::json!({
+            "title": title,
+            "category": "API_CREDENTIAL",
+            "fields": [
+                {
+                    "id": field::ACCESS,
+                    "label": field::ACCESS,
+                    "type": "CONCEALED",
+                    "value": cred.access_token.expose_secret(),
+                },
+                {
+                    "id": field::REFRESH,
+                    "label": field::REFRESH,
+                    "type": "CONCEALED",
+                    "value": cred.refresh_token.expose_secret(),
+                },
+                {
+                    "id": field::EXPIRES_AT,
+                    "label": field::EXPIRES_AT,
+                    "type": "STRING",
+                    "value": cred.expires_at.to_string(),
+                },
+                {
+                    "id": field::STORE_VERSION,
+                    "label": field::STORE_VERSION,
+                    "type": "STRING",
+                    "value": STORE_VERSION.to_string(),
+                },
+            ],
+        });
+        serde_json::to_string(&doc).map_err(|e| StoreError::Backend {
+            kind: StoreKind::OnePasswordDesktop,
+            operation: "build the item template",
+            reason: e.to_string(),
+        })
+    }
+
     fn backend(&self, operation: &'static str, reason: String) -> StoreError {
         StoreError::Backend {
             kind: self.mode.kind(),
@@ -395,27 +437,20 @@ impl<R: OpRunner> CredentialStore for OnePassword<R> {
 
     fn save(&self, key: &CredKey, cred: &Credential) -> Result<(), StoreError> {
         let title = self.item_title(key);
-        let access = format!("{}={}", field::ACCESS, cred.access_token.expose_secret());
-        let refresh = format!("{}={}", field::REFRESH, cred.refresh_token.expose_secret());
-        let expires = format!("{}={}", field::EXPIRES_AT, cred.expires_at);
-        let version = format!("{}={}", field::STORE_VERSION, STORE_VERSION);
+        let template = Self::template(&title, cred)?;
 
-        // Edit first. `op item edit` replaces the fields in one call, which
-        // is the atomic replacement the trait promises; create would leave
-        // a second item with the same title.
+        // The template goes in on stdin, never in argv. `op` says so
+        // itself -- "Command arguments can be visible to other processes
+        // on your machine. For sensitive values, use a template instead" --
+        // and a refresh token sitting in a process listing is outside the
+        // vault boundary this store exists to keep it inside.
+        //
+        // Edit first: it replaces the fields of the existing item in one
+        // call, which is the atomic replacement the trait promises. Create
+        // would leave a second item with the same title.
         let edit = self.runner.run(
-            &[
-                "item",
-                "edit",
-                &title,
-                "--vault",
-                &self.vault,
-                &access,
-                &refresh,
-                &expires,
-                &version,
-            ],
-            None,
+            &["item", "edit", &title, "--vault", &self.vault],
+            Some(&template),
         )?;
         if edit.success {
             return Ok(());
@@ -425,21 +460,8 @@ impl<R: OpRunner> CredentialStore for OnePassword<R> {
         }
 
         let create = self.runner.run(
-            &[
-                "item",
-                "create",
-                "--category",
-                ITEM_CATEGORY,
-                "--title",
-                &title,
-                "--vault",
-                &self.vault,
-                &access,
-                &refresh,
-                &expires,
-                &version,
-            ],
-            None,
+            &["item", "create", "-", "--vault", &self.vault],
+            Some(&template),
         )?;
         if create.success {
             Ok(())
@@ -480,6 +502,7 @@ mod tests {
     /// Records the commands it is given and replies from a script.
     struct FakeOp {
         calls: RefCell<Vec<Vec<String>>>,
+        stdins: RefCell<Vec<Option<String>>>,
         replies: RefCell<Vec<OpOutput>>,
     }
 
@@ -487,19 +510,24 @@ mod tests {
         fn new(replies: Vec<OpOutput>) -> Self {
             Self {
                 calls: RefCell::new(Vec::new()),
+                stdins: RefCell::new(Vec::new()),
                 replies: RefCell::new(replies),
             }
         }
         fn calls(&self) -> Vec<Vec<String>> {
             self.calls.borrow().clone()
         }
+        fn stdins(&self) -> Vec<Option<String>> {
+            self.stdins.borrow().clone()
+        }
     }
 
     impl OpRunner for &FakeOp {
-        fn run(&self, args: &[&str], _stdin: Option<&str>) -> Result<OpOutput, StoreError> {
+        fn run(&self, args: &[&str], stdin: Option<&str>) -> Result<OpOutput, StoreError> {
             self.calls
                 .borrow_mut()
                 .push(args.iter().map(|s| (*s).to_owned()).collect());
+            self.stdins.borrow_mut().push(stdin.map(ToOwned::to_owned));
             let mut replies = self.replies.borrow_mut();
             if replies.is_empty() {
                 Ok(OpOutput {
@@ -623,47 +651,81 @@ mod tests {
         assert!(matches!(store.load(&key()), Err(StoreError::Corrupt(_))));
     }
 
+    const ACCESS: &str = "access.token.secret";
+    const REFRESH: &str = "refresh.token.secret";
+
+    fn session() -> Credential {
+        Credential {
+            access_token: SecretString::from(ACCESS),
+            refresh_token: SecretString::from(REFRESH),
+            expires_at: 1_700_000_000,
+        }
+    }
+
+    /// Fails if either token appears anywhere in any argument vector.
+    fn assert_no_token_in_argv(fake: &FakeOp) {
+        for call in fake.calls() {
+            for arg in &call {
+                assert!(
+                    !arg.contains(ACCESS) && !arg.contains(REFRESH),
+                    "a token reached op's argv, where a process listing can read it: {arg}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn saving_edits_an_existing_item_in_one_call() {
         let fake = FakeOp::new(vec![ok("")]);
         let store = OnePassword::new(&fake, Mode::Desktop, VAULT, "mac-001");
-        store
-            .save(
-                &key(),
-                &Credential {
-                    access_token: SecretString::from("a.b.c"),
-                    refresh_token: SecretString::from("d.e.f"),
-                    expires_at: 7,
-                },
-            )
-            .expect("save");
+        store.save(&key(), &session()).expect("save");
 
         let calls = store_calls(&fake);
         assert_eq!(calls.len(), 1, "an edit should not be followed by a create");
         assert_eq!(calls[0][1], "edit");
-        assert!(calls[0].iter().any(|a| a == "access_token=a.b.c"));
-        assert!(calls[0].iter().any(|a| a == "store_version=1"));
+        assert_no_token_in_argv(&fake);
+
+        let body = fake.stdins()[0]
+            .clone()
+            .expect("the template goes in on stdin");
+        assert!(body.contains(ACCESS), "the template carries the session");
+        assert!(body.contains("CONCEALED"), "the token fields are concealed");
+        assert!(body.contains("store_version"));
     }
 
     #[test]
     fn saving_creates_the_item_when_there_is_none() {
         let fake = FakeOp::new(vec![missing(), ok("")]);
         let store = OnePassword::new(&fake, Mode::Desktop, VAULT, "mac-001");
-        store
-            .save(
-                &key(),
-                &Credential {
-                    access_token: SecretString::from("a.b.c"),
-                    refresh_token: SecretString::from("d.e.f"),
-                    expires_at: 7,
-                },
-            )
-            .expect("save");
+        store.save(&key(), &session()).expect("save");
 
         let calls = store_calls(&fake);
         assert_eq!(calls.len(), 2);
         assert_eq!(calls[1][1], "create");
-        assert!(calls[1].iter().any(|a| a == "API Credential"));
+        assert!(
+            calls[1].iter().any(|a| a == "-"),
+            "create reads the template from stdin"
+        );
+        assert_no_token_in_argv(&fake);
+        assert!(
+            fake.stdins()[1]
+                .as_deref()
+                .is_some_and(|b| b.contains(REFRESH))
+        );
+    }
+
+    #[test]
+    fn neither_token_ever_reaches_a_process_listing() {
+        // `op` warns about this itself: "Command arguments can be visible
+        // to other processes on your machine. For sensitive values, use a
+        // template instead." A refresh token in argv is outside the vault
+        // boundary this store exists to keep it inside.
+        for replies in [vec![ok("")], vec![missing(), ok("")]] {
+            let fake = FakeOp::new(replies);
+            let store = OnePassword::new(&fake, Mode::Desktop, VAULT, "mac-001");
+            store.save(&key(), &session()).expect("save");
+            assert_no_token_in_argv(&fake);
+        }
     }
 
     #[test]
