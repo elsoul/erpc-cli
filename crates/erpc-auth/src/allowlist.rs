@@ -17,8 +17,8 @@
 //! issuer and the API, so both of its tokens go there.
 //!
 //! `docs/public-hosts.md` restates this per host. A test below pins that
-//! whole page by its SHA-256, so it cannot change in any way without the
-//! test changing in the same diff. Another reads the row of every host a
+//! whole page by its SHA-256, line endings aside, so it cannot change in
+//! any other way without the test changing in the same diff. Another reads the row of every host a
 //! token goes to from the page and compares it with a pinned sentence, and
 //! a third requires those hosts to be exactly the issuers and destinations
 //! here. Whether a pinned sentence is true is for the reader of the diff
@@ -414,7 +414,7 @@ mod tests {
     /// The SHA-256 of `docs/public-hosts.md`, with CRLF read as LF so a
     /// Windows checkout hashes the same.
     ///
-    /// The whole page, byte for byte. Four rounds of review each found a
+    /// The whole page, byte for byte apart from line endings. Four rounds of review each found a
     /// way to change what the page shows -- a row in a form the check did
     /// not parse, a table with no pipes, a "blank" line GitHub does not
     /// think is blank, the table hidden in a comment -- because each check
@@ -510,11 +510,13 @@ mod tests {
     }
 
     #[test]
-    fn a_page_read_with_crlf_is_the_same_page() {
-        assert_eq!(
-            page_errors(&PAGE.replace('\n', "\r\n")),
-            Vec::<String>::new()
-        );
+    fn a_page_read_with_either_line_ending_is_the_same_page() {
+        // Built from the LF form, because the checkout this runs on may
+        // already be CRLF -- Windows is -- and adding a second CR would
+        // test something else.
+        let lf = PAGE.replace("\r\n", "\n");
+        assert_eq!(page_errors(&lf), Vec::<String>::new());
+        assert_eq!(page_errors(&lf.replace('\n', "\r\n")), Vec::<String>::new());
     }
 
     #[test]
