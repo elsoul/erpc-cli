@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Dependency updates. The 14-day cooldown enforces the project rule that a new
+# release must be public for at least 14 days before it enters the lockfile
+# (CONTRIBUTING.md), which also blunts fresh supply-chain compromises.
+
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 14
+    open-pull-requests-limit: 5
+    groups:
+      cargo-minor:
+        update-types: ["minor", "patch"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 14
+  - package-ecosystem: npm
+    directory: /installer
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 14

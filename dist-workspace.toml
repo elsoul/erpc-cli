@@ -1,0 +1,49 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+#
+# cargo-dist configuration. `dist generate` produces .github/workflows/release.yml.
+# Release verification is documented in docs/verify-release.md.
+
+[workspace]
+members = ["cargo:."]
+
+[dist]
+cargo-dist-version = "0.32.0"
+ci = "github"
+# Five release targets: static musl on Linux (rustls, no OpenSSL).
+targets = [
+  "x86_64-unknown-linux-musl",
+  "aarch64-unknown-linux-musl",
+  "x86_64-apple-darwin",
+  "aarch64-apple-darwin",
+  "x86_64-pc-windows-msvc",
+]
+# Homebrew is added once the tap repository exists.
+installers = ["shell", "powershell"]
+install-path = ["$ERPC_INSTALL_DIR/bin", "~/.erpc/bin"]
+install-updater = false
+checksum = "sha256"
+cargo-auditable = true
+cargo-cyclonedx = true
+github-attestations = true
+# GitHub Releases (immutable) first, R2 mirror as fallback. Only shell/powershell installers fall back.
+hosting = ["github", "simple"]
+simple-download-url = "https://dl.erpc.global/{tag}"
+# One custom publish workflow (.github/workflows/release-publish.yml) runs, in order:
+# release-gate -> rebuild-compare -> sign (environment `release`, human approval) -> upload-r2 -> publish-crates.
+# The GitHub Release itself is created in the `announce` phase, i.e. only after all of that succeeded.
+publish-jobs = ["./release-publish"]
+github-custom-job-permissions = { "release-publish" = { id-token = "write", contents = "read" } }
+github-release = "announce"
+msvc-crt-static = true
+create-release = true
+pr-run-mode = "plan"
+# Keep the `dist` cargo profile defined in Cargo.toml.
+precise-builds = false
+
+# Pin the actions in the generated release.yml to commit SHAs (scripts/pin-actions.sh prints them).
+[dist.github-action-commits]
+"actions/checkout" = "d23441a48e516b6c34aea4fa41551a30e30af803"            # v6
+"actions/upload-artifact" = "cf430e030ddbb5b0abf93d22962f4752f3646cd9"     # v7
+"actions/download-artifact" = "9000827ccba6bdab643e8b6fd33ac0654aef8333"   # v8
+"actions/attest" = "1e69f48acb82d1966a394da916b4c1698aa569d6"              # v4

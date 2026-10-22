@@ -1,0 +1,9 @@
+{
+  "//": "The tests run under `node --test` with type stripping, so they may use Node built-ins and import the worker source by its .ts path.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["@cloudflare/workers-types", "node"],
+    "allowImportingTsExtensions": true
+  },
+  "include": ["src/**/*.ts"]
+}

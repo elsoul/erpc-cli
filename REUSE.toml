@@ -1,0 +1,13 @@
+version = 1
+SPDX-PackageName = "erpc-cli"
+SPDX-PackageSupplier = "ELSOUL LABO B.V. <oss@elsoul.nl>"
+SPDX-PackageDownloadLocation = "https://github.com/elsoul/erpc-cli"
+
+# Files that cannot carry a header (lockfiles, JSON, assets, generated workflows)
+# are covered here. Source files carry their own SPDX headers; this aggregate
+# annotation keeps the project compliant if a header is ever missed.
+[[annotations]]
+path = ["**"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 ELSOUL LABO B.V."
+SPDX-License-Identifier = "Apache-2.0"

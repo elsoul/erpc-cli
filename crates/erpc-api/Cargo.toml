@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "erpc-api"
+description = "Typed client for the public ERPC user API used by the erpc CLI"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+publish = true
+
+[dependencies]
+
+[lints]
+workspace = true

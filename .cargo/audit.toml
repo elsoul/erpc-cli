@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+[advisories]
+# Every entry needs a dated reason, e.g.
+# ignore = ["RUSTSEC-0000-0000"]  # 2026-10-22: reason
+ignore = []
+informational_warnings = ["unmaintained", "unsound", "notice"]
+
+[output]
+deny = ["warnings", "unmaintained", "unsound", "yanked"]
+quiet = false
+
+[yanked]
+enabled = true
+update_index = true

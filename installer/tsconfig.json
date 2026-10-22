@@ -1,0 +1,14 @@
+{
+  "//": "The worker itself. Node types are deliberately absent so that a Node API cannot be used by accident in code that runs on Workers; the tests use tsconfig.test.json.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022"],
+    "types": ["@cloudflare/workers-types"],
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true
+  },
+  "include": ["src/index.ts"]
+}

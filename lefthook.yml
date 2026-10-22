@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Install with `lefthook install`. Requires gitleaks and cargo on PATH.
+# Never bypass these with `git commit --no-verify`; if a rule is wrong, change
+# the rule in the same commit. See docs/secret-exposure-response.md.
+
+pre-commit:
+  parallel: true
+  commands:
+    gitleaks:
+      run: gitleaks protect --staged --redact --config .gitleaks.toml
+    oss-hygiene:
+      glob: "*"
+      run: scripts/check-oss-hygiene.sh {staged_files}
+    endpoints:
+      glob: "*"
+      run: scripts/check-endpoints.sh {staged_files}
+    fmt:
+      glob: "*.rs"
+      run: cargo fmt --all -- --check
+
+pre-push:
+  parallel: true
+  commands:
+    gitleaks-history:
+      run: gitleaks git --redact --config .gitleaks.toml .
+    oss-hygiene-all:
+      run: scripts/check-oss-hygiene.sh
+    endpoints-all:
+      run: scripts/check-endpoints.sh
+    gate-self-tests:
+      run: scripts/tests/check-oss-hygiene.test.sh && scripts/tests/check-endpoints.test.sh && scripts/tests/build-manifest.test.sh
+    installer-tests:
+      run: cd installer && npm test
+    clippy:
+      run: cargo clippy --workspace --all-targets -- -D warnings
+    test:
+      run: cargo test --workspace

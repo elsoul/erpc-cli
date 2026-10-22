@@ -1,0 +1,208 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Custom publish workflow called by the cargo-dist generated release.yml
+# (publish-jobs = ["./release-publish"]). It runs after dist built and
+# attested the artifacts and BEFORE the GitHub Release is created (announce).
+#
+#   release-gate -> rebuild-compare -> sign (env `release`) -> upload-r2 -> publish-crates
+#
+# Secrets (GitHub environment `release`, values held by ELSOUL LABO B.V.):
+#   MINISIGN_SECRET_KEY, MINISIGN_PASSWORD      minisign signing key
+#   R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ENDPOINT   bucket-scoped, write-only token
+# crates.io uses Trusted Publishing (OIDC): no token.
+
+name: release-publish
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        description: dist plan JSON
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: "1.98.0"
+
+jobs:
+  release-gate:
+    name: release gate
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
+      commit: ${{ steps.meta.outputs.commit }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: meta
+        name: tag == Cargo version, commit on main, CHANGELOG entry
+        env:
+          PLAN: ${{ inputs.plan }}
+        run: |
+          set -euo pipefail
+          tag=$(jq -r '.announcement_tag' <<<"$PLAN")
+          version="${tag#v}"
+          cargo_version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name=="erpc") | .version')
+          [ "$version" = "$cargo_version" ] || { echo "tag $tag != Cargo version $cargo_version"; exit 1; }
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "release commit is not on main"; exit 1; }
+          grep -q "^## \[$version\]" CHANGELOG.md || { echo "CHANGELOG.md has no entry for $version"; exit 1; }
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "commit=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: 1.98.0
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
+        with:
+          command: check
+          rust-version: 1.98.0
+      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2
+        with:
+          tool: cargo-audit
+      - run: cargo audit --deny warnings
+
+  rebuild-compare:
+    name: rebuild and compare (${{ matrix.target }})
+    needs: release-gate
+    strategy:
+      fail-fast: true
+      matrix:
+        target: [x86_64-unknown-linux-musl, aarch64-unknown-linux-musl]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: artifacts-*
+          path: artifacts
+          merge-multiple: true
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: 1.98.0
+          targets: ${{ matrix.target }}
+      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2
+        with:
+          tool: cargo-dist@0.32.0,cargo-auditable,cargo-zigbuild
+      - name: independent rebuild with fixed SOURCE_DATE_EPOCH
+        env:
+          SOURCE_DATE_EPOCH: "0"
+        run: |
+          set -euo pipefail
+          dist build --artifacts=local --target ${{ matrix.target }} --output-format=json > rebuild.json
+          rebuilt=$(jq -r '.artifacts | to_entries[] | select(.value.kind=="executable-zip") | .value.path' rebuild.json | head -1)
+          [ -n "$rebuilt" ] && [ -f "$rebuilt" ] || { echo "rebuild produced no archive"; exit 1; }
+          orig="artifacts/$(basename "$rebuilt")"
+          [ -f "$orig" ] || { echo "no published archive to compare against: $orig"; exit 1; }
+          mkdir -p a b
+          tar -C a -xf "$orig"; tar -C b -xf "$rebuilt"
+          # `find` exits 0 when it matches nothing, so an empty result would
+          # otherwise compare "" with "" and report a successful check.
+          na=$(find a -type f -name erpc | wc -l | tr -d ' ')
+          nb=$(find b -type f -name erpc | wc -l | tr -d ' ')
+          [ "$na" = "1" ] && [ "$nb" = "1" ] || { echo "expected exactly one erpc binary per archive, found $na and $nb"; exit 1; }
+          ha=$(find a -type f -name erpc -exec sha256sum {} \; | cut -d' ' -f1)
+          hb=$(find b -type f -name erpc -exec sha256sum {} \; | cut -d' ' -f1)
+          [ -n "$ha" ] && [ -n "$hb" ] || { echo "could not hash one of the binaries"; exit 1; }
+          echo "original: $ha"; echo "rebuilt:  $hb"
+          [ "$ha" = "$hb" ] || { echo "binary hash mismatch for ${{ matrix.target }}"; exit 1; }
+
+  sign:
+    name: manifest + sign (approval)
+    needs: [release-gate, rebuild-compare]
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: artifacts-*
+          path: artifacts
+          merge-multiple: true
+      - run: sudo apt-get update -q && sudo apt-get install -y -q minisign jq
+      - name: build and sign release-manifest.json and latest.json
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+          TAG: ${{ needs.release-gate.outputs.tag }}
+          COMMIT: ${{ needs.release-gate.outputs.commit }}
+        run: |
+          set -euo pipefail
+          scripts/release/build-manifest.sh artifacts "$TAG" "$COMMIT" > artifacts/release-manifest.json
+          msum=$(sha256sum artifacts/release-manifest.json | cut -d' ' -f1)
+          now=$(date -u +%Y-%m-%dT%H:%M:%SZ); exp=$(date -u -d '+14 days' +%Y-%m-%dT%H:%M:%SZ)
+          jq -n --arg v "${TAG#v}" --arg t "$TAG" --arg m "$msum" --arg i "$now" --arg e "$exp" \
+            '{schema:1, version:$v, tag:$t, manifest_sha256:$m, issued_at:$i, expires_at:$e}' > artifacts/latest.json
+          scripts/release/sign-manifest.sh artifacts/release-manifest.json artifacts/latest.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: signed-manifest
+          path: |
+            artifacts/release-manifest.json
+            artifacts/release-manifest.json.minisig
+            artifacts/latest.json
+            artifacts/latest.json.minisig
+          if-no-files-found: error
+
+  upload-r2:
+    name: mirror to dl.erpc.global
+    needs: [release-gate, sign]
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: artifacts-*
+          path: artifacts
+          merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: signed-manifest
+          path: artifacts
+      - name: upload to R2 (bucket-scoped write-only token)
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          TAG: ${{ needs.release-gate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          aws s3 cp artifacts/ "s3://erpc-dl/$TAG/" --recursive --endpoint-url "$R2_ENDPOINT" --only-show-errors
+          # latest.json is only advanced for stable releases.
+          case "$TAG" in *-*) echo "prerelease: not advancing latest.json";; *)
+            aws s3 cp artifacts/latest.json "s3://erpc-dl/latest.json" --endpoint-url "$R2_ENDPOINT" --cache-control "max-age=300"
+            aws s3 cp artifacts/latest.json.minisig "s3://erpc-dl/latest.json.minisig" --endpoint-url "$R2_ENDPOINT" --cache-control "max-age=300";;
+          esac
+
+  publish-crates:
+    name: crates.io (trusted publishing)
+    needs: [release-gate, sign]
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: 1.98.0
+      - uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1
+        id: auth
+      - run: cargo publish --workspace --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}

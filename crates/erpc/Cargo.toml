@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "erpc"
+description = "ERPC command line: multi-chain node operations, account, AI assistant and credits for erpc.global"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords = ["erpc", "solana", "ethereum", "validator", "cli"]
+categories = ["command-line-utilities"]
+readme = "../../README.md"
+publish = true
+
+[[bin]]
+name = "erpc"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+erpc-core.workspace = true
+
+[lints]
+workspace = true
+
+# cargo-binstall: fetch prebuilt archives from GitHub Releases (cargo-dist layout).
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }{ archive-suffix }"
+bin-dir = "{ name }-{ target }/{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"

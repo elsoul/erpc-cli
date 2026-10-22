@@ -1,0 +1,20 @@
+{
+  "name": "erpc-installer-worker",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Cloudflare Worker serving the erpc installer at install.erpc.global",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
+    "test": "node --test 'src/**/*.test.ts'"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261022.1",
+    "@types/node": "^26.6.5",
+    "typescript": "^5.9.3",
+    "wrangler": "^4.151.3"
+  }
+}

@@ -1,0 +1,121 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+#
+# gitleaks configuration: the default ruleset (AWS, GCP, GitHub, Stripe, Slack,
+# generic private-key blocks, ...) plus rules for the credential shapes this
+# project actually handles: blockchain key material, Cloudflare tokens,
+# 1Password and ERPC credentials.
+#
+# Regexes are Go RE2: no lookaround, no backreferences.
+# Run locally:  gitleaks git --redact --config .gitleaks.toml .
+
+title = "erpc-cli"
+
+[extend]
+useDefault = true
+
+# --- Blockchain key material ------------------------------------------------
+
+[[rules]]
+id = "solana-keypair-json"
+description = "Solana keypair as a 64-byte JSON array"
+regex = '''\[(?:[[:space:]]*(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])[[:space:]]*,){63}[[:space:]]*(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])[[:space:]]*\]'''
+keywords = ["["]
+
+[[rules]]
+id = "blockchain-private-key-hex"
+description = "Ed25519/secp256k1 private key in hex, with a key-ish label"
+regex = '''(?i)(?:priv(?:ate)?[_-]?key|secret[_-]?key|signing[_-]?key|keypair)["'[:space:]]{0,10}[:=][[:space:]]*["']?(?:0x)?[0-9a-f]{64}'''
+keywords = ["privatekey", "private_key", "private-key", "privkey", "secretkey", "secret_key", "signingkey", "keypair"]
+
+[[rules]]
+id = "blockchain-private-key-base58"
+description = "Solana/Sui private key in base58 (87-88 chars), with a key-ish label"
+regex = '''(?i)(?:priv(?:ate)?[_-]?key|secret[_-]?key|keypair)["'[:space:]]{0,10}[:=][[:space:]]*["']?[1-9A-HJ-NP-Za-km-z]{87,88}'''
+keywords = ["privatekey", "private_key", "private-key", "privkey", "secretkey", "secret_key", "keypair"]
+
+[[rules]]
+id = "bip39-mnemonic"
+description = "BIP-39 mnemonic / seed phrase"
+regex = '''(?i)(?:mnemonic|seed[_-]?phrase|recovery[_-]?phrase|secret[_-]?recovery)["'[:space:]]{0,10}[:=][[:space:]]*["']?(?:[a-z]{3,8}[[:space:]]+){11,23}[a-z]{3,8}'''
+keywords = ["mnemonic", "seed phrase", "seed_phrase", "recovery phrase", "recovery_phrase"]
+
+[[rules]]
+id = "ethereum-keystore-json"
+description = "Web3 Secret Storage (keystore) JSON"
+regex = '''"crypto"[[:space:]]*:[[:space:]]*\{[^}]{0,200}"ciphertext"'''
+keywords = ["ciphertext"]
+
+# --- Cloud and platform credentials ----------------------------------------
+
+[[rules]]
+id = "cloudflare-api-token"
+description = "Cloudflare API token"
+regex = '''(?i)cloudflare[^\n]{0,40}["'][A-Za-z0-9_-]{40}["']'''
+keywords = ["cloudflare"]
+
+[[rules]]
+id = "cloudflare-global-api-key"
+description = "Cloudflare global API key"
+regex = '''(?i)cloudflare[^\n]{0,40}["'][0-9a-f]{37}["']'''
+keywords = ["cloudflare"]
+
+[[rules]]
+id = "r2-s3-secret-access-key"
+description = "R2/S3 secret access key assignment"
+regex = '''(?i)(?:r2|aws)?_?secret_access_key["'[:space:]]{0,10}[:=][[:space:]]*["']?[A-Za-z0-9/+=]{40,}'''
+keywords = ["secret_access_key"]
+
+[[rules]]
+id = "gcp-service-account-json"
+description = "GCP service account key file"
+regex = '''"type"[[:space:]]*:[[:space:]]*"service_account"'''
+keywords = ["service_account"]
+
+# --- Project credentials ----------------------------------------------------
+
+[[rules]]
+id = "onepassword-service-account-token"
+description = "1Password service account token"
+regex = '''ops_[A-Za-z0-9_-]{40,}'''
+keywords = ["ops_"]
+
+[[rules]]
+id = "minisign-secret-key"
+description = "minisign secret key block"
+regex = '''untrusted comment: minisign encrypted secret key'''
+keywords = ["minisign encrypted secret key"]
+
+[[rules]]
+id = "erpc-storage-access-key"
+description = "ERPC storage access key id"
+regex = '''erpcsk_[a-z2-7]{16}'''
+keywords = ["erpcsk_"]
+
+[[rules]]
+id = "crates-io-token"
+description = "crates.io API token"
+regex = '''cio[A-Za-z0-9]{32,}'''
+keywords = ["cio"]
+
+[allowlist]
+description = "Public material, pointers and the detection patterns themselves"
+paths = [
+  '''LICENSES/.*''',
+  '''crates/erpc-release/pubkey\.txt''',
+  # These files quote the patterns on purpose. The exemption names the two
+  # self-test scripts rather than their directory, so a file dropped into
+  # scripts/tests/ is still scanned.
+  '''\.gitleaks\.toml''',
+  '''scripts/check-oss-hygiene\.sh''',
+  '''scripts/tests/check-oss-hygiene\.test\.sh''',
+  '''scripts/tests/check-endpoints\.test\.sh''',
+  '''docs/secret-exposure-response\.md''',
+]
+regexes = [
+  # op:// secret references are pointers, not secrets.
+  '''op://[A-Za-z0-9]{26}/[A-Za-z0-9]{26}/[A-Za-z0-9_-]+''',
+  # Published contract addresses are public constants, not keys.
+  '''0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913''',
+  '''0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42''',
+]

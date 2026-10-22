@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Cloudflare Worker serving https://install.erpc.global
+# Deploy from the `release` environment only (installer-worker.yml). The
+# Cloudflare account/zone are bound at deploy time through wrangler's
+# CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN environment, never committed.
+
+name = "erpc-installer"
+main = "src/index.ts"
+compatibility_date = "2026-10-01"
+workers_dev = false
+
+routes = [
+  { pattern = "install.erpc.global", custom_domain = true },
+]
+
+[vars]
+# GitHub Releases is the only source this worker serves from; see src/index.ts.
+GITHUB_REPO = "elsoul/erpc-cli"
+
+[observability]
+enabled = true
