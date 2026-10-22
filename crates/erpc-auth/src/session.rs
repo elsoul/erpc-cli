@@ -343,8 +343,10 @@ mod tests {
 
     use std::cell::Cell;
 
+    use super::current_session;
     use crate::credential::{CredKey, Credential};
-    use crate::lock::{clear_parked, park_credential, read_parked};
+    use crate::http::AuthClient;
+    use crate::lock::{park_credential, read_parked};
     use crate::store::{CredentialStore, StoreError, StoreKind};
     use secrecy::SecretString;
 
@@ -406,8 +408,12 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_recovery_that_cannot_store_keeps_the_parked_file() {
+    /// A time far enough ahead that `needs_refresh` is false, so
+    /// `current_session` returns before it would build a request.
+    const NOW: i64 = 1_600_000_000;
+
+    #[tokio::test]
+    async fn a_recovery_that_cannot_store_keeps_the_parked_file() {
         // The condition that created the file is the store refusing a
         // write, and it is usually still true when the recovery runs.
         // Clearing before the save destroyed the only copy of a token
@@ -418,12 +424,16 @@ mod tests {
 
         let store = FlakyStore::new();
         store.refuse_saves.set(true);
-        assert!(store.save(&key(), &cred("x")).is_err());
+        let client = AuthClient::new().expect("a client");
 
-        // The recovery's own shape, without the network: read, try to
-        // save, and on failure leave the file alone.
-        let parked = read_parked(&at).expect("read").expect("present");
-        assert!(store.save(&key(), &parked).is_err());
+        // The real function. An earlier version of this test wrote the
+        // sequence out by hand and stayed green with the fix reverted,
+        // which is not evidence of anything.
+        let outcome = current_session(&client, &store, &key(), dir.path(), NOW).await;
+        assert!(
+            outcome.is_err(),
+            "the store refused, so this cannot succeed"
+        );
         assert!(
             at.exists(),
             "a failed save must leave the only copy where it is"
@@ -431,14 +441,16 @@ mod tests {
 
         // Once the store works, the recovery completes and clears it.
         store.refuse_saves.set(false);
-        store.save(&key(), &parked).expect("save");
-        clear_parked(&at).expect("cleared");
-        assert!(!at.exists());
+        let recovered = current_session(&client, &store, &key(), dir.path(), NOW)
+            .await
+            .expect("the recovery completes");
+        assert_eq!(recovered.refresh_token.expose_secret(), "ref.ROTATED.s");
+        assert!(!at.exists(), "and the file is cleared once it is durable");
         assert_eq!(store.refresh_token().as_deref(), Some("ref.ROTATED.s"));
     }
 
-    #[test]
-    fn an_unreadable_parked_file_does_not_wedge_a_good_session() {
+    #[tokio::test]
+    async fn an_unreadable_parked_file_does_not_wedge_a_good_session() {
         // A record from a later build used to fail every session read,
         // with no way out: the error said to sign in again, and signing
         // in did not clear the file.
@@ -451,15 +463,18 @@ mod tests {
         .expect("write the fixture");
         assert!(read_parked(&at).is_err(), "this build cannot read it");
 
-        // The recovery skips it rather than failing, and the file stays
-        // so that `erpc doctor` can report it.
         let store = FlakyStore::new();
         store.save(&key(), &cred("GOOD")).expect("save");
-        if let Ok(Some(parked)) = read_parked(&at) {
-            store.save(&key(), &parked).expect("save");
+        let client = AuthClient::new().expect("a client");
+
+        // Three times, because the failure this covers was permanent.
+        for attempt in 1..=3 {
+            let got = current_session(&client, &store, &key(), dir.path(), NOW)
+                .await
+                .unwrap_or_else(|e| panic!("attempt {attempt} failed: {e}"));
+            assert_eq!(got.refresh_token.expose_secret(), "ref.GOOD.s");
         }
-        assert_eq!(store.refresh_token().as_deref(), Some("ref.GOOD.s"));
-        assert!(at.exists(), "and it is still there to be reported");
+        assert!(at.exists(), "and it is still there for doctor to report");
     }
 
     /// Records what it was asked to revoke, and agrees to everything.
