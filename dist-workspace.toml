@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # cargo-dist configuration. `dist generate` produces .github/workflows/release.yml.
-# Release policy is documented in docs/verify-release.md and docs/architecture.md.
+# Release verification is documented in docs/verify-release.md.
 
 [workspace]
 members = ["cargo:."]
@@ -18,7 +18,7 @@ targets = [
   "aarch64-apple-darwin",
   "x86_64-pc-windows-msvc",
 ]
-# Homebrew is added once the tap repository exists (see docs/architecture.md, Phase 0 follow-ups).
+# Homebrew is added once the tap repository exists.
 installers = ["shell", "powershell"]
 install-path = ["$ERPC_INSTALL_DIR/bin", "~/.erpc/bin"]
 install-updater = false

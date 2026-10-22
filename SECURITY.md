@@ -44,7 +44,11 @@ SBOM and GitHub build provenance attestations. See `docs/verify-release.md`.
 
 ## Secret handling
 
-`erpc` is designed so that private keys and session tokens never rest on the
-operator machine in plaintext (1Password or the OS keychain are used). If you
-find a code path that writes secret material to disk or to logs, treat it as a
-vulnerability and report it through the channel above.
+`erpc` does not yet handle credentials: at this version it neither reads nor
+stores private keys or session tokens. When it does, the rule will be that
+secret material never rests on the operator machine in plaintext. Either way,
+a code path that writes secret material to disk or to logs is a vulnerability;
+report it through the channel above.
+
+Do not infer from this repository which protections are already in force. What
+the code does today is what the code in this repository does today.

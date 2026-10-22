@@ -3,8 +3,7 @@
 
 //! `erpc-chain`: Chain and role abstractions for the multi-chain erpc CLI.
 //!
-//! Phase 0 placeholder. The public API is defined in the design document
-//! (`docs/architecture.md`) and lands in later phases.
+//! Phase 0 placeholder. The public API lands in a later phase.
 
 #![forbid(unsafe_code)]
 

@@ -3,8 +3,8 @@
 
 //! `erpc` command line entry point.
 //!
-//! Phase 0 ships only `erpc version`. The command tree (role-first with a
-//! chain context, see `docs/architecture.md`) is added from Phase 1 onwards.
+//! Phase 0 ships only `erpc version`. The rest of the command tree is added
+//! from Phase 1 onwards.
 
 #![forbid(unsafe_code)]
 #![allow(clippy::print_stdout)]
@@ -13,7 +13,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
-/// Exit codes shared by every command (documented in `docs/architecture.md`).
+/// Exit codes shared by every command.
 mod exit {
     pub const OK: u8 = 0;
     pub const FAILURE: u8 = 1;

@@ -8,8 +8,7 @@ SPDX-License-Identifier: Apache-2.0
 ## Roles
 
 - **Maintainers** (ELSOUL LABO B.V. engineering) review and merge pull
-  requests, triage issues and security reports, and own the roadmap in
-  `docs/architecture.md`.
+  requests, triage issues and security reports, and own the roadmap.
 - **Release approvers** are the required reviewers of the GitHub environment
   `release`. A release is published only after an approver accepts the
   release checklist (CI green, dependency audit, SBOM diff review, changelog,
@@ -19,10 +18,9 @@ SPDX-License-Identifier: Apache-2.0
 
 ## Decision making
 
-Technical decisions are recorded in `docs/architecture.md` and in pull
-request discussions. Maintainers decide by consensus; ELSOUL LABO B.V. holds
-the final say as the responsible legal entity for the project and its
-releases.
+Technical decisions are recorded in pull request discussions and in the code
+itself. Maintainers decide by consensus; ELSOUL LABO B.V. holds the final say
+as the responsible legal entity for the project and its releases.
 
 ## Security and compliance
 

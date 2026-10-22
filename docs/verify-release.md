@@ -5,6 +5,12 @@ SPDX-License-Identifier: Apache-2.0
 
 # Verifying an erpc release
 
+> **Not yet in force.** No release has been published, and the signing key in
+> `crates/erpc-release/pubkey.txt` is a placeholder. Verification against it
+> will fail until the first signed release. This document describes the
+> procedure that the release workflow implements, so that it can be reviewed
+> before it is used.
+
 Two paths are offered. The convenience path (`curl | bash`) trusts DNS, TLS,
 the `install.erpc.global` worker and GitHub Releases at install time; `erpc`
 then verifies every later update with the signatures below. Operators of

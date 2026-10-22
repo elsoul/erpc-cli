@@ -6,7 +6,8 @@ SPDX-License-Identifier: Apache-2.0
 # Contributing to erpc-cli
 
 Thank you for your interest. This document covers the rules that keep the
-project secure and releasable; the architecture is in `docs/architecture.md`.
+project secure and releasable. For how the code is organised, read the crates
+under `crates/` and the discussion on the pull request you are working from.
 
 ## Ground rules
 

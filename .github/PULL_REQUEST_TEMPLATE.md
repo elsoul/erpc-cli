@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 ## Summary
 
-<!-- What changes and why. Link the design section in docs/architecture.md if relevant. -->
+<!-- What changes and why. -->
 
 ## Checklist
 
