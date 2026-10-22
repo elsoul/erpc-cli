@@ -4,7 +4,18 @@
 [advisories]
 # Every entry needs a dated reason, e.g.
 # ignore = ["RUSTSEC-0000-0000"]  # 2026-10-22: reason
-ignore = []
+ignore = [
+  # 2026-10-22: zvariant_derive is unmaintained. It reaches Cargo.lock as an
+  # optional dependency of keyring, which lists every backend it could use,
+  # and no target here enables the one that needs it: Linux builds
+  # dbus-secret-service, macOS security-framework, Windows windows-sys.
+  # Verified with `cargo tree -p erpc-auth -e normal --target <t>` for
+  # x86_64-unknown-linux-musl, x86_64-apple-darwin and
+  # x86_64-pc-windows-msvc; none compiles zvariant, zvariant_derive, zbus or
+  # secret-service. Re-check whenever the keyring version or its feature
+  # selection in crates/erpc-auth/Cargo.toml changes.
+  "RUSTSEC-2026-0372",
+]
 informational_warnings = ["unmaintained", "unsound", "notice"]
 
 [output]
