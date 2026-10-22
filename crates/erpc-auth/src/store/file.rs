@@ -16,7 +16,7 @@
 
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read as _, Write as _};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use fs2::FileExt as _;
@@ -56,8 +56,24 @@ impl FileStore {
         &self.path
     }
 
-    /// Opens the file for a locked read-modify-write, creating it 0600.
-    fn open_locked(&self) -> Result<File, StoreError> {
+    /// The sidecar file the exclusive lock is taken on.
+    ///
+    /// Separate from the credentials file on purpose. The replacement is a
+    /// rename over the target, and Windows refuses to rename over a file
+    /// that anyone still has open -- including this process. Locking a
+    /// sidecar keeps the mutual exclusion while leaving the target closed.
+    #[must_use]
+    pub fn lock_path(&self) -> PathBuf {
+        let mut name = self.path.file_name().unwrap_or_default().to_os_string();
+        name.push(".lock");
+        self.path.with_file_name(name)
+    }
+
+    /// Takes the exclusive lock for a read-modify-write.
+    ///
+    /// The returned handle must be held for the whole sequence: dropping
+    /// it releases the lock.
+    fn lock(&self) -> Result<File, StoreError> {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)
                 .map_err(|e| Self::backend("create the state directory", &e))?;
@@ -70,18 +86,23 @@ impl FileStore {
             options.mode(FILE_MODE);
         }
         let file = options
-            .open(&self.path)
-            .map_err(|e| Self::backend("open the credentials file", &e))?;
+            .open(self.lock_path())
+            .map_err(|e| Self::backend("open the lock file", &e))?;
         file.lock_exclusive()
-            .map_err(|e| Self::backend("lock the credentials file", &e))?;
+            .map_err(|e| Self::backend("take the lock", &e))?;
         Ok(file)
     }
 
-    /// Reads the document from an already-locked handle.
-    fn read_document(file: &mut File) -> Result<Document, StoreError> {
-        let mut text = String::new();
-        file.read_to_string(&mut text)
-            .map_err(|e| Self::backend("read the credentials file", &e))?;
+    /// Reads the document. The caller must already hold the lock.
+    ///
+    /// Opens and closes the file, so that nothing holds a handle on it
+    /// when the replacement renames over it.
+    fn read_document(&self) -> Result<Document, StoreError> {
+        let text = match fs::read_to_string(&self.path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Document::default()),
+            Err(e) => return Err(Self::backend("read the credentials file", &e)),
+        };
         if text.trim().is_empty() {
             return Ok(Document::default());
         }
@@ -130,8 +151,8 @@ impl FileStore {
 
 impl CredentialStore for FileStore {
     fn load(&self, key: &CredKey) -> Result<Option<Credential>, StoreError> {
-        let mut file = self.open_locked()?;
-        let doc = Self::read_document(&mut file)?;
+        let _lock = self.lock()?;
+        let doc = self.read_document()?;
         let Some(stored) = doc.sessions.get(&key.keychain_account()) else {
             return Ok(None);
         };
@@ -149,8 +170,8 @@ impl CredentialStore for FileStore {
     }
 
     fn save(&self, key: &CredKey, cred: &Credential) -> Result<(), StoreError> {
-        let mut file = self.open_locked()?;
-        let mut doc = Self::read_document(&mut file)?;
+        let _lock = self.lock()?;
+        let mut doc = self.read_document()?;
         doc.sessions.insert(
             key.keychain_account(),
             StoredCredential {
@@ -164,8 +185,8 @@ impl CredentialStore for FileStore {
     }
 
     fn delete(&self, key: &CredKey) -> Result<(), StoreError> {
-        let mut file = self.open_locked()?;
-        let mut doc = Self::read_document(&mut file)?;
+        let _lock = self.lock()?;
+        let mut doc = self.read_document()?;
         if doc.sessions.remove(&key.keychain_account()).is_none() {
             return Ok(());
         }
@@ -314,6 +335,42 @@ mod tests {
             .mode()
             & 0o777;
         assert_eq!(mode, 0o600, "mode was {mode:o}");
+    }
+
+    #[test]
+    fn the_lock_is_a_separate_file_from_the_credentials() {
+        // Not a detail: the replacement renames over the credentials file,
+        // and Windows refuses to rename over a file this process still has
+        // open. Locking the credentials file itself made every save fail
+        // there with "Access is denied", which only CI could show. Keeping
+        // them separate is what makes the save portable.
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let path = dir.path().join("credentials.toml");
+        let store = FileStore::new(&path);
+        assert_ne!(store.lock_path(), path);
+        assert_eq!(
+            store.lock_path().file_name().and_then(|n| n.to_str()),
+            Some("credentials.toml.lock")
+        );
+
+        store.save(&key(), &cred("a.b.c")).expect("save");
+        assert!(store.lock_path().exists(), "the lock file is created");
+        assert!(path.exists(), "and so is the credentials file");
+    }
+
+    #[test]
+    fn repeated_saves_succeed() {
+        // The sequence that failed on Windows: save, then save again over
+        // the file the first one created.
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let store = FileStore::new(dir.path().join("credentials.toml"));
+        for i in 0..5 {
+            store
+                .save(&key(), &cred(&format!("token.{i}.x")))
+                .unwrap_or_else(|e| panic!("save {i} failed: {e}"));
+        }
+        let got = store.load(&key()).expect("load").expect("present");
+        assert_eq!(got.access_token.expose_secret(), "token.4.x");
     }
 
     #[test]
