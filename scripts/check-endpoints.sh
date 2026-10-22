@@ -389,12 +389,22 @@ check_url() {
   # api.github.com,evil.example.net and so on -- and all three were silent
   # before this check was generalised beyond the backtick.
   #
-  # The OTHER shape, a second whole URL after one of these characters, is
-  # not handled here. It is handled by separating the two URLs in
-  # normalise(), so that each is matched and judged on its own; a test for
-  # a trailing scheme word was tried here first and is redundant once the
-  # split exists -- removing it leaves every case passing and every probe
-  # reported, which is why it is not in the condition below.
+  # ...or A TRAILING SCHEME WORD, which is the letters of a following URL
+  # that this match absorbed. The separator split in normalise() handles the
+  # case where one of these characters sits IMMEDIATELY before a scheme, but
+  # only that case: put any one character the host class admits in between
+  # and the split does not fire, the match runs to the second scheme's colon
+  # again, and the tail is `xhttps` -- which carries no dotted pair, so the
+  # test above stays silent while the second URL is never evaluated. All of
+  # `,xhttps://`, `;ahttps://`, `)qhttps://`, `,_.https://`, `,wshttps://`
+  # and `,0https://` were silent on exactly that boundary.
+  #
+  # This arm was briefly deleted as redundant once the split existed. That
+  # measurement was CIRCULAR: it rested on "no case fails without it", and
+  # no case in the suite put a character between the separator and the
+  # second scheme, so the suite could not tell the two designs apart. The
+  # cases below now do. Left-unanchored on purpose -- `xhttps` has to match,
+  # not just `https`.
   #
   # The tail is NOT trimmed before either test. Trimming it was the defect
   # that let `https://github.com`;evil.example.net through, the tail emptying
@@ -403,7 +413,7 @@ check_url() {
     case "$host" in
       *[\),\;\`]*)
         cut_tail="${host#*[\),\;\`]}"
-        if printf '%s' "$cut_tail" | LC_ALL=C grep -qE '[A-Za-z0-9-]+\.[A-Za-z0-9-]+'; then
+        if printf '%s' "$cut_tail" | LC_ALL=C grep -qE '[A-Za-z0-9-]+\.[A-Za-z0-9-]+|([Hh][Tt][Tt][Pp][Ss]?|[Ww][Ss][Ss]?)$'; then
           report "$f" "$ln" "punctuation inside the host hides the rest of it: $scheme://$host"
           return 0
         fi
@@ -538,7 +548,6 @@ url_re='(https?|wss?)://(((\$\{\{[^}/]*\}\}|\$\{[^}/]*\}|\{\{[^}/]*\}\}|\$\([^)/
 #     merits -- which is also the right reading of a comma-separated list,
 #     where the second URL really is contacted. It runs AFTER the slash
 #     collapse, so a second URL written `,https:host` is separated too.
-
 # The scheme alternation, spelled with character classes because BSD sed has
 # no portable case-insensitivity modifier for s/// and the matcher below runs
 # `grep -i`. Keeping the two in step matters: a rule that only saw lowercase
@@ -554,7 +563,7 @@ normalise() {
          -e "s/${cr}${scheme_re}:/ \1:/g" \
          -e "s/${tab}//g" \
          -e "s/${cr}//g" \
-         -e "s#${scheme_re}:(/)*#\1://#g" \
+         -e "s#(^|[^A-Za-z0-9])${scheme_re}:(/)*#\1\2://#g" \
          -e "s#([),;${bt}])${scheme_re}://#\1 \2://#g"
 }
 

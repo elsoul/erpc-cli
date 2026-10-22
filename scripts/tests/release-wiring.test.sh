@@ -156,7 +156,12 @@ fi
 #    name a file that no longer exists -- `latest.json` and its signature
 #    were exactly that until this branch removed them -- and the operator
 #    would be told to verify something they cannot download.
-documented_files=$(grep -ohE '[A-Za-z0-9_.-]+\.(json|minisig)' "$verify_doc" 2>/dev/null | sort -u)
+# The CycloneDX SBOM is attached by cargo-dist's own job, not by the upload
+# step this test reads, so a legitimate future mention of `*.cdx.json` on
+# that page is not a drift and is excluded by name. Everything else the page
+# names has to come from the upload step.
+documented_files=$(grep -ohE '[A-Za-z0-9_.-]+\.(json|minisig)' "$verify_doc" 2>/dev/null \
+  | grep -v '\.cdx\.json$' | sort -u)
 
 if [ -z "$documented_files" ]; then
   bad "every release file the page names is one the pipeline attaches" \
