@@ -43,76 +43,56 @@
 #     skipped: there is nothing literal to check. An UNTERMINATED opener is
 #     not that case and is reported, because the text after it is literal
 #     and is usually the registrable domain.
-#   - The matcher applies ONE normalisation to the line, in normalise()
-#     below, and nothing else: it reproduces what the WHATWG URL Standard
-#     does to its input BEFORE parsing, because that is what a browser,
-#     curl and the Worker's fetch all do. Claiming the line was read "as
-#     written" was wrong in both directions -- one rewrite was already
-#     there, and it was too narrow to be faithful. It then
-#     matches the AUTHORITY only, stopping at the first / ? or #, and within
-#     it a run of non-space characters or whole balanced ${ }, ${{ }}, {{ }}
-#     and $( ) expressions, none of which may contain a /. A space inside
-#     one of those does not end the match; nothing in the path is matched,
-#     because the authority is all this gate judges. Both bounds exist so
-#     that a match can never reach a later URL on the same line and hide it.
-#   - Backticks are not one of the balanced forms: a backtick is also a
-#     string quote, and pairing them across a space would splice a URL to
-#     unrelated text. A backtick inside a host is instead reported when what
-#     follows it still carries two dot-separated labels, which is what a
-#     registrable domain needs; a backtick followed by punctuation or by a
-#     method call is a string quote and is trimmed as before.
-#   - The shapes this gate does NOT see. This list is NOT COMPLETE and must
-#     not be read as if it were: an earlier version of this header said
-#     "two shapes", and the next review found five more. The reason is
-#     structural rather than a series of oversights. The matcher ends the
-#     authority at a fixed set of characters, and that set is narrower than
-#     the set a URL parser accepts, so a character at which the match stops
-#     early can always be looked for. What this gate buys is that adding a
-#     destination costs effort and shows up in a diff; it is not a proof
-#     that none can be written. The ones known today:
-#       * a backtick expression containing a space, as in
-#         https://`cat host`.evil.example.net. The match ends at the space,
-#         and widening the rule far enough to catch it also rejects
-#         `https://semver.org`. in prose, which is a correct line.
-#       * a colon not followed by digits ends the match, so in
-#         https://declared:x.evil.example.net/y the host judged is the part
-#         before the colon. No URL parser accepts a non-numeric port --
-#         node's new URL() raises ERR_INVALID_URL, curl refuses it -- so
-#         this is not a reachable destination. A guard over this shape was
-#         tried and removed: its only unique catch was this unreachable
-#         form, while it also reported url.strip_prefix("https://") and a
-#         declared host followed by ordinary punctuation in a comment.
-#       * a single or double quote inside the host ends the match, and
-#         unlike the colon this one IS reachable:
+#   - The scan is driven from SCHEME OCCURRENCES, not from URLs, and that is
+#     the one design decision everything else here follows from. See the
+#     block above check_occurrence for why the previous design was replaced:
+#     in short, it matched a whole URL with a regex whose authority ran over
+#     a fixed character class, and that class had to be narrower than the set
+#     a URL parser accepts, so some character always ended the match early.
+#     Four consecutive review rounds each found one. The attack surface was
+#     the complement of that class, and a complement never empties.
+#   - What this gate judges, per occurrence: the authority ends where it
+#     cannot continue, trailing punctuation is stripped FROM THE END ONLY,
+#     and what is left must EQUAL a declared host, an IP-literal or a
+#     HOST_PATTERNS match. Nothing is trimmed into shape, and the default is
+#     to report.
+#   - Two shapes this gate does NOT see. The list is NOT COMPLETE and must
+#     not be read as if it were -- the rewrite removed the mechanism that
+#     produced a new one every round, it did not turn a text gate into a
+#     parser:
+#       * a single or double quote inside the host, which IS reachable:
 #         https://api.github.com'evil.example.net/x resolves to the host
-#         api.github.com'evil.example.net, which a wildcard record under
-#         evil.example.net serves, so the DNS query reaches that zone even
-#         though no public CA will issue a certificate for a label
-#         containing a quote. It is open rather than closed because
-#         admitting quotes to the authority makes ["https://a","https://b"]
-#         -- a JSON array of two URLs with no space between them -- read as
-#         the single host a","https, which is a false positive on a correct
-#         and common line. The quote characters have been excluded since
-#         before this gate was hardened; this entry records it, it is not a
-#         new hole.
+#         api.github.com'evil.example.net, served by a wildcard record under
+#         evil.example.net, so the DNS query reaches that zone even though no
+#         public CA will issue for a label containing a quote. A quote ends
+#         the authority because a quote is how source delimits a URL;
+#         admitting quotes instead reads ["https://a","https://b"] as the one
+#         host a","https, a false positive on a correct and common line. Open
+#         by choice, not by impossibility.
 #       * a URL split across two lines by a multi-line string literal. The
-#         Standard deletes LF from its input exactly as it deletes tab and
-#         CR, and normalise() handles those two, but this gate reads one
-#         line at a time and a rejoined URL is not visible to it.
+#         Standard deletes LF as it deletes tab and CR; this gate is
+#         line-based.
+#   - Two limits this header used to state are now CLOSED rather than
+#     restated. A colon followed by something that is not a port no longer
+#     ends the authority: https://declared:x.evil.example.net/y is reported,
+#     where it used to be judged as the declared prefix. And a `,`, `;`, `)`
+#     or backtick between a declared host and a second URL no longer hides
+#     that URL, because the second scheme occurrence is scanned in its own
+#     right rather than being consumed by the first match.
 #   - A host that is not plain ASCII, or one containing a backslash escape
 #     anywhere, is reported: both are literals a reviewer should see, and
 #     neither may be skipped just because the matcher finds them awkward.
-#     These checks, and the plaintext one above, run on every URL before the
-#     allowlist question is answered, so no host can reach an "allowed"
-#     verdict without passing them first.
-#   - normalise() is the one rewrite, and the block above it is the full
-#     statement of what it does. It is NOT a summary of the Standard: the
-#     slash rule covers `/` only, and a backslash in the authority is
-#     refused rather than resolved, for the reason given there. An earlier
-#     version of this bullet described the rule as accepting `\` where `/`
-#     is expected and collapsing backslash runs, which stopped being true
-#     when the rule was rewritten and was left behind -- the designated
-#     authoritative description of a control, contradicting the control.
+#     These checks, and the plaintext one above, run on every occurrence
+#     before the allowlist question is answered, so no host can reach an
+#     "allowed" verdict without passing them first.
+#   - A backslash is REFUSED, never resolved. The URL Standard skips it like
+#     a slash after a special scheme, but resolving it would make this gate
+#     name a host the source does not: "https://\x65vil.example.com" is one
+#     compile-time literal in Rust, TypeScript and Python whose real
+#     authority is evil.example.com, while skipping the backslash yields
+#     x65vil.example.com -- concrete-looking, not the destination, and it
+#     would PASS if ever declared. Refusing needs no knowledge of the file's
+#     language, which is the machinery this gate has twice deleted.
 #   - A host assembled at runtime from fragments is invisible to this gate.
 #     This is a text gate over source, not a sandbox, and it does not
 #     constrain a dependency.
@@ -286,25 +266,25 @@ strip_expressions() {
 }
 
 template_host_matches_pattern() {
-  local host prefix suffix lit_pre lit_suf opener closer after best d c o cl mid tail
+  local host prefix suffix lit_pre lit_suf opener closerr after best d c o cl mid tail
   host=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
 
-  # Find the EARLIEST template delimiter and pair it with ITS OWN closer.
+  # Find the EARLIEST template delimiter and pair it with ITS OWN closerr.
   # Pairing matters: a backtick is both a template delimiter and a JavaScript
   # string quote, so "after the last closing delimiter" reads the text after
   # the string's closing backtick and loses the real suffix.
-  best=""; opener=""; closer=""
+  best=""; opener=""; closerr=""
   for d in '${:}' '{{:}}' '$(:)' '`:`'; do
     o="${d%%:*}"; cl="${d##*:}"
     c="${host%%$o*}"
     [ "$c" = "$host" ] && continue
-    if [ -z "$opener" ] || [ ${#c} -lt ${#best} ]; then best="$c"; opener="$o"; closer="$cl"; fi
+    if [ -z "$opener" ] || [ ${#c} -lt ${#best} ]; then best="$c"; opener="$o"; closerr="$cl"; fi
   done
   [ -n "$opener" ] || return 1
   lit_pre="$best"
 
   after="${host#*$opener}"
-  case "$after" in *"$closer"*) lit_suf="${after#*$closer}";; *) return 1;; esac
+  case "$after" in *"$closerr"*) lit_suf="${after#*$closerr}";; *) return 1;; esac
   # The suffix is literal text, so the same trailing punctuation the caller
   # strips applies here.
   lit_suf="${lit_suf%%[)\",\';\`]*}"
@@ -329,120 +309,193 @@ EOF
 }
 
 # $1 file, $2 line number, $3 url, $4 kind
-check_url() {
-  local f="$1" ln="$2" url="$3" kind="$4" scheme rest hostport host has_expr probe paired cut_tail
-  scheme=$(printf '%s' "${url%%://*}" | tr '[:upper:]' '[:lower:]')
-  rest="${url#*://}"
-  hostport="${rest%%/*}"; hostport="${hostport%%\?*}"; hostport="${hostport%%#*}"
-  hostport="${hostport##*@}"
-  case "$hostport" in
-    \[*\]*) host="${hostport%%\]*}]";;
-    *)
-      # Strip a TRAILING :digits, which is the only port the matcher admits.
-      # Cutting at the first colon instead reached inside an expression:
-      # `https://solana-snapshot-${a:-b}.erpc.global` became the host
-      # `solana-snapshot-${a`, reported for an unexpected character rather
-      # than recognised as the declared pattern it is.
-      if printf '%s' "$hostport" | LC_ALL=C grep -qE ':[0-9]+$'; then
-        host="${hostport%:*}"
-      else
-        host="$hostport"
-      fi
-      ;;
-  esac
+# ---------------------------------------------------------------------------
+# The scanner.
+#
+# This is the INVERTED design, and it replaced a matcher that had produced one
+# bypass of the same class in each of four consecutive review rounds. The old
+# one matched a whole URL with a regex whose authority ran over a fixed
+# character class, then trimmed that match into a host. Both halves were
+# wrong in the same way:
+#
+#   * the authority class had to be NARROWER than the set a URL parser
+#     accepts, so there was always a character at which the match ended early
+#     and handed over a prefix of the real host. Rounds 9 to 12 found the
+#     bare `:`, the slash counts, the trim set, and then the one character
+#     between a separator and the next scheme. The attack surface was the
+#     COMPLEMENT of that class, and a complement never empties.
+#   * `grep -o` emits NON-OVERLAPPING matches, so a match that absorbed the
+#     letters of a following scheme consumed that URL too: it was never
+#     emitted, never evaluated, and nothing was reported. One URL in, no
+#     finding out.
+#
+# The scan is now driven from SCHEME OCCURRENCES rather than from URLs. awk
+# finds every `scheme:` at a word boundary, one at a time, and hands the rest
+# of the line to check_occurrence. Three properties follow, and they are the
+# whole reason for the rewrite:
+#
+#   1. No URL can be consumed by an earlier match, because the thing matched
+#      is six characters long and the scan continues from just past its
+#      colon. Every occurrence is evaluated, whatever its neighbours are.
+#   2. There is no "how far does the authority run" question answered by a
+#      character class. The authority ends where it cannot continue, and what
+#      is left must EQUAL a declared host. Nothing is trimmed into shape.
+#   3. The default is REPORT. A shape nobody has thought of fails closerd
+#      instead of passing silently, which inverts the one property that cost
+#      four rounds.
+#
+# The cost is real and is the point of the trade: a default-report gate
+# reports correct lines until the terminator and trailing-punctuation sets
+# cover them. That cost is BOUNDED -- two enumerated lists, one case per
+# entry, and a miss is a loud failure on a correct line that someone fixes
+# the same day. The old cost was UNBOUNDED: a character class that had to be
+# COMPLETE, with no way to know when it was, and a miss was a silent pass
+# that survived review rounds.
 
-  # An expression is present when removing the balanced ones changed the
-  # host, or when an opener survives that removal. Derived this way rather
-  # than by looking for a delimiter, because a lone backtick is far more
-  # often a JavaScript string quote than an expression: treating
-  # `https://user-api.erpc.global`;` as an expression host would report a
-  # host. A removed backtick PAIR does count.
-  paired=$(strip_expressions "$host")
-  has_expr=no
-  [ "$paired" = "$host" ] || has_expr=yes
-  case "$paired" in *'${'*|*'{{'*|*'$('*) has_expr=yes;; esac
+# Where an authority ENDS. A character here cannot be part of one, so the
+# authority is the run before it. Space is in the set because normalise()
+# has already deleted tab and CR by this point.
+#
+# `"` and `'` are here although the URL Standard does NOT forbid them in a
+# host: `https://a'b.example.net` really does resolve to the host
+# a'b.example.net. They end the authority anyway because a quote is how
+# source code delimits a URL, and admitting them makes `["https://a",
+# "https://b"]` -- a JSON array of two URLs -- read as the single host
+# `a","https`. That gap is stated in the header limits; it is the same one
+# the previous design had, and it is the only character class decision left
+# in the gate.
+authority_end='[/?#"'"'"'<> ]'
 
-  # A backslash ANYWHERE in the host hides the rest of it. In Rust,
+# Trailing punctuation stripped from the END of an authority, and only from
+# the end. This is what lets prose write a URL inside a sentence: `(see
+# https://erpc.global)`, `https://semver.org.`, `https://erpc.global,` in a
+# list. Stripping at the FIRST occurrence instead -- which the previous
+# design did -- is what let `https://api.github.com,evil.example.net` be
+# judged as api.github.com.
+authority_tail_punct='[].,;:)}!?`]'
+
+# $1 scheme word (with its colon), $2 the rest of the line after that colon,
+# $3 file, $4 line number, $5 prose|code
+check_occurrence() {
+  local scheme="$1" rest="$2" f="$3" ln="$4" kind="$5"
+  local authority host probe paired has_expr tail prefix
+
+  scheme=$(printf '%s' "${scheme%:}" | tr '[:upper:]' '[:lower:]')
+
+  # The authority was computed by awk, which walked it with the balanced
+  # expressions in mind. Nothing here re-derives where it ends.
+  authority="$rest"
+
+  # userinfo. Every URL parser splits an authority at the LAST '@', so a
+  # declared host in the middle vouches for nothing.
+  authority="${authority##*@}"
+
+  [ -n "$authority" ] || return 0
+
+  # A backslash ANYWHERE in the authority hides the rest of it. In Rust,
   # TypeScript and Python alike `https://github.com\x2eevil.example.net` is
-  # one compile-time literal under evil.example.net, and trimming at the
-  # backslash would leave the allowlisted prefix and pass. Checking only
-  # position 0 catches the shape that would have been caught anyway.
-  case "$host" in
+  # one compile-time literal under evil.example.net. Refusing is strictly
+  # safer than resolving, and needs no knowledge of the file's language.
+  case "$authority" in
     *\\*)
-      report "$f" "$ln" "escape sequence in host, so the literal is hidden: $scheme://$host"
+      report "$f" "$ln" "escape sequence in host, so the literal is hidden: $scheme://$authority"
       return 0
       ;;
   esac
 
-  # EVERY character the host is trimmed at below hides whatever follows it,
-  # not just the backtick this rule was first written for. Trimming is right
-  # when nothing host-like follows -- `https://semver.org`. ending a markdown
-  # sentence, [ERPC](https://erpc.global), `https://erpc.global,` in a list,
-  # `https://user-api.erpc.global`.trim() -- and wrong when something does,
-  # because the trim then drops the registrable domain and the allowlist is
-  # asked about a prefix.
+  case "$authority" in
+    # An IP-literal ends at its bracket, and its brackets are not trailing
+    # punctuation to be stripped.
+    \[*\]*)
+      host="${authority%%\]*}]"
+      ;;
+    *)
+      # The port: a trailing run of digits, or a trailing balanced
+      # expression, which is how a port is written in practice --
+      # `127.0.0.1:${PORT}` for the OAuth callback, `:{port}` in a Rust
+      # format string. Anchored at the END, so `:{x}.evil.example.net`
+      # does not qualify and falls through to the colon check below.
+      host=$(printf '%s' "$authority" | LC_ALL=C sed -E \
+        's/:([0-9]+|\$\{\{[^}]*\}\}|\$\{[^}]*\}|\{\{[^}]*\}\}|\$\([^)]*\)|\{[^}]*\})$//')
+
+      # Then trailing punctuation, from the end only and as a run, which is
+      # what lets prose put a URL in a sentence.
+      #
+      # Guarded by the expression skeleton: a `}` or `)` that CLOSES a
+      # balanced expression is not trailing punctuation, and stripping it
+      # turned `${MIRROR}` into `${MIRROR` -- reported for an unexpected
+      # character rather than recognised as the wholly-templated host it is.
+      # A character is literal exactly when removing the balanced
+      # expressions leaves it at the end as well.
+      while :; do
+        case "$host" in
+          *$authority_tail_punct) ;;
+          *) break;;
+        esac
+        case "$(strip_expressions "$host")" in
+          *$authority_tail_punct) host="${host%?}";;
+          *) break;;
+        esac
+      done
+
+      # A colon that is not a port. The previous design stopped the match at
+      # the first colon and so judged the part before it, which made
+      # `https://declared:x.evil.example.net/y` read as the declared host --
+      # a limit this gate used to state rather than close. It is closed now:
+      # the colon is looked for in the SKELETON, so a colon inside an
+      # expression (`solana-snapshot-${a:-b}.erpc.global`) is not one.
+      case "$(strip_expressions "$host")" in
+        *:*)
+          report "$f" "$ln" "a colon in the authority is followed by something that is not a port: $scheme://$host"
+          return 0
+          ;;
+      esac
+      ;;
+  esac
+
+  [ -n "$host" ] || return 0
+
+  # An expression means the destination is not fixed by what is written.
+  # Detected BEFORE the punctuation test below, because a `)` that closes a
+  # command substitution is not punctuation inside a host: `$(cat host)`
+  # would otherwise be cut to `$(cat host`. An expression-bearing host takes
+  # the stricter HOST_PATTERNS path further down in any case, so nothing is
+  # lost by skipping the punctuation test for it.
+  paired=$(strip_expressions "$host")
+  has_expr=no
+  [ "$paired" = "$host" ] || has_expr=yes
+  case "$paired" in *'${'*|*'{{'*|*'$('*) has_expr=yes;; esac
+  if [ "$has_expr" = yes ]; then probe="$paired"; else probe="$host"; fi
+
+  # What remains may still carry punctuation in the MIDDLE, and that is the
+  # one place this gate has to interpret rather than measure. `,`, `;`, `)`
+  # and a backtick are all legal in a host per the URL Standard --
+  # `api.github.com,evil.example.net` resolves -- and they are also how prose
+  # and code put a URL inside a larger construct.
   #
-  # What means a destination survived the trim: TWO DOT-SEPARATED LABELS in
-  # the tail, the shortest thing that can carry a registrable domain.
-  # `https://api.github.com,evil.example.net`, `;evil.example.net` and
-  # `)evil.example.net` all resolve under node's new URL() -- hostname
-  # api.github.com,evil.example.net and so on -- and all three were silent
-  # before this check was generalised beyond the backtick.
-  #
-  # ...or A TRAILING SCHEME WORD, which is the letters of a following URL
-  # that this match absorbed. The separator split in normalise() handles the
-  # case where one of these characters sits IMMEDIATELY before a scheme, but
-  # only that case: put any one character the host class admits in between
-  # and the split does not fire, the match runs to the second scheme's colon
-  # again, and the tail is `xhttps` -- which carries no dotted pair, so the
-  # test above stays silent while the second URL is never evaluated. All of
-  # `,xhttps://`, `;ahttps://`, `)qhttps://`, `,_.https://`, `,wshttps://`
-  # and `,0https://` were silent on exactly that boundary.
-  #
-  # This arm was briefly deleted as redundant once the split existed. That
-  # measurement was CIRCULAR: it rested on "no case fails without it", and
-  # no case in the suite put a character between the separator and the
-  # second scheme, so the suite could not tell the two designs apart. The
-  # cases below now do. Left-unanchored on purpose -- `xhttps` has to match,
-  # not just `https`.
-  #
-  # The tail is NOT trimmed before either test. Trimming it was the defect
-  # that let `https://github.com`;evil.example.net through, the tail emptying
-  # at the `;`.
+  # The test is on the TAIL, not on the character: what follows the first
+  # such character decides. Two dot-separated labels is the shortest thing
+  # that can carry a registrable domain, and a trailing scheme word is the
+  # absorbed letters of a following URL.
   if [ "$has_expr" = no ]; then
     case "$host" in
-      *[\),\;\`]*)
-        cut_tail="${host#*[\),\;\`]}"
-        if printf '%s' "$cut_tail" | LC_ALL=C grep -qE '[A-Za-z0-9-]+\.[A-Za-z0-9-]+|([Hh][Tt][Tt][Pp][Ss]?|[Ww][Ss][Ss]?)$'; then
+      *[,\;\)\`]*)
+        prefix="${host%%[,\;\)\`]*}"
+        tail="${host#*[,\;\)\`]}"
+        if printf '%s' "$tail" | LC_ALL=C grep -qE '[A-Za-z0-9-]+\.[A-Za-z0-9-]+|([Hh][Tt][Tt][Pp][Ss]?|[Ww][Ss][Ss]?)$'; then
           report "$f" "$ln" "punctuation inside the host hides the rest of it: $scheme://$host"
           return 0
         fi
+        host="$prefix"
+        probe="$host"
         ;;
     esac
   fi
 
-  # `probe` is the host's literal skeleton: the same string with every
-  # expression removed, so the checks below read the parts the author wrote
-  # and not the parts the expansion decides. With no expression it is just
-  # the host. The scheme and character checks run on it BEFORE the allowlist
-  # question, because an earlier arrangement answered that question first and
-  # returned, which let a host matching a declared pattern carry plaintext
-  # http, a Cyrillic label or an escape past checks the gate states as
-  # absolute.
-  if [ "$has_expr" = yes ]; then
-    probe="$paired"
-  else
-    host="${host%%[)\",\';\`]*}"
-    probe="$host"
-  fi
-  probe="${probe%%[)\",\';\`]*}"
-  [ "$has_expr" = yes ] || [ -n "$host" ] || return 0
+  [ -n "$host" ] || return 0
 
-  # A host that is not plain ASCII is a homograph risk and must be seen, not
-  # silently skipped because the matcher's character class missed it.
-  # Deliberately `tr -d` and not a bracket expression: a class containing
-  # `[` and `]` is read differently by different greps, and two attempts at
-  # writing one here produced a check that silently matched nothing.
+  # These run BEFORE the allowlist question, so that no host can reach an
+  # "allowed" verdict carrying plaintext http, a Cyrillic label or an escape.
   if [ -n "$(printf '%s' "$probe" | LC_ALL=C tr -d 'A-Za-z0-9.:_[]-')" ]; then
     report "$f" "$ln" "non-ASCII or unexpected character in host: $scheme://$host"
     return 0
@@ -452,38 +505,20 @@ check_url() {
     return 0
   fi
 
-  # An expression in the host means the destination is not fixed by what is
-  # written. It is allowed only when the literal text on both sides matches a
-  # declared HOST_PATTERNS pair, which is what that list is for
-  # (`solana-snapshot-${REGION}.erpc.global`). The one thing this gate must
-  # not do is vouch for a host on the strength of its first few bytes -- and
-  # that applies just as much when the expression comes FIRST, because the
-  # literal that follows it is the registrable domain. A host with no literal
-  # part at all is skipped: there is nothing to check, and nothing here
-  # builds one.
   if [ "$has_expr" = yes ]; then
+    # A host that is ENTIRELY one balanced expression has no literal part to
+    # check and is skipped; anything else must be pinned on both sides by a
+    # declared HOST_PATTERNS pair.
     [ -n "$probe" ] || return 0
     template_host_matches_pattern "$host" && return 0
     report "$f" "$ln" "expression in host, so the literal text does not fix the destination: $scheme://$host"
     return 0
   fi
+
   if ! host_allowed "$host" "$kind"; then
     report "$f" "$ln" "endpoint not in the allowlist: $scheme://$host  (declare it in $allowlist_src; documentation links go in DOCUMENTATION_HOSTS)"
   fi
 }
-
-# One definition of an authority, shared by the matcher and by the boundary
-# guard below so that tightening one cannot silently invalidate the other.
-#
-#   [ userinfo "@" ] ( IP-literal | host ) [ ":" digits ]
-#
-# userinfo admits ':' and '@' and stops at '/'. It has to admit '@': the
-# WHATWG URL Standard, and so every browser, curl and URL library, splits
-# an authority at the LAST '@', and `hostport="${hostport##*@}"` below is
-# written to that rule. A grammar that stopped at the first '@' disagreed
-# with it, and `https://a@user-api.erpc.global@evil.example.net/x` was then
-# approved on the declared middle component while resolving elsewhere.
-url_re='(https?|wss?)://(((\$\{\{[^}/]*\}\}|\$\{[^}/]*\}|\{\{[^}/]*\}\}|\$\([^)/]*\)|[^[:space:]"'"'"'<>/?#])*@)?(\[[0-9A-Fa-f:.]*\]|(\$\{\{[^}/]*\}\}|\$\{[^}/]*\}|\{\{[^}/]*\}\}|\$\([^)/]*\)|[^[:space:]"'"'"'<>/?#:@])+)(:[0-9]+)?)'
 
 # The ONE normalisation this gate applies to a line, and the only place it
 # rewrites anything. It reproduces what the WHATWG URL Standard does to the
@@ -505,35 +540,26 @@ url_re='(https?|wss?)://(((\$\{\{[^}/]*\}\}|\$\{[^}/]*\}|\{\{[^}/]*\}\}|\$\([^)/
 #     one, and deleting it would splice them into a host that is in neither.
 #     Nothing can hide behind this: the text after the separator is matched
 #     as a URL in its own right and answers for itself.
-#   * ANY run of `/` after a special scheme -- including a run of length
-#     one, and INCLUDING NONE -- collapses to `://`. This is not cosmetic.
-#     The Standard's special-authority-ignore-slashes state skips any number
-#     of `/` (and of `\`), so `https:h`, `https:/h`, `https:///h` and
-#     `https:////h` all resolve to h exactly as `https://h` does. An earlier
-#     version rewrote only the two-character forms `:\\` and `:/\` plus a
-#     backslash run before a slash, on the belief that the leniency was
-#     about escaped slashes in string literals. It is not, and every shape
-#     above passed this gate without being looked at.
+#   * The SLASH COUNT is not normalised here, and used to be. The URL
+#     Standard's special-authority-ignore-slashes state skips any number of
+#     `/` after a special scheme, so `https:h`, `https:/h`, `https:///h` and
+#     `https:////h` all resolve to h -- and a rule here rewrote every such
+#     run to `://` so that the old regex had a literal `://` to anchor on.
+#     The scanner does not anchor on one: awk strips the leading slashes
+#     from the remainder itself, whatever their count, including none. The
+#     rule was therefore dead, and measured dead before being removed:
+#     deleting it changed neither the verdict nor the MESSAGE on any of nine
+#     slash and backslash forms, the uppercase scheme among them. Noting
+#     how that was established, because "no case fails without it" has been
+#     wrong twice on this file: a case can fail to distinguish two designs.
 #
-#     A BACKSLASH is deliberately NOT consumed here, although the Standard
-#     skips it in the same state. Resolving it would make this gate name a
-#     host the source does not: in Rust, TypeScript and Python alike
-#     `"https://\x65vil.example.com"` is one compile-time literal whose real
-#     authority is evil.example.com, while skipping the backslash as if it
-#     were a slash yields x65vil.example.com -- a concrete-looking host that
-#     is not the destination, and that would PASS if it were ever declared.
-#     So a backslash anywhere in the authority is reported as a hidden
-#     literal by the check in check_url instead, which refuses rather than
-#     guesses, and covers `https:\h`, `https:/\h`, `https:\\/\\/h` and
-#     `https://\x65vil` alike. Refusing is strictly safer than resolving and
-#     needs no knowledge of which language the file is in -- the machinery
-#     this gate has twice deleted.
-#
-#     The cost, which is real: a JavaScript regex literal written to match
-#     URLs, such as /^https:\/\//, has `https:` followed by no slash, so
-#     `://` is inserted and the host becomes a backslash, which is then
-#     reported. No such line exists in the tree today. Write the pattern
-#     with a character class, or add the file to --print-exceptions.
+#     A BACKSLASH is still refused rather than resolved, by the check in
+#     check_occurrence. The Standard skips it in the same state, but
+#     resolving it would make this gate name a host the source does not:
+#     `"https://\x65vil.example.com"` is one compile-time literal in Rust,
+#     TypeScript and Python whose real authority is evil.example.com, while
+#     treating the backslash as a slash yields x65vil.example.com -- which
+#     is not the destination and would PASS if it were ever declared.
 #   * A `)`, `,`, `;` or backtick IMMEDIATELY BEFORE a scheme gets a space
 #     inserted, for the same reason as the tab and CR exception above and
 #     with a sharper consequence. These are the characters the host is
@@ -563,7 +589,6 @@ normalise() {
          -e "s/${cr}${scheme_re}:/ \1:/g" \
          -e "s/${tab}//g" \
          -e "s/${cr}//g" \
-         -e "s#(^|[^A-Za-z0-9])${scheme_re}:(/)*#\1\2://#g" \
          -e "s#([),;${bt}])${scheme_re}://#\1 \2://#g"
 }
 
@@ -572,71 +597,67 @@ for f in "${files[@]}"; do
   is_excepted "$f" && continue
   if [[ "$f" =~ $prose_re ]]; then kind=prose; else kind=code; fi
 
-  # -a so a stray NUL cannot hide the rest of the file from either branch.
-  # Escaped slashes (\/\/) are normalised so a JSON or TypeScript string
-  # cannot hide a URL from the matcher.
+  # -a so a stray NUL cannot hide the rest of the file.
   #
-  # The match is the AUTHORITY only -- it stops at the first / ? or # -- and
-  # within it a run of non-space characters or whole balanced expressions,
-  # so a space inside `${{ ... }}` or `{{ ... }}` does not end it and
-  # `https://{{ host }}.evil.example.net` is seen whole. Nothing else of the
-  # URL is matched, because the authority is all this gate judges.
+  # awk emits ONE RECORD PER SCHEME OCCURRENCE: line number, the scheme word,
+  # and the rest of the line after its colon. It then continues from just
+  # past that colon, so a second occurrence on the same line is found whether
+  # or not the first one's authority ran over it. That is the property the
+  # previous `grep -o` pipeline could not have, and the one that made a URL
+  # after a comma disappear from the scan entirely.
   #
-  # Both bounds are load-bearing, and each replaced a defect that let a URL
-  # escape the gate entirely:
-  #
-  #   * Stopping at / keeps the balanced branches out of the path. When they
-  #     could start after a /, `https://github.com/x$(echo https://evil…)`
-  #     was ONE match whose host was the declared github.com, and the inner
-  #     URL -- a real destination -- was inside it, so `grep -o` never
-  #     emitted it. Allowed, silently.
-  #   * Forbidding / INSIDE an expression keeps `://` out of one, so a
-  #     balanced span cannot contain a URL even in the authority.
-  #   * The authority is spelled out rather than approximated:
-  #     [ userinfo "@" ] ( IP-literal | host ) [ ":" digits ]. Earlier
-  #     versions matched one undifferentiated run and let check_url trim it
-  #     into a host afterwards, and every trim was a silent assumption about
-  #     where the authority ended. Each time the run was tightened, one of
-  #     those assumptions broke somewhere else:
-  #
-  #       - a bare : was excluded to stop a match eating the scheme of a
-  #         later URL, which also cut the match before the @, so
-  #         `https://github.com:x@evil.example.net/x` was read as the
-  #         declared github.com and the real destination vanished. A colon
-  #         is legal in userinfo, so userinfo now carries its own.
-  #       - the IP-literal branch was one element of the run, so
-  #         `https://[::1]https://evil.example.net/x` absorbed the next
-  #         scheme's letters and the `]` trim then discarded them. It is a
-  #         terminal alternative now: a bracketed authority ends at the ].
-  #
-  #     Spelling the grammar out is what keeps the matcher and the three
-  #     derivations in check_url talking about the same thing.
-  #
-  # The version before that rewrote expressions to placeholders first, which
-  # is the one thing a gate must not do: an unbalanced `${` before a URL and
-  # a `}` after it replaced the URL itself. Three rounds of this had the one
-  # cause -- treating "find the URLs" as a regex over a whole line of
-  # arbitrary source. Bounding the match to the authority removes the only
-  # freedom the extension had. The invariant to hold on to is not "no
-  # rewriting" but: no URL in a tracked file escapes evaluation. The suite
-  # asserts it with cases whose first host is DECLARED as well as cases
-  # whose first host is not, and that distinction is the whole point: with
-  # an undeclared host first the line is reported whatever becomes of the
-  # second URL, so such a case cannot fail for this class. Every case in
-  # the invariant block once put an undeclared host first, while a comma
-  # between a declared host and a second URL made that second URL vanish
-  # from the scan completely.
-  #
-  # Backticks are deliberately NOT one of the balanced forms here. A backtick
-  # is also a JavaScript string quote, so pairing them across a space would
-  # join a URL to whatever text follows it in the file. The cost is that
-  # `https://`cat host`.evil.example.net` is cut at the space and its domain
-  # is not seen; that limit is stated in the header.
-  while IFS=: read -r ln url; do
-    [ -z "$ln" ] && continue
-    check_url "$f" "$ln" "$url" "$kind"
-  done < <(grep -a '' "$f" 2>/dev/null | normalise \
-    | grep -naoiE "$url_re" 2>/dev/null)
+  # The occurrence must sit at a word boundary. `xhttps:` is a scheme this
+  # gate does not judge -- it is not special, so no parser applies the
+  # slash-skipping rule to it and no client fetches it over TLS -- and
+  # matching the tail of a word instead reported `let flows:u32 = 1;`.
+  while IFS="$tab" read -r ln scheme rest; do
+    [ -n "$ln" ] || continue
+    check_occurrence "$scheme" "$rest" "$f" "$ln" "$kind"
+  done < <(grep -a '' "$f" 2>/dev/null | normalise | awk '
+    # Where an authority ends. index() rather than a regex, so no character
+    # here needs escaping in two languages at once.
+    BEGIN {
+      re = "(^|[^A-Za-z0-9])([Hh][Tt][Tt][Pp][Ss]?|[Ww][Ss][Ss]?):"
+      TERM = "/?#\"\x27<> "
+    }
+    # The authority: the run after the slashes, up to the first character
+    # that cannot continue one -- except inside a BALANCED expression, where
+    # a space and a closing brace are part of the expression and not the end
+    # of the authority. `https://{{ host }}.evil.example.net` has to be seen
+    # whole, and `${MIRROR}` must not lose its brace to the terminator set.
+    # Walking characters is why this lives in awk: the shell cannot do it
+    # without a regex that has to be right in every edge case at once, which
+    # is the thing this rewrite removed.
+    function authority_of(rest,   i, n, c, c2, c3, out, closer) {
+      sub(/^\/+/, "", rest)
+      n = length(rest); out = ""; closer = ""; i = 1
+      while (i <= n) {
+        c = substr(rest, i, 1)
+        if (closer != "") {
+          if (substr(rest, i, length(closer)) == closer) {
+            out = out closer; i += length(closer); closer = ""; continue
+          }
+          out = out c; i++; continue
+        }
+        c3 = substr(rest, i, 3); c2 = substr(rest, i, 2)
+        if (c3 == "${{") { out = out c3; i += 3; closer = "}}"; continue }
+        if (c2 == "${")  { out = out c2; i += 2; closer = "}";  continue }
+        if (c2 == "{{")  { out = out c2; i += 2; closer = "}}"; continue }
+        if (c2 == "$(")  { out = out c2; i += 2; closer = ")";  continue }
+        if (index(TERM, c) > 0) break
+        out = out c; i++
+      }
+      return out
+    }
+    {
+      s = $0
+      while (match(s, re)) {
+        tok = substr(s, RSTART, RLENGTH)
+        sub(/^[^A-Za-z]/, "", tok)
+        printf "%d\t%s\t%s\n", NR, tok, authority_of(substr(s, RSTART + RLENGTH))
+        s = substr(s, RSTART + RLENGTH)
+      }
+    }')
 
 done
 

