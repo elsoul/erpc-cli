@@ -66,10 +66,15 @@ where
 
 /// Opens `url` in the operator's browser.
 ///
-/// Refuses any URL that is not an allowed browser destination. The URL
-/// comes from the identity provider's reply, which is the right source but
-/// still a remote one, and this is the last point before it is handed to
-/// the operating system.
+/// Refuses a URL that is not on a host declared in `erpc-core`'s
+/// endpoints, or that holds anything but the characters a verification
+/// URL needs. The URL comes from the identity provider's reply, which is
+/// the right source but still a remote one, and this is the last point
+/// before it is handed to the operating system. On Windows that is
+/// `cmd /C start`, which reads `&`, `|`, `^`, `%` and quotes as syntax and
+/// which the standard library does not escape for; the character check is
+/// what keeps the URL a single argument. `erpc-auth` already refuses such a
+/// URL when the reply arrives; this repeats it where it matters most.
 ///
 /// # Errors
 ///
@@ -77,6 +82,14 @@ where
 /// opener could not be started.
 pub fn open(url: &str) -> Result<(), String> {
     endpoints::ensure_service_url(url).map_err(|e| format!("refusing to open {url}: {e}"))?;
+    if !url
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b"-._~:/?=".contains(&b))
+    {
+        return Err(format!(
+            "refusing to open {url:?}: it holds characters a verification page does not need"
+        ));
+    }
 
     let (program, args): (&str, &[&str]) = if cfg!(target_os = "macos") {
         ("/usr/bin/open", &[])
@@ -166,6 +179,21 @@ mod tests {
         let evil = format!("{}evil.example.net/activate", "https://");
         let err = open(&evil).expect_err("an undeclared host is not opened");
         assert!(err.contains("refusing to open"), "{err}");
+    }
+
+    #[test]
+    fn a_url_a_shell_would_read_as_syntax_is_not_opened() {
+        // Round 6. Refused before anything is started, so this test never
+        // opens a browser on the machine running it.
+        for url in [
+            "https://auth-api.erpc.global/oauth/device?user_code=A&calc.exe",
+            "https://auth-api.erpc.global/oauth/device?x=1|whoami",
+            "https://auth-api.erpc.global/oauth/device?x=%PATH%",
+            "https://auth-api.erpc.global/oauth/device?x=^\"y",
+        ] {
+            let err = open(url).expect_err("not opened");
+            assert!(err.contains("refusing to open"), "{err}");
+        }
     }
 
     #[test]

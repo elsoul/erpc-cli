@@ -303,11 +303,27 @@ impl AuthorizationBody {
                 reason: "the authorization reply expires immediately".to_owned(),
             });
         }
+        // Checked here, where it arrives, so that nothing downstream --
+        // the terminal, the JSON output, the browser -- ever holds one
+        // that was not.
+        if !crate::device_flow::is_verification_url(&self.verification_uri, host) {
+            return Err(HttpError::Malformed {
+                host,
+                reason: "the authorization reply names a verification page that is not an \
+                         https page on the issuer's own host"
+                    .to_owned(),
+            });
+        }
+        // The complete form is a convenience; one that fails the check is
+        // dropped and the operator types the code instead.
+        let verification_uri_complete = self
+            .verification_uri_complete
+            .filter(|url| crate::device_flow::is_verification_url(url, host));
         Ok(DeviceAuthorization {
             device_code: self.device_code,
             user_code: self.user_code,
             verification_uri: self.verification_uri,
-            verification_uri_complete: self.verification_uri_complete,
+            verification_uri_complete,
             expires_in: Duration::from_secs(self.expires_in),
             // RFC 8628 says five seconds when the server does not say.
             interval: Duration::from_secs(self.interval.unwrap_or(5)),
@@ -395,7 +411,7 @@ mod tests {
     #[test]
     fn an_authorization_reply_is_read() {
         let body: AuthorizationBody = serde_json::from_str(
-            r#"{"device_code":"dc","user_code":"ABCD","verification_uri":"https://dashboard.erpc.global/activate","expires_in":600,"interval":5}"#,
+            r#"{"device_code":"dc","user_code":"ABCD","verification_uri":"https://auth-api.erpc.global/oauth/device","expires_in":600,"interval":5}"#,
         )
         .expect("parses");
         let auth = body.into_authorization(HOST).expect("valid");
@@ -405,10 +421,36 @@ mod tests {
     }
 
     #[test]
+    fn an_authorization_naming_another_page_is_refused() {
+        let body: AuthorizationBody = serde_json::from_str(
+            r#"{"device_code":"dc","user_code":"ABCD","verification_uri":"https://auth-api.erpc.global/oauth/device?x=1&calc","expires_in":600}"#,
+        )
+        .expect("parses");
+        assert!(matches!(
+            body.into_authorization(HOST),
+            Err(HttpError::Malformed { .. })
+        ));
+    }
+
+    #[test]
+    fn a_complete_verification_url_that_fails_the_check_is_dropped() {
+        let body: AuthorizationBody = serde_json::from_str(
+            r#"{"device_code":"dc","user_code":"ABCD","verification_uri":"https://auth-api.erpc.global/oauth/device","verification_uri_complete":"https://auth-api.erpc.global/oauth/device?user_code=A|B","expires_in":600}"#,
+        )
+        .expect("parses");
+        let auth = body.into_authorization(HOST).expect("valid");
+        assert_eq!(auth.verification_uri_complete, None);
+        assert_eq!(
+            auth.verification_uri,
+            "https://auth-api.erpc.global/oauth/device"
+        );
+    }
+
+    #[test]
     fn a_missing_interval_defaults_to_five_seconds() {
         // RFC 8628 section 3.2: five seconds when the server is silent.
         let body: AuthorizationBody = serde_json::from_str(
-            r#"{"device_code":"dc","user_code":"ABCD","verification_uri":"https://dashboard.erpc.global/activate","expires_in":600}"#,
+            r#"{"device_code":"dc","user_code":"ABCD","verification_uri":"https://auth-api.erpc.global/oauth/device","expires_in":600}"#,
         )
         .expect("parses");
         let auth = body.into_authorization(HOST).expect("valid");
@@ -418,7 +460,7 @@ mod tests {
     #[test]
     fn an_authorization_reply_without_codes_is_refused() {
         let body: AuthorizationBody = serde_json::from_str(
-            r#"{"device_code":"","user_code":"","verification_uri":"https://dashboard.erpc.global/x","expires_in":600}"#,
+            r#"{"device_code":"","user_code":"","verification_uri":"https://auth-api.erpc.global/oauth/device","expires_in":600}"#,
         )
         .expect("parses");
         assert!(matches!(
@@ -430,7 +472,7 @@ mod tests {
     #[test]
     fn an_authorization_that_expires_at_once_is_refused() {
         let body: AuthorizationBody = serde_json::from_str(
-            r#"{"device_code":"dc","user_code":"ABCD","verification_uri":"https://dashboard.erpc.global/x","expires_in":0}"#,
+            r#"{"device_code":"dc","user_code":"ABCD","verification_uri":"https://auth-api.erpc.global/oauth/device","expires_in":0}"#,
         )
         .expect("parses");
         assert!(matches!(

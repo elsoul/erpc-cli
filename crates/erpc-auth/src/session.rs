@@ -277,9 +277,16 @@ pub async fn sign_out<R: Revoker>(
 ) -> Result<bool, SessionError> {
     let _guard =
         crate::lock::ExclusiveLock::acquire(&refresh_lock_path(state_dir, key.audience()))?;
-    let stored_revoked = match store.load(key)? {
-        Some(existing) => Some(client.revoke(key.audience(), &existing.refresh_token).await),
-        None => None,
+    let stored_revoked = match readable(store.load(key))? {
+        Readable::Held(existing) => {
+            Some(client.revoke(key.audience(), &existing.refresh_token).await)
+        }
+        Readable::Nothing => None,
+        // A record this build cannot read still has to go: refusing to
+        // sign out over it left the operator no way out at all, since
+        // signing in failed on the same read. Its token cannot be revoked,
+        // and nothing may say it was.
+        Readable::Unreadable => Some(false),
     };
 
     // A parked session is a live refresh token in cleartext on this
@@ -352,10 +359,17 @@ pub async fn store_new_session<R: Revoker>(
     key: &CredKey,
     state_dir: &Path,
     credential: &Credential,
-) -> Result<Option<ParkedReport>, SessionError> {
+) -> Result<SignInReport, SessionError> {
     let _guard =
         crate::lock::ExclusiveLock::acquire(&refresh_lock_path(state_dir, key.audience()))?;
-    let previous = store.load(key)?;
+    let (previous, previous_unreadable) = match readable(store.load(key))? {
+        Readable::Held(previous) => (Some(previous), false),
+        Readable::Nothing => (None, false),
+        // Replaced all the same, and said so: a record this build cannot
+        // read is one nobody can use, and refusing the sign-in over it
+        // left the operator no way past it.
+        Readable::Unreadable => (None, true),
+    };
     store.save(key, credential)?;
 
     // The parked file is only newer than the store, never newer than a
@@ -389,14 +403,47 @@ pub async fn store_new_session<R: Revoker>(
     if let Some(previous) = previous {
         client.revoke(key.audience(), &previous.refresh_token).await;
     }
-    Ok(match parked_revoked {
-        Some(revoked) if !(revoked && removed) => Some(ParkedReport {
-            path: parked_at,
-            revoked,
-            removed,
-        }),
-        _ => None,
+    Ok(SignInReport {
+        parked: match parked_revoked {
+            Some(revoked) if !(revoked && removed) => Some(ParkedReport {
+                path: parked_at,
+                revoked,
+                removed,
+            }),
+            _ => None,
+        },
+        previous_unreadable,
     })
+}
+
+/// What a sign-in could not do cleanly, for the caller to tell the
+/// operator. The default is the clean case.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SignInReport {
+    /// A parked file that was not both revoked and removed.
+    pub parked: Option<ParkedReport>,
+    /// The store held a session this build could not read. It was replaced
+    /// and could not be revoked.
+    pub previous_unreadable: bool,
+}
+
+/// A store read, sorted by what a writer can do about it.
+enum Readable {
+    Held(Credential),
+    Nothing,
+    Unreadable,
+}
+
+/// Sorts a store read. A record that will not parse, or is from another
+/// build, is something a writer can replace; a store that could not be
+/// reached is not, because what it holds may be a live session.
+fn readable(read: Result<Option<Credential>, StoreError>) -> Result<Readable, SessionError> {
+    match read {
+        Ok(Some(held)) => Ok(Readable::Held(held)),
+        Ok(None) => Ok(Readable::Nothing),
+        Err(StoreError::Corrupt(_) | StoreError::UnknownVersion { .. }) => Ok(Readable::Unreadable),
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// What a sign-in did with a parked file it found, when that was not the
@@ -827,7 +874,7 @@ mod tests {
             release_files(dir.path());
 
             assert_eq!(
-                leftover.expect("signed in"),
+                leftover.expect("signed in").parked,
                 Some(super::ParkedReport {
                     path: at.clone(),
                     revoked: true,
@@ -884,7 +931,7 @@ mod tests {
                 .await
                 .expect("signed in");
         assert_eq!(
-            report,
+            report.parked,
             Some(super::ParkedReport {
                 path: at.clone(),
                 revoked: false,
@@ -907,7 +954,10 @@ mod tests {
             super::store_new_session(&revoker, &store, &key(), dir.path(), &cred("NEW-LOGIN"))
                 .await
                 .expect("signed in");
-        assert_eq!(report.map(|r| (r.revoked, r.removed)), Some((false, true)));
+        assert_eq!(
+            report.parked.map(|r| (r.revoked, r.removed)),
+            Some((false, true))
+        );
     }
 
     #[tokio::test]
@@ -928,6 +978,111 @@ mod tests {
         assert!(!at.exists(), "the cleartext copy is gone");
     }
 
+    /// A store whose one record is from a build this one cannot read.
+    struct UnreadableStore {
+        held: std::cell::RefCell<Option<Credential>>,
+        unreadable: Cell<bool>,
+    }
+
+    impl CredentialStore for UnreadableStore {
+        fn load(&self, _key: &CredKey) -> Result<Option<Credential>, StoreError> {
+            if self.unreadable.get() {
+                return Err(StoreError::UnknownVersion {
+                    found: 9,
+                    expected: 1,
+                });
+            }
+            Ok(self.held.borrow().clone())
+        }
+        fn save(&self, _key: &CredKey, cred: &Credential) -> Result<(), StoreError> {
+            self.unreadable.set(false);
+            *self.held.borrow_mut() = Some(cred.clone());
+            Ok(())
+        }
+        fn delete(&self, _key: &CredKey) -> Result<(), StoreError> {
+            self.unreadable.set(false);
+            *self.held.borrow_mut() = None;
+            Ok(())
+        }
+        fn kind(&self) -> StoreKind {
+            StoreKind::File
+        }
+    }
+
+    fn unreadable_store() -> UnreadableStore {
+        UnreadableStore {
+            held: std::cell::RefCell::new(None),
+            unreadable: Cell::new(true),
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_stored_session_does_not_block_a_sign_in() {
+        // Round 6: the error said to sign in again, and signing in failed
+        // on the same read -- after the operator had approved it, so the
+        // new session was revoked as well.
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let store = unreadable_store();
+        let revoker = RecordingRevoker::default();
+        let report =
+            super::store_new_session(&revoker, &store, &key(), dir.path(), &cred("NEW-LOGIN"))
+                .await
+                .expect("signed in");
+        assert!(report.previous_unreadable, "and the operator is told");
+        assert_eq!(
+            store
+                .held
+                .borrow()
+                .as_ref()
+                .map(|c| c.refresh_token.expose_secret().to_owned()),
+            Some("ref.NEW-LOGIN.s".to_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_stored_session_does_not_block_a_sign_out() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let store = unreadable_store();
+        let revoker = RecordingRevoker::default();
+        let confirmed = super::sign_out(&revoker, &store, &key(), dir.path())
+            .await
+            .expect("signed out");
+        assert!(!confirmed, "a token nobody could read was not revoked");
+        assert!(!store.unreadable.get(), "the record was removed");
+    }
+
+    #[tokio::test]
+    async fn a_store_that_cannot_be_reached_still_stops_a_sign_in() {
+        // Not the same as unreadable: what it holds may be a live session,
+        // and writing over it would strand that.
+        struct Unreachable;
+        impl CredentialStore for Unreachable {
+            fn load(&self, _key: &CredKey) -> Result<Option<Credential>, StoreError> {
+                Err(StoreError::Backend {
+                    kind: StoreKind::OsKeychain,
+                    operation: "read from the keychain",
+                    reason: "locked".to_owned(),
+                })
+            }
+            fn save(&self, _key: &CredKey, _cred: &Credential) -> Result<(), StoreError> {
+                panic!("must not write over what it could not read")
+            }
+            fn delete(&self, _key: &CredKey) -> Result<(), StoreError> {
+                panic!("must not delete what it could not read")
+            }
+            fn kind(&self) -> StoreKind {
+                StoreKind::OsKeychain
+            }
+        }
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let revoker = RecordingRevoker::default();
+        assert!(
+            super::store_new_session(&revoker, &Unreachable, &key(), dir.path(), &cred("N"))
+                .await
+                .is_err()
+        );
+    }
+
     #[tokio::test]
     async fn a_sign_in_with_a_working_unlink_reports_nothing_left_over() {
         let dir = tempfile::tempdir().expect("a temporary directory");
@@ -939,7 +1094,7 @@ mod tests {
             super::store_new_session(&revoker, &store, &key(), dir.path(), &cred("NEW-LOGIN"))
                 .await
                 .expect("signed in");
-        assert!(leftover.is_none());
+        assert_eq!(leftover, super::SignInReport::default());
         assert!(!at.exists());
     }
 

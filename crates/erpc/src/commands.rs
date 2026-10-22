@@ -12,7 +12,7 @@ use core::time::Duration;
 
 use erpc_auth::credential::CredKey;
 use erpc_auth::device_flow::DeviceAuthorization;
-use erpc_auth::session::{LoginPrompt, ParkedReport, approved_to_credential};
+use erpc_auth::session::{LoginPrompt, ParkedReport, SignInReport, approved_to_credential};
 use erpc_auth::store::StoreKind;
 use erpc_auth::{AuthClient, session as auth_session};
 
@@ -92,6 +92,12 @@ pub async fn login(json: bool, requested: Option<StoreKind>, no_browser: bool) -
         );
     }
 
+    // Before the operator is sent to a browser: a sign-in that cannot be
+    // kept anywhere should not be approved first and revoked after.
+    let state_dir = match session::state_dir() {
+        Ok(dir) => dir,
+        Err(e) => return Outcome::Failed(e),
+    };
     let client = match AuthClient::new() {
         Ok(client) => client,
         Err(e) => return Outcome::Failed(e.to_string()),
@@ -127,7 +133,7 @@ pub async fn login(json: bool, requested: Option<StoreKind>, no_browser: bool) -
         &client,
         store.as_ref(),
         &key,
-        &session::state_dir(),
+        &state_dir,
         &credential,
     )
     .await
@@ -158,7 +164,8 @@ pub async fn login(json: bool, requested: Option<StoreKind>, no_browser: bool) -
             "account": user.label(),
             "uid": user.uid,
             "store": report,
-            "parked_file": leftover.as_ref().map(|r| serde_json::json!({
+            "previous_session_unreadable": leftover.previous_unreadable,
+            "parked_file": leftover.parked.as_ref().map(|r| serde_json::json!({
                 "path": r.path.display().to_string(),
                 "revoked_at_issuer": r.revoked,
                 "removed": r.removed,
@@ -173,8 +180,8 @@ pub async fn login(json: bool, requested: Option<StoreKind>, no_browser: bool) -
         }
         // Said now, not left to `erpc doctor`: the sign-in is fine, but
         // something about the parked file it found did not go cleanly.
-        if let Some(report) = &leftover {
-            lines.push(format!("  warning: {}", parked_warning(report)));
+        for warning in sign_in_warnings(&leftover) {
+            lines.push(format!("  warning: {warning}"));
         }
         Outcome::Done(lines.join("\n"))
     }
@@ -193,7 +200,11 @@ pub async fn logout(json: bool, requested: Option<StoreKind>) -> Outcome {
         Ok(client) => client,
         Err(e) => return Outcome::Failed(e.to_string()),
     };
-    match auth_session::sign_out(&client, store.as_ref(), &key, &session::state_dir()).await {
+    let state_dir = match session::state_dir() {
+        Ok(dir) => dir,
+        Err(e) => return Outcome::Failed(e),
+    };
+    match auth_session::sign_out(&client, store.as_ref(), &key, &state_dir).await {
         Ok(revoked) => {
             if json {
                 crate::print_json(&serde_json::json!({
@@ -231,24 +242,22 @@ pub async fn whoami(json: bool, requested: Option<StoreKind>) -> Outcome {
         Err(e) => return Outcome::Failed(e.to_string()),
     };
 
-    let credential = match auth_session::current_session(
-        &client,
-        store.as_ref(),
-        &key,
-        &session::state_dir(),
-        now(),
-    )
-    .await
-    {
-        Ok(credential) => credential,
-        Err(erpc_auth::SessionError::NoSession) => {
-            return no_session(json, "not signed in");
-        }
-        Err(erpc_auth::SessionError::Expired) => {
-            return no_session(json, "the session has expired or was signed out elsewhere");
-        }
-        Err(e) => return Outcome::Failed(e.to_string()),
+    let state_dir = match session::state_dir() {
+        Ok(dir) => dir,
+        Err(e) => return Outcome::Failed(e),
     };
+    let credential =
+        match auth_session::current_session(&client, store.as_ref(), &key, &state_dir, now()).await
+        {
+            Ok(credential) => credential,
+            Err(erpc_auth::SessionError::NoSession) => {
+                return no_session(json, "not signed in");
+            }
+            Err(erpc_auth::SessionError::Expired) => {
+                return no_session(json, "the session has expired or was signed out elsewhere");
+            }
+            Err(e) => return Outcome::Failed(e.to_string()),
+        };
 
     match erpc_api::get_user(&client, &credential.access_token).await {
         Ok(user) => {
@@ -329,7 +338,10 @@ fn now() -> i64 {
 /// the network, so it works when nothing else does.
 pub fn doctor(json: bool, requested: Option<StoreKind>) -> Outcome {
     let selection = session::plan_store(requested);
-    let state_dir = session::state_dir();
+    let state_dir = match session::state_dir() {
+        Ok(dir) => dir,
+        Err(e) => return Outcome::Failed(e),
+    };
     let on_disk = crate::doctor::secrets_on_disk(&state_dir);
     let found = crate::doctor::findings(selection, &on_disk);
     let worst = crate::doctor::worst(&found);
@@ -377,6 +389,22 @@ fn doctor_outcome(worst: crate::doctor::Level) -> Outcome {
     }
 }
 
+/// What `login` says about what it could not do cleanly.
+fn sign_in_warnings(report: &SignInReport) -> Vec<String> {
+    let mut out = Vec::new();
+    if report.previous_unreadable {
+        out.push(
+            "the session stored before this one could not be read, so it was replaced without \
+             being revoked and may stay valid until it expires."
+                .to_owned(),
+        );
+    }
+    if let Some(parked) = &report.parked {
+        out.push(parked_warning(parked));
+    }
+    out
+}
+
 /// What `login` says about a parked file it could not deal with cleanly.
 ///
 /// Each sentence is conditional on what actually happened: "revoked" only
@@ -400,7 +428,25 @@ fn parked_warning(report: &ParkedReport) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Outcome, ParkedReport, now, parked_warning};
+    use super::{Outcome, ParkedReport, SignInReport, now, parked_warning, sign_in_warnings};
+
+    #[test]
+    fn a_clean_sign_in_warns_about_nothing() {
+        assert!(sign_in_warnings(&SignInReport::default()).is_empty());
+    }
+
+    #[test]
+    fn an_unreadable_previous_session_is_said_not_to_be_revoked() {
+        let warnings = sign_in_warnings(&SignInReport {
+            parked: None,
+            previous_unreadable: true,
+        });
+        assert_eq!(warnings.len(), 1);
+        assert!(
+            warnings[0].contains("without being revoked"),
+            "{warnings:?}"
+        );
+    }
 
     fn report(revoked: bool, removed: bool) -> ParkedReport {
         ParkedReport {

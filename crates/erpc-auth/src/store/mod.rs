@@ -42,7 +42,7 @@ pub enum StoreKind {
 }
 
 impl StoreKind {
-    /// The name used in configuration, in `--store` and in `erpc doctor`.
+    /// The name used in `--store` and in `erpc doctor`.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -62,7 +62,7 @@ impl StoreKind {
         matches!(self, Self::File)
     }
 
-    /// Parses a name from configuration or `--store`.
+    /// Parses a name from `--store`.
     #[must_use]
     pub fn parse(name: &str) -> Option<Self> {
         match name {
@@ -155,6 +155,32 @@ pub trait CredentialStore {
     fn kind(&self) -> StoreKind;
 }
 
+/// A record that would not parse, described by where and never by what.
+///
+/// The parsers' own messages quote the text they choke on -- `toml` prints
+/// the offending line, `serde_json` can quote a value -- and in these
+/// records that text is a session token. A message that reaches `error:`
+/// on the operator's terminal is not a place a token may go, so the
+/// position is all that is kept.
+pub(crate) fn unparsable_toml(what: &str, text: &str, error: &toml::de::Error) -> StoreError {
+    let line = error
+        .span()
+        .map(|span| text[..span.start.min(text.len())].matches('\n').count() + 1);
+    StoreError::Corrupt(match line {
+        Some(line) => format!("{what} is not valid TOML at line {line}"),
+        None => format!("{what} is not valid TOML"),
+    })
+}
+
+/// The JSON counterpart of [`unparsable_toml`].
+pub(crate) fn unparsable_json(what: &str, error: &serde_json::Error) -> StoreError {
+    StoreError::Corrupt(format!(
+        "{what} is not the expected JSON at line {}, column {}",
+        error.line(),
+        error.column()
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::StoreKind;
@@ -182,5 +208,33 @@ mod tests {
         ] {
             assert!(!kind.writes_secrets_to_disk(), "{kind}");
         }
+    }
+}
+
+#[cfg(test)]
+mod unparsable_tests {
+    use super::{unparsable_json, unparsable_toml};
+    use crate::credential::StoredCredential;
+
+    #[test]
+    fn neither_parser_message_is_passed_on() {
+        // serde_json quotes a value it could not convert, and toml quotes
+        // the line it stopped on; in these records both are tokens.
+        let token = crate::lock::tests::token_fixture();
+        let json = format!(
+            r#"{{"store_version":1,"access_token":"a","refresh_token":"b","expires_at":"{token}"}}"#
+        );
+        let err = serde_json::from_str::<StoredCredential>(&json).expect_err("a type error");
+        assert!(
+            err.to_string().contains("U0VDUkVUUEFZTE9BRA"),
+            "the premise: {err}"
+        );
+        let shown = unparsable_json("the keychain entry", &err).to_string();
+        assert!(!shown.contains("U0VDUkVUUEFZTE9BRA"), "{shown}");
+
+        let text = format!("store_version = 1\nexpires_at = \"{token}\"\n");
+        let err = toml::from_str::<StoredCredential>(&text).expect_err("a type error");
+        let shown = unparsable_toml("the credentials file", &text, &err).to_string();
+        assert!(!shown.contains("U0VDUkVUUEFZTE9BRA"), "{shown}");
     }
 }

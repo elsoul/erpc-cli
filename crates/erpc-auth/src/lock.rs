@@ -220,8 +220,8 @@ pub fn read_parked(path: &Path) -> Result<Option<Parked>, StoreError> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(backend("read the parked session", &e)),
     };
-    let stored: ParkedRecord =
-        toml::from_str(&text).map_err(|e| StoreError::Corrupt(e.to_string()))?;
+    let stored: ParkedRecord = toml::from_str(&text)
+        .map_err(|e| crate::store::unparsable_toml("the parked session", &text, &e))?;
     if stored.store_version != PARKED_VERSION {
         return Err(StoreError::UnknownVersion {
             found: stored.store_version,
@@ -264,7 +264,7 @@ fn backend(operation: &'static str, error: &dyn core::fmt::Display) -> StoreErro
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::{ExclusiveLock, clear_parked, park_credential, read_parked};
     use crate::credential::Credential;
     use crate::store::StoreError;
@@ -336,12 +336,17 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temporary directory");
         let path = dir.path().join("pending-credentials.auth-api");
         park_credential(&path, &cred(), &spent()).expect("parked");
+        // Read it the way the earlier build did: as a stored record, whose
+        // reader ignores fields it does not know and then checks the
+        // version against the store's.
         let text = std::fs::read_to_string(&path).expect("read the file");
-        assert!(
-            text.contains(&format!("store_version = {}", super::PARKED_VERSION)),
-            "{text}"
+        let as_old: crate::credential::StoredCredential =
+            toml::from_str(&text).expect("the old reader parses it");
+        assert_ne!(
+            as_old.store_version,
+            crate::credential::STORE_VERSION,
+            "so the old reader refuses it instead of filing it away"
         );
-        assert_ne!(super::PARKED_VERSION, crate::credential::STORE_VERSION);
     }
 
     #[test]
@@ -409,6 +414,34 @@ mod tests {
             path.exists(),
             "a file that could not be read is not deleted"
         );
+    }
+
+    /// A token-shaped value, assembled at runtime for the same reason as
+    /// the fixtures in `store::one_password`: a literal would be a finding
+    /// for `gitleaks`, correctly.
+    pub(crate) fn token_fixture() -> String {
+        ["eyJhbGciOiJIUzI1NiJ9", "U0VDUkVUUEFZTE9BRA", "c2ln"].join(".")
+    }
+
+    #[test]
+    fn a_broken_parked_file_does_not_quote_its_token() {
+        // Round 6: `toml`'s message prints the line it failed on, and in
+        // this file that line is a token. The message reaches `error:` on
+        // the operator's terminal.
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let path = dir.path().join("pending-credentials.auth-api");
+        let token = token_fixture();
+        std::fs::write(
+            &path,
+            format!("store_version = 2\naccess_token = \"{token}\nrefresh_token = 1\n"),
+        )
+        .expect("write the fixture");
+        let Err(err) = read_parked(&path) else {
+            panic!("the file is malformed");
+        };
+        let shown = err.to_string();
+        assert!(!shown.contains("U0VDUkVUUEFZTE9BRA"), "{shown}");
+        assert!(shown.contains("line 2"), "the position is kept: {shown}");
     }
 
     #[cfg(unix)]

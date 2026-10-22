@@ -283,22 +283,82 @@ pub mod endpoint {
     }
 }
 
+/// Whether `url` is a page the operator may be sent to for this sign-in.
+///
+/// Only `https` on the issuer's own host -- the host the authorization was
+/// requested from, which is where the issuer puts its verification page --
+/// and only characters a URL of that kind needs. The URL comes from the
+/// network, and it is printed to a terminal and handed to the operating
+/// system to open; on Windows that goes through `cmd`, where `&`, `|`, `^`
+/// and `%` are syntax. A narrow character set is what makes both safe
+/// without depending on how either one quotes.
+#[must_use]
+pub fn is_verification_url(url: &str, issuer_host: &str) -> bool {
+    url.strip_prefix("https://")
+        .and_then(|rest| rest.strip_prefix(issuer_host))
+        .is_some_and(|path| {
+            path.starts_with('/')
+                && path
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-._~/?=".contains(&b))
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use core::time::Duration;
 
     use super::{
         Audience, DeviceAuthorization, LoginError, MAX_INTERVAL, MIN_INTERVAL, Next, PollOutcome,
-        Poller, endpoint,
+        Poller, endpoint, is_verification_url,
     };
+
+    #[test]
+    fn the_issuers_own_verification_page_is_accepted() {
+        // The shape the issuer really sends.
+        for url in [
+            "https://auth-api.erpc.global/oauth/device",
+            "https://auth-api.erpc.global/oauth/device?user_code=ABCD-EFGH",
+        ] {
+            assert!(is_verification_url(url, "auth-api.erpc.global"), "{url}");
+        }
+    }
+
+    #[test]
+    fn a_verification_page_anywhere_else_or_with_shell_syntax_is_refused() {
+        // Round 6: on Windows the URL went to `cmd /C start`, where these
+        // are command separators and variable expansion.
+        let host = "auth-api.erpc.global";
+        for url in [
+            "https://auth-api.erpc.global/oauth/device?user_code=A&calc.exe",
+            "https://auth-api.erpc.global/oauth/device?x=1|whoami",
+            "https://auth-api.erpc.global/oauth/device?x=^%PATH%",
+            "https://auth-api.erpc.global/oauth/device?x=\"y",
+            "https://auth-api.erpc.global/oauth/device x",
+            "https://auth-api.erpc.global/oauth/device\n",
+            "https://auth-api.erpc.global:8443/oauth/device",
+            "https://user@auth-api.erpc.global/oauth/device",
+            "https://dashboard.erpc.global/activate",
+            "https://auth-api.erpc.global",
+        ] {
+            assert!(!is_verification_url(url, host), "{url:?}");
+        }
+        // Assembled, as the URL fixtures elsewhere are: a lookalike host and
+        // a plaintext scheme are both findings for the endpoint gate,
+        // correctly, since it cannot tell a fixture from a destination.
+        let lookalike = ["https://auth-api.erpc.global", ".evil.example/oauth/device"].concat();
+        assert!(!is_verification_url(&lookalike, host));
+        let plaintext = ["http", "://auth-api.erpc.global/oauth/device"].concat();
+        assert!(!is_verification_url(&plaintext, host));
+    }
 
     fn auth(interval_secs: u64, expires_secs: u64) -> DeviceAuthorization {
         DeviceAuthorization {
             device_code: "dc".to_owned(),
             user_code: "ABCD-EFGH".to_owned(),
-            verification_uri: "https://dashboard.erpc.global/activate".to_owned(),
+            verification_uri: "https://auth-api.erpc.global/oauth/device".to_owned(),
             verification_uri_complete: Some(
-                "https://dashboard.erpc.global/activate?code=ABCD-EFGH".to_owned(),
+                "https://auth-api.erpc.global/oauth/device?user_code=ABCD-EFGH".to_owned(),
             ),
             expires_in: Duration::from_secs(expires_secs),
             interval: Duration::from_secs(interval_secs),
@@ -510,7 +570,10 @@ mod tests {
             verification_uri_complete: None,
             ..auth(5, 600)
         };
-        assert_eq!(without.open_url(), "https://dashboard.erpc.global/activate");
+        assert_eq!(
+            without.open_url(),
+            "https://auth-api.erpc.global/oauth/device"
+        );
     }
 
     #[test]

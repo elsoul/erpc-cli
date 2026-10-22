@@ -38,11 +38,11 @@ impl From<Selection> for StoreReport {
 
 /// Reads the facts the store choice is made from.
 ///
-/// `probe_desktop` says whether to run `op account list`. It is false for
-/// anything that only wants to report, because starting a subprocess to
-/// answer a question nobody asked would slow every command down and could
-/// raise a biometric prompt; it is true when a session is about to be
-/// written and the answer decides where.
+/// `probe_desktop` says whether to run `op account list`. [`plan_store`]
+/// sets it whenever no store was named, for every command, because then
+/// the answer decides which store the command reads or writes. With
+/// `--store` the choice is made and the probe is skipped: it would only
+/// cost a subprocess and possibly a biometric prompt.
 ///
 /// Without the probe `op_account_usable` stays false, so an installed `op`
 /// alone never selects the desktop store. The binary being on disk says
@@ -100,31 +100,56 @@ pub fn has_terminal() -> bool {
 ///
 /// `ERPC_HOME` overrides the root, which is what makes a test, and a CI
 /// job, able to run without touching the operator's own files.
-#[must_use]
-pub fn state_dir() -> PathBuf {
-    state_dir_from(|name| std::env::var_os(name))
+///
+/// # Errors
+///
+/// Returns a message when neither `ERPC_HOME` nor the home directory gives
+/// an absolute path; see [`state_dir_from`].
+pub fn state_dir() -> Result<PathBuf, String> {
+    state_dir_from(std::env::var_os("ERPC_HOME"), std::env::home_dir())
 }
 
-/// The state directory, reading the environment through `var`.
+/// The state directory, from `ERPC_HOME` and the home directory.
 ///
 /// Split out so a test can describe a machine instead of mutating the
 /// process environment, which this workspace forbids anyway: changing a
 /// variable is `unsafe` in this edition because another thread may be
 /// reading it.
-#[must_use]
-pub fn state_dir_from<F>(var: F) -> PathBuf
-where
-    F: Fn(&str) -> Option<std::ffi::OsString>,
-{
-    let root = var("ERPC_HOME").map_or_else(
-        || {
-            var("HOME")
-                .map_or_else(|| PathBuf::from("."), PathBuf::from)
-                .join(".erpc")
-        },
-        PathBuf::from,
-    );
-    root.join("state")
+///
+/// The home directory comes from the platform's own lookup, which on
+/// Windows is the profile directory: `HOME` is not set there by default,
+/// and reading it alone sent every Windows user to the fallback.
+///
+/// # Errors
+///
+/// Refuses rather than falling back to a relative path. The fallback used
+/// to be `.`, which put the credentials file and any parked session in
+/// whatever directory `erpc` ran in -- possibly a git working tree -- where
+/// `erpc doctor`, run from anywhere else, could not see them. It also made
+/// the refresh lock one per directory instead of one per machine, so two
+/// refreshes from two directories could both rotate the token and revoke
+/// the family, which is what the lock exists to prevent.
+pub fn state_dir_from(
+    erpc_home: Option<std::ffi::OsString>,
+    home: Option<PathBuf>,
+) -> Result<PathBuf, String> {
+    let root = match (erpc_home.filter(|v| !v.is_empty()), home) {
+        (Some(explicit), _) => PathBuf::from(explicit),
+        (None, Some(home)) => home.join(".erpc"),
+        (None, None) => {
+            return Err(
+                "cannot find a home directory for erpc's state; set ERPC_HOME to an absolute path"
+                    .to_owned(),
+            );
+        }
+    };
+    if !root.is_absolute() {
+        return Err(format!(
+            "erpc's state directory must be an absolute path, got {}; set ERPC_HOME to one",
+            root.display()
+        ));
+    }
+    Ok(root.join("state"))
 }
 
 /// The account name a session is filed under.
@@ -221,22 +246,42 @@ mod tests {
         assert!(!report.writes_to_disk);
     }
 
+    /// An absolute path on whichever platform runs the test. `/srv/erpc`
+    /// is relative on Windows, which has no root without a drive.
+    fn somewhere_absolute() -> std::path::PathBuf {
+        std::env::temp_dir().join("erpc-test-root")
+    }
+
     #[test]
     fn erpc_home_moves_the_state_directory() {
-        let moved = super::state_dir_from(|n| match n {
-            "ERPC_HOME" => Some(std::ffi::OsString::from("/srv/erpc")),
-            _ => None,
-        });
-        assert_eq!(moved, std::path::Path::new("/srv/erpc/state"));
+        let root = somewhere_absolute();
+        let moved = super::state_dir_from(Some(root.clone().into_os_string()), None)
+            .expect("an absolute ERPC_HOME is used as it is");
+        assert_eq!(moved, root.join("state"));
     }
 
     #[test]
     fn without_erpc_home_the_state_directory_is_under_the_home_directory() {
-        let home = super::state_dir_from(|n| match n {
-            "HOME" => Some(std::ffi::OsString::from("/home/alice")),
-            _ => None,
-        });
-        assert_eq!(home, std::path::Path::new("/home/alice/.erpc/state"));
+        let home = somewhere_absolute();
+        let dir = super::state_dir_from(None, Some(home.clone())).expect("a home directory");
+        assert_eq!(dir, home.join(".erpc").join("state"));
+    }
+
+    #[test]
+    fn the_state_directory_is_never_relative() {
+        // Round 6: with no home directory it fell back to `.`, which put
+        // secrets in the working directory and split the refresh lock.
+        assert!(super::state_dir_from(None, None).is_err());
+        assert!(super::state_dir_from(Some(".".into()), None).is_err());
+        assert!(super::state_dir_from(Some("relative/erpc".into()), None).is_err());
+        assert!(super::state_dir_from(None, Some(".".into())).is_err());
+        assert!(super::state_dir_from(Some("".into()), Some(".".into())).is_err());
+        // An empty ERPC_HOME is unset, not "here".
+        let home = somewhere_absolute();
+        assert_eq!(
+            super::state_dir_from(Some("".into()), Some(home.clone())).expect("falls through"),
+            home.join(".erpc").join("state")
+        );
     }
 
     #[test]

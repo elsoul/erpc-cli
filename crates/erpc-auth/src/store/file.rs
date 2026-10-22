@@ -108,7 +108,7 @@ impl FileStore {
         if text.trim().is_empty() {
             return Ok(Document::default());
         }
-        toml::from_str(&text).map_err(|e| StoreError::Corrupt(e.to_string()))
+        toml::from_str(&text).map_err(|e| super::unparsable_toml("the credentials file", &text, &e))
     }
 
     /// Writes the document beside the target and renames it over.
@@ -206,6 +206,22 @@ mod tests {
     use crate::credential::{Audience, CredKey, Credential};
     use crate::store::{CredentialStore as _, StoreError, StoreKind};
     use secrecy::{ExposeSecret as _, SecretString};
+
+    #[test]
+    fn a_broken_credentials_file_does_not_quote_its_token() {
+        // Round 6: `erpc whoami --store file` printed the token from the
+        // line `toml` failed on.
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let path = dir.path().join("credentials.toml");
+        let token = crate::lock::tests::token_fixture();
+        std::fs::write(&path, format!("[sessions]\naccess_token = \"{token}\n")).expect("write");
+        let err = FileStore::new(&path)
+            .load(&CredKey::new(Audience::AuthApi, "alice"))
+            .expect_err("the file is malformed");
+        let shown = err.to_string();
+        assert!(!shown.contains("U0VDUkVUUEFZTE9BRA"), "{shown}");
+        assert!(shown.contains("line 2"), "the position is kept: {shown}");
+    }
 
     fn cred(access: &str) -> Credential {
         Credential {

@@ -5,10 +5,11 @@
 //!
 //! The requirement is that `erpc` leaves no secret on this machine, with
 //! two stated exceptions. A rule with exceptions needs something that
-//! finds them, and that is what this command is for: the file store, and a
-//! session parked after a rotation the store refused. Several places in
-//! the code promise that this command will report those, so it has to
-//! exist and it has to actually look.
+//! finds them, and that is what this command is for: the file store, a
+//! session parked after a rotation the store refused, and the temporary
+//! file either can leave if a write is interrupted. Several places in the
+//! code promise that this command will report those, so it has to exist
+//! and it has to actually look.
 
 use std::path::{Path, PathBuf};
 
@@ -77,7 +78,32 @@ pub fn secrets_on_disk(state_dir: &Path) -> Vec<OnDisk> {
     for audience in Audience::all() {
         consider(parked_path(state_dir, *audience));
     }
+    // Both are written to a temporary file beside them and renamed into
+    // place. A crash between the two leaves the temporary file, holding
+    // the same secret, under a name nothing else looks for.
+    if let Ok(entries) = std::fs::read_dir(state_dir) {
+        let mut temporary: Vec<PathBuf> = entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| is_interrupted_write(path))
+            .collect();
+        temporary.sort();
+        for path in temporary {
+            consider(path);
+        }
+    }
     found
+}
+
+/// Whether `path` is the temporary file of a secret write that did not
+/// finish: `.credentials-*.tmp` from the file store, `.pending-*.tmp` from
+/// a parked session.
+fn is_interrupted_write(path: &Path) -> bool {
+    path.extension().is_some_and(|ext| ext == "tmp")
+        && path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with(".credentials-") || n.starts_with(".pending-"))
 }
 
 /// Turns the store choice and what is on disk into findings.
@@ -109,12 +135,18 @@ pub fn findings(selection: Selection, on_disk: &[OnDisk]) -> Vec<Finding> {
             .and_then(|n| n.to_str())
             .is_some_and(|n| n.starts_with("pending-credentials."));
         let stale = item.age.is_some_and(|age| age > PARKED_STALE_AFTER);
-        let level = if parked && stale {
+        let level = if (parked && stale) || is_interrupted_write(&item.path) {
             Level::Warn
         } else {
             Level::Note
         };
-        let detail = if parked {
+        let detail = if is_interrupted_write(&item.path) {
+            format!(
+                "{} — left by a write that did not finish, and it may hold a session in \
+                 cleartext. erpc does not use it; delete it.",
+                item.path.display()
+            )
+        } else if parked {
             if stale {
                 // Either the store has refused it ever since, and it is a
                 // live token in cleartext, or a sign-in or sign-out revoked
@@ -260,6 +292,34 @@ mod tests {
         // The message tells the operator a command will clean this up, so
         // that command has to be the one that really does it.
         assert!(detail.contains("whoami"), "{detail}");
+    }
+
+    #[test]
+    fn a_write_that_did_not_finish_is_found_and_warned_about() {
+        // Round 6: the temporary file a crash leaves holds the same secret
+        // as the file it was going to replace, and nothing reported it.
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        // Assembled: `credentials-` followed by a random-looking suffix is
+        // the shape gitleaks reads as a key assignment, correctly, since it
+        // cannot tell a temporary file's name from a credential. Same
+        // accommodation as the token fixtures, for the same reason.
+        for prefix in [".credentials-", ".pending-"] {
+            let name = format!("{prefix}{}.tmp", "a1b2");
+            std::fs::write(dir.path().join(name), "x").expect("write");
+        }
+        // Not ours, so not reported.
+        std::fs::write(dir.path().join(".other-e5f6.tmp"), "x").expect("write");
+        let found = secrets_on_disk(dir.path());
+        assert_eq!(
+            found.len(),
+            2,
+            "{:?}",
+            found.iter().map(|f| &f.path).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            worst(&findings(selection(StoreKind::OsKeychain), &found)),
+            Level::Warn
+        );
     }
 
     #[test]

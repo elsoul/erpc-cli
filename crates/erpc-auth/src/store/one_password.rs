@@ -45,7 +45,7 @@ mod field {
     pub const STORE_VERSION: &str = "store_version";
 }
 
-/// Where `op` is looked for when the configuration does not say.
+/// Where `op` is looked for.
 ///
 /// Absolute paths only. `PATH` is not searched: an `op` picked up from the
 /// environment could be anything, and this process hands it secrets.
@@ -463,8 +463,8 @@ impl<R: OpRunner> OnePassword<R> {
         if !out.success {
             return Err(self.backend("list the vault", &out.stderr));
         }
-        let items: Vec<OpListEntry> =
-            serde_json::from_str(&out.stdout).map_err(|e| StoreError::Corrupt(e.to_string()))?;
+        let items: Vec<OpListEntry> = serde_json::from_str(&out.stdout)
+            .map_err(|e| super::unparsable_json("the vault listing", &e))?;
         Ok(items.iter().any(|i| i.title == title))
     }
 
@@ -541,8 +541,8 @@ impl<R: OpRunner> CredentialStore for OnePassword<R> {
             return Ok(None);
         }
 
-        let item: OpItem =
-            serde_json::from_str(&out.stdout).map_err(|e| StoreError::Corrupt(e.to_string()))?;
+        let item: OpItem = serde_json::from_str(&out.stdout)
+            .map_err(|e| super::unparsable_json("the 1Password item", &e))?;
 
         let version = item
             .field(field::STORE_VERSION)
@@ -1221,6 +1221,23 @@ mod tests {
         let rendered = save_through_a_scripted_op(&noisy);
         assert!(rendered.contains("update the item"), "{rendered}");
         assert!(!rendered.contains(&ACCESS[..5]), "{rendered}");
+    }
+
+    #[test]
+    fn op_output_does_not_print_what_op_printed() {
+        // `item get` prints the item, tokens included, and a failed write
+        // may echo the template.
+        let out = OpOutput {
+            success: false,
+            stdout: ACCESS.to_owned(),
+            stderr: REFRESH.to_owned(),
+        };
+        let shown = format!("{out:?}");
+        assert!(
+            !shown.contains(ACCESS) && !shown.contains(REFRESH),
+            "{shown}"
+        );
+        assert!(shown.contains("stderr_len"), "{shown}");
     }
 
     #[test]

@@ -13,8 +13,10 @@
 //! * [`op_ref`] is the only reference form accepted for a secret, by
 //!   identifier rather than by name.
 //!
-//! This crate decides and names; it does not read a secret, and no secret
-//! value passes through it.
+//! This crate decides and names; it does not read a secret. The gate looks
+//! at the environment variables a caller passes it, some of which hold
+//! secrets; for those it only checks whether they are set, and it keeps no
+//! value.
 //!
 //! What it does provide is that a caller which asks the gate first cannot
 //! reach a key the table does not allow, and that a reference by name is

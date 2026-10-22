@@ -8,12 +8,12 @@
 //! 1. Before a commit, `scripts/check-endpoints.sh` extracts these literals and
 //!    refuses any other URL in a tracked text file, so a new destination cannot
 //!    enter the repository without a reviewer seeing this file change.
-//! 2. [`ensure_service_url`] checks a URL against the service hosts. Every
-//!    request URL `erpc` builds is a constant, and a test runs each one
-//!    through it. At runtime it guards the one URL `erpc` acts on without
-//!    having built it, the sign-in page the issuer names, before that is
-//!    handed to a browser. Which hosts may receive a session token is
-//!    narrower still, and lives in `erpc-auth`'s allowlist.
+//! 2. [`ensure_service_url`] accepts a URL on any host declared here, of
+//!    any kind -- not only the service hosts. Every request URL `erpc`
+//!    builds is a constant, and a test runs each one through it. At runtime
+//!    it is called before a page is opened in a browser. Which hosts may
+//!    receive a session token is much narrower, and lives in `erpc-auth`'s
+//!    allowlist.
 //!
 //! What this does and does not buy. Because ERPC's own endpoints are
 //! compile-time constants and are never read from configuration or environment
@@ -168,7 +168,9 @@ pub fn is_allowed_host(host: &str) -> bool {
 /// Accepts `https`/`wss` to an allowlisted host with no explicit port and no
 /// userinfo, or `http`/`ws`/`https`/`wss` to loopback with any port.
 ///
-/// No caller exists in this version; see the module documentation.
+/// "Allowlisted" here means declared anywhere in this module, whatever
+/// the kind of host. A caller that needs a narrower set -- where a token
+/// may go, or which page may be opened -- checks for it itself.
 ///
 /// # Errors
 ///

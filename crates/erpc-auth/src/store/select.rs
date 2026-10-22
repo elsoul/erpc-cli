@@ -52,7 +52,7 @@ impl Environment {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Reason {
-    /// The operator asked for it, through `--store` or configuration.
+    /// The operator asked for it, through `--store`.
     Requested,
     /// A service account token is present, so this is a headless context.
     ServiceAccountToken,
@@ -67,7 +67,7 @@ pub enum Reason {
 impl core::fmt::Display for Reason {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let text = match self {
-            Self::Requested => "you asked for it with --store or in config.toml",
+            Self::Requested => "you asked for it with --store",
             Self::ServiceAccountToken => {
                 "OP_SERVICE_ACCOUNT_TOKEN is set, so this is treated as a headless context"
             }
@@ -105,7 +105,7 @@ impl Selection {
 
 /// Chooses a store.
 ///
-/// `requested` is an explicit choice from `--store` or configuration, which
+/// `requested` is an explicit choice from `--store`, which
 /// always wins: an operator who names a store has a reason, and silently
 /// using another one would be worse than failing later if it is not there.
 #[must_use]

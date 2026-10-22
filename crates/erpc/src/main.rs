@@ -124,9 +124,15 @@ enum Command {
 pub fn store_for(kind: StoreKind) -> Result<Box<dyn erpc_auth::CredentialStore>, StoreError> {
     use erpc_auth::store::one_password::{Mode, OnePassword, OpCli};
     match kind {
-        StoreKind::File => Ok(Box::new(erpc_auth::store::file::FileStore::new(
-            session::state_dir().join("credentials.toml"),
-        ))),
+        StoreKind::File => {
+            let dir = session::state_dir().map_err(|reason| StoreError::Unavailable {
+                kind: StoreKind::File,
+                reason,
+            })?;
+            Ok(Box::new(erpc_auth::store::file::FileStore::new(
+                dir.join("credentials.toml"),
+            )))
+        }
         StoreKind::OsKeychain => Ok(Box::new(erpc_auth::store::keychain::OsKeychain::new())),
         StoreKind::OnePasswordDesktop | StoreKind::OnePasswordServiceAccount => {
             let mode = if kind == StoreKind::OnePasswordDesktop {

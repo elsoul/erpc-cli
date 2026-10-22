@@ -44,34 +44,66 @@ SBOM and GitHub build provenance attestations. See `docs/verify-release.md`.
 
 ## Secret handling
 
-`erpc` handles one kind of secret: the session for your ERPC account. It does
-not read or store private keys.
+`erpc` keeps one kind of secret: the session for your ERPC account, an access
+token and a refresh token obtained through the OAuth device authorization
+grant. It does not read or store private keys. When it uses a 1Password
+service account, it reads `OP_SERVICE_ACCOUNT_TOKEN` from its environment and
+passes it to the `op` process it starts. It does not write that token
+anywhere.
 
-- **Where a session is kept.** `erpc login` obtains an access token and a
-  refresh token through the OAuth device authorization grant and keeps them
-  in one store: the 1Password desktop app, a 1Password service account, the
-  operating system's keychain, or a file. Without `--store`, the first of
-  those that is usable on the machine is chosen, and `erpc doctor` says which
-  one and why.
-- **When a session is on disk in cleartext.** In two cases, both written with
-  mode `0600` and both reported by `erpc doctor` for as long as they exist:
-  - The file store. It is used when you ask for it, or when neither `op` nor a
-    keychain is available, and `erpc login` warns when it is.
-  - A parked session. When the issuer has rotated a refresh token and the
-    store then refuses the new one, the new one is written to the erpc state
-    directory instead of being lost. The next command files it into the
-    store, as long as the store still holds the session it replaced.
-- **Where a session is sent.** A token is attached only to the hosts listed
-  for it in `crates/erpc-auth/src/allowlist.rs`. The HTTP client accepts
-  `https` only and does not follow redirects. Request URLs are compile-time
-  constants, not configuration.
+### Where the session is kept
+
+The session is kept in one store. Unless `--store` names one, the store is the
+first of these that applies:
+
+1. a 1Password service account, when `OP_SERVICE_ACCOUNT_TOKEN` is set;
+2. the 1Password desktop app, when `op` is installed and `op account list`
+   answers;
+3. the operating system's keychain, when there is one;
+4. a file in the erpc state directory.
+
+`erpc doctor` reports which store is in use and why.
+
+### When the session is on disk in cleartext
+
+The erpc state directory is `$ERPC_HOME/state` or, without `ERPC_HOME`,
+`.erpc/state` in your home directory. `erpc` will not use a state directory
+that is not an absolute path.
+
+`erpc` writes a session to that directory in the following cases, and
+`erpc doctor` reports each file for as long as it exists:
+
+- **The file store.** `erpc login` warns when the session is going there.
+- **A parked session.** If the issuer has rotated a refresh token and the
+  store then refuses the new one, the new token is written here so that it is
+  not lost. `erpc whoami` moves it into the store if the store still holds the
+  session it replaced. `erpc login` and `erpc logout` revoke it and remove it,
+  and say so when they could not.
+- **An interrupted write.** The two files above are written to a temporary
+  file first and then renamed into place. A crash between the two steps
+  leaves that temporary file behind.
+
+On Unix these files are created with mode `0600`. On Windows `erpc` sets no
+permissions of its own, so the files have the permissions of the directory
+they are in.
+
+### Where the session is sent
+
+- The access token is sent as a bearer token only to the hosts listed for its
+  audience in `crates/erpc-auth/src/allowlist.rs`.
+- The refresh token is sent only to its issuer's token and revoke endpoints.
+- Every request URL is a compile-time constant.
+- The HTTP client is configured to accept `https` only and not to follow
+  redirects. Neither setting is covered by a test; the reasons are given
+  beside them in `crates/erpc-auth/src/http.rs`.
+
+### What to report
 
 Report any of the following as a vulnerability, through the channel above:
 
-- a code path that writes secret material to disk other than in the two cases
-  above;
-- a code path that writes secret material to a log or an error message;
-- a token sent to any host other than those listed for it.
+- secret material written to disk in any way not described above;
+- secret material in a log, an error message, or other output;
+- a token sent anywhere not described above.
 
 Do not infer from this repository which protections are already in force. What
 the code does today is what the code in this repository does today.

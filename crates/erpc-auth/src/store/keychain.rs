@@ -68,8 +68,8 @@ impl CredentialStore for OsKeychain {
                 });
             }
         };
-        let stored: StoredCredential =
-            serde_json::from_str(&raw).map_err(|e| StoreError::Corrupt(e.to_string()))?;
+        let stored: StoredCredential = serde_json::from_str(&raw)
+            .map_err(|e| super::unparsable_json("the keychain entry", &e))?;
         if stored.store_version != STORE_VERSION {
             return Err(StoreError::UnknownVersion {
                 found: stored.store_version,
