@@ -52,7 +52,7 @@ secrecy = { version = "0.10", features = ["serde"] }
 zeroize = { version = "1.8", features = ["zeroize_derive"] }
 # Already in the lock through dbus-secret-service; the parked file uses it to
 # name the session a rotation replaced without writing that token down.
-sha2 = { version = "0.10.9", default-features = false }
+sha2 = { version = "0.11.0", default-features = false }
 # Platform features are chosen per target in crates/erpc-auth/Cargo.toml.
 # On Linux the Secret Service backend is vendored, so the build does not
 # need a system libdbus: the release targets are static musl.
