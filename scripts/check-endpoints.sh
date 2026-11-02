@@ -95,11 +95,18 @@
 #         unambiguous and open where it is not.
 #
 #         CLOSED -- reported:
-#           - a quote right after the scheme, followed by anything that can
-#             begin a host or an interpolation: https://"evil.example.net"/x
-#             is https://evil.example.net/x and needs no declared host.
-#           - a quote ending a host, followed at once by `$`, a backtick,
-#             `@`, `{`, a digit, `_` or the same quote again.
+#           - a quote right after the scheme, followed by ANY character but
+#             end of line, space, `)`, `,`, `;`, `]`, `}`, `.`, `+` or `|`:
+#             https://"evil.example.net"/x is https://evil.example.net/x and
+#             needs no declared host. Report by default, because a list of
+#             what can BEGIN a host was found to leave out `/`, `[`, `%` and
+#             non-ASCII; the exceptions are how source continues after a
+#             string that is exactly a scheme.
+#           - a quote ending a host, followed at once by `$`, `@`, `{`, a
+#             digit or `_`, or by the same quote again and then a character
+#             that is not that quote.
+#           - a quote ending a host that is wholly one expression, followed
+#             by a letter: https://${X}"evil.example.net"/x.
 #           - a backtick inside a host followed by a letter or a digit.
 #
 #         OPEN -- EVERYTHING ELSE in the class, stated as the complement of
@@ -107,17 +114,29 @@
 #         earlier version listed the open shapes one by one, and the next
 #         review found members of the class that were on neither list.
 #         Precisely:
-#           - a quote ending a host, followed by any character not in the
-#             closed set above. That includes `.`, which is a method call in
-#             Rust, TypeScript and Python ("https://erpc.global".to_string()),
-#             and a letter, which includes a quote INSIDE the host as the URL
-#             Standard permits -- https://api.github.com'evil.example.net/x
-#             resolves to that host, served by a wildcard record -- and which
-#             would also report a possessive in prose. It includes `,` `]`
-#             `}` `-` `!` `=` and the OTHER quote, each of which begins a
-#             correct line somewhere.
-#           - a backtick after a declared host followed by anything other
-#             than a letter or digit, INCLUDING when it is the last
+#           - a quote right after the scheme followed by one of the
+#             characters excepted above. The shell joins those as well:
+#             https://"+evil.example.net" is the host +evil.example.net,
+#             which the URL Standard accepts. Whether a resolver then
+#             contacts it is not argued here.
+#           - a quote ending a host the gate otherwise allows -- a declared
+#             host, a HOST_PATTERNS match, or a host that is wholly one
+#             expression -- followed by any character not in the closed set
+#             above. That includes `.`, which is a method call in Rust,
+#             TypeScript and Python ("https://erpc.global".to_string()), and
+#             after a declared host or pattern a letter, which includes a
+#             quote INSIDE the host as the URL Standard permits --
+#             https://api.github.com'evil.example.net/x resolves to that
+#             host, served by a wildcard record -- and which would also
+#             report a possessive in prose. It includes `,` `]` `}` `-` `!`
+#             `=`, the OTHER quote, a BACKTICK -- rustdoc and Markdown put
+#             "https://erpc.global" in inline code and end in exactly that
+#             pair -- and the same quote three or more times, which is how a
+#             TOML or Python string ends; each begins a correct line
+#             somewhere.
+#           - a backtick after a declared host or HOST_PATTERNS match
+#             followed by anything other than a letter or digit, INCLUDING
+#             when it is the last
 #             character of the authority -- a space, `/`, `(`, `{`, `.`, a
 #             quote or the end of the line. Under a shell that backtick may
 #             OPEN a command substitution; in Markdown and JavaScript it
@@ -126,10 +145,13 @@
 #         Representative members of both are pinned as KNOWN LIMIT cases in
 #         the self-test.
 #
-#         The two closes also report some correct lines, and fail loudly
-#         when they do: a regex end anchor after a quoted URL
-#         ('"https://erpc.global"$'), and in Markdown a word run straight
-#         on from inline code (`https://erpc.global`s docs).
+#         The closes also report some correct lines, and fail loudly when
+#         they do: a regex end anchor after a quoted URL
+#         ('"https://erpc.global"$'); in Markdown a word run straight on
+#         from inline code (`https://erpc.global`s docs); and a string that
+#         is exactly a scheme followed by a character not excepted above,
+#         such as a shell case pattern ("https://"*) or a YAML key
+#         ("https://": x).
 #
 #         The design holds only while every construct that interpolates at
 #         runtime, in every file type tracked here, is either tracked by awk
@@ -508,23 +530,41 @@ authority_tail_punct='[];:}!`]'
 
 # $1 scheme word (with its colon), $2 the rest of the line after that colon,
 # $3 file, $4 line number, $5 prose|code
-# True when what follows an EMPTY authority is a quote and then something
-# that can begin a host or an interpolation. In a shell word quoted and
-# unquoted parts are joined, so `https://"evil.example.net"/x` is the URL
-# https://evil.example.net/x -- a plain destination, needing no declared
-# host at all -- while awk, which stops the authority at the quote, hands
-# over an empty one. The empty authority used to return success before the
-# terminator was ever looked at.
+# True when an EMPTY authority ends at a quote and the character after that
+# quote is NOT one of a short list of allowed followers. In a shell word
+# quoted and unquoted parts are joined, so `https://"evil.example.net"/x` is
+# the URL https://evil.example.net/x -- a plain destination, needing no
+# declared host at all -- while awk, which stops the authority at the quote,
+# hands over an empty one.
 #
-# What stays allowed is what source code writes when it builds a URL from a
-# runtime host, which is the wholly-templated case the header already
-# states: `url.strip_prefix("https://")` (a quote, then `)`),
-# `"https://".len()` (then `.`) and `'https://' + host` (then a space).
+# REPORT BY DEFAULT, like the rest of this gate. An earlier version listed
+# the characters that COULD begin a host and allowed the rest, and the next
+# review found the rest held slashes (`"https:"//evil.example.net/x`, which
+# the Standard's slash-skipping reads as that host), `[` for an IP-literal,
+# `%` and non-ASCII -- a list of what can begin a host is a complement, and
+# a complement never empties. So the list is of what may FOLLOW instead,
+# taken from how source continues after a string that is exactly a scheme:
+#
+#   end of line, space, `)`, `,`, `;`, `]`, `}`, `.`, `+`, `|`
+#
+# as in `url.strip_prefix("https://")`, `"https://".len()`,
+# `'https://' + host`, `'https://'+host`, `x || 'https://'||y` and the end
+# of a JSON array or object. Each has a case in the self-test.
+#
+# What this does NOT claim: that no allowed follower can be joined by a
+# shell into a live host. `https://"+evil.example.net"` is the host
+# `+evil.example.net`, which the Standard accepts. Whether a resolver goes
+# on to contact it is not argued here; it is stated as open in the header.
 quoted_host_after_scheme() {
-  case "${1#L}" in
-    [\"\'][A-Za-z0-9\$\`\"\'\{_]*) return 0;;
+  local l="${1#L}"
+  case "$l" in
+    [\"\']*) ;;
+    *) return 1;;
   esac
-  return 1
+  case "${l#?}" in
+    ''|[\ \)\,\;\]\}.+\|]*) return 1;;
+  esac
+  return 0
 }
 
 check_occurrence() {
@@ -556,13 +596,19 @@ check_occurrence() {
   # how source delimits a URL, so the text past it was never part of the
   # authority, and the allowlist was asked about the declared prefix alone.
   #
-  # CLOSED for exactly these followers: `$`, a backtick, `@`, `{`, a digit,
-  # `_`, and the same quote again. Each is joined by the shell, and none
-  # begins a correct line in Rust, TypeScript, YAML, JSON or Markdown in that
-  # position. `$` does have one correct use that this reports: a regex end
-  # anchor written after a quoted URL, as in grep -x '"https://x"$'. That
-  # fails loudly, and the earlier claim here that nothing but an
-  # interpolation begins with `$` was wrong.
+  # CLOSED for exactly these followers: `$`, `@`, `{`, a digit, `_`, and the
+  # same quote again when a third character follows that is not a quote.
+  # Each is joined by the shell. They are not free of false positives, and
+  # an earlier version of this comment said they were: `$` reports a regex
+  # end anchor written after a quoted URL (grep -x '"https://x"$'), and the
+  # doubled quote would have reported every TOML or Python triple-quoted
+  # string, which is why a third quote now leaves it alone.
+  #
+  # A BACKTICK after the quote is NOT closed, and was until a review found
+  # it reporting rustdoc and Markdown: `"https://erpc.global"` inside inline
+  # code ends in exactly that pair. It is the same ambiguity as a backtick
+  # after a declared host -- open a command or close a code span -- and it
+  # is stated open in the header for the same reason.
   #
   # EVERY OTHER FOLLOWER IS OPEN, and the header says so in those words
   # rather than by listing them -- a list of open shapes was found incomplete
@@ -572,7 +618,7 @@ check_occurrence() {
   # quote, each a correct line somewhere (a JSON array, an index, a nested
   # jq filter).
   case "${look#L}" in
-    [\"\'][\$\`@\{0-9_]*|\"\"*|\'\'*)
+    [\"\'][\$@\{0-9_]*|\"\"[!\"]*|\'\'[!\']*)
       report "$f" "$ln" "a quote ends the host and the shell would join what follows it, so the host is built at runtime: $scheme://$authority${look#L}"
       return 0
       ;;
@@ -749,7 +795,22 @@ check_occurrence() {
     # A host that is ENTIRELY one balanced expression has no literal part to
     # check and is skipped; anything else must be pinned on both sides by a
     # declared HOST_PATTERNS pair.
-    [ -n "$probe" ] || return 0
+    #
+    # A host that is wholly an expression and ends at a quote followed by a
+    # LETTER is the one exception: the shell joins the letter on, so
+    # `https://${X}"evil.example.net"/x` is a host whose literal part --
+    # the registrable domain -- is entirely past the quote. A letter after
+    # a closing quote is a syntax error in Rust, TypeScript, Python, YAML
+    # and JSON, so this has no correct line to report. Other followers are
+    # open, as for a declared host; `.` among them.
+    if [ -z "$probe" ]; then
+      case "${look#L}" in
+        [\"\'][A-Za-z]*)
+          report "$f" "$ln" "a quote ends a host that is wholly an expression, and the shell would join what follows it: $scheme://$host${look#L}"
+          ;;
+      esac
+      return 0
+    fi
     template_host_matches_pattern "$host" && return 0
     report "$f" "$ln" "expression in host, so the literal text does not fix the destination: $scheme://$host"
     return 0
@@ -913,7 +974,7 @@ for f in "${files[@]}"; do
         if (c2 == "${")  { out = out c2; i += 2; closer = "}";  continue }
         if (c2 == "{{")  { out = out c2; i += 2; closer = "}}"; continue }
         if (c2 == "$(")  { out = out c2; i += 2; closer = ")";  continue }
-        if (index(TERM, c) > 0) { STOP = substr(rest, i, 2); break }
+        if (index(TERM, c) > 0) { STOP = substr(rest, i, 3); break }
         out = out c; i++
       }
       return out
@@ -923,8 +984,11 @@ for f in "${files[@]}"; do
       while (match(s, re)) {
         tok = substr(s, RSTART, RLENGTH)
         sub(/^[^A-Za-z]/, "", tok)
-        # STOP is the terminator that ended the authority and the character
-        # after it, empty when the authority ran to end of line. It travels
+        # STOP is the terminator that ended the authority and the TWO
+        # characters after it, empty when the authority ran to end of line.
+        # Two, not one, so that a doubled quote can be told from a triple
+        # quote: a TOML or Python string ends in three quotes and joins
+        # nothing, while a doubled quote and then a dot joins the dot on. It travels
         # with an `L` in front so the field is never empty: the read below
         # splits on tab, and bash collapses consecutive tabs as IFS
         # whitespace, so an empty field before the authority would shift

