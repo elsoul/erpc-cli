@@ -12,6 +12,15 @@ whose version has no entry below.
 
 ## [Unreleased]
 
+### Added
+
+- `erpc login`, `logout`, `whoami` and `doctor`: sign in to an ERPC account
+  through the OAuth device authorization grant, keep the session in the
+  1Password desktop app, a 1Password service account, the OS keychain or a
+  file, and report where it is and why.
+- `erpc-secret`: the key-use gate and the `op://` reference parser.
+- `erpc-api`: the account lookup against `user-api`.
+
 ## [0.0.1] - 2026-10-22
 
 ### Added
