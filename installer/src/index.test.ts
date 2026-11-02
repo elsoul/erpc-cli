@@ -23,6 +23,9 @@ import { looksLikeInstaller } from "./index.ts";
 const REAL_SH = `#!/bin/sh
 # shellcheck shell=dash
 # shellcheck disable=SC2039  # local is non-POSIX
+# shellcheck disable=SC2268  # no harm in supporting older shells
+#
+# Licensed under the MIT license
 `;
 
 // The first lines of target/distrib/erpc-installer.ps1. The licence URL on

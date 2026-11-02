@@ -8,14 +8,26 @@
 #
 # The manifest is what minisign signs (scripts/release/sign-manifest.sh) and
 # what docs/verify-release.md tells an operator to check: version, tag, commit,
-# build time, per-target archive sha256/size and the SBOM hash. It also carries
-# a `revoked_versions_url` field, reserved for a revocation list that nothing
-# publishes or consumes yet.
+# build time, per-target archive sha256/size and the SBOM hash.
 set -euo pipefail
+
+# Every pattern below is matched against bytes, so the locale must not decide
+# what a character class means. Under en_US.UTF-8 — which is what the GitHub
+# runners set — a bash range follows collation order, so `[A-Z]` also matches
+# lowercase and `[!A-Za-z0-9._-]` stops matching accented letters. Both turned
+# live controls into no-ops that still passed their self-tests on a machine
+# with no LANG set. The self-tests run under both locales to keep this honest.
+export LC_ALL=C
 
 dir="${1:?artifacts dir}"
 tag="${2:?tag, e.g. v0.1.0}"
 commit="${3:?full commit sha}"
+# Fourth argument: the cargo-dist config to compare the target list against.
+# It exists so the self-test can hand this script a fixture; the release
+# workflow passes three arguments and gets the repository's own file. A
+# positional argument rather than an environment variable, so nothing in the
+# ambient environment can redirect the comparison.
+dist_config_arg="${4:-}"
 
 version="${tag#v}"
 build_time="${SOURCE_DATE_EPOCH:+$(date -u -d "@$SOURCE_DATE_EPOCH" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$SOURCE_DATE_EPOCH" +%Y-%m-%dT%H:%M:%SZ)}"
@@ -60,15 +72,19 @@ done
 [ -n "$targets_json" ] || { echo "no release archives found in $dir; refusing to emit an empty manifest" >&2; exit 1; }
 [ -n "$sbom_sha" ] || { echo "no CycloneDX SBOM found in $dir; refusing to emit a manifest without one" >&2; exit 1; }
 target_count=$(printf '%s' "$targets_json" | tr ',' '\n' | grep -c '"archive"' || true)
-dist_config="$(git rev-parse --show-toplevel)/dist-workspace.toml"
+dist_config="${dist_config_arg:-$(git rev-parse --show-toplevel)/dist-workspace.toml}"
 [ -f "$dist_config" ] || { echo "cannot read $dist_config to check the target count" >&2; exit 1; }
 # Count the entries of the `targets = [ ... ]` array itself. Counting
 # comma-terminated lines broke on a trailing comma being dropped, which is
 # valid TOML and would have aborted every release with a confusing message.
 expected_targets=$(awk '
   /^[[:space:]]*targets[[:space:]]*=/ { inside = 1 }
-  inside { n += gsub(/"[a-z0-9_]+-[a-z0-9_-]+"/, "&") }
-  inside && /\]/ { print n; exit }
+  inside { line = $0; sub(/#.*/, "", line); n += gsub(/"[a-z0-9_]+-[a-z0-9_-]+"/, "&", line) }
+  # The terminator tests the COMMENT-STRIPPED line, like the count above it.
+  # Testing $0 meant a `]` inside a comment in the array ended the count
+  # early -- a fixture with three targets and a commented `[retired]` counted
+  # one -- which is the same defect as the one the stripping was added for.
+  inside && line ~ /\]/ { print n; exit }
 ' "$dist_config" || true)
 [ -n "$expected_targets" ] || expected_targets=0
 if [ "$expected_targets" -le 0 ]; then
@@ -89,7 +105,6 @@ cat <<EOF
   "commit": "$commit",
   "build_time": "$build_time",
   "targets": { $targets_json },
-  "sbom_sha256": "$sbom_sha",
-  "revoked_versions_url": "https://dl.erpc.global/revoked-versions.json"
+  "sbom_sha256": "$sbom_sha"
 }
 EOF

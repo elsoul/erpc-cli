@@ -16,6 +16,14 @@
 # docs/secret-exposure-response.md.
 set -uo pipefail
 
+# Every pattern below is matched against bytes, so the locale must not decide
+# what a character class means. Under en_US.UTF-8 — which is what the GitHub
+# runners set — a bash range follows collation order, so `[A-Z]` also matches
+# lowercase and `[!A-Za-z0-9._-]` stops matching accented letters. Both turned
+# live controls into no-ops that still passed their self-tests on a machine
+# with no LANG set. The self-tests run under both locales to keep this honest.
+export LC_ALL=C
+
 cd "$(git rev-parse --show-toplevel)"
 
 if [ "$#" -gt 0 ]; then
@@ -29,7 +37,10 @@ fi
 skip_re='(\.lock$|\.png$|\.jpg$|\.gif$|\.ico$|\.woff2?$|^LICENSES/|^LICENSE$|/node_modules/|^target/)'
 
 # Files that quote these patterns on purpose.
-self_re='^(scripts/check-oss-hygiene\.sh|scripts/tests/(check-oss-hygiene|check-endpoints|build-manifest)\.test\.sh|docs/public-hosts\.md|docs/secret-exposure-response\.md|\.gitleaks\.toml|crates/erpc-core/src/endpoints\.rs)$'
+# Only the files that genuinely need it: each quotes a pattern this gate
+# matches. An exemption is a blanket bypass of every content check, so a
+# file that passes without one does not get one.
+self_re='^(scripts/check-oss-hygiene\.sh|scripts/tests/(check-oss-hygiene|check-endpoints)\.test\.sh|crates/erpc-core/src/endpoints\.rs)$'
 
 # erpc.global hosts come from the one allowlist, so this gate and
 # check-endpoints.sh cannot drift apart. Only the const arrays are read; the
@@ -105,6 +116,36 @@ for f in "${files[@]}"; do
     [ -z "$ln" ] && continue
     report "$f" "$ln" "infrastructure identifier: $match"
   done < <(grep -noiE '(account|zone|project)[_ -]?id[^0-9a-z]{0,8}[0-9a-f]{32}' "$f" 2>/dev/null)
+
+  # 2b. Bare 1Password vault or item identifiers.
+  #
+  # An `op://vault/item/field` reference is a pointer and is allowed, and our
+  # convention puts the 26-character ids inside it — so the reference is
+  # removed from the line first, which is what makes the exemption real
+  # rather than a guard that can never fire. What is left is matched beside
+  # the words vault or item, including the plural and the dashboard URL form
+  # (.../vaults/<id>/items/<id>). The id itself must be lowercase: real ones
+  # are, and matching case-insensitively flagged uppercase base32 in prose.
+  op_ln=0
+  while IFS= read -r op_line; do
+    op_ln=$((op_ln + 1))
+    case "$op_line" in *[Vv][Aa][Uu][Ll][Tt]*|*[Ii][Tt][Ee][Mm]*) ;; *) continue;; esac
+    stripped=$(printf '%s' "$op_line" | sed 's|op://[A-Za-z0-9._/-]*||g')
+    # `set -f` because the loop word-splits the match on purpose but must
+    # not also glob it against the repository root: a `*` or `?` inside the
+    # matched separator would otherwise expand to filenames.
+    set -f
+    for tok in $(printf '%s' "$stripped" | grep -oiE '(vault|item)s?([^A-Za-z0-9]{1,8}(id|identifier))?[^A-Za-z0-9]{1,8}[A-Za-z0-9]{26}([^A-Za-z0-9]|$)' 2>/dev/null); do
+      id=$(printf '%s' "$tok" | grep -oE '[A-Za-z0-9]{26}$|[A-Za-z0-9]{26}' | tail -1)
+      [ -n "$id" ] || continue
+      # `[[:upper:]]` and not `[A-Z]`: under a non-C locale the range
+      # follows collation order and matches lowercase too. LC_ALL=C above
+      # already settles this; the class is correct on its own as well.
+      case "$id" in *[[:upper:]]*) continue;; esac
+      report "$f" "$op_ln" "bare 1Password identifier: $id"
+    done
+    set +f
+  done < <(grep -a '' "$f" 2>/dev/null)
 
   # 3. Bearer token literals.
   while IFS=: read -r ln match; do

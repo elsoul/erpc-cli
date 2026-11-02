@@ -26,13 +26,20 @@ checksum = "sha256"
 cargo-auditable = true
 cargo-cyclonedx = true
 github-attestations = true
-# GitHub Releases (immutable) first, R2 mirror as fallback. Only shell/powershell installers fall back.
-hosting = ["github", "simple"]
-simple-download-url = "https://dl.erpc.global/{tag}"
+# GitHub Releases only. A mirror was configured earlier and dropped: nothing
+# verified what it served (no self-update command exists yet) while it cost a
+# bucket, a custom domain and a write token to hold and rotate.
+hosting = ["github"]
 # One custom publish workflow (.github/workflows/release-publish.yml) runs, in order:
-# release-gate -> rebuild-compare -> sign (environment `release`, human approval) -> upload-r2 -> publish-crates.
+# release-gate -> rebuild-compare -> sign (environment `release`, human approval) -> publish-crates.
 # The GitHub Release itself is created in the `announce` phase, i.e. only after all of that succeeded.
 publish-jobs = ["./release-publish"]
+# Prerelease tags (`-rc.N`) run that same workflow. Without this the generated
+# release.yml SKIPS it for a prerelease and `announce` still creates the
+# release, unsigned and ungated (scripts/tests/release-wiring.test.sh, case 7).
+# A prerelease is therefore published to crates.io as well, as a semver
+# prerelease that `cargo install erpc` does not pick by default.
+publish-prereleases = true
 github-custom-job-permissions = { "release-publish" = { id-token = "write", contents = "read" } }
 github-release = "announce"
 msvc-crt-static = true

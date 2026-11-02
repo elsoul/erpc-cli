@@ -99,7 +99,7 @@ they are in.
 - Every request URL is a compile-time constant.
 - The HTTP client is configured to accept `https` only and not to follow
   redirects. Neither setting is covered by a test; the reasons are given
-  beside them in `crates/erpc-auth/src/http.rs`.
+  beside them in `crates/erpc-auth/src/client.rs`.
 
 ### What to report
 

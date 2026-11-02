@@ -12,8 +12,51 @@
 #   scripts/tests/build-manifest.test.sh
 set -uo pipefail
 
+# Run the gate, and this harness's own re-exec below, under the SAME bash
+# that was used to start it -- never whatever `#!/usr/bin/env bash` finds on
+# PATH. On a machine with a newer bash on PATH the CI job named "gates under
+# bash 3.2" ran only this harness under 3.2 while the gate itself ran under
+# bash 5, which does not share 3.2's collation behaviour. That is why two
+# locale defects passed locally and failed only on the runner.
+sh="${BASH:-/bin/bash}"
+
+# A gate must behave the same whatever locale the caller has. Outside the C
+# locale a bash range follows collation order: `[A-Z]` matches lowercase too,
+# and `[!A-Za-z0-9._-]` stops matching accented letters. That silently turned
+# two live rules into no-ops while this suite passed on a developer machine
+# with no LANG set and failed only on the runner. So the suite runs itself
+# once per locale and every case must pass in both.
+if [ -z "${ERPC_TEST_LOCALE:-}" ]; then
+  utf8=""
+  # Deliberately not `locale -a | grep -q`: under `set -o pipefail` the -q
+  # exit closes the pipe, `locale` dies of SIGPIPE and the pipeline reports
+  # failure, so every locale looked absent. Match the captured list instead.
+  all_locales="$(locale -a 2>/dev/null || true)"
+  for cand in en_US.UTF-8 en_GB.UTF-8 en_US.utf8; do
+    case "
+$all_locales
+" in
+      *"
+$cand
+"*) utf8="$cand"; break;;
+    esac
+  done
+  if [ -z "$utf8" ]; then
+    echo "no dictionary-collation UTF-8 locale on this machine, so the" >&2
+    echo "locale-independence of the gate cannot be verified here." >&2
+    exit 1
+  fi
+  rc=0
+  for loc in C "$utf8"; do
+    printf '== locale %s ==\n' "$loc"
+    ERPC_TEST_LOCALE="$loc" LC_ALL="$loc" LANG="$loc" "$sh" "$0" "$@" || rc=1
+  done
+  exit "$rc"
+fi
+
 repo_root="$(git rev-parse --show-toplevel)"
 script="$repo_root/scripts/release/build-manifest.sh"
+
 pass=0
 fail=0
 
@@ -46,7 +89,7 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 
 # 1. A realistic artifact directory produces a manifest covering every target.
 make_artifacts "$tmp/good"
-if out=$("$script" "$tmp/good" v1.2.3 abc123 2>"$tmp/err"); then
+if out=$("$sh" "$script" "$tmp/good" v1.2.3 abc123 2>"$tmp/err"); then
   got=$(printf '%s' "$out" | grep -o '"archive"' | grep -c .)
   if [ "$got" -eq "$target_count" ]; then
     ok "covers all $target_count configured targets"
@@ -71,13 +114,13 @@ fi
 
 # 2. Refuses rather than signing a manifest that vouches for nothing.
 mkdir -p "$tmp/empty"
-"$script" "$tmp/empty" v1.2.3 abc123 >/dev/null 2>&1 \
+"$sh" "$script" "$tmp/empty" v1.2.3 abc123 >/dev/null 2>&1 \
   && bad "refuses an empty artifact directory" "it emitted a manifest" \
   || ok "refuses an empty artifact directory"
 
 # 3. Refuses when the SBOM is absent.
 make_artifacts "$tmp/nosbom"; rm -f "$tmp/nosbom"/*.cdx.json
-"$script" "$tmp/nosbom" v1.2.3 abc123 >/dev/null 2>&1 \
+"$sh" "$script" "$tmp/nosbom" v1.2.3 abc123 >/dev/null 2>&1 \
   && bad "refuses a manifest without an SBOM" "it emitted one" \
   || ok "refuses a manifest without an SBOM"
 
@@ -85,9 +128,59 @@ make_artifacts "$tmp/nosbom"; rm -f "$tmp/nosbom"/*.cdx.json
 #    for and which previously failed open.
 make_artifacts "$tmp/partial"
 rm -f "$(ls "$tmp"/partial/erpc-*.tar.xz 2>/dev/null | head -1)"
-"$script" "$tmp/partial" v1.2.3 abc123 >/dev/null 2>&1 \
+"$sh" "$script" "$tmp/partial" v1.2.3 abc123 >/dev/null 2>&1 \
   && bad "refuses a manifest missing a target" "it emitted one" \
   || ok "refuses a manifest missing a target"
+
+# 5. An artifact name that would need escaping inside the manifest JSON must
+# be refused, not written. Under en_US.UTF-8 the name filter's range stopped
+# matching accented letters, so this exact file was accepted and its name went
+# into the signed manifest unescaped. The release job runs with a UTF-8 LANG.
+# The assertion is on the MESSAGE, not the exit code. An extra archive also
+# makes the target count disagree, so a non-zero exit proves nothing about
+# the name filter: with the locale fix reverted this case still exited 1, for
+# the wrong reason. Only the filter emits this line.
+mkdir -p "$tmp/badname"
+make_artifacts "$tmp/badname"
+# $'...' so the name really carries the UTF-8 bytes. Written as "\xc3\xa9"
+# inside double quotes bash leaves the backslash in the name, and a backslash
+# is refused in every locale, so the case would pass without testing anything.
+accented="$tmp/badname/erpc-x86_64-apple-darwin-caf"$'\303\251'".tar.xz"
+printf 'archive\n' > "$accented"
+name_err="$("$sh" "$script" "$tmp/badname" v1.2.3 abc123 2>&1 >/dev/null)"
+case "$name_err" in
+  *"unexpected character in artifact name"*)
+    ok "refuses an artifact name needing JSON escaping";;
+  *)
+    bad "refuses an artifact name needing JSON escaping" \
+        "the name filter never fired; it said: $name_err";;
+esac
+
+# 6. A `]` inside a comment in the `targets` array must not end the count.
+# The array is read with awk, and the terminator used to test the raw line
+# while the counting used the comment-stripped one, so a commented `]`
+# stopped the count early and the script aborted the release with a target
+# mismatch. The fixture is the repository's own config with one comment line
+# inserted, so the expected count is unchanged by construction; a fourth
+# argument points the script at it.
+mkdir -p "$tmp/comment"
+make_artifacts "$tmp/comment"
+awk '
+  { print }
+  /^targets[[:space:]]*=[[:space:]]*\[/ && !done {
+    print "  # the 32-bit target [retired in 0.1] is kept here for reference"
+    done = 1
+  }
+' "$repo_root/dist-workspace.toml" > "$tmp/dist-comment.toml"
+grep -q 'retired in 0.1' "$tmp/dist-comment.toml" \
+  || bad "a ] inside a comment does not end the target count" \
+         "the fixture was not built; the targets array was not found"
+comment_err="$("$sh" "$script" "$tmp/comment" v1.2.3 abc123 "$tmp/dist-comment.toml" 2>&1 >/dev/null)"
+if [ -z "$comment_err" ]; then
+  ok "a ] inside a comment does not end the target count"
+else
+  bad "a ] inside a comment does not end the target count" "it said: $comment_err"
+fi
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

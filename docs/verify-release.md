@@ -26,17 +26,39 @@ anything today. Operators of mainnet validators should use it.
 
 ## High-assurance path
 
-1. Pick a tag, e.g. `v0.1.0`, and download from the GitHub Release
-   (immutable) or the mirror `https://dl.erpc.global/v0.1.0/`:
+1. Pick a tag, e.g. `v0.1.0`, and download from the GitHub Release:
    `release-manifest.json`, `release-manifest.json.minisig`, and the archive
-   for your platform.
-2. Verify the manifest signature with the project public key
-   (`crates/erpc-release/pubkey.txt` in this repository, at the tag you are
-   checking):
+   for your platform. There is no mirror; GitHub Releases is the only place
+   release artifacts are published.
+
+   Do not treat the download itself as trustworthy. A release asset can be
+   replaced by anyone who can publish a release, and this page does not
+   claim otherwise. What this procedure rests on is step 2: the signature is
+   checked against a key you already hold, so it does not matter where the
+   bytes came from. Step 4 adds the build provenance on top of that.
+
+   That holds only if the key really is one you already hold. Do **not** take
+   it from `crates/erpc-release/pubkey.txt` at the tag you are checking: the
+   people who can replace a release asset can also push a tag whose
+   `pubkey.txt` is their own key, and a signature made with it would verify.
+2. Verify the manifest signature with the project public key you saved the
+   first time you installed erpc, and keep using that saved copy:
 
    ```bash
-   minisign -Vm release-manifest.json -P "$(grep -v '^untrusted' crates/erpc-release/pubkey.txt)"
+   # once, from a clone of this repository: save the key as it is on main
+   git show origin/main:crates/erpc-release/pubkey.txt > ~/.erpc-release-pubkey.txt
+
+   # every release: verify against the saved copy, not the copy at the tag
+   minisign -Vm release-manifest.json -p ~/.erpc-release-pubkey.txt
    ```
+
+   If `pubkey.txt` at the tag you are checking differs from your saved copy,
+   stop: either the key was rotated (see Key rotation below) or someone is
+   trying to make their own key look like the project's.
+
+   This is trust on first use. The first copy is only as good as `main` was
+   on the day you saved it; what the saved copy buys is that a later tag
+   cannot quietly bring a different key with it.
 
 3. Check that `tag` and `version` inside the manifest match the tag you chose,
    then compare the archive hash:
@@ -57,13 +79,10 @@ anything today. Operators of mainnet validators should use it.
 ## What the signature covers
 
 `release-manifest.json` contains `version`, `tag`, `commit`, `build_time`, and
-the `sha256` and `size` of every archive, plus the SBOM hash. `latest.json` is
-signed separately and carries an expiry, so that a client which checks it
-cannot be frozen on an old version by a stale copy. No client checks it yet.
-
-The manifest also carries a `revoked_versions_url`. **Nothing publishes that
-file and nothing reads it**; the field is reserved for a revocation list that
-does not exist.
+the `sha256` and `size` of every archive, plus the SBOM hash. That is the
+whole of it: there is no revocation list and no signed "latest version"
+document, because nothing would read them. A self-update command that needs
+either will add it then.
 
 ## Reproducible build check
 
