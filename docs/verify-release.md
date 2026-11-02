@@ -36,13 +36,29 @@ anything today. Operators of mainnet validators should use it.
    claim otherwise. What this procedure rests on is step 2: the signature is
    checked against a key you already hold, so it does not matter where the
    bytes came from. Step 4 adds the build provenance on top of that.
-2. Verify the manifest signature with the project public key
-   (`crates/erpc-release/pubkey.txt` in this repository, at the tag you are
-   checking):
+
+   That holds only if the key really is one you already hold. Do **not** take
+   it from `crates/erpc-release/pubkey.txt` at the tag you are checking: the
+   people who can replace a release asset can also push a tag whose
+   `pubkey.txt` is their own key, and a signature made with it would verify.
+2. Verify the manifest signature with the project public key you saved the
+   first time you installed erpc, and keep using that saved copy:
 
    ```bash
-   minisign -Vm release-manifest.json -P "$(grep -v '^untrusted' crates/erpc-release/pubkey.txt)"
+   # once, from a clone of this repository: save the key as it is on main
+   git show origin/main:crates/erpc-release/pubkey.txt > ~/.erpc-release-pubkey.txt
+
+   # every release: verify against the saved copy, not the copy at the tag
+   minisign -Vm release-manifest.json -p ~/.erpc-release-pubkey.txt
    ```
+
+   If `pubkey.txt` at the tag you are checking differs from your saved copy,
+   stop: either the key was rotated (see Key rotation below) or someone is
+   trying to make their own key look like the project's.
+
+   This is trust on first use. The first copy is only as good as `main` was
+   on the day you saved it; what the saved copy buys is that a later tag
+   cannot quietly bring a different key with it.
 
 3. Check that `tag` and `version` inside the manifest match the tag you chose,
    then compare the archive hash:
