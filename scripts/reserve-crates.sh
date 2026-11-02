@@ -10,8 +10,20 @@
 # only in the environment; revoke the token immediately afterwards and record
 # the revocation in the private ledger.
 #
-#   CARGO_REGISTRY_TOKEN=... scripts/reserve-crates.sh --dry-run
-#   CARGO_REGISTRY_TOKEN=... scripts/reserve-crates.sh
+#   cargo publish --workspace --dry-run --locked   # check packaging first
+#   read -rs CARGO_REGISTRY_TOKEN && export CARGO_REGISTRY_TOKEN
+#   scripts/reserve-crates.sh [--from <crate>]
+#
+# There is no per-crate dry run: `cargo publish -p <crate> --dry-run` resolves
+# workspace dependencies from crates.io, so it fails for every crate whose
+# dependencies are not published yet. The workspace dry run above packages
+# against the local tree instead.
+#
+# crates.io rate-limits NEW crates: a burst of 5, then one every 10 minutes
+# (observed 2026-11-02; a 6th publish 20 s after the 5th got HTTP 429). The
+# loop paces itself to that, so the whole list takes about 1.5 hours. If a
+# publish still fails, wait 10 minutes and rerun with `--from <that crate>`;
+# a resumed run assumes the burst is already spent and paces every crate.
 #
 # Afterwards, for EVERY crate on crates.io:
 #   Settings -> Trusted Publishing -> GitHub: owner elsoul, repo erpc-cli,
@@ -21,22 +33,27 @@ set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
 
-dry_run=""
-if [ "${1:-}" = "--dry-run" ]; then dry_run="--dry-run"; fi
+from=""
+case "${1:-}" in
+  "") ;;
+  --from) from="${2:?--from needs a crate name}";;
+  *) echo "usage: $0 [--from <crate>]" >&2; exit 2;;
+esac
 
-if [ -z "${CARGO_REGISTRY_TOKEN:-}" ] && [ -z "$dry_run" ]; then
+if [ -z "${CARGO_REGISTRY_TOKEN:-}" ]; then
   echo "CARGO_REGISTRY_TOKEN is required (short-lived token, revoke after use)" >&2
   exit 2
 fi
 
 # Publish order follows dependencies: leaves first, the binary last.
+# erpc-auth needs erpc-core and erpc-secret; erpc-api needs erpc-auth.
 crates=(
   erpc-core
   erpc-chain
   erpc-secret
   erpc-ssh
-  erpc-api
   erpc-auth
+  erpc-api
   erpc-ops
   erpc-chain-solana
   erpc-wallet
@@ -48,11 +65,37 @@ crates=(
   erpc
 )
 
+burst=5          # new crates crates.io accepts back to back
+interval=610     # seconds between new crates after the burst (10 min + slack)
+
+if [ -n "$from" ]; then
+  found=""
+  for c in "${crates[@]}"; do [ "$c" = "$from" ] && found=1; done
+  [ -n "$found" ] || { echo "--from: unknown crate '$from'" >&2; exit 2; }
+fi
+
+started=""
+published=0
+spent=0
+[ -z "$from" ] || spent=$burst
 for c in "${crates[@]}"; do
+  if [ -n "$from" ] && [ -z "$started" ]; then
+    [ "$c" = "$from" ] || { echo "== $c (skipped, before --from)"; continue; }
+  fi
+  started=1
+  if [ "$published" -gt 0 ] && [ $((published + spent)) -ge "$burst" ]; then
+    echo "   waiting ${interval}s for the crates.io new-crate rate limit"
+    sleep "$interval"
+  elif [ "$published" -gt 0 ]; then
+    # crates.io needs a moment to index a new crate before dependents resolve it.
+    sleep 20
+  fi
   echo "== $c"
-  cargo publish -p "$c" --locked $dry_run
-  # crates.io needs a moment to index a new crate before dependents resolve it.
-  [ -n "$dry_run" ] || sleep 20
+  cargo publish -p "$c" --locked || {
+    echo "publish of $c failed. Fix the cause (for HTTP 429, wait 10 minutes), then rerun: $0 --from $c" >&2
+    exit 1
+  }
+  published=$((published + 1))
 done
 
 echo
