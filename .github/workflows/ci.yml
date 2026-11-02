@@ -213,3 +213,5 @@ jobs:
           tool: cargo-dist@0.32.0
       - run: dist plan
       - run: dist generate --check
+      - name: rebuild-compare runs where dist builds
+        run: scripts/tests/rebuild-runners.test.sh

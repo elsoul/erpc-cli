@@ -86,9 +86,11 @@ either will add it then.
 
 ## Reproducible build check
 
-Each release rebuilds the two Linux musl targets on an independent runner
-with a fixed `SOURCE_DATE_EPOCH` and compares the binary hashes before
-publishing. The macOS and Windows builds are **not** compared. Treat this
+Each release rebuilds the two Linux musl targets on a second runner of the
+same image, with the same toolchain, and compares the binary hashes before
+publishing. This shows that the build is deterministic and that the first
+runner's output was not altered; it does not show that a different machine
+would produce the same binary. The macOS and Windows builds are **not** compared. Treat this
 page, not the release notes, as the statement of what is checked.
 
 ## Key rotation
