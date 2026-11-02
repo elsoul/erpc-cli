@@ -12,6 +12,10 @@ whose version has no entry below.
 
 ## [Unreleased]
 
+## [0.1.0-rc.1] - 2026-11-02
+
+First release through the release pipeline, as a prerelease.
+
 ### Added
 
 - `erpc login`, `logout`, `whoami` and `doctor`: sign in to an ERPC account
@@ -20,6 +24,21 @@ whose version has no entry below.
   file, and report where it is and why.
 - `erpc-secret`: the key-use gate and the `op://` reference parser.
 - `erpc-api`: the account lookup against `user-api`.
+
+### Changed
+
+- Release artifacts are published on GitHub Releases only; the planned
+  download mirror was removed before it ever served a release.
+- Prerelease tags run the full release workflow (gate, rebuild comparison,
+  signature) and are published to crates.io as semver prereleases.
+- `docs/verify-release.md`: verify signatures against a key saved once from
+  `main`, not against `pubkey.txt` at the tag being checked.
+
+### Fixed
+
+- Endpoint gate: escape sequences, userinfo, quoted and slash-less forms no
+  longer slip past it.
+- `tokio` 1.53.3 (RUSTSEC-2026-0386).
 
 ## [0.0.1] - 2026-10-22
 
@@ -36,5 +55,6 @@ whose version has no entry below.
   minisign-signed release manifest and crates.io Trusted Publishing.
 - `install.erpc.global` Cloudflare Worker serving the installers.
 
-[Unreleased]: https://github.com/elsoul/erpc-cli/compare/v0.0.1...HEAD
+[Unreleased]: https://github.com/elsoul/erpc-cli/compare/v0.1.0-rc.1...HEAD
+[0.1.0-rc.1]: https://github.com/elsoul/erpc-cli/releases/tag/v0.1.0-rc.1
 [0.0.1]: https://github.com/elsoul/erpc-cli/releases/tag/v0.0.1
