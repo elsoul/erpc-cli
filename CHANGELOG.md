@@ -24,10 +24,16 @@ Apart from the entries below, the code is that of 0.0.1.
 - The release signing key (minisign, key ID `A84D7BB71B974545`) in
   `crates/erpc-release/pubkey.txt`, replacing the placeholder.
 
-### Changed
+### Fixed
 
-- Prerelease tags run the full release workflow (gate, rebuild comparison,
-  signature) and are published to crates.io as semver prereleases.
+- The `aarch64-unknown-linux-musl` release build links: the vendored libdbus
+  is compiled without outline atomics (`.cargo/config.toml`).
+- The rebuild comparison runs on the runner images cargo-dist builds on, with
+  the same C compiler. In 0.0.1 it rebuilt on a different image with
+  cargo-zigbuild. `docs/verify-release.md` states what the comparison does
+  and does not show.
+- `scripts/reserve-crates.sh` publishes in dependency order, paces new crates
+  to the crates.io rate limit and refuses any version but 0.0.1.
 
 ## [0.0.1] - 2026-11-02
 
@@ -52,7 +58,9 @@ version.
 - cargo-dist release pipeline with GitHub Attestations, CycloneDX SBOM,
   `cargo-auditable`, release gate, independent rebuild comparison for Linux,
   minisign-signed release manifest and crates.io Trusted Publishing. Release
-  artifacts are published on GitHub Releases only.
+  artifacts are published on GitHub Releases only. Prerelease tags run the
+  full release workflow and are published to crates.io as semver
+  prereleases.
 - `install.erpc.global` Cloudflare Worker serving the installers.
 - `docs/verify-release.md`: verify signatures against a key saved once from
   `main`, not against `pubkey.txt` at the tag being checked.

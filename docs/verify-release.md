@@ -5,10 +5,11 @@ SPDX-License-Identifier: Apache-2.0
 
 # Verifying an erpc release
 
-> Every release is signed with the minisign key in
-> `crates/erpc-release/pubkey.txt`, key ID `A84D7BB71B974545`. Commits from
-> before that key was added hold a placeholder in that file; no release was
-> made from them.
+> GitHub Releases, starting with `v0.1.0-rc.1`, are signed with the minisign
+> key in `crates/erpc-release/pubkey.txt`, key ID `A84D7BB71B974545`.
+> Version 0.0.1 exists only on crates.io, as a name reservation published
+> from a commit that still held a placeholder key; it has no GitHub Release,
+> no binary and no signature.
 
 Two paths are offered.
 
