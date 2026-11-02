@@ -106,6 +106,9 @@ jobs:
       - name: independent rebuild
         run: |
           set -euo pipefail
+          # The dist build installs cargo-auditable from its latest release;
+          # this one from install-action. Logged so a mismatch is diagnosable.
+          cargo auditable --version
           dist build --artifacts=local --target ${{ matrix.target }} --output-format=json > rebuild.json
           rebuilt=$(jq -r '.artifacts | to_entries[] | select(.value.kind=="executable-zip") | .value.path' rebuild.json | head -1)
           [ -n "$rebuilt" ] && [ -f "$rebuilt" ] || { echo "rebuild produced no archive"; exit 1; }

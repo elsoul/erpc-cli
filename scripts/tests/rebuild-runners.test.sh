@@ -14,7 +14,9 @@
 # comparison. The runners are chosen by cargo-dist and can change with a
 # dist upgrade, hence a test that asks dist rather than a comment.
 #
-# Needs `dist` (cargo-dist) and `jq`; CI runs it in the dist-plan job.
+# Needs `dist` (cargo-dist) and `jq`; CI runs it in the dist-plan job. It is
+# not in the gates-bash32 job because that runner has no cargo-dist, and the
+# script uses nothing beyond bash 3.2 that the other tests do not.
 set -uo pipefail
 
 export LC_ALL=C
@@ -37,6 +39,7 @@ plan=$(cd "$repo_root" && dist plan --output-format=json 2>/dev/null) || {
 job=$(awk '
   /^  rebuild-compare:/ { inside = 1; next }
   inside && /^  [a-z]/ { exit }
+  inside && /^[[:space:]]*#/ { next }
   inside { print }
 ' "$custom")
 [ -n "$job" ] || { echo "could not find the rebuild-compare job in $custom" >&2; exit 2; }
@@ -63,6 +66,20 @@ if [ -n "$dist_linux" ] && [ "$dist_linux" = "$mine" ]; then
 else
   bad "each Linux target is rebuilt on the runner dist builds it on" \
       "dist plan: $(printf '%s' "$dist_linux" | tr '\n' ';') rebuild-compare: $(printf '%s' "$mine" | tr '\n' ';')"
+fi
+
+# 1b. dist builds them on the bare runner. A container would make the
+#     runner name meaningless for this comparison.
+in_container=$(printf '%s' "$plan" | jq -r '
+  [.ci.github.artifacts_matrix.include[]
+   | select(.targets[0] | test("linux"))
+   | select(.container != null)
+   | .targets[0]] | join(" ")')
+if [ -z "$in_container" ]; then
+  ok "dist builds the Linux targets on the bare runner, not in a container"
+else
+  bad "dist builds the Linux targets on the bare runner, not in a container" \
+      "built in a container: $in_container; rebuild-compare does not use one"
 fi
 
 # 2. The job uses the matrix runner rather than a fixed image.

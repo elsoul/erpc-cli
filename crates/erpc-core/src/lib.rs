@@ -25,8 +25,9 @@ pub mod version {
     /// `ERPC_BUILD_TIME` if the build environment sets them. **Nothing sets
     /// them today**, so every build reports `unknown`; stamping them in the
     /// release workflow has to keep the two independent builds byte-identical
-    /// (see the rebuild comparison in `release-publish.yml`), which means
-    /// deriving the timestamp from `SOURCE_DATE_EPOCH` rather than the clock.
+    /// (see the rebuild comparison in `release-publish.yml`), so both builds
+    /// must derive the values the same way, from the commit rather than the
+    /// clock.
     #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
     pub struct VersionInfo {
         /// Semantic version from `Cargo.toml`.
