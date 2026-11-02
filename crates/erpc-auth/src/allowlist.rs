@@ -101,7 +101,7 @@ pub fn ensure_token_destination(audience: Audience, url: &str) -> Result<(), All
 ///
 /// The field is private, so the only way to have one is [`Self::checked`].
 /// The two requests that carry a refresh token, the exchange and the
-/// revocation in [`crate::http`], take their URL from one of these.
+/// revocation in [`crate::client`], take their URL from one of these.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefreshDestination(&'static str);
 

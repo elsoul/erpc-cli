@@ -15,9 +15,9 @@ use std::path::{Path, PathBuf};
 
 use secrecy::SecretString;
 
+use crate::client::{AuthClient, HttpError};
 use crate::credential::{Audience, CredKey, Credential};
 use crate::device_flow::{Approved, DeviceAuthorization, LoginError, Next, Poller};
-use crate::http::{AuthClient, HttpError};
 use crate::store::{CredentialStore, StoreError};
 
 /// Why a sign-in or a refresh did not produce a usable session.
@@ -504,8 +504,8 @@ mod tests {
     use std::cell::Cell;
 
     use super::current_session;
+    use crate::client::AuthClient;
     use crate::credential::{CredKey, Credential};
-    use crate::http::AuthClient;
     use crate::lock::{park_credential, read_parked};
     use crate::store::{CredentialStore, StoreError, StoreKind};
     use secrecy::SecretString;

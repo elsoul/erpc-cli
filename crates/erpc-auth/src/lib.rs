@@ -11,27 +11,27 @@
 //! * [`allowlist`] — which hosts the access token and the refresh token may
 //!   each be sent to.
 //! * [`device_flow`] — the polling rules of the device authorization grant.
-//! * [`http`] — the requests themselves, and the one client that sends them.
+//! * [`client`] — the requests themselves, and the one client that sends them.
 //! * [`session`] — signing in, keeping a session current, signing out.
 //! * [`lock`] — the exclusive lock a refresh runs under.
 //!
 //! The decision-making and the network are deliberately separate: every
 //! rule about which store to use, whether a token may be attached, and how
 //! the poll behaves is testable without a server and without a keychain,
-//! and [`http`] is the only module that opens a connection.
+//! and [`client`] is the only module that opens a connection.
 
 #![forbid(unsafe_code)]
 
 pub mod allowlist;
+pub mod client;
 pub mod credential;
 pub mod device_flow;
-pub mod http;
 pub mod lock;
 pub mod session;
 pub mod store;
 
+pub use client::{AuthClient, HttpError};
 pub use credential::{Audience, CredKey, Credential, check_token_shape};
-pub use http::{AuthClient, HttpError};
 pub use session::{SessionError, current_session, run_device_grant, sign_out};
 pub use store::{CredentialStore, StoreError, StoreKind};
 
