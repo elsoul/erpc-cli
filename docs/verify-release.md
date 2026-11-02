@@ -86,10 +86,17 @@ either will add it then.
 
 ## Reproducible build check
 
-Each release rebuilds the two Linux musl targets on an independent runner
-with a fixed `SOURCE_DATE_EPOCH` and compares the binary hashes before
-publishing. The macOS and Windows builds are **not** compared. Treat this
-page, not the release notes, as the statement of what is checked.
+Each release rebuilds the two Linux musl targets on a second runner of the
+same image, with the same Rust toolchain and C compiler, and compares the
+hash of the `erpc` binary with the one in the first runner's archive before
+publishing. A match shows that the build is deterministic and that the
+`erpc` binary in that archive was not altered; it does not show that a
+different machine would produce the same binary, and it does not cover the
+other files in the archive. cargo-auditable is installed separately on each
+side, so a new cargo-auditable release between the two installs makes the
+hashes differ and stops the release. The macOS and Windows builds are
+**not** compared. Treat this page, not the release notes, as the statement
+of what is checked.
 
 ## Key rotation
 

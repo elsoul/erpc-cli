@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+[env]
+# The vendored libdbus (dbus-secret-service, the Linux keychain backend) is C
+# built by musl-gcc. On aarch64, Ubuntu's gcc defaults to -moutline-atomics,
+# which calls helpers such as __aarch64_ldadd4_sync from libgcc; rustc links
+# musl binaries with -nodefaultlibs, so libgcc is not there and the link of
+# `erpc` fails. Inline LSE/LL-SC atomics need no helper. Scoped to that one
+# target; cc-rs reads CFLAGS_<target>.
+CFLAGS_aarch64_unknown_linux_musl = "-mno-outline-atomics"

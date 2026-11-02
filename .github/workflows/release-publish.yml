@@ -73,9 +73,19 @@ jobs:
     needs: release-gate
     strategy:
       fail-fast: true
+      # Rebuild on the same runner image, with the same C toolchain, as the
+      # build-local-artifacts job in release.yml (runner and packages_install
+      # come from `dist plan`; scripts/tests/rebuild-runners.test.sh
+      # fails when they drift). The comparison is between two independent
+      # runs of one environment; a different image or a cross linker such as
+      # zig produces a different binary from the same source.
       matrix:
-        target: [x86_64-unknown-linux-musl, aarch64-unknown-linux-musl]
-    runs-on: ubuntu-latest
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-22.04
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -89,14 +99,16 @@ jobs:
         with:
           toolchain: 1.98.0
           targets: ${{ matrix.target }}
+      - run: sudo apt-get update -q && sudo apt-get install -y -q musl-tools
       - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
         with:
-          tool: cargo-dist@0.32.0,cargo-auditable,cargo-zigbuild
-      - name: independent rebuild with fixed SOURCE_DATE_EPOCH
-        env:
-          SOURCE_DATE_EPOCH: "0"
+          tool: cargo-dist@0.32.0,cargo-auditable
+      - name: independent rebuild
         run: |
           set -euo pipefail
+          # The dist build installs cargo-auditable from its latest release;
+          # this one from install-action. Logged so a mismatch is diagnosable.
+          cargo auditable --version
           dist build --artifacts=local --target ${{ matrix.target }} --output-format=json > rebuild.json
           rebuilt=$(jq -r '.artifacts | to_entries[] | select(.value.kind=="executable-zip") | .value.path' rebuild.json | head -1)
           [ -n "$rebuilt" ] && [ -f "$rebuilt" ] || { echo "rebuild produced no archive"; exit 1; }
