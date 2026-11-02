@@ -24,6 +24,8 @@ First release through the release pipeline, as a prerelease.
   file, and report where it is and why.
 - `erpc-secret`: the key-use gate and the `op://` reference parser.
 - `erpc-api`: the account lookup against `user-api`.
+- The release signing key (minisign, key ID `A84D7BB71B974545`) in
+  `crates/erpc-release/pubkey.txt`, replacing the placeholder.
 
 ### Changed
 
