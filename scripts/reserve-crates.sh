@@ -21,7 +21,7 @@
 #
 # crates.io rate-limits NEW crates: a burst of 5, then one every 10 minutes
 # (observed 2026-11-02; a 6th publish 20 s after the 5th got HTTP 429). The
-# loop paces itself to that, so the whole list takes about 1.5 hours. If a
+# loop paces itself to that, so the whole list takes about 1 h 45 min. If a
 # publish still fails, wait 10 minutes and rerun with `--from <that crate>`;
 # a resumed run assumes the burst is already spent and paces every crate.
 #
@@ -33,12 +33,26 @@ set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
 
+usage() { echo "usage: $0 [--from <crate>]" >&2; exit 2; }
+
 from=""
+[ "$#" -le 2 ] || usage
 case "${1:-}" in
-  "") ;;
-  --from) from="${2:?--from needs a crate name}";;
-  *) echo "usage: $0 [--from <crate>]" >&2; exit 2;;
+  "") [ "$#" -eq 0 ] || usage;;
+  --from)
+    if [ "$#" -ne 2 ] || [ -z "$2" ]; then usage; fi
+    from="$2";;
+  *) usage;;
 esac
+
+# Reservation only: a later version must come from the signed release
+# pipeline, never from a maintainer machine with an API token.
+pkgid=$(cargo pkgid -p erpc)
+version="${pkgid##*[#@]}"
+if [ "$version" != "0.0.1" ]; then
+  echo "the workspace is at $version; this script only reserves names at 0.0.1" >&2
+  exit 2
+fi
 
 if [ -z "${CARGO_REGISTRY_TOKEN:-}" ]; then
   echo "CARGO_REGISTRY_TOKEN is required (short-lived token, revoke after use)" >&2
