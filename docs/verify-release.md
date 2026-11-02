@@ -5,11 +5,11 @@ SPDX-License-Identifier: Apache-2.0
 
 # Verifying an erpc release
 
-> **Not yet in force.** No release has been published, and the signing key in
-> `crates/erpc-release/pubkey.txt` is a placeholder. Verification against it
-> will fail until the first signed release. This document describes the
-> procedure that the release workflow implements, so that it can be reviewed
-> before it is used.
+> GitHub Releases, starting with `v0.1.0-rc.1`, are signed with the minisign
+> key in `crates/erpc-release/pubkey.txt`, key ID `A84D7BB71B974545`.
+> Version 0.0.1 exists only on crates.io, as a name reservation published
+> from a commit that still held a placeholder key; it has no GitHub Release,
+> no binary and no signature.
 
 Two paths are offered.
 

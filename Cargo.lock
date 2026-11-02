@@ -418,7 +418,7 @@ checksum = "00d174d5400e5e8fd687ad1049e2f578285fa914201b1af7e8b112a4546bd826"
 
 [[package]]
 name = "erpc"
-version = "0.0.1"
+version = "0.1.0-rc.1"
 dependencies = [
  "clap",
  "erpc-api",
@@ -433,11 +433,11 @@ dependencies = [
 
 [[package]]
 name = "erpc-ai"
-version = "0.0.1"
+version = "0.1.0-rc.1"
 
 [[package]]
 name = "erpc-api"
-version = "0.0.1"
+version = "0.1.0-rc.1"
 dependencies = [
  "erpc-auth",
  "erpc-core",
@@ -451,7 +451,7 @@ dependencies = [
 
 [[package]]
 name = "erpc-auth"
-version = "0.0.1"
+version = "0.1.0-rc.1"
 dependencies = [
  "dbus-secret-service",
  "erpc-core",
@@ -472,15 +472,15 @@ dependencies = [
 
 [[package]]
 name = "erpc-chain"
-version = "0.0.1"
+version = "0.1.0-rc.1"
 
 [[package]]
 name = "erpc-chain-solana"
-version = "0.0.1"
+version = "0.1.0-rc.1"
 
 [[package]]
 name = "erpc-core"
-version = "0.0.1"
+version = "0.1.0-rc.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -488,35 +488,35 @@ dependencies = [
 
 [[package]]
 name = "erpc-mcp-server"
-version = "0.0.1"
+version = "0.1.0-rc.1"
 
 [[package]]
 name = "erpc-ops"
-version = "0.0.1"
+version = "0.1.0-rc.1"
 
 [[package]]
 name = "erpc-release"
-version = "0.0.1"
+version = "0.1.0-rc.1"
 
 [[package]]
 name = "erpc-secret"
-version = "0.0.1"
+version = "0.1.0-rc.1"
 
 [[package]]
 name = "erpc-skills"
-version = "0.0.1"
+version = "0.1.0-rc.1"
 
 [[package]]
 name = "erpc-ssh"
-version = "0.0.1"
+version = "0.1.0-rc.1"
 
 [[package]]
 name = "erpc-wallet"
-version = "0.0.1"
+version = "0.1.0-rc.1"
 
 [[package]]
 name = "erpc-x402"
-version = "0.0.1"
+version = "0.1.0-rc.1"
 
 [[package]]
 name = "errno"
