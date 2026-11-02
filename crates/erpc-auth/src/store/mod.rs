@@ -3,13 +3,14 @@
 
 //! Where a session is kept, and how the right place is chosen.
 //!
-//! Four implementations, in the order they are preferred:
+//! Four implementations:
 //!
-//! 1. [`one_password::Desktop`] — the default on a person's machine. The
-//!    1Password app holds the item and asks for biometrics.
-//! 2. [`one_password::ServiceAccount`] — CI, headless servers and resident
+//! 1. [`keychain::OsKeychain`] — the default on a person's machine.
+//! 2. [`one_password::Desktop`] — chosen by the operator at `erpc login` or
+//!    with `--store`, never by detection. The 1Password app holds the item
+//!    and asks for biometrics.
+//! 3. [`one_password::ServiceAccount`] — CI, headless servers and resident
 //!    agents, selected by the presence of a service account token.
-//! 3. [`keychain::OsKeychain`] — machines without `op`.
 //! 4. [`file::FileStore`] — the last resort, and the only store that writes
 //!    a secret to disk. It warns, and `erpc doctor` reports it. The one other
 //!    case of a session on disk is not a store: a rotation the store refused
@@ -62,11 +63,13 @@ impl StoreKind {
         matches!(self, Self::File)
     }
 
-    /// Parses a name from `--store`.
+    /// Parses a name from `--store` or from `credential_store` in the
+    /// configuration.
     #[must_use]
     pub fn parse(name: &str) -> Option<Self> {
         match name {
-            "1password-desktop" => Some(Self::OnePasswordDesktop),
+            // Short names, for typing and for `config.toml`.
+            "1password-desktop" | "1password" | "op" => Some(Self::OnePasswordDesktop),
             "1password-service-account" => Some(Self::OnePasswordServiceAccount),
             "keychain" => Some(Self::OsKeychain),
             "file" => Some(Self::File),

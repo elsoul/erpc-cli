@@ -20,7 +20,9 @@ use erpc_auth::store::{StoreError, StoreKind};
 
 mod browser;
 mod commands;
+mod config;
 mod doctor;
+mod prompt;
 mod session;
 
 /// Exit codes shared by every command.
@@ -56,7 +58,7 @@ struct Cli {
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum StoreChoice {
     /// 1Password through the desktop application.
-    #[value(name = "1password-desktop")]
+    #[value(name = "1password-desktop", alias = "1password", alias = "op")]
     OnePasswordDesktop,
     /// 1Password through a service account token.
     #[value(name = "1password-service-account")]
@@ -84,28 +86,32 @@ enum Command {
     Version,
     /// Sign in to your ERPC account.
     Login {
-        /// Keep the session in this store instead of the detected one.
+        /// Keep the session in this store, without asking. Without it,
+        /// erpc asks at a terminal and otherwise uses the keychain.
         #[arg(long, value_enum)]
         store: Option<StoreChoice>,
+        /// The 1Password vault id to keep the session in, without asking.
+        #[arg(long, value_name = "VAULT_ID")]
+        vault: Option<String>,
         /// Print the URL and code instead of opening a browser.
         #[arg(long)]
         no_browser: bool,
     },
     /// Sign out and remove the stored session.
     Logout {
-        /// Remove the session from this store instead of the detected one.
+        /// Remove the session from this store instead of the one `erpc login` chose.
         #[arg(long, value_enum)]
         store: Option<StoreChoice>,
     },
     /// Report what this machine is doing with your session.
     Doctor {
-        /// Report on this store instead of the detected one.
+        /// Report on this store instead of the one `erpc login` chose.
         #[arg(long, value_enum)]
         store: Option<StoreChoice>,
     },
     /// Show who the stored session belongs to.
     Whoami {
-        /// Look in this store instead of the detected one.
+        /// Look in this store instead of the one `erpc login` chose.
         #[arg(long, value_enum)]
         store: Option<StoreChoice>,
     },
@@ -119,9 +125,12 @@ enum Command {
 /// # Errors
 ///
 /// Returns [`StoreError::Unavailable`] when the chosen backend is not
-/// usable here: `op` missing for a 1Password store, or no vault
-/// configured for it.
-pub fn store_for(kind: StoreKind) -> Result<Box<dyn erpc_auth::CredentialStore>, StoreError> {
+/// usable here: `op` missing for a 1Password store, or no vault chosen
+/// for it by `vault`, the configuration or `ERPC_CREDENTIAL_VAULT`.
+pub fn store_for(
+    kind: StoreKind,
+    vault: Option<&str>,
+) -> Result<Box<dyn erpc_auth::CredentialStore>, StoreError> {
     use erpc_auth::store::one_password::{Mode, OnePassword, OpCli};
     match kind {
         StoreKind::File => {
@@ -141,11 +150,16 @@ pub fn store_for(kind: StoreKind) -> Result<Box<dyn erpc_auth::CredentialStore>,
                 Mode::ServiceAccount
             };
             let runner = OpCli::from_env(mode, |n| std::env::var_os(n))?;
-            let vault =
-                std::env::var("ERPC_CREDENTIAL_VAULT").map_err(|_| StoreError::Unavailable {
+            // The environment overrides the vault `erpc login` recorded, so
+            // CI can point one run elsewhere without editing the file.
+            let vault = std::env::var("ERPC_CREDENTIAL_VAULT")
+                .ok()
+                .filter(|v| !v.is_empty())
+                .or_else(|| vault.map(ToOwned::to_owned))
+                .ok_or_else(|| StoreError::Unavailable {
                     kind,
-                    reason: "no vault is configured; set ERPC_CREDENTIAL_VAULT to a 1Password \
-                             vault id, or use --store keychain"
+                    reason: "no 1Password vault is chosen; run `erpc login` and pick one, pass \
+                             --vault, or set ERPC_CREDENTIAL_VAULT"
                         .to_owned(),
                 })?;
             Ok(Box::new(OnePassword::new(
@@ -162,9 +176,11 @@ pub fn store_for(kind: StoreKind) -> Result<Box<dyn erpc_auth::CredentialStore>,
 async fn main() -> ExitCode {
     let cli = Cli::parse();
     let outcome = match cli.command {
-        Command::Login { store, no_browser } => {
-            commands::login(cli.json, store.map(Into::into), no_browser).await
-        }
+        Command::Login {
+            store,
+            vault,
+            no_browser,
+        } => commands::login(cli.json, store.map(Into::into), vault, no_browser).await,
         Command::Logout { store } => commands::logout(cli.json, store.map(Into::into)).await,
         Command::Whoami { store } => commands::whoami(cli.json, store.map(Into::into)).await,
         Command::Doctor { store } => commands::doctor(cli.json, store.map(Into::into)),

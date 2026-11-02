@@ -44,6 +44,28 @@ pub struct Finding {
     pub detail: String,
 }
 
+impl Finding {
+    /// A finding that needs nothing done.
+    #[must_use]
+    pub fn ok(subject: &str, detail: String) -> Self {
+        Self {
+            level: Level::Ok,
+            subject: subject.to_owned(),
+            detail,
+        }
+    }
+
+    /// A finding the operator should act on.
+    #[must_use]
+    pub fn warn(subject: &str, detail: String) -> Self {
+        Self {
+            level: Level::Warn,
+            subject: subject.to_owned(),
+            detail,
+        }
+    }
+}
+
 /// A secret left on this machine, and how long it has been there.
 #[derive(Debug, Clone)]
 pub struct OnDisk {
