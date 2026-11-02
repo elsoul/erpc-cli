@@ -34,6 +34,12 @@ hosting = ["github"]
 # release-gate -> rebuild-compare -> sign (environment `release`, human approval) -> publish-crates.
 # The GitHub Release itself is created in the `announce` phase, i.e. only after all of that succeeded.
 publish-jobs = ["./release-publish"]
+# Prerelease tags (`-rc.N`) run that same workflow. Without this the generated
+# release.yml SKIPS it for a prerelease and `announce` still creates the
+# release, unsigned and ungated (scripts/tests/release-wiring.test.sh, case 7).
+# A prerelease is therefore published to crates.io as well, as a semver
+# prerelease that `cargo install erpc` does not pick by default.
+publish-prereleases = true
 github-custom-job-permissions = { "release-publish" = { id-token = "write", contents = "read" } }
 github-release = "announce"
 msvc-crt-static = true

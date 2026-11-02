@@ -189,5 +189,36 @@ EOF
   fi
 fi
 
+# 7. A prerelease tag must not skip the publish workflow. The generated
+#    `custom-release-publish` job runs only when the tag is not a prerelease
+#    OR the plan says `publish_prereleases`, and the generated `announce`
+#    job accepts a SKIPPED publish job as well as a successful one. So
+#    without `publish-prereleases = true`, an `-rc` tag gets a GitHub
+#    Release with no release gate, no rebuild comparison and no signature --
+#    and nothing fails. The first tag this repository cuts is an `-rc`.
+publish_if=$(awk '
+  /^  custom-release-publish:/ { inside = 1; next }
+  inside && /^  [a-z]/ { exit }
+  inside && /^    if:/ { print; exit }
+' "$generated")
+dist_config="$repo_root/dist-workspace.toml"
+if [ -z "$publish_if" ]; then
+  bad "a prerelease tag runs the publish workflow" \
+      "no 'if:' on custom-release-publish in $generated; re-read the generated workflow before trusting this test"
+else
+  case "$publish_if" in
+    *announcement_is_prerelease*)
+      if grep -qE '^[[:space:]]*publish-prereleases[[:space:]]*=[[:space:]]*true[[:space:]]*(#.*)?$' "$dist_config"; then
+        ok "a prerelease tag runs the publish workflow"
+      else
+        bad "a prerelease tag runs the publish workflow" \
+            "custom-release-publish is skipped for prereleases unless dist-workspace.toml sets publish-prereleases = true, and announce still publishes"
+      fi
+      ;;
+    *)
+      ok "a prerelease tag runs the publish workflow";;
+  esac
+fi
+
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
