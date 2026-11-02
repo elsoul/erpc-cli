@@ -261,6 +261,19 @@ check_msg "a backslash authority is refused" "$sample_dir/y0c.ts" \
   'const u = "https:\\evil.example.net/x";' \
   'escape sequence in host'
 
+# `scheme::` gets NO exception, although `http::Method` and `use
+# crate::http::{..}` are ordinary Rust paths. The colon after the scheme can
+# begin an empty userinfo: node's `new URL("https::@evil.example.net/x")`
+# resolves to evil.example.net, and `format!("https::{}x", "@")` builds that
+# string at runtime. So a Rust path through a module named `http` is
+# reported, and the fix is the module's name (erpc-auth's is `client`).
+check_msg "a double colon after the scheme can still carry a host" "$sample_dir/y0d.rs" \
+  'let u = "https::@evil.example.net/x";' \
+  'endpoint not in the allowlist: https://evil.example.net'
+
+check "a Rust path through a module named http is reported" block "$sample_dir/y0e.rs" \
+  'use reqwest::http::StatusCode;'
+
 check_msg "a mixed slash-backslash authority too" "$sample_dir/y0d.ts" \
   'const u = "https:/\\evil.example.net/x";' \
   'escape sequence in host'
