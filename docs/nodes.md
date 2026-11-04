@@ -84,17 +84,26 @@ How erpc handles a server:
 
 ## Where keys are kept
 
-Not every key is in 1Password, and a node may hold a key it needs to run. Back
-up what is on a host yourself: rebuilding that host without a backup loses it.
+This table is about node hosts; `SECURITY.md` covers the operator's machine. Not
+every key is in 1Password, and a node may hold a key it needs to run. Back up
+what is on a host yourself: rebuilding that host without a backup loses it. An
+active Sui validator or an elected TRON witness also refuses to move to a new
+host, so rebuilding one is not a quick redeploy.
 
 | Node | In 1Password | On the host |
 |---|---|---|
-| Solana validator | Identity, vote account key and withdraw authority | What the running validator needs; never the withdraw authority |
+| Solana validator | Staked identity and withdraw authority. The vote account key is deleted once the account is verified | A throwaway `unstaked-identity.json` in plain text. A deploy never copies the staked key or the withdraw authority there |
 | Solana RPC | The inventory | The identity, made there; it never leaves |
-| Ethereum validator | The inventory | Keystores and their unlock password; keep your original backups |
+| Ethereum validator | The inventory | Keystores, their unlock password and the slashing history; keep your original backups, and never restore keys without that history |
 | Arc RPC | The consensus key | The consensus key, encrypted |
 | Avalanche | A backup of the staking and BLS keys | The same keys, made there on the first deploy |
-| Sui validator | The keys, made on your own machine | The network credential, encrypted to that host and not portable |
+| Sui validator | The protocol, network and worker keys, made on your own machine | The same three keys, encrypted with `systemd-creds` to that host; never the account key |
+| Sui full node | The inventory | The network credential, encrypted to that host; there is no other copy |
 | TRON witness | The encrypted keystore and its password | The same, as encrypted systemd credentials |
-| OP-family RPC | The inventory and provider values | Engine JWT and peer identities, encrypted; back up the owner record and the host's encryption secret |
+| OP-family RPC | The inventory and provider values | Provider credential, engine JWT and peer identities, encrypted; back up the owner record and the host's encryption secret |
+| Nitro RPC | The inventory and upstream credential | The upstream credential, encrypted |
+
+Other RPC nodes hold no signing key for a validator, but their hosts keep what
+the client makes for itself, such as an engine JWT, a peer identity or an RPC
+cookie.
 

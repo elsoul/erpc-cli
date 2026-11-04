@@ -27,7 +27,7 @@ chains, and each chain's guide in `docs/chains/` says where it stands.
   five (Solana, Ethereum, Avalanche, Sui, TRON), with the same verbs:
   `init`, `deploy`, `status`, `logs`, `start`, `stop`, `restart`, `update`,
   `update-config`, `plan` and `destroy`. Solana validators have only `init`,
-  `deploy`, `list` and `status` of these so far. Six
+  `deploy` and `status` of these so far, plus `list`, `keys` and `vote-account`. Six
   more chains (Polygon, BNB Chain, Kaia, Monad, Hyperliquid, NEAR) are
   researched in `docs/chains/` and answer "not implemented yet". Live
   acceptance on real hosts is still under way for most chains. Every deploy
@@ -37,8 +37,7 @@ chains, and each chain's guide in `docs/chains/` says where it stands.
   passwordless sudo, Solana builds its clients at a pinned commit and fetches
   some tools without a checksum, and Solana validators, Ethereum validators and
   Bitcoin nodes get no firewall from erpc. Node and validator records
-  live in 1Password and no key or inventory is kept on the operator's disk.
-  Which keys are in 1Password and which stay on the host differs by chain.
+  live in 1Password, not on the operator's disk. Which keys are in 1Password and which stay on the host differs by chain.
   `docs/nodes.md` has that table, the clients, networks and guides.
 - `erpc rpc --chain solana`: Solana mainnet RPC nodes, the port of `slv rpc`,
   with agave or jito and SLV's four RPC types

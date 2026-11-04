@@ -7,7 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # erpc
 
-**Run validators and RPC nodes on 12 chains, and your own apps on Linux servers, with no keys on your servers.**
+**Run validators and RPC nodes on 12 chains, and your own apps on Linux servers.**
 
 One command line for your nodes, your apps and your [ERPC](https://erpc.global) account,
 and an assistant that runs it for you when you ask.
@@ -16,17 +16,17 @@ and an assistant that runs it for you when you ask.
 
 </div>
 
-## Your keys, out of your files
+## Where your keys are
 
-erpc keeps the keys it manages in **1Password** and hands a server only what it
-needs, when it needs it. Your session stays in 1Password or your operating
-system's keychain.
+erpc stores keys in **1Password** or your operating system's keychain where it
+can, and hands a server only what it needs. What has to live on a server depends
+on the chain: [Running nodes](docs/nodes.md#where-keys-are-kept) has the table.
 
-- **Solana validators.** The staked identity, the vote account key and the withdraw
-  authority are kept in 1Password. A new validator syncs under a throwaway
-  identity, and the withdraw authority never goes to a server at all.
-- **Trading bots and Web3 apps.** An `erpc worker` app gets its wallet key on
-  a pipe when it starts. The worker holds it in memory only, locked and
+- **Solana validators.** The staked identity and the withdraw authority are kept
+  in 1Password. A deploy never copies the staked key to the node: it starts under
+  a throwaway identity, and the withdraw authority never goes to a server at all.
+- **Trading bots and Web3 apps.** An `erpc worker` app gets its wallet key from
+  1Password or the keychain, on a pipe, when it starts. The worker holds it in memory only, locked and
   undumpable; there is no `wallet.json`, no `.env`, no copy on disk. After a
   reboot the app stays locked until you send the key again.
 - **Secrets.** API tokens and RPC keys are stored as `op://…` references.
@@ -34,15 +34,9 @@ system's keychain.
 - **Your team.** The node inventory lives in 1Password too. Share the vault
   and everyone on the team manages the same nodes from their own machine,
   with 1Password deciding who can do what.
-
-- **Keys that stay on a server.** Some nodes need a key on the host, or make
-  one there. A Solana RPC node's identity never leaves it, and an Ethereum
-  validator's keystores and unlock password live on it. Those hosts need
-  backups of their own. [Running nodes](docs/nodes.md#where-keys-are-kept) lists
-  what each chain keeps where.
-
-A server whose keys are all in 1Password can be rebuilt and deployed again in
-minutes.
+- **Keys that stay on a server.** Many nodes hold a key on the host. A Solana RPC
+  node's identity never leaves it, and an Ethereum validator's keystores and
+  unlock password live on it. Those hosts need backups of their own.
 
 ## Install
 
@@ -240,8 +234,8 @@ erpc whoami
 ## All commands
 
 Run any command group without a verb (`erpc validator`, `erpc worker`) to
-list its verbs. `erpc --json <command>` gives machine-readable output; the flag
-goes before the command.
+list its verbs. `erpc --json <command>` gives machine-readable output. On node
+commands the flag has to go before the command.
 
 | Command | What it does |
 |---|---|

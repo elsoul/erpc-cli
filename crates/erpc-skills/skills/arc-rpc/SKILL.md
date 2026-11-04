@@ -51,7 +51,7 @@ a few minutes. Memory in use settles at 5 to 10 GB for the execution layer and w
 
 ## Commands
 
-What every chain's commands share -- the inventory and keys in 1Password, logging in through an
+What every chain's commands share -- the inventory in 1Password and where keys are kept, logging in through an
 SSH agent with the verb's `--ssh-key`, the host key, `plan`, `--yes`, `--json`, repeating a verb
 -- is in the skill `erpc-nodes`. For Arc: pass `--chain arc` every time, and a node is named by
 `-n` and `--name`:

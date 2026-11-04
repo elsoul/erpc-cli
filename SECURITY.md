@@ -44,12 +44,22 @@ SBOM and GitHub build provenance attestations. See `docs/verify-release.md`.
 
 ## Secret handling
 
-On the operator's machine `erpc` keeps one kind of secret: the session for your
-ERPC account, an access token and a refresh token obtained through the OAuth
-device authorization grant. Private keys it manages, such as a Solana validator's
-or the `erpc wallet` key, are made or read in memory and stored in 1Password, not
-on the operator's disk. Some nodes hold keys on their own hosts; `docs/nodes.md`
-lists them. When it uses a 1Password
+On the operator's machine `erpc` keeps these secrets:
+
+- the session for your ERPC account, an access token and a refresh token obtained
+  through the OAuth device authorization grant, in the store described below;
+- the storage and backup secrets listed under the storage section below, in the
+  same store, and a machine's own backup keys in `~/.erpc/backup.env`;
+- an `erpc worker` app's trading key and secret settings, in 1Password or the
+  keychain.
+
+Node keys and the `erpc wallet` key are made or read in memory and stored in
+1Password. One command writes them to disk: `erpc validator vote-account` writes
+the identity and vote keys to 0600 files under the state directory while the
+Solana CLI runs, and wipes them afterwards. A process that dies can leave a file
+until a later run sweeps it. Keys on node hosts are listed in `docs/nodes.md`.
+
+When it uses a 1Password
 service account, it reads `OP_SERVICE_ACCOUNT_TOKEN` from its environment and
 passes it to the `op` processes it starts, and to no other process: the
 browser `erpc login` opens is started without any variable whose name begins

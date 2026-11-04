@@ -1,6 +1,6 @@
 ---
 name: erpc-nodes
-description: What every chain's node commands in erpc share -- erpc v / erpc r / erpc n, choosing the chain and network, the inventory and keys in 1Password, logging in over SSH (agent, --ssh-key, the host key), which nodes get the nftables firewall and its rollback, plan, --yes, --json, repeating a command safely, and reading a failure.
+description: What every chain's node commands in erpc share -- erpc v / erpc r / erpc n, choosing the chain and network, the inventory in 1Password and where keys are kept, logging in over SSH (agent, --ssh-key, the host key), which nodes get the nftables firewall and its rollback, plan, --yes, --json, repeating a command safely, and reading a failure.
 ---
 
 # Node commands: what every chain shares
@@ -30,11 +30,14 @@ erpc r --chain arc -n testnet --name arc1 deploy --ssh-key ~/.ssh/id_ed25519.pub
 The inventory (each node: address, SSH user and port, pinned host key, release pins, allow
 lists, type) lives in 1Password, in one vault per network shared by every
 chain: the first `init` on a network asks for it (`--vault`), and a different `--vault` later is
-refused. erpc keeps none of it on the operator's disk. Keys differ by chain: Solana validator
-keys and Arc's consensus key are in 1Password, but a Solana RPC node's identity and an Ethereum
-validator's keystores stay on the host, so those hosts need backups; `docs/nodes.md` has the table. 1Password is the desktop app, or on a
+refused. erpc keeps none of it on the operator's disk. 1Password is the desktop app, or on a
 machine without one a service account (`OP_SERVICE_ACCOUNT_TOKEN`), which reaches testnet only.
-Keys sent to a node go over SSH standard input, never in a command line or a file erpc writes.
+
+Keys differ by chain, and `docs/nodes.md` has the table. A Solana validator's staked identity and
+withdraw authority are in 1Password and a deploy never copies them to the node. A Solana RPC
+node's identity and an Ethereum validator's keystores and unlock password stay on the host, so
+those hosts need backups. Keys sent to a node go over SSH standard input, never on a command
+line; some hosts then store them.
 
 ## Logging in to the node
 
