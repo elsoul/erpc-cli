@@ -7,7 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # erpc
 
-**Run validators and RPC nodes on 12 chains, and your own apps on any server, with no keys on your servers.**
+**Run validators and RPC nodes on 12 chains, and your own apps on Linux servers, with no keys on your servers.**
 
 One command line for your nodes, your apps and your [ERPC](https://erpc.global) account,
 and an assistant that runs it for you when you ask.

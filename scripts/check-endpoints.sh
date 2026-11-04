@@ -107,8 +107,9 @@
 #         earlier version listed the open shapes one by one, and the next
 #         review found members of the class that were on neither list.
 #         Precisely:
-#           - a quote ending a host, followed by any character not in the
-#             closed set above. That includes `.`, which is a method call in
+#           - a quote ending a host -- or a host, a numeric port and the
+#             `,` `;` or `)` that ends it -- followed by any character not
+#             in the closed set above. That includes `.`, which is a method call in
 #             Rust, TypeScript and Python ("https://erpc.global".to_string()),
 #             and a letter, which includes a quote INSIDE the host as the URL
 #             Standard permits -- https://api.github.com'evil.example.net/x

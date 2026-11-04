@@ -562,14 +562,7 @@ async fn follow(
     let mut last = submitted;
     // The relay and the grant take a little while: follow it for a minute.
     for _ in 0..20 {
-        let state = last
-            .body
-            .get("state")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        if matches!(state, "granted" | "stuck" | "expired" | "cancelled")
-            || !(200..300).contains(&last.status)
-        {
+        if is_settled(state_of(&last.body)) || !(200..300).contains(&last.status) {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
@@ -668,39 +661,121 @@ pub(crate) async fn top_up_credit(
     // said, and when it cannot be, the outcome is reported as unknown with
     // the session id, never as "not sent": a second top-up on that word
     // would be a second purchase.
-    let submitted = match gasless::submit(client, token, &id, &signature).await {
-        Ok(reply) => reply,
-        Err(e) => match erpc_api::gasless::status(client, token, &id).await {
-            Ok(reply) => reply,
-            Err(_) => {
-                return Ok(json!({
-                    "state": "unknown",
-                    "done": false,
-                    "sessionId": id,
-                    "what": format!("buy {credits} credits"),
-                    "message": format!(
-                        "the signed transfer was sent but no answer came back ({e}); whether \
-                         it was taken is not known. Do not buy again until the credit \
-                         balance or this session shows what happened."
-                    ),
-                }));
+    let what = format!("buy {credits} credits");
+    let (submitted, submit_failed) = match gasless::submit(client, token, &id, &signature).await {
+        Ok(reply) => (reply, false),
+        Err(e) => {
+            let asked = erpc_api::gasless::status(client, token, &id).await;
+            match after_failed_submit(asked, &id, &what, &e) {
+                Ok(reply) => (reply, true),
+                Err(unknown) => return Ok(unknown),
             }
-        },
+        }
     };
-    let last = follow(client, token, &id, submitted).await;
+    let mut last = follow(client, token, &id, submitted).await;
+    if submit_failed && !is_settled(state_of(&last.body)) {
+        // The signature may still be on its way. Close the session, so a
+        // late arrival is refused rather than paid after the person was
+        // told nothing happened, and read it once more: what is reported
+        // is then final either way.
+        let _ = gasless::cancel(client, token, &id).await;
+        if let Ok(reply) = erpc_api::gasless::status(client, token, &id).await {
+            last = reply;
+        }
+    }
     let mut out = pick(&last.body, &["state", "code", "message", "transaction"]);
     out["httpStatus"] = json!(last.status);
     out["done"] = json!(last.body.get("state").and_then(Value::as_str) == Some("granted"));
     out["sessionId"] = json!(id);
-    out["what"] = json!(format!("buy {credits} credits"));
+    out["what"] = json!(what);
     Ok(out)
+}
+
+/// The session's `state`, or `""`.
+fn state_of(body: &Value) -> &str {
+    body.get("state")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+}
+
+/// A state the session will not leave on its own.
+fn is_settled(state: &str) -> bool {
+    matches!(state, "granted" | "stuck" | "expired" | "cancelled")
+}
+
+/// What to do when the submit failed after the signature left this machine:
+/// user-api may have taken it before the connection broke, so `asked` is
+/// the session as it answers now. Its answer, when it gave one, is followed
+/// like a submit's. When it gave none, the outcome is reported as unknown
+/// with the session id, never as "not sent": a second top-up on that word
+/// would be a second purchase.
+fn after_failed_submit(
+    asked: Result<erpc_api::gasless::Reply, erpc_api::ApiError>,
+    id: &str,
+    what: &str,
+    submit_error: &erpc_api::ApiError,
+) -> Result<erpc_api::gasless::Reply, Value> {
+    asked.map_err(|_| {
+        json!({
+            "state": "unknown",
+            "done": false,
+            "sessionId": id,
+            "what": what,
+            "message": format!(
+                "the signed transfer was sent but no answer came back ({submit_error}); \
+                 whether it was taken is not known. Do not buy again until the credit \
+                 balance or this session shows what happened."
+            ),
+        })
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{euros, outcome};
+    use super::{after_failed_submit, euros, is_settled, outcome};
     use erpc_api::hourly::Reply;
     use serde_json::json;
+
+    #[test]
+    fn a_failed_submit_is_never_reported_as_not_sent() {
+        let lost = erpc_api::ApiError::Status(502);
+        // The session answered: its answer is what gets followed, as a
+        // submit's would be.
+        let answered = erpc_api::gasless::Reply {
+            status: 200,
+            body: json!({ "state": "submitted", "sessionId": "s" }),
+        };
+        let followed = after_failed_submit(Ok(answered), "s", "buy 5 credits", &lost)
+            .expect("the session's answer is followed");
+        assert_eq!(followed.body["state"], "submitted");
+        // The session did not answer either: unknown, with the session id,
+        // and the words say not to buy again.
+        let unknown = after_failed_submit(
+            Err(erpc_api::ApiError::Status(504)),
+            "s",
+            "buy 5 credits",
+            &lost,
+        )
+        .expect_err("nothing definite can be said");
+        assert_eq!(unknown["state"], "unknown");
+        assert_eq!(unknown["done"], false);
+        assert_eq!(unknown["sessionId"], "s");
+        assert_eq!(unknown["what"], "buy 5 credits");
+        let message = unknown["message"].as_str().expect("a message");
+        assert!(message.contains("not known"), "{message}");
+        assert!(message.contains("Do not buy again"), "{message}");
+        assert!(!message.contains("not sent"), "{message}");
+    }
+
+    #[test]
+    fn only_a_settled_session_is_left_alone() {
+        for state in ["granted", "stuck", "expired", "cancelled"] {
+            assert!(is_settled(state), "{state}");
+        }
+        for state in ["ready", "submitted", "relayed", ""] {
+            assert!(!is_settled(state), "{state}");
+        }
+    }
 
     #[tokio::test]
     async fn nothing_is_started_or_ended_without_someone_to_ask() {

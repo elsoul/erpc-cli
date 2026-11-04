@@ -143,13 +143,16 @@ for (const { file } of cases) {
 const endings = {
   "erpc-installer.sh": {
     ending: /download_binary_and_run_installer "\$@" \|\| exit 1\s*$/,
-    layout: /_force_install_dir="\$ERPC_INSTALL_DIR"\n\s*_install_layout="flat"/,
+    // The three forced directories, in the tail's order, each flat.
+    layout:
+      /if \[ -n "\$\{ERPC_INSTALL_DIR:-\}" \]; then\n\s*_force_install_dir="\$ERPC_INSTALL_DIR"\n\s*_install_layout="flat"\n\s*elif \[ -n "\$\{CARGO_DIST_FORCE_INSTALL_DIR:-\}" \]; then\n\s*_force_install_dir="\$CARGO_DIST_FORCE_INSTALL_DIR"\n\s*_install_layout="flat"\n\s*elif \[ -n "\$UNMANAGED_INSTALL" \]; then\n\s*_force_install_dir="\$UNMANAGED_INSTALL"\n\s*_install_layout="flat"/,
     flat: /"flat"\)\n\s*_install_dir="\$_force_install_dir"/,
     flavor: "sh",
   },
   "erpc-installer.ps1": {
     ending: /try \{\s*Install-Binary "\$Args"\s*\} catch \{[^}]*exit 1\s*\}\s*$/,
-    layout: /\$force_install_dir = \$env:ERPC_INSTALL_DIR\n\s*\$install_layout = "flat"/,
+    layout:
+      /if \(\(\$env:ERPC_INSTALL_DIR\)\) \{\n\s*\$force_install_dir = \$env:ERPC_INSTALL_DIR\n\s*\$install_layout = "flat"\n\s*\} elseif \(\(\$env:CARGO_DIST_FORCE_INSTALL_DIR\)\) \{\n\s*\$force_install_dir = \$env:CARGO_DIST_FORCE_INSTALL_DIR\n\s*\$install_layout = "flat"\n\s*\} elseif \(\$unmanaged_install\) \{\n\s*\$force_install_dir = \$unmanaged_install\n\s*\$install_layout = "flat"/,
     flat: /"flat" \{\n\s*\$dest_dir = \$force_install_dir/,
     flavor: "ps1",
   },

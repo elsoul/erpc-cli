@@ -1110,6 +1110,14 @@ check "KNOWN LIMIT: a closing quote then the other quote" allow "$sample_dir/sk9
 check "KNOWN LIMIT: a closing quote then a hyphen" allow "$sample_dir/sk10.sh" \
   'curl "https://erpc.global"-evil.example.net/x'
 
+# The same open shape reached through the port rule: the port and the comma
+# end the literal host, and a quote then a letter follows, which is the
+# first open item in the header. main reported it for the colon instead;
+# without the port (`https://erpc.global,"x"@evil...`) main allows it too, so
+# the port rule adds no destination the gate did not already pass.
+check "KNOWN LIMIT: a port, a comma, then a quoted word and an at sign" allow "$sample_dir/sk11.sh" \
+  'curl https://erpc.global:8080,"x"@evil.example.net/p'
+
 # --- the invariant ------------------------------------------------------
 #
 # Every shape-specific case above pins one bypass. This pins the property

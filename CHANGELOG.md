@@ -120,6 +120,11 @@ chains, and each chain's guide in `docs/chains/` says where it stands.
   `erpc-chain-eth`, `erpc-chain-nitro`, `erpc-chain-op`,
   `erpc-chain-rollup`, `erpc-chain-sui`, `erpc-chain-tron`, `erpc-worker`
   and `erpc-worker-agent` join the workspace (26 crates in all).
+- `scripts/reserve-crates.sh` reserves the workspace crates missing from
+  crates.io with placeholder 0.0.1 packages (a name, a licence, a
+  description and an empty library; nothing of the tree), after checking
+  that every crate already there is owned as `erpc` is. The 0.0.1-only rule
+  stands: a real version comes from the release pipeline alone.
 - The endpoint gate learns `NODE_HOSTS`, the hosts a node reaches from the
   playbooks and templates erpc carries, accepted in those trees only, and
   `ADDRESS_ECHO_HOSTS`, the services `erpc ai` may ask for the operator's
