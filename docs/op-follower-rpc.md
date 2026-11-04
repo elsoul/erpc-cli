@@ -198,7 +198,7 @@ waits for readiness; `status` exits unsuccessfully while readiness is false.
 ## Operations and recovery
 
 All twelve verbs are implemented: init, deploy, list, status, logs, start, stop,
-restart, update, update-config, plan and destroy. `logs --json` emits NDJSON.
+restart, update, update-config, plan and destroy. `erpc --json rpc logs` emits NDJSON.
 `plan --change deploy|update|update-config` shows public desired settings without
 reading provider values or mutating a host. `update` selects this CLI's reviewed
 pair, rejects downgrades, fences startup before stopping the old pair, and never

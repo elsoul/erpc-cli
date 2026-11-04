@@ -69,10 +69,6 @@ The command registry and dispatch are the implementation evidence. [R1], [R2], [
 | Robinhood | Implemented: Nitro mainnet/testnet follower with separate genesis pins | Permissioned admission and signing remain separate | Independent review and deferred live acceptance |
 | Other 10 researched families | **Not implemented** | **Not implemented**, or N/A for the mapped network role | Follow the ordered roadmap |
 
-The [implementation roadmap](../plans/2026-10-26-chain-implementation.md) tracks
-order, dependencies and acceptance criteria. Research completion does not mark
-any implementation step complete.
-
 ## Reading and maintaining the map
 
 - Read the chain's Networks and release qualifications before selecting a binary.

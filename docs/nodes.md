@@ -5,16 +5,17 @@ SPDX-License-Identifier: Apache-2.0
 
 # Running nodes: `erpc validator` and `erpc rpc`
 
-Every node type has the same verbs:
+Node types share these verbs. Solana validators have only `init`, `deploy`,
+`list` and `status` of them so far, plus `keys` and `vote-account`.
 
 | Verb | What it does |
 |---|---|
 | `init` | Check the server, pin client releases, store the node in 1Password and prepare the host |
-| `deploy` | Install the client, fetch a snapshot, apply the firewall and start the node |
+| `deploy` | Install the client, fetch a snapshot, apply the firewall where erpc has one for that node, and start the node |
 | `list`, `status`, `logs` | Inventory, health and journal |
 | `start`, `stop`, `restart` | Service control, in the right order for nodes with several layers |
 | `update` | Move to another client release; rollback policy depends on the client |
-| `update-config` | Write the configuration and firewall again, restarting only on a change |
+| `update-config` | Write the configuration, and the firewall where there is one, again, restarting only on a change |
 | `plan` | Show what `deploy`, `update` or `update-config` would change |
 | `destroy` | Stop and remove services; chain data only with `--purge-data`; Avalanche preserves identities and firewall |
 
@@ -27,7 +28,7 @@ the network with `-n`, and the host with `--name`. A change to mainnet needs
 | Chain | Command | Clients | Networks |
 |---|---|---|---|
 | Solana | `erpc validator` | Agave, Jito, Firedancer | mainnet, testnet, devnet |
-| Solana | `erpc rpc --chain solana` | Agave, Jito, Firedancer | mainnet, testnet, devnet |
+| Solana | `erpc rpc --chain solana` | Agave, Jito, Firedancer | mainnet |
 | Ethereum | `erpc validator --chain eth` | Reth + Lighthouse BN/VC; see [validator guide](ethereum-validator.md) | Hoodi, mainnet (live acceptance deferred) |
 | Ethereum | `erpc rpc --chain eth` | Reth + Lighthouse; `--type full` or `archive` | mainnet |
 | Sui | `erpc rpc/node/validator --chain sui` | Full node with gRPC; validator custody and external registration; [operations guide](../crates/erpc-chain-sui/templates/README.md) | mainnet, testnet (live acceptance deferred) |
@@ -42,8 +43,7 @@ the network with `-n`, and the host with `--name`. A change to mainnet needs
 | Arc | `erpc rpc --chain arc` | Arc execution + consensus; `--type full`, `archive` or `provider` | testnet |
 
 The [chain source map](chains/README.md) separates network capabilities from
-CLI implementation. The [implementation roadmap](plans/2026-10-26-chain-implementation.md)
-starts with Ethereum validators, then Avalanche nodes and validators.
+CLI implementation.
 
 Bitcoin setup and acceptance limits are in the [Bitcoin RPC guide](bitcoin-rpc.md).
 
@@ -59,8 +59,10 @@ How erpc handles a server:
   exception: its clients run as `solv`, a login user with an SSH key and
   passwordless sudo, and erpc logs in as that user after the first run.
 - Client releases are pinned by version and checksum, and checked before they
-  are installed. Solana is the exception: its plays install `node_exporter`
-  and rustup without checking a checksum.
+  are installed. Solana is the exception: its clients are built from source at
+  a pinned tag and commit, with no checksum. Its plays also download
+  `node_exporter` at a fixed version with no checksum, and run the rustup
+  installer unpinned.
 - The firewall is nftables, on RPC nodes other than Bitcoin and on Avalanche,
   Sui and TRON validators. erpc applies no firewall to Solana validators,
   Ethereum validators or Bitcoin nodes, so filtering those hosts is yours to

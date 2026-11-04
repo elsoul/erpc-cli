@@ -52,7 +52,9 @@ Nodes, whatever the chain:
   chains, so without any of these it asks at a terminal and fails in a script or with `--json`.
 - Networks: solana mainnet|testnet|devnet; arc mainnet|testnet; eth mainnet (the only one erpc
   runs nodes on so far); avax mainnet|fuji; sui mainnet|testnet. Pass `--network` (`-n`).
-- What every chain's node commands share (where the inventory is kept, logging in over SSH, the
-  firewall, `plan`, `--yes`, `--json`, reading a failure) is in the skill `erpc-nodes`.
+- What the chains' node commands share (where the inventory is kept, logging in over SSH, `plan`,
+  `--yes`, `--json`, reading a failure) is in the skill `erpc-nodes`, with which nodes erpc gives
+  a firewall. Solana validators, Ethereum validators and Bitcoin nodes get none: say so when a
+  user runs one.
 - A change on mainnet requires `--chain` on the command line itself; `ERPC_CHAIN` and
   `default_chain` are refused for mainnet changes.

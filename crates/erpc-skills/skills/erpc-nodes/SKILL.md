@@ -1,6 +1,6 @@
 ---
 name: erpc-nodes
-description: What every chain's node commands in erpc share -- erpc v / erpc r / erpc n, choosing the chain and network, the inventory and keys in 1Password, logging in over SSH (agent, --ssh-key, the host key), the nftables firewall and its rollback, plan, --yes, --json, repeating a command safely, and reading a failure.
+description: What every chain's node commands in erpc share -- erpc v / erpc r / erpc n, choosing the chain and network, the inventory and keys in 1Password, logging in over SSH (agent, --ssh-key, the host key), which nodes get the nftables firewall and its rollback, plan, --yes, --json, repeating a command safely, and reading a failure.
 ---
 
 # Node commands: what every chain shares
@@ -46,7 +46,9 @@ Keys go to the node over SSH standard input, never in a command line or a file e
 
 ## The firewall
 
-RPC nodes (Solana, Arc, Ethereum) get an nftables table of their own with policy drop: SSH from `--management-allow`
+erpc applies no firewall to Solana validators, Ethereum validators or Bitcoin nodes: filtering
+those hosts is the operator's job, so say so. Every other node gets an nftables firewall. On Solana,
+Arc and Ethereum RPC nodes it is a table of its own with policy drop: SSH from `--management-allow`
 and the address erpc connects from, the RPC ports from `--rpc-allow`, metrics from
 `--monitoring-allow`, the chain's peer-to-peer ports as the chain needs, nothing else. A new
 table rolls itself back after two minutes unless erpc reaches the node again over a fresh SSH

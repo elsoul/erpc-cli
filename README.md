@@ -116,7 +116,7 @@ erpc rpc deploy --chain ethereum      # install, fetch a snapshot, apply the fir
 
 erpc validator init --chain solana -n testnet
 erpc validator deploy --chain solana -n testnet
-erpc validator status                 # health, slot, identity and firewall
+erpc validator status                 # health, slot and identity
 ```
 
 | | Chains |
@@ -135,11 +135,12 @@ validators, Ethereum validators and Bitcoin nodes get no firewall from erpc.
 [The node guide](docs/nodes.md) has the details.
 
 `init`, `deploy`, `status`, `logs`, `start`, `stop`, `restart`, `update`,
-`update-config`, `plan` and `destroy` work the same on every implemented
-chain. Live acceptance on real hosts is still under way for most of them;
-[the chain source map](docs/chains/README.md) says where each one stands.
-[Running nodes](docs/nodes.md) has the clients, networks and guides for each
-chain, and the [chain source map](docs/chains/README.md) where each one stands.
+`update-config`, `plan` and `destroy` work the same on every implemented chain
+except Solana validators, which have `init`, `deploy`, `list`, `status`, `keys`
+and `vote-account` so far. Live acceptance on real hosts is still under way for
+most chains. [Running nodes](docs/nodes.md) has the clients, networks and guides
+for each chain, and the [chain source map](docs/chains/README.md) says where
+each one stands.
 
 ## `erpc ai`: just ask
 
@@ -155,9 +156,9 @@ them for you.
   is shown first, with the cursor on **Stop**. Choices are picked with the
   arrow keys.
 - **It runs erpc, not improvised scripts.** The assistant drives the same
-  commands you would type, so the settings that matter (pinned releases,
-  checksums, the firewall, where keys live) are enforced by erpc's code every
-  time, not left to what a model writes.
+  commands you would type, so what erpc enforces on a chain is enforced by its
+  code every time, not left to what a model writes. What that covers differs by
+  chain: [the node guide](docs/nodes.md) lists it.
 - **It sets up the server too.** It can start an hourly VPS, wait for it,
   install your SSH key, turn off password logins and allow SSH only from your
   address.
@@ -233,7 +234,8 @@ erpc whoami
 ## All commands
 
 Run any command group without a verb (`erpc validator`, `erpc worker`) to
-list its verbs. Every command takes `--json` for machine-readable output.
+list its verbs. `erpc --json <command>` gives machine-readable output; the flag
+goes before the command.
 
 | Command | What it does |
 |---|---|
