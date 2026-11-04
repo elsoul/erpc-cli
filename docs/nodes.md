@@ -92,7 +92,7 @@ host, so rebuilding one is not a quick redeploy.
 
 | Node | In 1Password | On the host |
 |---|---|---|
-| Solana validator | Staked identity and withdraw authority, unless you give a public key. The vote account key is deleted once the account is verified | A throwaway `unstaked-identity.json` in plain text. A deploy never copies the staked key or the withdraw authority there; the staked key arrives only if you put it on with SLV |
+| Solana validator | Staked identity, and the withdraw authority unless you give only its public key. The vote account key is deleted once the account is verified | A throwaway `unstaked-identity.json` in plain text. A deploy never copies the staked key or the withdraw authority there; the staked key arrives only if you put it on with SLV |
 | Solana RPC | The inventory | The identity, made there; it never leaves |
 | Ethereum validator | The inventory | Keystores, their unlock password and the slashing history; keep your original backups, and never restore keys without that history |
 | Arc RPC | The consensus key | The consensus key, encrypted |

@@ -22,14 +22,15 @@ erpc stores keys in **1Password** or your operating system's keychain where it
 can, and hands a server only what it needs. What has to live on a server depends
 on the chain: [Running nodes](docs/nodes.md#where-keys-are-kept) has the table.
 
-- **Solana validators.** The staked identity and the withdraw authority are kept
-  in 1Password, unless you give erpc only a public key. A deploy never copies the staked key to the node: it starts under
+- **Solana validators.** The staked identity is kept in 1Password, and so is the
+  withdraw authority unless you give erpc only its public key. A deploy never copies the staked key to the node: it starts under
   a throwaway identity, and the withdraw authority never goes to a server at all.
 - **Trading bots and Web3 apps.** An `erpc worker` app gets its wallet key from
   1Password or the keychain, on a pipe, when it starts. The worker holds it in memory only, locked and
   undumpable; there is no `wallet.json`, no `.env`, no copy on disk. After a
   reboot the app stays locked until you send the key again.
-- **Secrets.** API tokens and RPC keys are stored as `op://…` references.
+- **Secrets.** API tokens and RPC keys are stored as `op://…` or `keychain:…`
+  references.
   The values reach the server over standard input, never on a command line.
 - **Your team.** The node inventory lives in 1Password too. Share the vault
   and everyone on the team manages the same nodes from their own machine,
@@ -154,9 +155,11 @@ them for you.
 
 - **It asks before it acts.** Anything that spends money or changes a server
   is shown first, with the cursor on **Stop**. Choices are picked with the
-  arrow keys.
-- **It runs erpc, not improvised scripts.** The assistant drives the same
-  commands you would type, so what erpc enforces on a chain is enforced by its
+  arrow keys. You can allow every command for one conversation, behind a second
+  question, and then nothing is asked until it ends.
+- **It prefers erpc to improvised scripts.** The assistant drives the same
+  commands you would type, and can run other commands and scripts only as you
+  allow them. What erpc enforces on a chain is enforced by its
   code every time, not left to what a model writes. What that covers differs by
   chain: [the node guide](docs/nodes.md) lists it.
 - **It sets up the server too.** It can start an hourly VPS, wait for it,
@@ -192,13 +195,16 @@ talking to `erpc ai`.
   erpc worker firewall allow --to ssh 203.0.113.10 198.51.100.7
   ```
 
-- **Lost access?** Rebuild the server from the
-  [dashboard](https://dashboard.erpc.global) and deploy again. That brings back
-  the code and the keys you hold, not the app's state, which only a backup can
-  restore. If the server may have been taken over, replace its trading key and
-  secrets, and revoke its backup access key with `erpc worker backup off`.
-- **App state** is backed up daily to ERPC Global Storage, encrypted on the
-  server: `erpc worker backup on`.
+- **Lost access?** If the server may have been taken over, first run
+  `erpc worker backup off` to revoke its backup access key, and move funds off its
+  trading key and replace its secrets. `off` does not undo what the server already
+  read: [the worker guide](docs/worker.md) has the limits. Then rebuild it from the
+  [dashboard](https://dashboard.erpc.global) and deploy again. If the rebuild
+  changed its SSH host key, erpc refuses it until you update the pinned key. A
+  deploy brings back the code, not the app's state, which only a backup can restore.
+- **App state** can be backed up daily to ERPC Global Storage, encrypted on the
+  server, once you run `erpc worker backup on`. Redis and PostgreSQL data are not
+  covered.
 
 Everything about an app is in `erpc.toml`, which holds no secret and can be
 committed. [docs/worker.md](docs/worker.md) has the full guide.
@@ -211,7 +217,8 @@ erpc backup init          # back this machine up with restic, on a schedule if y
 ```
 
 Files are encrypted on your machine before they leave it, and each machine
-gets an append-only key that cannot delete its own backups.
+gets an append-only key that cannot delete its own backups. The machine where you
+ran `erpc backup init` also holds the keys that can.
 See [storage encryption](docs/storage-encryption.md) and [backups](docs/backup.md).
 
 ## Free to start
@@ -286,7 +293,7 @@ The rules for these, and for writing a message, are in
 | `~/.erpc/memory.json` | What the assistant remembers |
 | `~/.erpc/vps_hosts.json` | Host keys of VPSs the assistant logged in to |
 | `~/.erpc/skills/` | Skills written by `erpc skills install` |
-| `~/.erpc/storage-key` | The storage encryption key, when `erpc login` keeps the session in a file |
+| `~/.erpc/storage-key` | The storage encryption key, when `erpc login` keeps the session in a file; the backup master password and `read_write` key are in that store too |
 | `~/.erpc/backup.env` | This machine's backup credentials (0600) |
 | `~/.erpc/bin/restic-0.19.1` | The pinned restic `erpc backup` installs |
 

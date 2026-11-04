@@ -59,7 +59,7 @@ hosts instead. One command writes them to disk: `erpc validator vote-account` wr
 the identity and vote keys to 0600 files under the state directory while the
 Solana CLI runs, and wipes them afterwards. A process that dies can leave a file
 until a later run sweeps it. Adding a restic key also keeps its password in a
-temporary file in the configuration directory while restic runs.
+temporary file in the configuration directory while restic runs, and a process that dies can leave that file behind.
 
 When it uses a 1Password
 service account, it reads `OP_SERVICE_ACCOUNT_TOKEN` from its environment and
@@ -162,7 +162,8 @@ they are in.
 
 - `erpc storage put` encrypts files with an account key before they leave the
   machine; `docs/storage-encryption.md` describes the format. With the file
-  store that key sits in `~/.erpc/storage-key` (0600), not encrypted.
+  store that key sits in `~/.erpc/storage-key` (0600), not encrypted, and the
+  backup secrets below are not encrypted either.
 - `erpc backup` keeps the restic repository's master password and a
   `read_write` storage access key in the store `erpc login` chose. Each
   machine gets its own `append_only` access key and its own restic key, kept

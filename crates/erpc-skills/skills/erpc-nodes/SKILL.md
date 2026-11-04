@@ -33,8 +33,9 @@ chain: the first `init` on a network asks for it (`--vault`), and a different `-
 refused. erpc keeps none of it on the operator's disk. 1Password is the desktop app, or on a
 machine without one a service account (`OP_SERVICE_ACCOUNT_TOKEN`), which reaches testnet only.
 
-Keys differ by chain, and `docs/nodes.md` has the table. A Solana validator's staked identity and
-withdraw authority are in 1Password and a deploy never copies them to the node. A Solana RPC
+Keys differ by chain, and `docs/nodes.md` has the table. A Solana validator's staked identity is in
+1Password, and so is its withdraw authority unless only a public key was given; a deploy never
+copies either to the node. A Solana RPC
 node's identity and an Ethereum validator's keystores and unlock password stay on the host, so
 those hosts need backups. Keys sent to a node go over SSH standard input, never on a command
 line; some hosts then store them.
