@@ -94,7 +94,7 @@ host, so rebuilding one is not a quick redeploy.
 |---|---|---|
 | Solana validator | Staked identity, and the withdraw authority unless you give only its public key. The vote account key is deleted once the account is verified | A throwaway `unstaked-identity.json` in plain text. A deploy never copies the staked key or the withdraw authority there; the staked key arrives only if you put it on with SLV |
 | Solana RPC | The inventory | The identity, made there; it never leaves |
-| Ethereum validator | The inventory | Keystores, their unlock password and the slashing history; keep your original backups, and never restore keys without that history |
+| Ethereum validator | The inventory | Keystores, their unlock password and the slashing history. A backup's history stops at its snapshot, so restoring a key that signed after it can be slashed: move a signer with `erpc v --chain eth migrate`, and see the [validator guide](ethereum-validator.md) for a lost one |
 | Arc RPC | The consensus key | The consensus key, encrypted |
 | Avalanche | A backup of the staking and BLS keys | The same keys, made there on the first deploy |
 | Sui validator | The protocol, network and worker keys, made on your own machine | The same three keys, encrypted with `systemd-creds` to that host; never the account key |

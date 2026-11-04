@@ -32,6 +32,11 @@ erpc backup run
 | `status` | The schedule, and when the last run was and how it ended |
 | `password --show` | Prints the repository's master password, to keep a copy elsewhere |
 
+**Do not restore an Ethereum validator's signer from a backup.** Its slashing
+history stops at the snapshot, so a key that signed after it can be slashed. Move a
+signer with `erpc v --chain eth migrate`; [the validator guide](ethereum-validator.md)
+covers a lost one.
+
 ## Who holds what
 
 - **The account**, in the store `erpc login` chose (1Password, the macOS

@@ -31,7 +31,10 @@ description: Signing in to ERPC with erpc (login, logout, whoami, doctor, config
   after 30 minutes unused, and `eval $(op signin)` renews it. For node work that runs unattended,
   a 1Password service account (`OP_SERVICE_ACCOUNT_TOKEN` in the environment, for a vault it may
   read) works instead. Node commands do not check the network for one, so keep mainnet keys in a
-  vault it cannot read. `erpc worker` trading keys and the credit wallet do refuse one.
+  vault it cannot read. erpc refuses one only at the moment it reads an `erpc worker` trading key or the credit wallet's
+  key. That does not keep it off a worker: an app without `[wallet]` has no such check, and a worker
+  already holding its key and secrets restarts without reading them. Do not rely on this refusal;
+  give a service account no vault or SSH access it should not use.
 - On macOS erpc reaches the keychain through Apple's `security` tool, so an update does not make
   it ask again. A session saved by an older erpc may ask once; "Always Allow" ends that, and the
   next save makes the item `security`'s own.

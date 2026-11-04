@@ -27,7 +27,7 @@ use core::fmt;
 ///
 /// Mainnet is separated because every mainnet row of the table is stricter:
 /// the table refuses a service account for a mainnet key. Node commands do not
-/// call this gate yet, so only its callers get that refusal.
+/// call this gate, and no caller reaches a mainnet row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Network {
     /// Real funds and real stake.
