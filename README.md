@@ -23,7 +23,7 @@ can, and hands a server only what it needs. What has to live on a server depends
 on the chain: [Running nodes](docs/nodes.md#where-keys-are-kept) has the table.
 
 - **Solana validators.** The staked identity and the withdraw authority are kept
-  in 1Password. A deploy never copies the staked key to the node: it starts under
+  in 1Password, unless you give erpc only a public key. A deploy never copies the staked key to the node: it starts under
   a throwaway identity, and the withdraw authority never goes to a server at all.
 - **Trading bots and Web3 apps.** An `erpc worker` app gets its wallet key from
   1Password or the keychain, on a pipe, when it starts. The worker holds it in memory only, locked and
@@ -193,8 +193,10 @@ talking to `erpc ai`.
   ```
 
 - **Lost access?** Rebuild the server from the
-  [dashboard](https://dashboard.erpc.global) and deploy again. Nothing secret
-  was on it, so nothing is lost.
+  [dashboard](https://dashboard.erpc.global) and deploy again. That brings back
+  the code and the keys you hold, not the app's state, which only a backup can
+  restore. If the server may have been taken over, replace its trading key and
+  secrets, and revoke its backup access key with `erpc worker backup off`.
 - **App state** is backed up daily to ERPC Global Storage, encrypted on the
   server: `erpc worker backup on`.
 

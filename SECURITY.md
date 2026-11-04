@@ -53,11 +53,13 @@ On the operator's machine `erpc` keeps these secrets:
 - an `erpc worker` app's trading key and secret settings, in 1Password or the
   keychain.
 
-Node keys and the `erpc wallet` key are made or read in memory and stored in
-1Password. One command writes them to disk: `erpc validator vote-account` writes
+Node keys that erpc holds for you, and the `erpc wallet` key, are made or read in
+memory and stored in 1Password; `docs/nodes.md` lists the keys that stay on node
+hosts instead. One command writes them to disk: `erpc validator vote-account` writes
 the identity and vote keys to 0600 files under the state directory while the
 Solana CLI runs, and wipes them afterwards. A process that dies can leave a file
-until a later run sweeps it. Keys on node hosts are listed in `docs/nodes.md`.
+until a later run sweeps it. Adding a restic key also keeps its password in a
+temporary file in the configuration directory while restic runs.
 
 When it uses a 1Password
 service account, it reads `OP_SERVICE_ACCOUNT_TOKEN` from its environment and
@@ -159,7 +161,8 @@ they are in.
 ### Storage and backup secrets
 
 - `erpc storage put` encrypts files with an account key before they leave the
-  machine; `docs/storage-encryption.md` describes the format.
+  machine; `docs/storage-encryption.md` describes the format. With the file
+  store that key sits in `~/.erpc/storage-key` (0600), not encrypted.
 - `erpc backup` keeps the restic repository's master password and a
   `read_write` storage access key in the store `erpc login` chose. Each
   machine gets its own `append_only` access key and its own restic key, kept
