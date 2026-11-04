@@ -655,12 +655,6 @@ pub(crate) async fn top_up_credit(
             }
         }
     };
-    // Once the signature has left this machine, a failed submit does not
-    // mean a failed payment: user-api may have taken it before the
-    // connection broke. So the session is asked before anything definite is
-    // said, and when it cannot be, the outcome is reported as unknown with
-    // the session id, never as "not sent": a second top-up on that word
-    // would be a second purchase.
     let what = format!("buy {credits} credits");
     // Once the signature has left this machine, nothing short of a definite
     // answer may be reported as definite: user-api may have taken it before
@@ -721,13 +715,21 @@ fn classify_submit(result: Result<erpc_api::gasless::Reply, erpc_api::ApiError>)
         Err(e) => return Submitted::Unclear(e.to_string()),
     };
     let has_words = reply.body.get("code").is_some() || reply.body.get("message").is_some();
+    let state = state_of(&reply.body);
+    // A refusal is one only while the session itself says nothing was taken:
+    // no state, or still `ready`, or over without a payment. A 4xx carrying
+    // `submitted`, `relayed` or `granted` contradicts its own status and is
+    // not a word to buy again on.
+    let nothing_taken = matches!(state, "" | "ready" | "expired" | "cancelled");
     match reply.status {
-        200..=299 if !state_of(&reply.body).is_empty() => Submitted::Accepted(reply),
+        // `ready` is the state before a signature: a 2xx that still says so
+        // has not accepted anything.
+        200..=299 if !state.is_empty() && state != "ready" => Submitted::Accepted(reply),
         // 408 and 429 say nothing about what happened to the request itself.
-        400..=499 if reply.status != 408 && reply.status != 429 && has_words => {
+        400..=499 if reply.status != 408 && reply.status != 429 && has_words && nothing_taken => {
             Submitted::Refused(reply)
         }
-        status => Submitted::Unclear(format!("HTTP {status} with no readable session state")),
+        status => Submitted::Unclear(format!("HTTP {status} with the session state {state:?}")),
     }
 }
 
@@ -769,6 +771,15 @@ fn report(unclear: bool, last: &erpc_api::gasless::Reply, id: &str, what: &str) 
         out["done"] = json!(state == "granted");
         out["sessionId"] = json!(id);
         out["what"] = json!(what);
+        if state == "stuck" {
+            // Settled, but not well: user-api could not finish. The EURC
+            // may have moved without the credit, which is ERPC's to put
+            // right, not a reason to buy again.
+            out["message"] = json!(
+                "the session is stuck: the transfer may have been taken without the credit \
+                 being granted. Do not buy again; give ERPC support this session id."
+            );
+        }
         return out;
     }
     if state.is_empty() {
@@ -857,9 +868,30 @@ mod tests {
             classify_submit(Ok(reply(409, json!({ "message": "the session expired" })))),
             Submitted::Refused(_)
         ));
+        // Not a refusal: a 4xx whose own state says the session moved on.
+        for live in ["submitted", "relayed", "granted", "stuck"] {
+            let sorted = classify_submit(Ok(reply(
+                409,
+                json!({ "code": "already_submitted", "state": live }),
+            )));
+            assert!(
+                matches!(sorted, Submitted::Unclear(_)),
+                "{live}: {sorted:?}"
+            );
+        }
+        // ...while one that says nothing was taken is.
+        assert!(matches!(
+            classify_submit(Ok(reply(
+                409,
+                json!({ "message": "expired", "state": "expired" })
+            ))),
+            Submitted::Refused(_)
+        ));
         // Unclear: no answer, a 5xx, a timeout, a rate limit, a 2xx with no
-        // state, or a 4xx with no words. The signature may have been taken.
+        // state or still `ready`, or a 4xx with no words. The signature may
+        // have been taken.
         for unclear in [
+            classify_submit(Ok(reply(200, json!({ "state": "ready" })))),
             classify_submit(Err(erpc_api::ApiError::Status(502))),
             classify_submit(Ok(reply(502, json!(null)))),
             classify_submit(Ok(reply(500, json!({ "message": "internal" })))),
@@ -931,6 +963,16 @@ mod tests {
             );
             assert_eq!(cancelled["state"], "cancelled");
             assert_eq!(cancelled["done"], false);
+            // Stuck is settled, and said in words that keep a person from
+            // buying again.
+            let stuck = report(
+                unclear,
+                &reply(200, json!({ "state": "stuck" })),
+                "s",
+                "buy 5 credits",
+            );
+            assert_eq!(stuck["state"], "stuck");
+            unsettled(&stuck);
         }
         // Accepted submit, still in flight after the follow: its state, and
         // the words that keep a person from buying again.
