@@ -1238,7 +1238,7 @@ mod tests {
     fn only_a_connection_that_never_happened_is_called_unreached() {
         let says = |text: &str| super::NOT_CONNECTED.iter().any(|m| text.contains(m));
         assert!(says(
-            "the command failed on the node (exit 255): ssh: connect to host 151.244.92.48 port 22: Network is unreachable"
+            "the command failed on the node (exit 255): ssh: connect to host 192.0.2.48 port 22: Network is unreachable"
         ));
         assert!(says("ssh: connect to host h port 22: Connection timed out"));
         assert!(!says(

@@ -662,9 +662,31 @@ pub(crate) async fn top_up_credit(
             }
         }
     };
-    let submitted = gasless::submit(client, token, &id, &signature)
-        .await
-        .map_err(|e| format!("the signed transfer was not sent: {e}"))?;
+    // Once the signature has left this machine, a failed submit does not
+    // mean a failed payment: user-api may have taken it before the
+    // connection broke. So the session is asked before anything definite is
+    // said, and when it cannot be, the outcome is reported as unknown with
+    // the session id, never as "not sent": a second top-up on that word
+    // would be a second purchase.
+    let submitted = match gasless::submit(client, token, &id, &signature).await {
+        Ok(reply) => reply,
+        Err(e) => match erpc_api::gasless::status(client, token, &id).await {
+            Ok(reply) => reply,
+            Err(_) => {
+                return Ok(json!({
+                    "state": "unknown",
+                    "done": false,
+                    "sessionId": id,
+                    "what": format!("buy {credits} credits"),
+                    "message": format!(
+                        "the signed transfer was sent but no answer came back ({e}); whether \
+                         it was taken is not known. Do not buy again until the credit \
+                         balance or this session shows what happened."
+                    ),
+                }));
+            }
+        },
+    };
     let last = follow(client, token, &id, submitted).await;
     let mut out = pick(&last.body, &["state", "code", "message", "transaction"]);
     out["httpStatus"] = json!(last.status);

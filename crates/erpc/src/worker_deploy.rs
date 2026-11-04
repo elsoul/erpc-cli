@@ -186,10 +186,12 @@ struct Agent {
     sha256: String,
 }
 
-/// The agent for `target`'s machine ([`AgentSource::choose`]). One that is
-/// not the agent this erpc carries is said on standard error whether or
-/// not output is quiet, and the deploy's report names its source and
-/// digest either way: it is not the one the release's signature covers.
+/// The agent for `target`'s machine ([`AgentSource::choose`]). One named by
+/// `ERPC_WORKER_AGENT` that differs from the agent this erpc carries is said
+/// on standard error whether or not output is quiet. The deploy's report
+/// names the agent's source and digest in every case, since an agent from
+/// `ERPC_WORKER_AGENT` or found beside erpc is not the one the release's
+/// signature covers.
 fn agent_binary(triple: &str) -> Result<Agent, CliError> {
     let machine = triple.split('-').next().unwrap_or(triple);
     let carried = embedded_agent(machine);

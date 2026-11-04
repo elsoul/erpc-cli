@@ -7,16 +7,14 @@ SPDX-License-Identifier: Apache-2.0
 
 # erpc
 
-**Run validators, RPC nodes and your own apps on 18 chains, with no keys on your servers.**
+**Run validators and RPC nodes on 12 chains, and your own apps on any server, with no keys on your servers.**
 
 One command line for your nodes, your apps and your [ERPC](https://erpc.global) account,
 and an assistant that runs it for you when you ask.
 
-[Install](#install) · [Nodes](#validators-and-rpc-nodes-on-18-chains) · [erpc ai](#erpc-ai-just-ask) · [erpc worker](#erpc-worker-your-app-as-a-tuned-rust-binary) · [Free or with an account](#free-to-start)
+[Install](#install) · [Nodes](#validators-and-rpc-nodes) · [erpc ai](#erpc-ai-just-ask) · [erpc worker](#erpc-worker-your-app-as-a-tuned-rust-binary) · [Free or with an account](#free-to-start)
 
 </div>
-
-https://github.com/user-attachments/assets/939cf35a-dc72-4a36-bf63-fa055a01c4dc
 
 ## No keys on your servers
 
@@ -72,7 +70,7 @@ cargo build --release
 
 </details>
 
-## Validators and RPC nodes on 18 chains
+## Validators and RPC nodes
 
 <table>
 <tr>
@@ -101,7 +99,13 @@ cargo build --release
 </tr>
 </table>
 
-Two commands take a bare server to a running node. Every chain uses the same verbs.
+Eighteen chains are researched in [`docs/chains/`](docs/chains/README.md).
+erpc deploys **RPC nodes on 12** of them today and **validators on five**;
+Polygon, BNB Chain, Kaia, Monad, Hyperliquid and NEAR have their research and
+no backend yet, and `erpc rpc --chain polygon` says so rather than pretending.
+
+Two commands take a bare server to a running node. Every implemented chain
+uses the same verbs.
 
 ```bash
 erpc rpc init --chain ethereum        # check the server, pin the client release, store the node in 1Password
@@ -114,8 +118,9 @@ erpc validator status                 # health, slot, identity and firewall
 
 | | Chains |
 |---|---|
-| **RPC node** (`erpc rpc`) | all 18 |
-| **Validator** (`erpc validator`) | Solana, Ethereum, Avalanche, Sui, TRON, Polygon, BNB Chain, Kaia, Monad, Hyperliquid, NEAR, Arbitrum One |
+| **RPC node** (`erpc rpc`) | Solana, Ethereum, Base, Optimism, Soneium, Arbitrum, Robinhood Chain, Avalanche, Bitcoin, Sui, TRON, Arc |
+| **Validator** (`erpc validator`) | Solana, Ethereum, Avalanche, Sui, TRON |
+| **Researched, not implemented** | Polygon, BNB Chain, Kaia, Monad, Hyperliquid, NEAR |
 
 Every deploy logs in over SSH with your key from the 1Password SSH agent, pins
 the host key, runs the client as its own user that cannot log in, checks each
@@ -124,7 +129,9 @@ rolls itself back unless a fresh connection still gets in. You cannot lock
 yourself out.
 
 `init`, `deploy`, `status`, `logs`, `start`, `stop`, `restart`, `update`,
-`update-config`, `plan` and `destroy` work the same on every chain.
+`update-config`, `plan` and `destroy` work the same on every implemented
+chain. Live acceptance on real hosts is still under way for most of them;
+[the chain source map](docs/chains/README.md) says where each one stands.
 [Running nodes](docs/nodes.md) has the clients, networks and guides for each
 chain, and the [chain source map](docs/chains/README.md) where each one stands.
 

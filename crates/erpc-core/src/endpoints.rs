@@ -146,8 +146,9 @@ pub const DOCUMENTATION_HOSTS: &[&str] = &[
 /// Hosts a node contacts while it sets itself up and runs, named in the
 /// playbooks and templates erpc carries for it
 /// (`crates/erpc-chain-solana/templates/`, `crates/erpc-chain-arc/templates/`,
-/// `crates/erpc-chain-eth/templates/`, `crates/erpc-chain-nitro/templates/`,
-/// `crates/erpc-chain-tron/templates/`),
+/// `crates/erpc-chain-eth/templates/`, `crates/erpc-chain-sui/templates/`,
+/// `crates/erpc-chain-tron/templates/`, `crates/erpc-chain-op/templates/`,
+/// `crates/erpc-chain-nitro/templates/`),
 /// in the Jito region table (`crates/erpc-chain-solana/regions/`) and in the
 /// Arc/Nitro network tables (`crates/erpc-chain-arc/networks/`,
 /// `crates/erpc-chain-nitro/networks/`).

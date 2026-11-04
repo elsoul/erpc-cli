@@ -110,7 +110,9 @@ fi
 #    same way on every runner (scripts/build-worker-agents.sh, run by
 #    release.yml's build setup and by this job), so that script and the tool
 #    install are the only lines where the word may appear.
-agent_free=$(printf '%s\n' "$job" | grep -v 'build-worker-agents\.sh' | grep -v 'cargo-zigbuild@')
+agent_free=$(printf '%s\n' "$job" \
+  | grep -vxE '[[:space:]]*run: scripts/build-worker-agents\.sh' \
+  | grep -vxE '[[:space:]]*tool: cargo-dist@0\.32\.0,cargo-auditable,cargo-zigbuild@0\.24\.0')
 if printf '%s\n' "$agent_free" | grep -q zigbuild; then
   bad "the rebuild does not use cargo-zigbuild for erpc" "zig links differently from the native musl-gcc build"
 else

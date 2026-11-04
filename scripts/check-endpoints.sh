@@ -649,27 +649,41 @@ check_occurrence() {
       # anchored at the end, did not see the port.
       host=$(printf '%s' "$host" | LC_ALL=C sed -E 's/:[0-9]+$//')
 
-      # A numeric port followed by `,`, `;`, `)` or a backtick, which is how
-      # an nginx `proxy_pass http://127.0.0.1:9650;` and Solana's
-      # `host=https://metrics.solana.com:8086,db=...` are written. The port
-      # strip above is anchored at the end, so it left these, and the colon
-      # check below would read the port as "not a port". Judged as
+      # A numeric port followed by `,`, `;` or `)` with literal text after
+      # it, which is how Solana's
+      # `host=https://metrics.solana.com:8086,db=tds,u=...` is written. The
+      # port strips above are anchored at the end, so they left this, and
+      # the colon check below would read the port as "not a port". Judged as
       # punctuation inside a host is further down: what follows decides. A
       # tail carrying two dot-separated labels or a scheme word is reported;
       # otherwise the authority ends at the punctuation, and the port with it.
+      #
+      # ONLY literal text. A `$`, `{`, `(` or backtick anywhere after the
+      # punctuation is left for the colon check to report, as it did before
+      # this rule existed: `:8080,${X}`, `:8080;$(cat h)`, `:8080;{host}`
+      # and `` :8080`printf @` `` all build the host at runtime -- the
+      # shell joins `` `printf @` `` into `erpc.global:8080@evil...`, whose
+      # host is evil. A review found the first version of this rule cutting
+      # those away unexamined, so the backtick is not in the punctuation set
+      # either, and the tail is tested on the RAW text, not the skeleton.
       case "$(strip_expressions "$host")" in
-        *:[0-9]*[,\;\)\`]*)
+        *:[0-9]*[,\;\)]*)
           port_tail="${host#*:}"
           port_digits="${port_tail%%[!0-9]*}"
           port_after="${port_tail#"$port_digits"}"
           if [ -n "$port_digits" ]; then
             case "$port_after" in
-              [,\;\)\`]*)
-                if printf '%s' "${port_after#?}" | LC_ALL=C grep -qE '[A-Za-z0-9-]+\.[A-Za-z0-9-]+|([Hh][Tt][Tt][Pp][Ss]?|[Ww][Ss][Ss]?)$'; then
-                  report "$f" "$ln" "punctuation inside the host hides the rest of it: $scheme://$host"
-                  return 0
-                fi
-                host="${host%%:*}"
+              [,\;\)]*)
+                case "$port_after" in
+                  *[\$\{\(\`]*) ;;
+                  *)
+                    if printf '%s' "${port_after#?}" | LC_ALL=C grep -qE '[A-Za-z0-9-]+\.[A-Za-z0-9-]+|([Hh][Tt][Tt][Pp][Ss]?|[Ww][Ss][Ss]?)$'; then
+                      report "$f" "$ln" "punctuation inside the host hides the rest of it: $scheme://$host"
+                      return 0
+                    fi
+                    host="${host%%:*}"
+                    ;;
+                esac
                 ;;
             esac
           fi

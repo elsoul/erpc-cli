@@ -95,8 +95,9 @@ and `aarch64` Linux) that `erpc worker deploy` installs on a server, built by
 binary, so the archive's digest covers them. `erpc version` prints their
 SHA-256, and a deploy reports whether the server's agent changed.
 `ERPC_WORKER_AGENT` makes a deploy install another agent instead (a build
-of your own). The deploy then warns on standard error, `--json` or not, and
-its report names the agent installed either way (`agent.sha256`,
+of your own). When it differs from the embedded one, the deploy warns on
+standard error, `--json` or not; its report names the agent installed either
+way (`agent.sha256`,
 `agent.source`: `embedded`, `ERPC_WORKER_AGENT` or `beside erpc`, and
 `agent.changed`).
 

@@ -272,7 +272,7 @@ mod tests {
         let deployed = Deployed {
             release: "20261029T154037Z-6914df5f".to_owned(),
             at: "2026-10-29T15:40:37Z".to_owned(),
-            from: "kawasaki-mac".to_owned(),
+            from: "deploy-laptop".to_owned(),
         };
         let written = fields(&env(), Some(&deployed)).expect("fields");
         let read: BTreeMap<String, String> = written

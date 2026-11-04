@@ -422,7 +422,7 @@ mod tests {
     /// any edit to the page fails the test until this digest is changed in
     /// the same diff, where a reader checks the page. What the page says is
     /// that reader's job; that it cannot change unseen is this test's.
-    const PAGE_SHA256: &str = "3466446b3e4716174ac841613478e8ba29cd88779a065770057058d58f71bc89";
+    const PAGE_SHA256: &str = "7f9e1fcf2def8a6f40220f0c2b98421f8ebb4d2166f2726143579f409c5a124c";
 
     /// The credentials cell of every host a session token goes to, as the
     /// pinned page states it. Read from the page by

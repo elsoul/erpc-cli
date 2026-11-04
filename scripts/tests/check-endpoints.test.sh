@@ -464,6 +464,26 @@ check_msg "a scheme word after the port's semicolon is still seen" "$sample_dir/
   'curl https://erpc.global:8080;https' \
   'punctuation inside the host hides the rest of it'
 
+# ...and the port rule must never cut away what is built at runtime. The
+# first version of it did: it read the tail for a domain, found none, and
+# dropped everything after the port -- expressions and backticks included.
+# Each of these was allowed by that version and is blocked on main; the
+# first is live under a shell (`printf @` joins into `erpc.global:8080@evil`).
+check "a backtick command after a port is not cut away" block "$sample_dir/pp6.sh" \
+  'curl "https://erpc.global:8080`printf @`evil.example.net/x"'
+
+check "a dollar-brace expression after the port's comma is not cut away" block "$sample_dir/pp7.sh" \
+  'curl "https://erpc.global:8080,${X}/x"'
+
+check "a command substitution after the port's semicolon is not cut away" block "$sample_dir/pp8.sh" \
+  'curl "https://erpc.global:8080;$(cat h)/x"'
+
+check "a rust format argument after the port's semicolon is not cut away" block "$sample_dir/pp9.rs" \
+  'const U: &str = "https://erpc.global:8080;{host}/x";'
+
+check "handlebars after the port's comma are not cut away" block "$sample_dir/pp10.yml" \
+  '      url: "https://erpc.global:8080,{{ host }}/x"'
+
 # --- must allow -------------------------------------------------------------
 
 check "declared host as a shell default" allow "$sample_dir/g2.sh" \

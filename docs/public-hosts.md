@@ -276,8 +276,9 @@ never contacts them, and nothing is sent but the request.
 
 `NODE_HOSTS` lists hosts named in the playbooks and templates erpc carries for
 a node (`crates/erpc-chain-solana/templates/`, `crates/erpc-chain-arc/templates/`,
-`crates/erpc-chain-eth/templates/`, `crates/erpc-chain-nitro/templates/`),
-in the Jito region table (`crates/erpc-chain-solana/regions/`) and in the Arc
+`crates/erpc-chain-eth/templates/`, `crates/erpc-chain-sui/templates/`,
+`crates/erpc-chain-tron/templates/`, `crates/erpc-chain-op/templates/`,
+`crates/erpc-chain-nitro/templates/`), in the Jito region table (`crates/erpc-chain-solana/regions/`) and in the Arc
 network tables (`crates/erpc-chain-arc/networks/`, `crates/erpc-chain-nitro/networks/`). The node reaches them once it runs the
 scripts those templates write; `erpc` itself never contacts them, and the gate
 accepts them in those trees and nowhere else. A plaintext URL is

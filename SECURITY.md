@@ -82,6 +82,15 @@ keyring only when it holds one of the user's keyrings, which a login gives
 it; a process started without one (`su` without `-`, `sudo -E`) is refused
 and told so.
 
+On macOS the keychain is reached through Apple's `/usr/bin/security`, not
+the keychain API directly. An erpc built on the operator's machine has no
+lasting code signature, so an item it made itself asked for the login
+password on every read and write. The item therefore trusts `security`, and
+with it any other program running as the same user, which can read the
+session by running `security` too; this is the trade other command-line
+tools make. The keychain still keeps the session encrypted at rest and away
+from other users, which the file store cannot (`crates/erpc-auth/src/store/security_cli.rs`).
+
 The 1Password item is titled with the machine's name, so that two machines
 never share, and keep rotating, one session. `ERPC_HOST_LABEL` overrides the
 name.
@@ -123,10 +132,13 @@ they are in.
   audience in `crates/erpc-auth/src/allowlist.rs`.
 - The refresh token is sent only to its issuer's token and revoke endpoints,
   checked against the issuer's host before each request.
-- Every request URL's host and path is a compile-time constant. The few
-  values that follow them -- a region, a bare metal category, a page cursor,
-  a product id -- go in the query string and are letters, digits, `-` and `_`
-  only, checked before the request is sent.
+- Every request URL's host is a compile-time constant, and so is its path
+  up to the one value a path may carry: a storage access key id, an
+  integer, or a gasless session id, checked to be a UUID before the URL is
+  built. Query values are percent-encoded. On the account routes they are
+  a region, a bare metal category, a page cursor or a product id, and are
+  letters, digits, `-` and `_` only, checked before the request is sent;
+  `erpc storage` sends the file path or prefix the operator named, encoded.
 - The HTTP client is configured to accept `https` only and not to follow
   redirects. Neither setting is covered by a test; the reasons are given
   beside them in `crates/erpc-auth/src/client.rs`.

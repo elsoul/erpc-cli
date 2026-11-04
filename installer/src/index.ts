@@ -123,46 +123,61 @@ function text(msg: string, status: number): Response {
  * installer put in place. cargo-dist's installers end by calling their main
  * function (`download_binary_and_run_installer "$@" || exit 1`, and
  * `Install-Binary` in a try/catch), so a tail runs after a successful
- * install and not after a failed one. The install directory is
- * looked for where cargo-dist's installer puts it, in its order:
- * `$ERPC_INSTALL_DIR/bin`, `$CARGO_DIST_FORCE_INSTALL_DIR/bin`,
- * `$ERPC_UNMANAGED_INSTALL`, then `~/.erpc/bin` (dist-workspace.toml). A
- * failure here never fails the install: `erpc skills install` can be run
- * again by hand.
+ * install and not after a failed one. The binary is looked for where the
+ * generated installer puts it, in its order of precedence: with
+ * `ERPC_INSTALL_DIR`, `CARGO_DIST_FORCE_INSTALL_DIR` or
+ * `ERPC_UNMANAGED_INSTALL` set, in that directory itself (cargo-dist's
+ * "flat" layout; under `bin/` only when the directory is Cargo's home), and
+ * otherwise in `~/.erpc/bin` (dist-workspace.toml). An earlier tail looked
+ * under `bin/` for the first two and so ran a binary from an earlier
+ * install; `installer/scripts/verify-against-real-installers.mjs` now pins
+ * the layout and the endings this tail depends on. A failure here never
+ * fails the install: `erpc skills install` can be run again by hand.
  */
 export const AFTER_INSTALL: Record<"sh" | "ps1", string> = {
   sh: `
-# erpc: put the assistant's skills on this machine (~/.erpc/skills).
-for _erpc_dir in "\${ERPC_INSTALL_DIR:+$ERPC_INSTALL_DIR/bin}" \\
-    "\${CARGO_DIST_FORCE_INSTALL_DIR:+$CARGO_DIST_FORCE_INSTALL_DIR/bin}" \\
+# erpc: put the assistant's skills on this machine (~/.erpc/skills), with the
+# binary the installer above put in place: in the forced directory itself
+# (bin/ only when that directory is Cargo's home), else in ~/.erpc/bin.
+for _erpc_dir in "\${ERPC_INSTALL_DIR:-}" "\${CARGO_DIST_FORCE_INSTALL_DIR:-}" \\
     "\${ERPC_UNMANAGED_INSTALL:-}" "$HOME/.erpc/bin"; do
-  if [ -n "$_erpc_dir" ] && [ -x "$_erpc_dir/erpc" ]; then
-    "$_erpc_dir/erpc" skills install || say "could not write the skills; run: erpc skills install"
-    break
-  fi
+  [ -n "$_erpc_dir" ] || continue
+  for _erpc_bin in "$_erpc_dir/erpc" "$_erpc_dir/bin/erpc"; do
+    if [ -x "$_erpc_bin" ]; then
+      "$_erpc_bin" skills install || say "could not write the skills; run: erpc skills install"
+      break 2
+    fi
+  done
 done
 `,
   ps1: `
-# erpc: put the assistant's skills on this machine (~/.erpc/skills).
+# erpc: put the assistant's skills on this machine (~/.erpc/skills), with the
+# binary the installer above put in place: in the forced directory itself
+# (bin\\ only when that directory is Cargo's home), else in ~/.erpc/bin.
 $erpcDirs = @()
-if ($env:ERPC_INSTALL_DIR) { $erpcDirs += Join-Path $env:ERPC_INSTALL_DIR "bin" }
-if ($env:CARGO_DIST_FORCE_INSTALL_DIR) { $erpcDirs += Join-Path $env:CARGO_DIST_FORCE_INSTALL_DIR "bin" }
-if ($env:ERPC_UNMANAGED_INSTALL) { $erpcDirs += $env:ERPC_UNMANAGED_INSTALL }
+foreach ($erpcForced in @($env:ERPC_INSTALL_DIR, $env:CARGO_DIST_FORCE_INSTALL_DIR, $env:ERPC_UNMANAGED_INSTALL)) {
+  if ($erpcForced) { $erpcDirs += $erpcForced }
+}
 $erpcDirs += Join-Path $HOME ".erpc\\bin"
-foreach ($erpcDir in $erpcDirs) {
-  $erpcBin = Join-Path $erpcDir "erpc.exe"
-  if (Test-Path -LiteralPath $erpcBin -PathType Leaf) {
-    & $erpcBin skills install
-    if ($LASTEXITCODE -ne 0) { Write-Information "could not write the skills; run: erpc skills install" }
-    break
+:erpcFound foreach ($erpcDir in $erpcDirs) {
+  foreach ($erpcBin in @((Join-Path $erpcDir "erpc.exe"), (Join-Path $erpcDir "bin\\erpc.exe"))) {
+    if (Test-Path -LiteralPath $erpcBin -PathType Leaf) {
+      & $erpcBin skills install
+      if ($LASTEXITCODE -ne 0) { Write-Information "could not write the skills; run: erpc skills install" }
+      break erpcFound
+    }
   }
 }
 `,
 };
 
-/** The installer, with [`AFTER_INSTALL`] after it. */
+/**
+ * The installer, with [`AFTER_INSTALL`] after it. `trimEnd`, not a `\s*$`
+ * regex: on a body that is not ours a backtracking regex over runs of
+ * whitespace is polynomial, and CodeQL says so.
+ */
 export function withAfterInstall(body: string, flavor: "sh" | "ps1"): string {
-  return `${body.replace(/\s*$/, "")}\n${AFTER_INSTALL[flavor]}`;
+  return `${body.trimEnd()}\n${AFTER_INSTALL[flavor]}`;
 }
 
 /**

@@ -19,12 +19,16 @@ chains, and each chain's guide in `docs/chains/` says where it stands.
 
 ### Added
 
-- `erpc validator` (`v`), `erpc rpc` (`r`) and `erpc node` (`n`): validators
-  and RPC nodes on 18 chains (Solana, Ethereum, Base, Avalanche, Bitcoin,
-  Polygon, BNB Chain, Kaia, Arbitrum, Optimism, Hyperliquid, Monad, TRON,
-  Sui, NEAR, Arc, Robinhood Chain, Soneium), with the same verbs on every
-  chain: `init`, `deploy`, `status`, `logs`, `start`, `stop`, `restart`,
-  `update`, `update-config`, `plan` and `destroy`. Every deploy logs in over
+- `erpc validator` (`v`), `erpc rpc` (`r`) and `erpc node` (`n`): RPC nodes
+  on 12 chains (Solana, Ethereum, Base, Optimism, Soneium, Arbitrum,
+  Robinhood Chain, Avalanche, Bitcoin, Sui, TRON, Arc) and validators on
+  five (Solana, Ethereum, Avalanche, Sui, TRON), with the same verbs on
+  every implemented chain: `init`, `deploy`, `status`, `logs`, `start`,
+  `stop`, `restart`, `update`, `update-config`, `plan` and `destroy`. Six
+  more chains (Polygon, BNB Chain, Kaia, Monad, Hyperliquid, NEAR) are
+  researched in `docs/chains/` and answer "not implemented yet". Live
+  acceptance on real hosts is still under way for most chains. Every deploy
+  logs in over
   SSH with a key from the 1Password SSH agent, pins the host key, runs the
   client as its own user that cannot log in, checks each release against a
   pinned checksum, and applies an nftables firewall that rolls itself back
