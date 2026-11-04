@@ -1,0 +1,42 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Where things live on an Ethereum RPC node, for every play. What differs per
+# node comes from the inventory erpc writes for the run.
+---
+eth_home: /var/lib/ethereum
+eth_reth_dir: "{{ eth_home }}/reth"
+eth_lighthouse_dir: "{{ eth_home }}/lighthouse"
+eth_opt: /opt/ethereum
+# Both clients of one pin live together, so `current` moves them as a pair.
+eth_pair: "reth-{{ eth_reth_version }}--lighthouse-{{ eth_lighthouse_version }}"
+eth_release_dir: "{{ eth_opt }}/{{ eth_pair }}"
+eth_jinja: "{{ playbook_dir }}/../../jinja"
+eth_gpg: "{{ playbook_dir }}/../../gpg"
+eth_jwt: /etc/ethereum/jwt.hex
+eth_snapshot_marker: "{{ eth_reth_dir }}/.erpc-snapshot-done"
+eth_fw_dir: /etc/erpc/eth
+eth_fw_file: "{{ eth_fw_dir }}/firewall.nft"
+eth_fw_marker: /run/erpc-eth-firewall.armed
+eth_fw_rollback_seconds: 120
+eth_helpers: /usr/local/lib/erpc
+# Sigma Prime's checkpoint server; the community's agree with it.
+eth_checkpoint_sync_url: https://mainnet.checkpoint.sigp.io
+# Reth's own prune config comes from `reth download` (reth.toml); --full on
+# the command line says the same for a full node.
+eth_full: "{{ eth_rpc_type | default('full') != 'archive' }}"
+eth_rpc_api: "{{ 'eth,net,web3' if (eth_full | bool) else 'eth,net,web3,debug,trace' }}"
+# Bind RPC and metrics to the node's interfaces only when someone is allowed
+# to reach them; the firewall decides who.
+eth_rpc_bind: "{{ '0.0.0.0' if (eth_rpc_allow | default([]) | length > 0) else '127.0.0.1' }}"
+eth_metrics_bind: "{{ '0.0.0.0' if (eth_monitoring_allow | default([]) | length > 0) else '127.0.0.1' }}"
+# The two archives of the pin, as erpc wrote them into the inventory.
+eth_archives:
+  - client: reth
+    url: "{{ eth_reth_url }}"
+    sha256: "{{ eth_reth_sha256 }}"
+    fingerprint: "{{ eth_reth_fingerprint }}"
+  - client: lighthouse
+    url: "{{ eth_lighthouse_url }}"
+    sha256: "{{ eth_lighthouse_sha256 }}"
+    fingerprint: "{{ eth_lighthouse_fingerprint }}"

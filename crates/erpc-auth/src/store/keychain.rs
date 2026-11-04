@@ -4,8 +4,16 @@
 //! The operating system's own keychain, for machines without `op`.
 //!
 //! macOS Keychain, the Secret Service on Linux, and the Windows Credential
-//! Manager, all through the `keyring` crate under the service name `erpc`
-//! and the account `<audience>:<user>`.
+//! Manager, under the service name `erpc` and the account
+//! `<audience>:<user>`. On macOS through Apple's `security` tool (see
+//! `security_cli` for why); elsewhere through the `keyring` crate.
+//!
+//! A Linux machine without a Secret Service -- a server reached over SSH,
+//! with no desktop to run one -- uses the kernel's keyring instead: the
+//! user's persistent keyring, which outlives the login session but not a
+//! reboot, nor a few days unused (`/proc/sys/kernel/keys/
+//! persistent_keyring_expiry`). Nothing reaches the disk either way; when
+//! the kernel has dropped the session, `erpc login` is asked for again.
 //!
 //! The record stored is the same versioned document the file store writes,
 //! serialised as JSON, so that a session written by one store can be read
@@ -43,6 +51,7 @@ impl OsKeychain {
         }
     }
 
+    #[cfg(not(target_os = "macos"))]
     fn entry(&self, key: &CredKey) -> Result<keyring::Entry, StoreError> {
         keyring::Entry::new(&self.service, &key.keychain_account()).map_err(|e| {
             StoreError::Backend {
@@ -52,6 +61,61 @@ impl OsKeychain {
             }
         })
     }
+}
+
+/// Whether a Secret Service answers on the session bus, asked once.
+///
+/// Answered by opening a session with it, which is what every read and
+/// write starts with: a bus with nothing behind the name, or no bus this
+/// user can reach, is a no.
+#[cfg(target_os = "linux")]
+#[must_use]
+pub fn secret_service_answers() -> bool {
+    static ANSWERS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ANSWERS.get_or_init(|| {
+        dbus_secret_service::SecretService::connect(dbus_secret_service::EncryptionType::Plain)
+            .is_ok()
+    })
+}
+
+/// What holds the session on this machine, as a person would say it in
+/// `lang`.
+#[must_use]
+pub fn describe(lang: erpc_core::i18n::Lang) -> &'static str {
+    use erpc_core::i18n::Lang::{En, Ja, Ru, Zh};
+    #[cfg(target_os = "macos")]
+    let name = match lang {
+        En => "macOS Keychain",
+        Ja => "macOS キーチェーン",
+        Zh => "macOS 钥匙串",
+        Ru => "связка ключей macOS",
+    };
+    #[cfg(target_os = "windows")]
+    let name = match lang {
+        En => "Windows Credential Manager",
+        Ja => "Windows 資格情報マネージャー",
+        Zh => "Windows 凭据管理器",
+        Ru => "диспетчер учётных данных Windows",
+    };
+    #[cfg(target_os = "linux")]
+    let name = match (secret_service_answers(), lang) {
+        (true, En) => "the Secret Service keyring",
+        (true, Ja) => "Secret Service のキーリング",
+        (true, Zh) => "Secret Service 密钥环",
+        (true, Ru) => "связка ключей Secret Service",
+        (false, En) => "the kernel keyring (kept until a reboot)",
+        (false, Ja) => "カーネルのキーリング（再起動まで保持）",
+        (false, Zh) => "内核密钥环（保留到重启）",
+        (false, Ru) => "связка ключей ядра (хранится до перезагрузки)",
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    let name = match lang {
+        En => "the system keyring",
+        Ja => "OS のキーリング",
+        Zh => "系统密钥环",
+        Ru => "системная связка ключей",
+    };
+    name
 }
 
 /// Reads a keychain entry's text back into a session.
@@ -76,8 +140,149 @@ fn parse_entry(raw: &str) -> Result<Credential, StoreError> {
     })
 }
 
+/// Turns a `security` or kernel keyring failure into the store's error.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn backend(operation: &'static str) -> impl Fn(String) -> StoreError {
+    move |reason| StoreError::Backend {
+        kind: StoreKind::OsKeychain,
+        operation,
+        reason,
+    }
+}
+
+#[cfg(target_os = "macos")]
 impl CredentialStore for OsKeychain {
     fn load(&self, key: &CredKey) -> Result<Option<Credential>, StoreError> {
+        super::security_cli::read(&self.service, &key.keychain_account())
+            .map_err(backend("read from the keychain"))?
+            .map(|raw| parse_entry(&raw))
+            .transpose()
+    }
+
+    fn save(&self, key: &CredKey, cred: &Credential) -> Result<(), StoreError> {
+        super::security_cli::write(&self.service, &key.keychain_account(), &serialise(cred)?)
+            .map_err(backend("write to the keychain"))
+    }
+
+    fn delete(&self, key: &CredKey) -> Result<(), StoreError> {
+        super::security_cli::delete(&self.service, &key.keychain_account())
+            .map_err(backend("remove from the keychain"))
+    }
+
+    fn kind(&self) -> StoreKind {
+        StoreKind::OsKeychain
+    }
+}
+
+/// The user's persistent keyring in the Linux kernel.
+///
+/// It outlives the login session, for a few days unused. It is reached
+/// from the user keyring rather than from a session keyring, so a process
+/// started outside a PAM login -- cron, a systemd unit -- finds it too.
+///
+/// The kernel lets the user write and search it only through a keyring the
+/// process holds, which a login provides. A process whose session keyring
+/// is revoked or another user's -- after `su` without `-`, or `sudo -E` --
+/// holds none, and is refused: told so, rather than given a session that
+/// could not be read back.
+#[cfg(target_os = "linux")]
+mod kernel {
+    use linux_keyutils::{KeyError, KeyRing, KeyRingIdentifier};
+
+    /// What a refusal means here, and what to do about it.
+    const NOT_HELD: &str = "this process holds none of your kernel keyrings, which happens \
+        when it was started without a login of its own (`su` without `-`, `sudo -E`); \
+        start it from a login as yourself, or choose another store with \
+        `erpc login --store`";
+
+    /// The keyring, attached to the user keyring.
+    fn ring() -> Result<KeyRing, String> {
+        KeyRing::get_persistent(KeyRingIdentifier::User).map_err(explain)
+    }
+
+    /// A kernel error as a sentence.
+    fn explain(e: KeyError) -> String {
+        match e {
+            KeyError::AccessDenied | KeyError::PermissionDenied => NOT_HELD.to_owned(),
+            other => other.to_string(),
+        }
+    }
+
+    /// The key's description: the service and the account.
+    fn description(service: &str, account: &str) -> String {
+        format!("{service}:{account}")
+    }
+
+    /// A miss: no such key, or one the kernel has let go.
+    const fn missing(e: KeyError) -> bool {
+        matches!(
+            e,
+            KeyError::KeyDoesNotExist | KeyError::KeyExpired | KeyError::KeyRevoked
+        )
+    }
+
+    /// The entry's text, or none when there is no entry.
+    pub(super) fn read(service: &str, account: &str) -> Result<Option<String>, String> {
+        let bytes = match ring()?
+            .search(&description(service, account))
+            .and_then(|key| key.read_to_vec())
+        {
+            Ok(bytes) => bytes,
+            Err(e) if missing(e) => return Ok(None),
+            Err(e) => return Err(explain(e)),
+        };
+        String::from_utf8(bytes)
+            .map(Some)
+            .map_err(|_| "the entry is not text".to_owned())
+    }
+
+    /// Writes the entry. A key with the same description is updated in
+    /// place, in one call: a reader sees the old text or the new.
+    pub(super) fn write(service: &str, account: &str, text: &str) -> Result<(), String> {
+        ring()?
+            .add_key(&description(service, account), text)
+            .map(|_| ())
+            .map_err(explain)
+    }
+
+    /// Removes the entry; one that is not there is removed already.
+    pub(super) fn delete(service: &str, account: &str) -> Result<(), String> {
+        match ring()?
+            .search(&description(service, account))
+            .and_then(|key| key.invalidate())
+        {
+            Ok(()) => Ok(()),
+            Err(e) if missing(e) => Ok(()),
+            Err(e) => Err(explain(e)),
+        }
+    }
+}
+
+/// The session as the versioned document every store writes.
+fn serialise(cred: &Credential) -> Result<String, StoreError> {
+    let stored = StoredCredential {
+        store_version: STORE_VERSION,
+        access_token: cred.access_token.expose_secret().to_owned(),
+        refresh_token: cred.refresh_token.expose_secret().to_owned(),
+        expires_at: cred.expires_at,
+    };
+    serde_json::to_string(&stored).map_err(|e| StoreError::Backend {
+        kind: StoreKind::OsKeychain,
+        operation: "serialise the session",
+        reason: e.to_string(),
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+impl CredentialStore for OsKeychain {
+    fn load(&self, key: &CredKey) -> Result<Option<Credential>, StoreError> {
+        #[cfg(target_os = "linux")]
+        if !secret_service_answers() {
+            return kernel::read(&self.service, &key.keychain_account())
+                .map_err(backend("read from the kernel keyring"))?
+                .map(|raw| parse_entry(&raw))
+                .transpose();
+        }
         let entry = self.entry(key)?;
         let raw = match entry.get_password() {
             Ok(raw) => raw,
@@ -94,17 +299,12 @@ impl CredentialStore for OsKeychain {
     }
 
     fn save(&self, key: &CredKey, cred: &Credential) -> Result<(), StoreError> {
-        let stored = StoredCredential {
-            store_version: STORE_VERSION,
-            access_token: cred.access_token.expose_secret().to_owned(),
-            refresh_token: cred.refresh_token.expose_secret().to_owned(),
-            expires_at: cred.expires_at,
-        };
-        let raw = serde_json::to_string(&stored).map_err(|e| StoreError::Backend {
-            kind: StoreKind::OsKeychain,
-            operation: "serialise the session",
-            reason: e.to_string(),
-        })?;
+        let raw = serialise(cred)?;
+        #[cfg(target_os = "linux")]
+        if !secret_service_answers() {
+            return kernel::write(&self.service, &key.keychain_account(), &raw)
+                .map_err(backend("write to the kernel keyring"));
+        }
         // `set_password` replaces an existing entry in one call on every
         // supported platform, so there is no window where the entry is
         // missing.
@@ -118,6 +318,11 @@ impl CredentialStore for OsKeychain {
     }
 
     fn delete(&self, key: &CredKey) -> Result<(), StoreError> {
+        #[cfg(target_os = "linux")]
+        if !secret_service_answers() {
+            return kernel::delete(&self.service, &key.keychain_account())
+                .map_err(backend("remove from the kernel keyring"));
+        }
         match self.entry(key)?.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(e) => Err(StoreError::Backend {
@@ -130,6 +335,82 @@ impl CredentialStore for OsKeychain {
 
     fn kind(&self) -> StoreKind {
         StoreKind::OsKeychain
+    }
+}
+
+/// Secrets other than the session, kept in the same keychain the session
+/// is: by `service` and `account`, as text, never on a command line.
+///
+/// For keys that must outlive a reboot, so on Linux only the Secret
+/// Service is used; the kernel keyring, which the session falls back to,
+/// forgets what it holds.
+pub mod item {
+    use zeroize::Zeroizing;
+
+    #[cfg(target_os = "linux")]
+    fn durable() -> Result<(), String> {
+        if super::secret_service_answers() {
+            Ok(())
+        } else {
+            Err(
+                "no Secret Service answers here, and the kernel keyring forgets what it holds \
+                 at a reboot; keep this secret in 1Password instead"
+                    .to_owned(),
+            )
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn entry(service: &str, account: &str) -> Result<keyring::Entry, String> {
+        #[cfg(target_os = "linux")]
+        durable()?;
+        keyring::Entry::new(service, account).map_err(|e| e.to_string())
+    }
+
+    /// The secret under `service` and `account`, or `None` when there is none.
+    ///
+    /// # Errors
+    ///
+    /// A message when the keychain cannot be read.
+    pub fn read(service: &str, account: &str) -> Result<Option<Zeroizing<String>>, String> {
+        #[cfg(target_os = "macos")]
+        return super::super::security_cli::read(service, account).map(|s| s.map(Zeroizing::new));
+        #[cfg(not(target_os = "macos"))]
+        match entry(service, account)?.get_password() {
+            Ok(secret) => Ok(Some(Zeroizing::new(secret))),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    /// Keeps `secret` under `service` and `account`, replacing what was there.
+    ///
+    /// # Errors
+    ///
+    /// A message when the keychain cannot be written.
+    pub fn write(service: &str, account: &str, secret: &str) -> Result<(), String> {
+        #[cfg(target_os = "macos")]
+        return super::super::security_cli::write(service, account, secret);
+        #[cfg(not(target_os = "macos"))]
+        entry(service, account)?
+            .set_password(secret)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Removes what is under `service` and `account`; nothing there is not
+    /// an error.
+    ///
+    /// # Errors
+    ///
+    /// A message when the keychain cannot be written.
+    pub fn delete(service: &str, account: &str) -> Result<(), String> {
+        #[cfg(target_os = "macos")]
+        return super::super::security_cli::delete(service, account);
+        #[cfg(not(target_os = "macos"))]
+        match entry(service, account)?.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(e.to_string()),
+        }
     }
 }
 
@@ -166,6 +447,26 @@ mod tests {
         assert_eq!(SERVICE, "erpc");
         assert_eq!(OsKeychain::new().kind(), StoreKind::OsKeychain);
         assert!(!OsKeychain::new().kind().writes_secrets_to_disk());
+    }
+
+    /// A session saved, read back and removed, in this machine's keychain:
+    /// on a Linux server, the kernel's keyring.
+    #[test]
+    #[ignore = "touches this machine's keychain"]
+    fn a_session_round_trips_through_the_keychain() {
+        use secrecy::{ExposeSecret as _, SecretString};
+        let store = OsKeychain::with_service("erpc-test-round-trip");
+        let key = CredKey::new(Audience::AuthApi, "round-trip");
+        let cred = crate::credential::Credential {
+            access_token: SecretString::from("a.b.c"),
+            refresh_token: SecretString::from("refresh"),
+            expires_at: 1,
+        };
+        store.save(&key, &cred).expect("saved");
+        let back = store.load(&key).expect("read").expect("there");
+        assert_eq!(back.refresh_token.expose_secret(), "refresh");
+        store.delete(&key).expect("removed");
+        assert!(store.load(&key).expect("read").is_none());
     }
 
     #[test]

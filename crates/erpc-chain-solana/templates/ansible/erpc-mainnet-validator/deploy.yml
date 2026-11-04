@@ -1,0 +1,94 @@
+# SPDX-FileCopyrightText: 2021 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+#
+# erpc's mainnet validator deploy: SLV's mainnet-validator/init.yml at the
+# version in ../../PROVENANCE.md, with the imports rewritten for this
+# directory and these changes:
+# - Firedancer is the full Firedancer from erpc's own plays
+#   (../erpc-validator-firedancer). SLV refuses Firedancer on mainnet because
+#   it carries only Frankendancer, which does not run Alpenglow;
+# - the snapshot is fetched only into an empty ledger, from the freshest and
+#   fastest source (../erpc-mainnet-rpc/snapshot.yml), not cmn/wget_snapshot.yml;
+#   Firedancer fetches its own;
+# - cmn/update_ubuntu.yml is left out, as the testnet deploy leaves it.
+# It sits two levels under the template root, like SLV's entry plays, because
+# the plays find the templates at {{ playbook_dir }}/../../jinja.
+---
+- import_playbook: ../cmn/assert_validator_bootstrap.yml
+  when: validator_type != 'firedancer'
+
+- name: Check what this node runs, before anything changes
+  hosts: all
+  gather_facts: no
+  any_errors_fatal: true
+  tasks:
+    - name: Fail unless validator_type is a supported type
+      ansible.builtin.assert:
+        that:
+          - validator_type | default('') in ['agave', 'jito', 'allnodes-jito', 'firedancer']
+        fail_msg: "validator_type '{{ validator_type | default('undefined') }}' is not supported on {{ inventory_hostname }}. Set it to one of agave, jito, allnodes-jito, firedancer. Nothing was changed."
+        quiet: true
+
+    - name: Read whether the ledger is empty
+      ansible.builtin.stat:
+        path: /mnt/ledger/rocksdb
+      register: erpc_ledger
+
+    - name: Remember whether a snapshot is needed
+      ansible.builtin.set_fact:
+        erpc_fresh_ledger: "{{ not erpc_ledger.stat.exists }}"
+
+- import_playbook: ../cmn/check_alpenglow_floor.yml
+  vars:
+    versions_section: mainnet_validators
+  when: validator_type != 'firedancer'
+
+- import_playbook: ../cmn/fix_permissions.yml
+- import_playbook: ../cmn/copy_restart_sh.yml
+  vars:
+    restarter_snapshot_network: mainnet
+  when: validator_type != 'firedancer'
+- import_playbook: ../cmn/add_solv.yml
+- import_playbook: ../cmn/install_package.yml
+- import_playbook: ../cmn/setup_node_exporter.yml
+- import_playbook: ../cmn/disable_swap.yml
+- import_playbook: ../cmn/mount_disks.yml
+- import_playbook: ../cmn/optimize_system.yml
+- import_playbook: ../cmn/setup_norestart.yml
+- import_playbook: ../cmn/setup_logrotate.yml
+
+- import_playbook: ../cmn/build_solana.yml
+  vars:
+    versions_section: mainnet_validators
+  when: validator_type != 'firedancer'
+
+- import_playbook: ../cmn/setup_unstaked_identity.yml
+  when: validator_type != 'firedancer'
+- import_playbook: ../cmn/assert_unstaked_identity.yml
+  when: validator_type != 'firedancer'
+
+- import_playbook: ../erpc-validator-firedancer/setup.yml
+  vars:
+    versions_section: mainnet_validators
+    erpc_fd_cluster: mainnet
+  when: validator_type == 'firedancer'
+
+- import_playbook: ../mainnet-validator/create_overrides.yml
+  when: validator_type != 'firedancer'
+
+- import_playbook: ../mainnet-validator/setup_solv_service.yml
+  when: validator_type != 'firedancer'
+
+- import_playbook: ../mainnet-validator/create-start-validator-sh.yml
+  when: validator_type != 'firedancer'
+
+- import_playbook: ../erpc-mainnet-rpc/snapshot.yml
+  when:
+    - validator_type != 'firedancer'
+    - erpc_fresh_ledger | bool
+
+- import_playbook: ../mainnet-validator/start_solv.yml
+  when: validator_type != 'firedancer'
+
+- import_playbook: ../erpc-validator-firedancer/start.yml
+  when: validator_type == 'firedancer'

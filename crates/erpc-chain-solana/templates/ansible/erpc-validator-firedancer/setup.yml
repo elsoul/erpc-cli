@@ -1,0 +1,187 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+#
+# The full Firedancer (v26.x, the `firedancer` binary) as a validator, on
+# testnet or mainnet, written for erpc: SLV carries only Frankendancer.
+#
+# - Built from source at the pinned tag, which must still point at the pinned
+#   commit (`version_firedancer` and `commit_firedancer` of the section the
+#   calling play names as versions_section).
+# - The node's unstaked identity made with erpc-keypair.py (the host has no
+#   Solana CLI), identity.json linked to it, and checked not to be the staked
+#   identity_account.
+# - Its config is erpc's few lines over Firedancer's own cluster defaults
+#   (`--mainnet` or `--testnet`: entrypoints, genesis hash, snapshot sources);
+#   Alpenglow is on, which mainnet runs since its genesis certificate.
+# - firedancer.service runs `configure init all` (hugetlbfs, sysctls) and
+#   then the validator, as root; Firedancer drops to solv itself.
+---
+- name: Build the full Firedancer at its pin
+  hosts: all
+  become: true
+  become_user: solv
+  vars_files:
+    - "{{ playbook_dir }}/../../vars/versions.yml"
+  vars:
+    erpc_fd_pins: "{{ lookup('ansible.builtin.vars', versions_section) }}"
+    erpc_fd_dir: /home/solv/firedancer
+  tasks:
+    - name: Fail without a Firedancer pin
+      ansible.builtin.assert:
+        that:
+          - erpc_fd_pins.version_firedancer | default('') != ''
+          - erpc_fd_pins.commit_firedancer | default('') != ''
+        fail_msg: "No Firedancer pin in {{ versions_section }} of vars/versions.yml. Nothing was built."
+        quiet: true
+
+    - name: Clone Firedancer at the pinned tag
+      ansible.builtin.git:
+        repo: https://github.com/firedancer-io/firedancer.git
+        dest: "{{ erpc_fd_dir }}"
+        version: "v{{ erpc_fd_pins.version_firedancer }}"
+        recursive: true
+        force: true
+      register: erpc_fd_clone
+
+    - name: Stop when the tag no longer points at the pinned commit
+      ansible.builtin.assert:
+        that:
+          - erpc_fd_clone.after == erpc_fd_pins.commit_firedancer
+        fail_msg: "v{{ erpc_fd_pins.version_firedancer }} now points at {{ erpc_fd_clone.after }}, not {{ erpc_fd_pins.commit_firedancer }}, the commit it was pinned to. Nothing was built. Pin the version again to accept the new commit."
+
+    # deps.sh installs the build's packages with sudo (solv has it) and
+    # builds the libraries Firedancer links.
+    - name: Install the build's dependencies
+      ansible.builtin.shell: yes y | ./deps.sh
+      args:
+        chdir: "{{ erpc_fd_dir }}"
+        executable: /bin/bash
+      async: 1800 # wait for 30 minutes
+      poll: 15
+      changed_when: false
+
+    - name: Build the firedancer binary
+      ansible.builtin.command: make -j firedancer
+      args:
+        chdir: "{{ erpc_fd_dir }}"
+      async: 3600 # wait for an hour
+      poll: 15
+      changed_when: false
+
+    # make writes build/native/<compiler>/<version>/bin/firedancer and links
+    # it as build/firedancer, whichever compiler it found.
+    - name: Link the binary into the PATH
+      ansible.builtin.file:
+        src: "{{ erpc_fd_dir }}/build/firedancer"
+        dest: /usr/local/bin/firedancer
+        state: link
+        force: true
+      become_user: root
+
+    - name: Read the version of the binary built
+      ansible.builtin.command: /usr/local/bin/firedancer --version
+      register: erpc_fd_version
+      changed_when: false
+
+    - name: Fail unless the binary is the pinned version
+      ansible.builtin.assert:
+        that:
+          - erpc_fd_version.stdout is search(erpc_fd_pins.version_firedancer ~ ' \\(' ~ erpc_fd_pins.commit_firedancer ~ '\\)')
+        fail_msg: "/usr/local/bin/firedancer reports {{ erpc_fd_version.stdout }}, not {{ erpc_fd_pins.version_firedancer }} ({{ erpc_fd_pins.commit_firedancer }})."
+        quiet: true
+
+- name: Give the node its unstaked identity
+  hosts: all
+  become: true
+  gather_facts: no
+  tasks:
+    - name: Install erpc-keypair.py
+      ansible.builtin.copy:
+        src: files/erpc-keypair.py
+        dest: /usr/local/bin/erpc-keypair.py
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Make unstaked-identity.json
+      ansible.builtin.command:
+        argv: [sudo, -u, solv, /usr/local/bin/erpc-keypair.py, new, /home/solv/unstaked-identity.json]
+        creates: /home/solv/unstaked-identity.json
+
+    - name: Read what identity.json is now
+      ansible.builtin.stat:
+        path: /home/solv/identity.json
+        follow: false
+      register: erpc_fd_identity_link
+
+    # As cmn/assert_unstaked_identity.yml has it for agave: the node never
+    # starts on the staked key, which stays in 1Password.
+    - name: Stop when identity.json is something else
+      ansible.builtin.assert:
+        that:
+          - not erpc_fd_identity_link.stat.exists or
+            (erpc_fd_identity_link.stat.islnk and erpc_fd_identity_link.stat.lnk_target == '/home/solv/unstaked-identity.json')
+        fail_msg: "/home/solv/identity.json on {{ inventory_hostname }} is not a link to unstaked-identity.json; it may be a staked key, and erpc does not replace it. Nothing was started."
+        quiet: true
+
+    - name: Link identity.json to the unstaked identity
+      ansible.builtin.file:
+        src: /home/solv/unstaked-identity.json
+        dest: /home/solv/identity.json
+        state: link
+        owner: solv
+        group: solv
+
+    - name: Read the identity's public key
+      ansible.builtin.command: /usr/local/bin/erpc-keypair.py pubkey /home/solv/identity.json
+      register: erpc_fd_identity
+      changed_when: false
+
+    - name: Stop when it is the staked identity
+      ansible.builtin.assert:
+        that:
+          - erpc_fd_identity.stdout | trim != (identity_account | default(''))
+        fail_msg: "/home/solv/identity.json on {{ inventory_hostname }} is the staked identity {{ identity_account }}. Nothing was started."
+        quiet: true
+
+- name: Write Firedancer's config and service
+  hosts: all
+  become: true
+  gather_facts: no
+  tasks:
+    - name: Ensure the data directories belong to solv
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: solv
+        group: solv
+        mode: "0700"
+      loop:
+        - /mnt/ledger
+        # Firedancer's base: it opens files there (stakedelegations.db,
+        # shreds.db) and makes no directory of its own.
+        - /mnt/ledger/firedancer
+        - /mnt/accounts
+        - /mnt/snapshot
+
+    - name: Write firedancer.toml
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../jinja/erpc-validator-firedancer/firedancer.toml.j2"
+        dest: /home/solv/firedancer.toml
+        owner: solv
+        group: solv
+        mode: "0644"
+
+    - name: Write firedancer.service
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../jinja/erpc-validator-firedancer/firedancer.service.j2"
+        dest: /etc/systemd/system/firedancer.service
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Enable firedancer
+      ansible.builtin.systemd_service:
+        name: firedancer
+        enabled: true
+        daemon_reload: true

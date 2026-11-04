@@ -44,6 +44,28 @@ pub struct Finding {
     pub detail: String,
 }
 
+impl Finding {
+    /// A finding that needs nothing done.
+    #[must_use]
+    pub fn ok(subject: &str, detail: String) -> Self {
+        Self {
+            level: Level::Ok,
+            subject: subject.to_owned(),
+            detail,
+        }
+    }
+
+    /// A finding the operator should act on.
+    #[must_use]
+    pub fn warn(subject: &str, detail: String) -> Self {
+        Self {
+            level: Level::Warn,
+            subject: subject.to_owned(),
+            detail,
+        }
+    }
+}
+
 /// A secret left on this machine, and how long it has been there.
 #[derive(Debug, Clone)]
 pub struct OnDisk {
@@ -163,9 +185,9 @@ pub fn findings(selection: Selection, on_disk: &[OnDisk]) -> Vec<Finding> {
                 )
             } else {
                 format!(
-                    "{} — a session parked when a store write failed. If the store still holds \
-                     the session it replaced, the next `erpc whoami` files it away and deletes \
-                     it. If you have signed in since, erpc ignores it, and `erpc login` said \
+                    "{} — a session parked when a store write failed, or when erpc had to stop \
+                     before the store took it. If the store still holds the session it replaced, \
+                     the next `erpc whoami` files it away and deletes it. If you have signed in since, erpc ignores it, and `erpc login` said \
                      then whether its token could be revoked; it is here only because it could \
                      not be deleted, so check the permissions on its directory and delete it \
                      yourself.",

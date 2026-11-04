@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+[Unit]
+Description=ERPC {{ nitro_family }} credentialed L1 transport
+Requires=erpc-{{ nitro_family }}-firewall.service
+After=erpc-{{ nitro_family }}-firewall.service network-online.target
+Wants=network-online.target
+
+[Service]
+LimitCORE=0
+Type=exec
+User=erpc-nitro-upstreams
+Group=erpc-nitro-upstreams
+UMask=0077
+LoadCredentialEncrypted=l1-upstreams:/etc/erpc/nitro/l1-upstreams.cred
+ExecStartPre=+/usr/local/lib/erpc/nitro-control guard
+ExecStart=/usr/bin/python3 /usr/local/lib/erpc/nitro-upstreams.py {{ nitro_parent }}
+Restart=on-failure
+RestartSec=30
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

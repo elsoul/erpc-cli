@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+op_conf: "/etc/erpc/{{ op_family }}"
+op_data: "/var/lib/erpc/{{ op_family }}"
+op_opt: "/opt/erpc/{{ op_family }}"
+op_user: "erpc-{{ op_family }}"
+op_proxy_user: "erpc-{{ op_family }}-l1"
+op_jinja: "{{ playbook_dir }}/../../jinja"
+op_scripts: "{{ playbook_dir }}/../../scripts"
+op_owner: "{{ op_request.contract.owner }}"
+op_network: "{{ op_request.contract.network }}"
+op_history: "{{ op_request.contract.history }}"
+op_sequencers:
+  optimism:
+    mainnet: https://mainnet-sequencer.optimism.io
+    sepolia: https://sepolia-sequencer.optimism.io
+  base:
+    mainnet: https://mainnet-sequencer.base.org
+    sepolia: https://sepolia-sequencer.base.org
+  soneium:
+    mainnet: https://rpc.soneium.org
+    minato: https://rpc.minato.soneium.org
+op_sequencer: "{{ op_sequencers[op_family][op_network] }}"

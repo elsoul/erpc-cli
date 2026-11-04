@@ -24,6 +24,12 @@
  * The convenience path therefore trusts DNS, TLS, this worker, and GitHub
  * Releases. Operators who need more follow the high-assurance path in
  * docs/verify-release.md, which does not involve this worker at all.
+ *
+ * One thing is added to the body: a fixed tail, `AFTER_INSTALL` below, that
+ * runs the binary the installer just put in place with `skills install`, so
+ * the assistant's skills are on the machine from the start. It is a constant
+ * in this file, the same for every request; it adds no source of code, only
+ * a call to the binary the GitHub installer installed.
  */
 
 export interface Env {
@@ -89,7 +95,7 @@ export default {
       );
     }
 
-    const res = new Response(got.body, {
+    const res = new Response(withAfterInstall(got.body, flavor), {
       status: 200,
       headers: {
         "content-type": "text/plain; charset=utf-8",
@@ -110,6 +116,53 @@ function text(msg: string, status: number): Response {
     status,
     headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },
   });
+}
+
+/**
+ * What runs after the installer: `erpc skills install`, with the binary the
+ * installer put in place. cargo-dist's installers end by calling their main
+ * function (`download_binary_and_run_installer "$@" || exit 1`, and
+ * `Install-Binary` in a try/catch), so a tail runs after a successful
+ * install and not after a failed one. The install directory is
+ * looked for where cargo-dist's installer puts it, in its order:
+ * `$ERPC_INSTALL_DIR/bin`, `$CARGO_DIST_FORCE_INSTALL_DIR/bin`,
+ * `$ERPC_UNMANAGED_INSTALL`, then `~/.erpc/bin` (dist-workspace.toml). A
+ * failure here never fails the install: `erpc skills install` can be run
+ * again by hand.
+ */
+export const AFTER_INSTALL: Record<"sh" | "ps1", string> = {
+  sh: `
+# erpc: put the assistant's skills on this machine (~/.erpc/skills).
+for _erpc_dir in "\${ERPC_INSTALL_DIR:+$ERPC_INSTALL_DIR/bin}" \\
+    "\${CARGO_DIST_FORCE_INSTALL_DIR:+$CARGO_DIST_FORCE_INSTALL_DIR/bin}" \\
+    "\${ERPC_UNMANAGED_INSTALL:-}" "$HOME/.erpc/bin"; do
+  if [ -n "$_erpc_dir" ] && [ -x "$_erpc_dir/erpc" ]; then
+    "$_erpc_dir/erpc" skills install || say "could not write the skills; run: erpc skills install"
+    break
+  fi
+done
+`,
+  ps1: `
+# erpc: put the assistant's skills on this machine (~/.erpc/skills).
+$erpcDirs = @()
+if ($env:ERPC_INSTALL_DIR) { $erpcDirs += Join-Path $env:ERPC_INSTALL_DIR "bin" }
+if ($env:CARGO_DIST_FORCE_INSTALL_DIR) { $erpcDirs += Join-Path $env:CARGO_DIST_FORCE_INSTALL_DIR "bin" }
+if ($env:ERPC_UNMANAGED_INSTALL) { $erpcDirs += $env:ERPC_UNMANAGED_INSTALL }
+$erpcDirs += Join-Path $HOME ".erpc\\bin"
+foreach ($erpcDir in $erpcDirs) {
+  $erpcBin = Join-Path $erpcDir "erpc.exe"
+  if (Test-Path -LiteralPath $erpcBin -PathType Leaf) {
+    & $erpcBin skills install
+    if ($LASTEXITCODE -ne 0) { Write-Information "could not write the skills; run: erpc skills install" }
+    break
+  }
+}
+`,
+};
+
+/** The installer, with [`AFTER_INSTALL`] after it. */
+export function withAfterInstall(body: string, flavor: "sh" | "ps1"): string {
+  return `${body.replace(/\s*$/, "")}\n${AFTER_INSTALL[flavor]}`;
 }
 
 /**

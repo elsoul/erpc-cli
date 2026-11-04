@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+#
+# The node's firewall: a table of its own, applied under a rollback timer
+# that erpc disarms from a fresh SSH connection (tasks/firewall.yml).
+---
+- name: Apply the RPC node's firewall
+  hosts: all
+  become: true
+  gather_facts: no
+  any_errors_fatal: true
+  vars:
+    erpc_fw_dir: /etc/erpc/solana-rpc
+    erpc_fw_file: /etc/erpc/solana-rpc/firewall.nft
+    erpc_fw_marker: /run/erpc-solana-rpc-firewall.armed
+    erpc_fw_rollback_seconds: 120
+    erpc_helpers: /usr/local/lib/erpc
+  tasks:
+    - name: Ensure nftables is installed
+      ansible.builtin.apt:
+        name: nftables
+        state: present
+
+    - name: Ensure the firewall's directories exist
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+      loop:
+        - "{{ erpc_fw_dir }}"
+        - "{{ erpc_helpers }}"
+
+    - name: Apply the firewall
+      ansible.builtin.include_tasks: tasks/firewall.yml

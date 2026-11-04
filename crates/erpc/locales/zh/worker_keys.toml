@@ -1,0 +1,77 @@
+# `erpc worker key` 和 `erpc worker secret` 的输出。
+
+read_failed = "无法读取 {path}：{error}"
+portability = "此应用的服务器信息保存在 1Password 中，而钥匙串只存在于本机：其他机器将无法启动该应用。传入 --store 1password 可将密钥与服务器信息保存在同一处。"
+
+[field]
+pubkey = "公钥"
+kept_at = "保存位置"
+
+[import]
+wipe_question = "密钥现已存入存储位置。是否擦除 {file}（先覆盖，再删除）？"
+wiped = "已擦除 {file}。"
+wipe_failed = "无法擦除 {file}：{error}"
+left_on_disk = "{file} 仍在磁盘上。确认存储中的密钥无误后，请将其删除（`--wipe` 可自动完成）。"
+
+[already]
+no_pubkey = "未设置其公钥"
+show_hint = "`erpc worker key show{dir_scope}` 可查看"
+replace_hint = "如需替换，请先从 erpc.toml 中删除 [wallet]"
+title = "{app} 已有钱包；未创建任何内容"
+refused = "{app} 已有钱包（{source} 中的 {pubkey}）；未创建任何内容"
+refused_hint = "`erpc worker key show{dir_scope}` 可查看；如需替换，请先从 erpc.toml 中删除 [wallet]"
+
+[kept]
+made = "已为 {app} 创建交易密钥：{pubkey}"
+imported = "已为 {app} 导入交易密钥：{pubkey}"
+where = "已保存在 {store} 中（{source}）；erpc.toml 的 [wallet] 引用了它。"
+hot_wallet = "只转入机器人所需的资金：这是一个热钱包。"
+by_hand = "密钥保存在 {source}；请手动在 erpc.toml 的 [wallet] 中设置 source = \"{source}\" 和 pubkey = \"{pubkey}\""
+
+[key_file]
+not_one = "{path} 不是密钥文件"
+unreadable = "{path}：{error}；密钥文件是 `solana-keygen` 写出的由 64 个数字组成的 JSON 数组"
+
+[show]
+no_wallet = "{app} 还没有钱包"
+new_hint = "`erpc worker key new{dir_scope}` 可创建一个"
+no_pubkey = "（erpc.toml 中未设置公钥）"
+kept_at = "保存位置：{source}"
+
+[balance]
+no_pubkey = "{app} 的 erpc.toml 中没有钱包公钥"
+not_json_rpc = "RPC 返回了 {status}，不是 JSON-RPC：{error}"
+no_balance = "RPC 返回了 {status}，但没有余额"
+failed = "无法读取余额：{error}"
+
+[rpc]
+none = "应用没有 RPC 设置（SOLANA_RPC_ENDPOINT 或 ERPC_API_KEY）"
+none_hint = "请传入 --rpc <url>"
+unusable = "该 RPC URL 不可用：{error}"
+
+[secret]
+prompt = "{name}（输入不显示）"
+ask_failed = "无法提示输入：{error}"
+stdin_failed = "无法读取标准输入：{error}"
+too_long = "标准输入中的机密值超过 64 KiB"
+empty = "{name} 为空；未保存任何内容"
+
+[put]
+in_vars = "{name} 在 [vars] 中；请先从那里删除，以免其值留在 erpc.toml 中"
+already = "{name} 已设置（{source}）"
+replace_hint = "传入 --replace 以用新值替换"
+by_hand = "该值保存在 {source}；请手动将 {name} = \"{source}\" 添加到 [secrets]"
+done = "{name} ← {source}，保存在 {store} 中"
+old_kept = "旧值仍保存在 {old}；如不再需要，请在那里删除。"
+
+[list]
+none = "还没有机密设置；`erpc worker secret put <NAME>{dir_scope}` 可保存一个。"
+missing_plain = "缺少：{name}（run.requires）"
+title = "{app} 的机密设置"
+missing = "缺少 {name}（run.requires）"
+
+[rm]
+not_there = "{name} 不在 [secrets] 中"
+done = "{name} 已不在 erpc.toml 中。"
+still_kept = "其值仍保存在 {source}；如果没有其他地方使用，请在那里删除。"
+plain = "{name} 已不在 erpc.toml 中。其值仍保存在 {source}；如果没有其他地方使用，请在那里删除。"

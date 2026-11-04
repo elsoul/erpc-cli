@@ -1,0 +1,5 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+"--json" = "输出机器可读的 JSON，而非供人阅读的文本"
+"--lang" = "erpc 使用的语言：en、ja、zh 或 ru（默认：`locale` 设置，否则使用系统语言）"

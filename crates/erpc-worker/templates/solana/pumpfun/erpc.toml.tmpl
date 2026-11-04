@@ -1,0 +1,52 @@
+# {{name}}: an erpc worker app, made from the {{template}} template.
+# `erpc worker check` says what this file describes and what is missing.
+# It holds no secret values, only references, so it can be committed.
+
+name     = "{{name}}"
+chain    = "solana"
+template = "{{template}}"
+
+[run]
+files    = ["config.jsonc"]
+# The app refuses to start without these; set each in [vars] or [secrets].
+# It also needs an RPC: SOLANA_RPC_ENDPOINT, or ERPC_API_KEY (see README.md).
+# `erpc worker deploy --grpc` starts an hourly ERPC gRPC line for the
+# server and sets GRPC_ENDPOINT to it, so it need not be set here.
+requires = ["GRPC_ENDPOINT", "API_TOKEN"]
+# Keep the port in step with API_PORT below.
+health   = { http = "http://127.0.0.1:3000/healthz", timeout_secs = 30 }
+# The API's port, which [env.<name>.firewall] app_allow opens on the server.
+# It stays closed until app_allow lists someone; the API also listens on
+# loopback only until API_BIND = "0.0.0.0" is set in [vars].
+port     = 3000
+
+# Redis on the server, which deploy installs and starts: the bot keeps its
+# trade history and the creators it banned there, so they outlast a restart.
+[services]
+redis = true
+
+[vars]
+# GRPC_ENDPOINT = "<a Geyser gRPC endpoint; deploy --grpc sets it on the server>"
+API_PORT       = "3000"
+AUTO_LOOP      = "false"
+TRADE_APP_LANG = "en"
+# EXPLORER_URL = "<https:// base of a block explorer, for links in notifications>"
+RUST_LOG       = "info"
+
+# Secret settings are references to 1Password or the OS keychain, never the
+# values themselves:
+#   op://<vault-id>/<item-id>/<field>
+#   keychain:<service>/<account>
+#
+# [secrets]
+# X_TOKEN      = "op://<vault-id>/<item-id>/x-token"  (a gRPC that takes a token)
+# API_TOKEN    = "op://<vault-id>/<item-id>/api-token"
+# ERPC_API_KEY = "op://<vault-id>/<item-id>/erpc-api-key"
+
+# The trading key. `erpc worker key new` makes one, keeps it only in
+# 1Password or the keychain, and fills this in. The app gets it on a pipe
+# when it starts; it is never written to a file, here or on a server.
+#
+# [wallet]
+# source = "op://<vault-id>/<item-id>/keypair"
+# pubkey = "<its public key>"

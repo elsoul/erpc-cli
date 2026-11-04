@@ -227,12 +227,15 @@ read_consts() {
 extract_hosts() { grep -v '("' | grep -oE '"[^"]+"' | tr -d '"' | sort -u; }
 
 doc_hosts=$(read_consts DOCUMENTATION_HOSTS | extract_hosts)
+# Hosts the node reaches, accepted only in the templates erpc carries for it.
+node_hosts=$(read_consts NODE_HOSTS | extract_hosts)
 all_consts=$(read_consts ALL)
 # Service hosts are everything declared except the documentation-only list.
 # No `|| <fallback>`: grep exits 1 when it selects nothing, and a fallback
 # here would quietly make every declared host, documentation hosts included,
 # allowed in code. An empty result is caught by the tripwire below instead.
-service_hosts=$(printf '%s\n' "$all_consts" | extract_hosts | grep -vxF "$doc_hosts")
+service_hosts=$(printf '%s\n' "$all_consts" | extract_hosts \
+  | grep -vxF "$(printf '%s\n%s\n' "$doc_hosts" "$node_hosts")")
 patterns=$(printf '%s\n' "$all_consts" | grep -oE '\("[A-Za-z0-9.-]+",[[:space:]]*"[A-Za-z0-9.-]+"\)' \
   | sed -E 's/^\("([^"]+)",[[:space:]]*"([^"]+)"\)$/\1	\2/')
 
@@ -278,6 +281,9 @@ else
 fi
 
 prose_re='(\.(md|txt)$|^(NOTICE|CHANGELOG|AUTHORS)$)'
+# The playbooks and templates a node runs, and the Jito region table whose
+# endpoints go into them. Their URLs are the node's.
+node_re='^crates/erpc-chain-(solana/(templates|regions)|arc/(templates|networks)|eth/templates|sui/templates|tron/templates|op/templates|nitro/(templates|networks))/'
 
 status=0
 report() { printf '%s:%s: %s\n' "$1" "$2" "$3" >&2; status=1; }
@@ -296,7 +302,18 @@ EOF
   return 1
 }
 
-# $1 host, $2 "prose" or "code"
+is_node_host() {
+  local host a
+  host=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  while IFS= read -r a; do
+    [ -n "$a" ] && [ "$host" = "$a" ] && return 0
+  done <<EOF
+$node_hosts
+EOF
+  return 1
+}
+
+# $1 host, $2 "prose", "code" or "node"
 host_allowed() {
   local host="$1" kind="$2" prefix suffix mid a
   host=$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')
@@ -306,6 +323,9 @@ host_allowed() {
   done <<EOF
 $service_hosts
 EOF
+  if [ "$kind" = node ] && is_node_host "$host"; then
+    return 0
+  fi
   if [ "$kind" = prose ]; then
     while IFS= read -r a; do
       [ -n "$a" ] && [ "$host" = "$a" ] && return 0
@@ -624,6 +644,38 @@ check_occurrence() {
         esac
       done
 
+      # The port once more, now that trailing punctuation is gone: an nginx
+      # `proxy_pass http://127.0.0.1:9650;` ends in `;`, so the strip above,
+      # anchored at the end, did not see the port.
+      host=$(printf '%s' "$host" | LC_ALL=C sed -E 's/:[0-9]+$//')
+
+      # A numeric port followed by `,`, `;`, `)` or a backtick, which is how
+      # an nginx `proxy_pass http://127.0.0.1:9650;` and Solana's
+      # `host=https://metrics.solana.com:8086,db=...` are written. The port
+      # strip above is anchored at the end, so it left these, and the colon
+      # check below would read the port as "not a port". Judged as
+      # punctuation inside a host is further down: what follows decides. A
+      # tail carrying two dot-separated labels or a scheme word is reported;
+      # otherwise the authority ends at the punctuation, and the port with it.
+      case "$(strip_expressions "$host")" in
+        *:[0-9]*[,\;\)\`]*)
+          port_tail="${host#*:}"
+          port_digits="${port_tail%%[!0-9]*}"
+          port_after="${port_tail#"$port_digits"}"
+          if [ -n "$port_digits" ]; then
+            case "$port_after" in
+              [,\;\)\`]*)
+                if printf '%s' "${port_after#?}" | LC_ALL=C grep -qE '[A-Za-z0-9-]+\.[A-Za-z0-9-]+|([Hh][Tt][Tt][Pp][Ss]?|[Ww][Ss][Ss]?)$'; then
+                  report "$f" "$ln" "punctuation inside the host hides the rest of it: $scheme://$host"
+                  return 0
+                fi
+                host="${host%%:*}"
+                ;;
+            esac
+          fi
+          ;;
+      esac
+
       # A colon that is not a port. The previous design stopped the match at
       # the first colon and so judged the part before it, which made
       # `https://declared:x.evil.example.net/y` read as the declared host --
@@ -740,6 +792,10 @@ check_occurrence() {
     report "$f" "$ln" "non-ASCII or unexpected character in host: $scheme://$host"
     return 0
   fi
+  # A node host in the node's templates keeps the scheme its client uses.
+  if [ "$kind" = node ] && is_node_host "$host"; then
+    return 0
+  fi
   if ! is_loopback_host "$host" && [ "$scheme" = http -o "$scheme" = ws ]; then
     report "$f" "$ln" "plaintext $scheme:// outside loopback: $host"
     return 0
@@ -842,7 +898,9 @@ normalise() {
 for f in "${files[@]}"; do
   [ -f "$f" ] || continue
   is_excepted "$f" && continue
-  if [[ "$f" =~ $prose_re ]]; then kind=prose; else kind=code; fi
+  if [[ "$f" =~ $prose_re ]]; then kind=prose
+  elif [[ "$f" =~ $node_re ]]; then kind=node
+  else kind=code; fi
 
   # The file is read with cat, which passes every byte and fails only when
   # the file cannot be read. It used to be `grep -a ''`, which exits 1 on a

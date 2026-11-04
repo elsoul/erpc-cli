@@ -65,6 +65,8 @@ crates=(
   erpc-core
   erpc-chain
   erpc-secret
+  erpc-worker
+  erpc-worker-agent
   erpc-ssh
   erpc-auth
   erpc-api

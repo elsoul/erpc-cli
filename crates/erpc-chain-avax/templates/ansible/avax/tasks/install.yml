@@ -1,0 +1,68 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Read immutable installation receipt
+  ansible.builtin.stat:
+    path: "{{ avax_release_dir }}/.verified-sha256"
+  register: avax_receipt
+- name: Verify an existing installation receipt
+  when: avax_receipt.stat.exists
+  block:
+    - ansible.builtin.slurp:
+        src: "{{ avax_release_dir }}/.verified-sha256"
+      register: avax_receipt_bytes
+    - ansible.builtin.assert:
+        that:
+          - avax_receipt_bytes.content | b64decode | trim == avax_sha256
+        fail_msg: Installed release has a different pinned archive digest.
+- name: Install a missing verified release
+  when: not avax_receipt.stat.exists
+  block:
+    - name: Fetch the pinned release archive
+      ansible.builtin.get_url:
+        url: "{{ avax_url }}"
+        dest: "{{ avax_opt }}/release.tar.gz"
+        checksum: "sha256:{{ avax_sha256 }}"
+        mode: '0644'
+    - name: Fetch its detached signature
+      ansible.builtin.get_url:
+        url: "{{ avax_url }}.sig"
+        dest: "{{ avax_opt }}/release.sig"
+        mode: '0644'
+    - name: Verify the archive with the embedded release key
+      ansible.builtin.shell:
+        cmd: |
+          set -euo pipefail
+          home=$(mktemp -d)
+          trap 'rm -rf "$home"' EXIT
+          gpg --batch --homedir "$home" --import "{{ playbook_dir }}/../../gpg/avalanchego.asc" >/dev/null 2>&1
+          gpg --batch --homedir "$home" --status-fd 1 --verify {{ avax_opt }}/release.sig {{ avax_opt }}/release.tar.gz 2>/dev/null |
+            awk '$1 == "[GNUPG:]" && $2 == "VALIDSIG" && ($3 == "{{ avax_fingerprint }}" || $NF == "{{ avax_fingerprint }}") {ok=1} END {exit !ok}'
+        executable: /bin/bash
+      changed_when: false
+    - name: Create release directory
+      ansible.builtin.file:
+        path: "{{ avax_release_dir }}"
+        state: directory
+        mode: '0755'
+    - name: Extract only after digest and signature verification
+      ansible.builtin.unarchive:
+        src: "{{ avax_opt }}/release.tar.gz"
+        dest: "{{ avax_release_dir }}"
+        remote_src: true
+        extra_opts: [--strip-components=1]
+        owner: root
+        group: root
+    - name: Confirm the extracted binary release
+      ansible.builtin.command: "{{ avax_release_dir }}/avalanchego --version-json"
+      register: avax_binary
+      changed_when: false
+      failed_when: >-
+        avax_binary.rc != 0 or
+        (avax_binary.stdout | from_json).application != ('avalanchego/' ~ avax_version[1:]) or
+        (avax_binary.stdout | from_json).commit != avax_commit
+    - name: Seal the verified archive receipt
+      ansible.builtin.copy:
+        dest: "{{ avax_release_dir }}/.verified-sha256"
+        content: "{{ avax_sha256 }}\n"
+        mode: '0644'

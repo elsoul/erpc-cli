@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+# This file is validated and applied only by the common operation-bound controller.
+table inet erpc_{{ op_family }} {
+  chain input {
+    type filter hook input priority -10; policy accept;
+    iifname "lo" accept
+    ct state established,related accept
+    {{ 'ip6' if ':' in op_controller_ip else 'ip' }} saddr {{ op_controller_ip }} tcp dport {{ op_ssh_port }} accept
+{% for cidr in op_management_allow %}
+    {{ 'ip6' if ':' in cidr else 'ip' }} saddr {{ cidr }} tcp dport {{ op_ssh_port }} accept
+{% endfor %}
+    tcp dport {{ op_ssh_port }} drop
+    # Engine, native RPC, derivation RPC, L1 proxy and native metrics stay local.
+    tcp dport { 8545, 8546, 8551, 9545, 6060, 7300, 18545, 15052 } drop
+{% for cidr in op_rpc_allow %}
+    {{ 'ip6' if ':' in cidr else 'ip' }} saddr {{ cidr }} tcp dport { 8555, 8556 } accept
+{% endfor %}
+    tcp dport { 8555, 8556 } drop
+{% for cidr in op_monitoring_allow %}
+    {{ 'ip6' if ':' in cidr else 'ip' }} saddr {{ cidr }} tcp dport 9060 accept
+{% endfor %}
+    tcp dport 9060 drop
+    tcp dport { 30303, 9222 } accept
+    udp dport { 30303, 9200, 9222, 9223 } accept
+  }
+}

@@ -1,0 +1,96 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+missing = "Приложение {name} не запустится без {settings}"
+missing_hint = "сохраните значение через `erpc worker secret put {first}{dir_scope}` или задайте его в [vars]"
+plan = "Развёртывание приложения {name}, релиз {release}, на {to} как {worker}"
+nothing_deployed = "ничего не развёрнуто"
+services = "проверяю, что на сервере работают {names} (в первый раз ставлю из пакетов Ubuntu)"
+target = "Развёртывание приложения {name} на {to} как {worker}"
+build_stopped = "сборка остановилась: {error}"
+could_not_read = "не удалось прочитать {path}: {error}"
+installed = "релиз {release} установлен"
+starting = "запуск и ожидание работоспособного состояния"
+and = " и "
+and_then = "{hint}; {next}"
+
+[still_charged]
+one = "{names}: почасовая оплата продолжается, запись сохранена; повторный `erpc worker deploy{scope}` продолжит работу с этим ресурсом, `erpc worker delete --release-server{scope}` завершит его"
+few = "{names}: почасовая оплата продолжается, записи сохранены; повторный `erpc worker deploy{scope}` продолжит работу с ними, `erpc worker delete --release-server{scope}` завершит их"
+many = "{names}: почасовая оплата продолжается, записи сохранены; повторный `erpc worker deploy{scope}` продолжит работу с ними, `erpc worker delete --release-server{scope}` завершит их"
+
+[agent]
+named = "устанавливается агент, указанный в ERPC_WORKER_AGENT (sha256 {sha256}), а не встроенный в этот erpc"
+no_exe = "не удалось определить, где находится этот erpc"
+none = "в этот erpc не встроен агент воркера для {machine} Linux, и по пути {path} его тоже нет ({error})"
+none_hint = "агенты встроены в релизы erpc; для собственной сборки выполните scripts/build-worker-agents.sh и соберите erpc, указав в ERPC_WORKER_AGENTS_DIR каталог, который выведет скрипт"
+not_installed = "не удалось установить агент: {error}"
+installed = "агент установлен"
+unchanged = "агент не изменился"
+
+[upload]
+failed = "не удалось загрузить {path}: {error}"
+not_checked = "не удалось проверить {path}: {error}"
+not_whole = "файл {path} передан не полностью; ничего не установлено"
+
+[line]
+name = "линия {kind} {id}"
+not_ipv4 = "линия данных пропускает только один IPv4-адрес, а адрес сервера — {host}"
+not_ipv4_hint = "разверните приложение на сервере, указав его IPv4-адрес"
+taking_up = "снова используется линия {id}"
+wait = "{name} есть в записях, но её пока нельзя подхватить: {why}; ничего не куплено"
+wait_hint = "повторите развёртывание через минуту, чтобы её подхватить. Если она уже завершена (например, в панели управления), `--forget-line {id}` в deploy или delete уберёт её из записей"
+wait_hint_unbilled = "повторите развёртывание через минуту, чтобы её подхватить. Если она уже завершена (например, в панели управления), `--forget-line {id}` в deploy или delete уберёт её из записей; линию без почасовой оплаты erpc не завершает"
+waiting = "ожидание активации линии {id}"
+unlimited_slow = "Unlimited RPC получает собственный сервер: это может занять до 45 минут"
+active = "линия {id} активна, эндпоинт: {endpoint}"
+charged = "{message}; линия оплачивается почасово"
+ended = "линия {id} завершена; плата за неё больше не взимается"
+not_ended = "линия {id} не завершена и осталась в erpc.toml: повторите развёртывание, чтобы дождаться её, или завершите её через `erpc worker delete --release-server{scope}`"
+still_waiting = "линия {id} записана в erpc.toml и оплачивается почасово: `erpc worker deploy{scope}` с теми же флагами снова её дождётся, а `erpc worker delete --release-server{scope}` завершит её, когда она станет активной"
+not_on_record = "линии {id} нет в записях, убирать нечего"
+gone = "{name}: её больше нет в аккаунте (плата за неё не взимается), она удаляется из записей"
+not_kept = "не удалось записать линию {id}: {error}"
+not_kept_hint = "она оплачивается почасово; если она не нужна, завершите её в панели управления"
+
+[line.forgotten]
+one = "{names} убрана из записей, как указано; если линия ещё работает, плата взимается, пока её не завершат в панели управления"
+few = "{names} убраны из записей, как указано; если линия ещё работает, плата взимается, пока её не завершат в панели управления"
+many = "{names} убраны из записей, как указано; если линия ещё работает, плата взимается, пока её не завершат в панели управления"
+
+[wait]
+setting_up = "плата уже взимается, а user-api её ещё не показывает (идёт настройка)"
+not_yet_charged = "user-api её показывает, а в начислениях аккаунта её ещё нет"
+unbilled = "она оплачивается не почасово, и user-api её не показывает"
+not_seen_yet = "она запущена, но её ещё нет ни в списке user-api, ни в начислениях аккаунта"
+
+[vps]
+not_kept = "VPS {id} запущен, но его не удалось записать: {error}"
+not_kept_hint = "он оплачивается почасово: `erpc worker deploy --vps {id}{scope}` подхватит его, иначе завершите его в панели управления"
+taking_up = "подхватывается VPS {id}, записанный при прошлом развёртывании"
+
+[server]
+no_terminal = "в erpc.toml нет [env.{env}], а выбрать сервер в терминале некому"
+no_terminal_hint = "укажите --vps <id>, --new-vps или --host <address>"
+new_vps = "Запустить новый VPS с почасовой оплатой (самый дешёвый тариф, рядом с {region}), сначала показав цену"
+which = "На каком сервере его запустить?"
+
+[failed]
+unhealthy = "приложение так и не стало работоспособным"
+previous = "предыдущий релиз"
+back_healthy = "; сервер откатился на {to}, он работоспособен"
+back_unhealthy = "; сервер откатился на {to}, но и он неработоспособен"
+no_earlier = "; более раннего релиза, к которому можно вернуться, нет, поэтому приложение остановлено"
+release = "релиз {release} не удался: {why}{back}"
+logs = "причину покажет `erpc worker logs{scope}`"
+
+[done]
+runs = "Приложение {name}, релиз {release}, работает на {host} как {worker} и работоспособно."
+ssh_only = "SSH разрешён только с {from}."
+rollback = "`erpc worker rollback{scope}` откатит приложение на {previous}."
+in_vault = "Сервер записан в хранилище 1Password {vault} ({title}); в erpc.toml указано это хранилище."
+in_toml = "Теперь окружение [env.{env}] в erpc.toml указывает на этот сервер."
+not_kept = "сервер не удалось записать: {error}"
+line = "{name} на {endpoint} пропускает этот сервер."
+line_hourly = "{name} на {endpoint} пропускает этот сервер; она оплачивается почасово, пока `erpc worker delete --release-server{scope}` её не завершит."
+hourly_vps = "Это VPS с почасовой оплатой: плата взимается, пока `erpc worker delete --release-server{scope}` его не завершит."

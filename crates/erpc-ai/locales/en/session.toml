@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+# What a conversation tells the person when a turn goes wrong, in ERPC's
+# words, never a provider's.
+
+cut_off = "the answer was cut off at its length limit"
+too_many_rounds = "stopped after {rounds} rounds of tool calls without an answer"
+finishing = "finishing what was agreed; it cannot be called back part way"
+expired = "Your sign-in has expired. Sign in again with `erpc login`."
+unreachable = "Could not reach ERPC AI. Check the network and try again."
+no_account = "This sign-in has no ERPC account yet. Create one with `erpc signup`."
+not_continuable = "the saved conversation is not in a shape that can be continued"

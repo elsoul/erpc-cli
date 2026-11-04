@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+op_failed = "1Password 无法{doing}：{why}"
+no_reason = "未说明原因"
+listing_not_json = "1Password 返回的列表不是 JSON"
+items_not_json = "1Password 返回的项目不是 JSON"
+item_not_json = "1Password 返回的项目不是 JSON"
+new_item_not_json = "1Password 新建的项目不是 JSON"
+more_than_one = "保险库 {vault} 中有多个带 {tag} 标签的项目；请保留一个，其余归档"
+item_error = "项目 {id}：{error}"
+record_unusable = "项目记录不可用"
+not_read_back = "1Password 项目 {id} 读回的 {label} 与写入的不一致"
+changed = "此命令读取后，1Password 中的 {title} 已被更改（可能有其他机器进行了部署）；未写入任何内容，请重新运行该命令"
+appeared = "此命令运行期间，1Password 中出现了 {title}；未写入任何内容，请重新运行该命令"
+
+[doing]
+list = "列出 worker 项目"
+read_all = "读取 worker 项目"
+read = "读取 worker 项目"
+update = "更新 worker 项目"
+create = "创建 worker 项目"
+archive = "归档 worker 项目"

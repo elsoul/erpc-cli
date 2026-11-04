@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+missing = "{name} cannot start without {settings}"
+missing_hint = "`erpc worker secret put {first}{dir_scope}` keeps a secret; a plain setting goes in [vars]"
+watch_only = "no [wallet]: the app starts watch-only (`erpc worker key new{dir_scope}` makes a key)"
+could_not_start = "could not start {bin}: {error}"
+no_stdin = "the app has no standard input to take the key"
+key_not_handed = "could not hand the key over: {error}"
+started = "{name} started (pid {pid})"
+running = "running; Ctrl-C stops it"
+healthy = "healthy; Ctrl-C stops it"
+stopped = "{name} stopped"
+ended = "{name} ended: {status}"
+
+[build]
+empty = "build.command is empty"
+building = "building: {command}"
+could_not_run = "could not run {program}: {error}"
+failed = "the build failed ({status})"
+no_binary = "the build finished, and {bin} is not there"
+no_binary_hint = "set build.bin in erpc.toml to the binary's name, and build with --release"
+
+[check]
+ended = "it ended on its own: {status}"
+timeout = "it was not healthy within {secs}s"
+healthy = "{name} is healthy ({secs}s after start); stopped"
+failed = "{name} failed its check: {why}"

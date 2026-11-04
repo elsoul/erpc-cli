@@ -3,34 +3,24 @@
 
 //! Which store is used, and why.
 //!
-//! The choice is made from facts, not preferences, and the reason is
-//! carried alongside it so that `erpc doctor` can print a sentence the
-//! operator can act on. An operator who cannot tell why their session went
-//! to a file instead of 1Password cannot fix it.
+//! The operator's choice wins where there is one -- `--store`, or what they
+//! picked at `erpc login` -- and otherwise the choice is made from facts.
+//! The reason is carried alongside it so that `erpc doctor` can print a
+//! sentence the operator can act on. An operator who cannot tell why their
+//! session went to a file instead of 1Password cannot fix it.
 
 use super::StoreKind;
 
 /// The facts the choice is made from.
 ///
-/// One field per condition, kept as separate booleans so that this type can
-/// be read beside the selection rules below and checked off.
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "one field per condition in the selection rules, kept legible on purpose"
-)]
+/// Only facts that hold without asking anyone. Whether the 1Password
+/// desktop app answers is not one of them: asking `op` can raise a
+/// biometric prompt, so the desktop store is chosen by the operator, at
+/// `erpc login` or with `--store`, never by detection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Environment {
     /// A 1Password service account token is in the environment.
     pub service_account_token: bool,
-    /// `op` was found at an absolute path.
-    pub op_present: bool,
-    /// `op account list` succeeded, so the desktop app really answered.
-    ///
-    /// Only ever set by running that command. A caller that has not run it
-    /// leaves this false, and the choice then falls through to the
-    /// keychain rather than sending a session to an app that may be signed
-    /// out, have integration switched off, or not be running at all.
-    pub op_account_usable: bool,
     /// An OS keychain is available on this machine.
     pub keychain_available: bool,
 }
@@ -41,8 +31,6 @@ impl Environment {
     pub const fn none() -> Self {
         Self {
             service_account_token: false,
-            op_present: false,
-            op_account_usable: false,
             keychain_available: false,
         }
     }
@@ -54,13 +42,14 @@ impl Environment {
 pub enum Reason {
     /// The operator asked for it, through `--store`.
     Requested,
+    /// The operator chose it at `erpc login`, and it is kept in the
+    /// configuration.
+    Configured,
     /// A service account token is present, so this is a headless context.
     ServiceAccountToken,
-    /// `op` is installed and its desktop account is reachable.
-    OnePasswordDesktopReachable,
-    /// `op` is not usable, and the machine has a keychain.
-    NoOpSoKeychain,
-    /// Nothing else is available.
+    /// Nothing was chosen, and the machine has a keychain.
+    KeychainDefault,
+    /// Nothing was chosen, and there is no keychain either.
     NothingElseAvailable,
 }
 
@@ -68,18 +57,15 @@ impl core::fmt::Display for Reason {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let text = match self {
             Self::Requested => "you asked for it with --store",
+            Self::Configured => "you chose it at `erpc login`; it is kept in config.toml",
             Self::ServiceAccountToken => {
                 "OP_SERVICE_ACCOUNT_TOKEN is set, so this is treated as a headless context"
             }
-            Self::OnePasswordDesktopReachable => {
-                "op is installed and `op account list` answered, so the desktop app holds the \
-                 session"
-            }
-            Self::NoOpSoKeychain => {
-                "the 1Password desktop app did not answer, so the OS keychain holds the session"
+            Self::KeychainDefault => {
+                "the default on a machine with an OS keychain; `erpc login` offers 1Password too"
             }
             Self::NothingElseAvailable => {
-                "neither op nor an OS keychain is available, so the session goes to a file on disk"
+                "no OS keychain is available, so the session goes to a file on disk"
             }
         };
         f.write_str(text)
@@ -105,36 +91,38 @@ impl Selection {
 
 /// Chooses a store.
 ///
-/// `requested` is an explicit choice from `--store`, which
-/// always wins: an operator who names a store has a reason, and silently
-/// using another one would be worse than failing later if it is not there.
+/// In order: `requested`, from `--store`, which always wins, because an
+/// operator who names a store has a reason; then `configured`, the choice
+/// kept from `erpc login`; then a service account token, which means nobody
+/// is at the keyboard; then the keychain; then a file.
 #[must_use]
-pub fn choose(env: &Environment, requested: Option<StoreKind>) -> Selection {
+pub fn choose(
+    env: &Environment,
+    requested: Option<StoreKind>,
+    configured: Option<StoreKind>,
+) -> Selection {
     if let Some(kind) = requested {
         return Selection {
             kind,
             reason: Reason::Requested,
         };
     }
-    // A service account token is checked before the desktop app: its
-    // presence means nobody is at the keyboard to answer a biometric
-    // prompt, whatever else is installed.
+    if let Some(kind) = configured {
+        return Selection {
+            kind,
+            reason: Reason::Configured,
+        };
+    }
     if env.service_account_token {
         return Selection {
             kind: StoreKind::OnePasswordServiceAccount,
             reason: Reason::ServiceAccountToken,
         };
     }
-    if env.op_present && env.op_account_usable {
-        return Selection {
-            kind: StoreKind::OnePasswordDesktop,
-            reason: Reason::OnePasswordDesktopReachable,
-        };
-    }
     if env.keychain_available {
         return Selection {
             kind: StoreKind::OsKeychain,
-            reason: Reason::NoOpSoKeychain,
+            reason: Reason::KeychainDefault,
         };
     }
     Selection {
@@ -149,48 +137,45 @@ mod tests {
 
     fn operator_machine() -> Environment {
         Environment {
-            op_present: true,
-            op_account_usable: true,
             keychain_available: true,
             service_account_token: false,
         }
     }
 
     #[test]
-    fn an_operator_machine_uses_the_desktop_app() {
-        let chosen = choose(&operator_machine(), None);
-        assert_eq!(chosen.kind, StoreKind::OnePasswordDesktop);
-        assert_eq!(chosen.reason, Reason::OnePasswordDesktopReachable);
+    fn an_operator_machine_uses_the_keychain_by_default() {
+        let chosen = choose(&operator_machine(), None, None);
+        assert_eq!(chosen.kind, StoreKind::OsKeychain);
+        assert_eq!(chosen.reason, Reason::KeychainDefault);
         assert!(!chosen.warns());
     }
 
     #[test]
-    fn a_service_account_token_wins_over_the_desktop_app() {
-        // Even on a machine with the app installed: the token means there
-        // is no one to answer a prompt.
+    fn a_configured_store_is_used_without_asking_again() {
+        let chosen = choose(
+            &operator_machine(),
+            None,
+            Some(StoreKind::OnePasswordDesktop),
+        );
+        assert_eq!(chosen.kind, StoreKind::OnePasswordDesktop);
+        assert_eq!(chosen.reason, Reason::Configured);
+    }
+
+    #[test]
+    fn a_service_account_token_wins_over_the_keychain() {
+        // The token means there is no one to answer a prompt.
         let env = Environment {
             service_account_token: true,
             ..operator_machine()
         };
-        let chosen = choose(&env, None);
+        let chosen = choose(&env, None, None);
         assert_eq!(chosen.kind, StoreKind::OnePasswordServiceAccount);
         assert_eq!(chosen.reason, Reason::ServiceAccountToken);
     }
 
     #[test]
-    fn op_installed_but_unreachable_falls_through_to_the_keychain() {
-        let env = Environment {
-            op_account_usable: false,
-            ..operator_machine()
-        };
-        let chosen = choose(&env, None);
-        assert_eq!(chosen.kind, StoreKind::OsKeychain);
-        assert_eq!(chosen.reason, Reason::NoOpSoKeychain);
-    }
-
-    #[test]
     fn a_bare_machine_falls_through_to_a_file_and_says_so() {
-        let chosen = choose(&Environment::none(), None);
+        let chosen = choose(&Environment::none(), None, None);
         assert_eq!(chosen.kind, StoreKind::File);
         assert_eq!(chosen.reason, Reason::NothingElseAvailable);
         assert!(
@@ -200,14 +185,14 @@ mod tests {
     }
 
     #[test]
-    fn an_explicit_choice_wins_over_every_fact() {
+    fn an_explicit_choice_wins_over_the_configuration_and_every_fact() {
         for requested in [
             StoreKind::File,
             StoreKind::OsKeychain,
             StoreKind::OnePasswordDesktop,
             StoreKind::OnePasswordServiceAccount,
         ] {
-            let chosen = choose(&operator_machine(), Some(requested));
+            let chosen = choose(&operator_machine(), Some(requested), Some(StoreKind::File));
             assert_eq!(chosen.kind, requested);
             assert_eq!(chosen.reason, Reason::Requested);
         }
@@ -217,9 +202,9 @@ mod tests {
     fn every_reason_prints_something_actionable() {
         for reason in [
             Reason::Requested,
+            Reason::Configured,
             Reason::ServiceAccountToken,
-            Reason::OnePasswordDesktopReachable,
-            Reason::NoOpSoKeychain,
+            Reason::KeychainDefault,
             Reason::NothingElseAvailable,
         ] {
             let text = reason.to_string();

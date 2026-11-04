@@ -1,0 +1,89 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Start the local container engine after ownership and firewall checks
+  ansible.builtin.systemd_service:
+    name: docker
+    state: started
+    enabled: true
+  when: op_family != 'base'
+
+- name: Pull only the pinned platform OCI manifests
+  ansible.builtin.command:
+    argv: [docker, --config, "{{ op_conf }}/docker", pull, "{{ item.reference }}"]
+  loop:
+    - { reference: "{{ op_execution_image }}", program: op-reth }
+    - { reference: "{{ op_consensus_image }}", program: op-node }
+  when: op_family != 'base'
+  changed_when: true
+
+- name: Validate the fetched image identity, platform and runtime contract
+  ansible.builtin.command:
+    argv: [python3, "{{ op_scripts }}/install.py", image, "{{ op_conf }}/docker", "{{ item.reference }}", "{{ op_pair.architecture }}", "{{ item.program }}"]
+  loop:
+    - { reference: "{{ op_execution_image }}", program: op-reth }
+    - { reference: "{{ op_consensus_image }}", program: op-node }
+  when: op_family != 'base'
+  changed_when: false
+
+- name: Create the Base release destination
+  ansible.builtin.file:
+    path: "{{ op_base_release }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  when: op_family == 'base'
+
+- name: Download reviewed Base native archives
+  ansible.builtin.get_url:
+    url: "{{ item.url }}"
+    dest: "{{ op_opt }}/{{ item.program }}.tar.gz"
+    checksum: "sha256:{{ item.sha256 }}"
+    owner: root
+    group: root
+    mode: '0600'
+  loop: "{{ op_base_artifacts }}"
+  when: op_family == 'base'
+
+- name: Download the Base detached archive signatures
+  ansible.builtin.get_url:
+    url: "{{ item.url }}.asc"
+    dest: "{{ op_opt }}/{{ item.program }}.tar.gz.asc"
+    force: true
+    owner: root
+    group: root
+    mode: '0600'
+  loop: "{{ op_base_artifacts }}"
+  when: op_family == 'base'
+
+- name: Require pinned digest and public signer before extracting a native binary
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ op_scripts }}/install.py"
+      - base
+      - "{{ op_opt }}/{{ item.program }}.tar.gz"
+      - "{{ op_opt }}/{{ item.program }}.tar.gz.asc"
+      - "{{ playbook_dir }}/../../gpg/base.asc"
+      - "{{ item.sha256 }}"
+      - "{{ item.program }}"
+      - "{{ op_base_release }}/{{ item.program }}"
+  loop: "{{ op_base_artifacts }}"
+  when: op_family == 'base'
+  changed_when: true
+
+- name: Check each verified native binary can execute on this host
+  ansible.builtin.command:
+    argv: ["{{ op_base_release }}/{{ item.program }}", --version]
+  loop: "{{ op_base_artifacts }}"
+  when: op_family == 'base'
+  changed_when: false
+
+- name: Select the verified Base pair without a database downgrade or automatic rollback
+  ansible.builtin.file:
+    src: "{{ op_base_release }}"
+    dest: "{{ op_opt }}/current"
+    state: link
+    force: true
+  when: op_family == 'base'

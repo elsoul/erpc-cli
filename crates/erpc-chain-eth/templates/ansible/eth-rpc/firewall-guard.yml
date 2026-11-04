@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Require this deployment's confirmed firewall receipt before any mutation
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Reject superseded or revoked preparation
+      ansible.builtin.command:
+        argv:
+          - python3
+          - /usr/local/lib/erpc/rpc-firewall.py
+          - eth
+          - require-confirmed
+          - "{{ erpc_fw_confirmed_run }}"
+          - "{{ erpc_fw_confirmed_bundle }}"
+      changed_when: false

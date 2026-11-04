@@ -74,3 +74,15 @@ test("rejects a plain-text error body", () => {
 test("does not accept a PowerShell installer as a shell one", () => {
   assert.equal(looksLikeInstaller(REAL_PS1, "sh"), false);
 });
+
+test("the installer is served with the skills step after it", async () => {
+  const { AFTER_INSTALL, withAfterInstall } = await import("./index.ts");
+  const sh = withAfterInstall(`${REAL_SH}download_binary_and_run_installer "$@" || exit 1\n`, "sh");
+  assert.ok(sh.startsWith("#!/bin/sh"), "still a shell script");
+  assert.ok(sh.endsWith(AFTER_INSTALL.sh));
+  assert.ok(sh.indexOf("|| exit 1") < sh.indexOf("skills install"), "after the install");
+  assert.ok(sh.includes('"${ERPC_INSTALL_DIR:+$ERPC_INSTALL_DIR/bin}"'), "not /bin when unset");
+  const ps1 = withAfterInstall(REAL_PS1, "ps1");
+  assert.equal(looksLikeInstaller(ps1, "ps1"), true);
+  assert.ok(ps1.includes('Join-Path $HOME ".erpc\\bin"'));
+});

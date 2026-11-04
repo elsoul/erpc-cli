@@ -1,0 +1,18 @@
+{
+  "arbitrum": {
+    "url": "https://raw.githubusercontent.com/OffchainLabs/nitro/70fa99a6e711f09eedd96a907290c3df0f3bcf7d/cmd/chaininfo/arbitrum_chain_info.json",
+    "sha256": "d7e8b87f078b10178a0ef03e809d3dad93a2583f6e181cc50f12368b57e58cdc"
+  },
+  "robinhood-mainnet": {
+    "url": "https://cdn.robinhood.com/assets/generated_assets/hoodchain_docsite/chain-node-configs/robinhood-chain-info.json",
+    "sha256": "cf6c0aa2bc520a28fe8983f783676bc43de94cc25a57a1cdc9b1f0afc5208f0a"
+  },
+  "robinhood-testnet": {
+    "url": "https://cdn.robinhood.com/assets/generated_assets/hoodchain_docsite/chain-node-configs/robinhood-chain-testnet-info.json",
+    "sha256": "0ad167c746c2aa9169c84a252f8c863140cdbd4fc23b571fa1041f94cabaf745"
+  },
+  "robinhood-genesis": {
+    "url": "https://cdn.robinhood.com/assets/generated_assets/hoodchain_docsite/chain-node-configs/robinhood-genesis.json",
+    "sha256": "353e6f6441b47695b41cee0c3645cde8dd7492d2f7f574bfb6aa4371e41bb6ba"
+  }
+}

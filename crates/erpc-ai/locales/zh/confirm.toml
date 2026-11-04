@@ -1,0 +1,83 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+# 工具付款、结束或更改内容之前 erpc ai 显示的确认。用户读后回答是或否，
+# 所以付多少钱、哪些无法撤销、授予了什么访问权限，都要和英文一样说清楚。
+
+[label]
+product = "产品"
+price = "价格"
+setting = "设置"
+credit = "积分余额"
+lasts = "可用时长"
+price_now = "当前价格"
+address = "地址"
+vault = "保险库"
+why = "原因"
+key = "密钥"
+credits = "积分"
+subtotal = "小计"
+vat = "增值税"
+total = "合计"
+from = "付款方"
+to = "收款方"
+network = "网络"
+valid_until = "报价有效期至"
+server = "服务器"
+host_key = "主机密钥"
+your_key = "你的密钥"
+changes = "变更"
+allowed = "允许的地址"
+yours_now = "你当前的地址"
+safety = "安全措施"
+note = "注意"
+script = "Shell 脚本"
+command = "命令"
+folder = "目录"
+ends = "期限"
+
+[start]
+title = "以按小时计费方式开通 {product}？在终止之前会一直计费。"
+price = "每小时 {hourly}（每天 {daily}），从 ERPC 积分扣除"
+lasts = "按全部服务运行时每小时 {rate} 计算，约可用 {hours} 小时"
+
+[end]
+title = "终止 {product}？它将停止运行并停止计费；此操作无法撤销。"
+price = "每小时 {hourly}"
+
+[wallet]
+found_title = "使用 1Password 中已有的 ERPC 钱包？"
+new_title = "新建一个用于购买 ERPC 积分的 Base 钱包？"
+vault = "1Password 保险库 {vault}"
+ai_may_pay = "可以请求用它付款；每次付款仍需你确认"
+ai_may_not = "不可使用"
+one_wallet = "erpc 只保留一个钱包，让你的 EURC 集中在一处"
+key = "在本机生成，仅保存在 1Password 中（绝不写入磁盘）"
+
+[top_up]
+vat = "{amount} EURC（税率 {rate}）"
+to = "{to}（ERPC 资金库）"
+network = "Base，EURC；Gas 费由 ERPC 承担"
+
+[top_up.title]
+other = "从你的钱包支付 {total} EURC，购买 {n} ERPC 积分？"
+
+[secure]
+title = "代你登录 {ip}，添加你的密钥并关闭密码登录？"
+changes = "添加你的密钥；永久关闭密码登录；如果 sudo 需要密码，将为登录用户配置免密码 sudo"
+
+[ssh_open]
+title = "重新允许所有地址通过 SSH 连接 {ip}？"
+
+[ssh_only]
+title = "只允许以下地址通过 SSH 连接 {ip}？"
+safety = "除非 erpc 在 {seconds} 秒内重新登录成功，否则会自动撤销"
+note = "如果你的地址发生变化，在重新允许之前 SSH 连接将被拒绝"
+
+[command]
+title = "在本机运行命令"
+
+[every_command]
+title = "在 erpc ai 退出之前允许所有命令吗？命令和 shell 脚本都将在本机直接运行，不再询问。"
+ends = "直到 erpc ai 退出，或开始新对话（/new 或 /clear）"
+note = "命令的输出会交给 ERPC AI，运行前也不再询问：命令可能会打印密钥文件或密码"

@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+# Saved `erpc ai` conversations: the list `erpc resume` picks from, and
+# why one cannot be read or saved.
+
+none_yet = "there are no saved conversations yet; start one with `erpc`"
+which = "Continue which conversation"
+nothing_chosen = "nothing was chosen"
+not_saved = "could not save: {error}"
+bad_id = "{id} is not a conversation id; `erpc resume` lists them"
+no_such = "there is no conversation {id}"
+unreadable = "could not read {path}: {error}"
+not_a_conversation = "{path} is not a saved conversation: {error}"
+other_version = "conversation {id} was saved by a different version of erpc"
+not_created = "could not create {path}: {error}"
+
+[age]
+just_now = "just now"
+
+[age.minutes]
+one = "{n}m ago"
+other = "{n}m ago"
+
+[age.hours]
+one = "{n}h ago"
+other = "{n}h ago"
+
+[age.days]
+one = "{n}d ago"
+other = "{n}d ago"

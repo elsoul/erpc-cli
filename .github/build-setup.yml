@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Steps cargo-dist runs before each release build (dist-workspace.toml,
+# github-build-setup): the erpc worker agents erpc embeds, built the same
+# way on every runner (scripts/build-worker-agents.sh). The script sets
+# ERPC_REQUIRE_WORKER_AGENTS=1, so a release cannot ship without them.
+- name: Install zig, for the worker agents
+  uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+  with:
+    version: 0.14.1
+    # No cache: a release build reads nothing another workflow could write.
+    use-cache: false
+- name: Install cargo-zigbuild, for the worker agents
+  uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
+  with:
+    # The version too: the agents it builds go inside the signed erpc.
+    tool: cargo-zigbuild@0.24.0
+- name: Build the worker agents erpc embeds
+  shell: bash
+  run: scripts/build-worker-agents.sh

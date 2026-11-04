@@ -1,0 +1,69 @@
+# ワーカーを動かす ERPC サーバーとデータ回線を探し、起動し、待ち、終了するときのメッセージ。
+
+no_session = "セッションがありません"
+login_hint = "`erpc login` を実行してください"
+api_silent = "user-api から応答がありませんでした：{error}"
+no_api_key = "このアカウントには共有 RPC 用の API キーがありません"
+no_api_key_hint = "ERPC ダッシュボードで作成できます"
+no_reason = "理由は示されていません"
+
+[vps]
+none = "このアカウントに VPS {id} はありません"
+no_address = "VPS {id} にはまだアドレスがありません"
+not_key_only = "VPS {id} を鍵認証のみにできませんでした"
+bad_id = "{id} は VPS の ID ではありません"
+
+[plan]
+not_offered = "{id} は現在時間課金で提供されている {family} プランではありません"
+none = "現在時間課金で提供されている {family} プランはありません"
+as_asked = "指定どおり"
+cheapest = "最安"
+
+[buy]
+bad_region = "`{region}` は VPS のリージョンではありません。指定できるのは {regions} です"
+buying = "新しい時間課金 VPS：{name}（{product}、{how}、1 時間あたり €{price}）、リージョン {region}（{why}）"
+region_asked = "指定どおり"
+region_nearest = "このマシンのタイムゾーンから最も近いもの"
+not_started = "user-api が起動しませんでした（HTTP {status}）：{reason}"
+other_region_hint = "別の --region なら在庫があるかもしれません。`erpc worker deploy --region <name>{scope}`"
+no_id = "user-api は VPS を起動しましたが、その ID を返しませんでした"
+started = "VPS {id} を起動しました"
+
+[ready]
+waiting = "VPS {id} の準備ができるのを待っています（最大 5 分）"
+failed = "VPS {id} の準備ができませんでした：{reason}"
+
+[end]
+not_hourly = "この環境のサーバーは時間課金の ERPC サーバーではありません。何も終了していません"
+ending = "時間課金の {kind} {id} を終了しています"
+failed = "user-api が {kind} {id} を終了しませんでした：{answer}"
+no_hourly_list = "user-api のクレジットスナップショットに時間課金の商品がありません。何も変更していません"
+
+[line]
+no_status = "erpc は {kind} 回線の状態を取得できません"
+no_list = "user-api が返した {kind} 回線の状態に一覧が含まれていません。何も変更していません"
+no_region = "Unlimited RPC はサーバーの ERPC リージョンで起動しますが、このサーバーにはリージョンの記録がありません"
+no_region_hint = "ERPC の VPS にデプロイしてください（`--vps <id>` または `--new-vps`）"
+buying = "新しい時間課金の {kind} 回線：{name}（{product}、{how}、1 時間あたり €{price}）、{ip} 用"
+not_started = "user-api が {kind} 回線を起動しませんでした（HTTP {status}）：{reason}"
+made_anyway = "user-api はそれでも回線 {id} を作成しており、記録済みです。`erpc worker delete --release-server{scope}` かダッシュボードで終了するまで課金される可能性があります"
+no_id = "user-api は {kind} 回線を起動しましたが、その ID を返しませんでした"
+warned = "user-api からの警告：{warning}"
+started = "{kind} 回線 {id} を起動しました"
+no_endpoint = "{kind} 回線 {id} は起動しましたが、1 分たっても user-api がエンドポイントを返しません"
+no_endpoint_hint = "時間課金されており、記録済みです。user-api が一覧に載せたら `erpc worker deploy{scope}` をもう一度実行すると引き継ぎ、`erpc worker delete --release-server{scope}` で終了します"
+bad_id = "{id} は回線の ID ではありません"
+let_in_failed = "{ip} から回線 {id} への接続を許可できませんでした：{error}"
+let_in_hint = "もう一度デプロイして再試行してください。その間も回線は課金されます"
+not_listed = "まだ一覧にありません"
+wrong_ip = "{kind} 回線 {id} が許可しているのは {allowed} で、このサーバーの {ip} ではありません"
+lets_in = "回線 {id} は {ip} からの接続を許可しています"
+lets_in_later = "回線 {id} は、サーバーのセットアップが終わりしだい {ip} からの接続を許可します"
+suspended = "{kind} 回線 {id} は利用停止中です"
+suspended_hint = "理由はダッシュボードで確認できます"
+waiting = "回線 {id} は {status} です（経過 {minutes} 分）"
+ending = "時間課金の {kind} 回線 {id} を終了しています"
+end_failed = "user-api が {kind} 回線 {id} を終了しませんでした：{answer}"
+
+[line.not_active]
+other = "{kind} 回線 {id} は {n} 分以内に有効になりませんでした（現在：{last}）"

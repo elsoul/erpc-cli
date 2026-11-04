@@ -1,0 +1,106 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Prepare the explicitly owned follower host
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars_files: [vars.yml]
+  tasks:
+    - name: Reserve only an unowned or identically owned chain and history scope
+      ansible.builtin.command:
+        argv: [python3, "{{ op_scripts }}/control.py", within-run]
+        stdin: "{{ op_request | combine({'action': 'prepare'}) | to_json }}"
+      changed_when: false
+      register: op_preparation
+
+    - name: Leave an already installed or retired owner unchanged
+      ansible.builtin.meta: end_host
+      when: (op_preparation.stdout | from_json).phase in ['installed', 'installing', 'bootstrapping']
+
+    - name: Install follower host prerequisites
+      ansible.builtin.apt:
+        name: [ca-certificates, curl, nftables, nginx-core, python3, zstd, gnupg, util-linux, iproute2]
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+        policy_rc_d: 101
+
+    - name: Install the official distribution container engine for OP clients
+      ansible.builtin.apt:
+        name: docker.io
+        state: present
+        policy_rc_d: 101
+      when: op_family != 'base'
+
+    - name: Create dedicated unprivileged service groups
+      ansible.builtin.group:
+        name: "{{ item }}"
+        system: true
+        state: present
+      loop: ["{{ op_user }}", "{{ op_proxy_user }}"]
+
+    - name: Create the isolated follower service account
+      ansible.builtin.user:
+        name: "{{ item }}"
+        group: "{{ item }}"
+        system: true
+        create_home: false
+        shell: /usr/sbin/nologin
+      loop: ["{{ op_user }}", "{{ op_proxy_user }}"]
+
+    - name: Create protected configuration and persistent data directories
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: "{{ item.owner }}"
+        group: "{{ item.owner }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - { path: "{{ op_conf }}", owner: root, mode: '0755' }
+        - { path: "{{ op_conf }}/docker", owner: root, mode: '0755' }
+        - { path: "{{ op_opt }}", owner: root, mode: '0755' }
+        - { path: "{{ op_opt }}/releases", owner: root, mode: '0755' }
+        - { path: "{{ op_data }}", owner: root, mode: '0755' }
+        - { path: "{{ op_data }}/execution", owner: "{{ op_user }}", mode: '0700' }
+        - { path: "{{ op_data }}/consensus", owner: "{{ op_user }}", mode: '0700' }
+        - { path: "{{ op_data }}/bootstrap-cache", owner: "{{ op_user }}", mode: '0700' }
+        - { path: /usr/local/lib/erpc, owner: root, mode: '0755' }
+
+    - name: Install the guarded control and inspection programs
+      ansible.builtin.copy:
+        src: "{{ op_scripts }}/{{ item.source }}"
+        dest: "/usr/local/lib/erpc/{{ item.target }}"
+        owner: root
+        group: root
+        mode: '0755'
+      loop:
+        - { source: control.py, target: rollup_control.py }
+        - { source: status.py, target: rollup_status.py }
+        - { source: bootstrap.py, target: rollup_bootstrap.py }
+        - { source: runtime-jwt.py, target: rollup_runtime_jwt.py }
+        - { source: container.py, target: rollup_container.py }
+
+    - name: Install the shared credential-isolating upstream transport
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../rollup-upstreams.py"
+        dest: /usr/local/lib/erpc/rollup_upstreams.py
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Isolate public image operations from existing Docker credentials and proxy settings
+      ansible.builtin.copy:
+        content: '{"auths":{}}'
+        dest: "{{ op_conf }}/docker/config.json"
+        owner: root
+        group: root
+        mode: '0644'
+      when: op_family != 'base'
+
+    - name: Validate account isolation before any provider credential can be installed
+      ansible.builtin.command:
+        argv: [python3, /usr/local/lib/erpc/rollup_control.py, within-run]
+        stdin: "{{ op_request | combine({'action': 'validate-accounts'}) | to_json }}"
+      changed_when: false

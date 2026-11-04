@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+# 保存された `erpc ai` の会話：`erpc resume` で選ぶ一覧と、読み込みや保存が
+# できないときの理由。
+
+none_yet = "保存された会話はまだありません。`erpc` で会話を始めてください"
+which = "どの会話を続けますか"
+nothing_chosen = "何も選択されませんでした"
+not_saved = "保存できませんでした：{error}"
+bad_id = "{id} は会話の ID ではありません。`erpc resume` で一覧を表示できます"
+no_such = "会話 {id} はありません"
+unreadable = "{path} を読み込めませんでした：{error}"
+not_a_conversation = "{path} は保存された会話ではありません：{error}"
+other_version = "会話 {id} は別のバージョンの erpc で保存されています"
+not_created = "{path} を作成できませんでした：{error}"
+
+[age]
+just_now = "たった今"
+
+[age.minutes]
+other = "{n}分前"
+
+[age.hours]
+other = "{n}時間前"
+
+[age.days]
+other = "{n}日前"

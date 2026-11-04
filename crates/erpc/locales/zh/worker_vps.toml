@@ -1,0 +1,69 @@
+# 查找、启动、等待和结束 worker 所用的 ERPC 服务器及数据线路时的输出。
+
+no_session = "当前没有登录会话"
+login_hint = "请运行 `erpc login`"
+api_silent = "user-api 没有响应：{error}"
+no_api_key = "该账户没有共享 RPC 的 API 密钥"
+no_api_key_hint = "可在 ERPC 控制面板中创建"
+no_reason = "未说明原因"
+
+[vps]
+none = "该账户没有 VPS {id}"
+no_address = "VPS {id} 还没有地址"
+not_key_only = "未能将 VPS {id} 设置为仅允许密钥登录"
+bad_id = "{id} 不是 VPS ID"
+
+[plan]
+not_offered = "{id} 不是当前可按小时计费的 {family} 套餐"
+none = "当前没有可按小时计费的 {family} 套餐"
+as_asked = "你指定的"
+cheapest = "最便宜的"
+
+[buy]
+bad_region = "`{region}` 不是 VPS 区域；可用的有 {regions}"
+buying = "新的按小时计费 VPS：{name}（{product}；{how}，每小时 €{price}），区域 {region}（{why}）"
+region_asked = "你指定的"
+region_nearest = "根据本机时区选择的最近区域"
+not_started = "user-api 未启动它（HTTP {status}）：{reason}"
+other_region_hint = "其他 --region 可能有库存；`erpc worker deploy --region <name>{scope}`"
+no_id = "user-api 启动了一台 VPS，但没有说明是哪台"
+started = "VPS {id} 已启动"
+
+[ready]
+waiting = "正在等待 VPS {id} 就绪（最多五分钟）"
+failed = "VPS {id} 未能就绪：{reason}"
+
+[end]
+not_hourly = "此环境的服务器不是按小时计费的 ERPC 服务器；未终止任何内容"
+ending = "正在终止按小时计费的 {kind} {id}"
+failed = "user-api 未能终止 {kind} {id}：{answer}"
+no_hourly_list = "user-api 的积分快照中没有列出按小时计费的产品；未做任何更改"
+
+[line]
+no_status = "erpc 不知道如何获取 {kind} 线路的状态"
+no_list = "user-api 返回的 {kind} 线路状态中没有列表；未做任何更改"
+no_region = "Unlimited RPC 需在服务器所在的 ERPC 区域中开通，而此服务器没有记录区域"
+no_region_hint = "请部署到 ERPC VPS（`--vps <id>` 或 `--new-vps`）"
+buying = "新的按小时计费 {kind} 线路：{name}（{product}；{how}，每小时 €{price}），用于 {ip}"
+not_started = "user-api 未启动 {kind} 线路（HTTP {status}）：{reason}"
+made_anyway = "user-api 仍创建了线路 {id}，且已记录；在 `erpc worker delete --release-server{scope}` 或控制面板将其终止之前，可能会持续计费"
+no_id = "user-api 启动了一条 {kind} 线路，但没有说明是哪条"
+warned = "user-api 警告：{warning}"
+started = "{kind} 线路 {id} 已启动"
+no_endpoint = "{kind} 线路 {id} 已启动，但一分钟后 user-api 仍未给出其端点"
+no_endpoint_hint = "它正在按小时计费且已记录：待 user-api 列出它后，再次运行 `erpc worker deploy{scope}` 即可接管，`erpc worker delete --release-server{scope}` 可将其终止"
+bad_id = "{id} 不是线路 ID"
+let_in_failed = "无法允许 {ip} 接入线路 {id}：{error}"
+let_in_hint = "再次部署即可重试；在此期间线路仍在计费"
+not_listed = "尚未列出"
+wrong_ip = "{kind} 线路 {id} 允许接入的是 {allowed}，而不是此服务器的 {ip}"
+lets_in = "线路 {id} 允许 {ip} 接入"
+lets_in_later = "线路 {id} 将在其服务器设置完成后允许 {ip} 接入"
+suspended = "{kind} 线路 {id} 已被暂停"
+suspended_hint = "可在控制面板中查看原因"
+waiting = "线路 {id} 状态为 {status}（已过 {minutes} 分钟）"
+ending = "正在终止按小时计费的 {kind} 线路 {id}"
+end_failed = "user-api 未能终止 {kind} 线路 {id}：{answer}"
+
+[line.not_active]
+other = "{kind} 线路 {id} 在 {n} 分钟内未能激活（当前状态为 {last}）"

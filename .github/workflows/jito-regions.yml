@@ -1,0 +1,65 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Checks the Jito region table erpc carries against Jito's docs once a week.
+# Jito publishes its regions only as a table on that page, so a change there
+# reaches erpc only through this job: it fails, and opens an issue listing
+# what differs. Actions are pinned to commit SHAs by scripts/pin-actions.sh.
+
+name: jito-regions
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    name: Jito region table
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: 1.98.0
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - name: Read the docs page
+        run: |
+          source=$(jq -r .source crates/erpc-chain-solana/regions/jito.json)
+          curl -fsSL --proto '=https' --tlsv1.2 "$source" -o "$RUNNER_TEMP/jito.html"
+      - name: Compare
+        id: compare
+        run: |
+          set -o pipefail
+          cargo run -q --locked -p erpc-chain-solana --example jito-drift -- "$RUNNER_TEMP/jito.html" \
+            | tee "$RUNNER_TEMP/drift.txt"
+      - name: Report
+        if: failure() && steps.compare.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          title="Jito region table differs from the docs"
+          if gh issue list --repo "$REPO" --state open --search "in:title \"$title\"" --json number --jq '.[].number' | grep -q .; then
+            exit 0
+          fi
+          {
+            echo "The weekly check found the region table in"
+            echo "\`crates/erpc-chain-solana/regions/jito.json\` no longer matches Jito's docs:"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/drift.txt"
+            echo '```'
+            echo
+            echo "Update the table and its \`read\` date, and refresh"
+            echo "\`regions/testdata/docs-table.html\` from the same page."
+          } > "$RUNNER_TEMP/body.md"
+          gh issue create --repo "$REPO" --title "$title" --body-file "$RUNNER_TEMP/body.md"

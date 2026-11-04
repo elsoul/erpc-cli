@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "erpc-chain-sui"
+description = "Network-pinned Sui node lifecycle for erpc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]
+erpc-core.workspace = true
+erpc-auth.workspace = true
+base64.workspace = true
+secrecy.workspace = true
+zeroize.workspace = true
+include_dir.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

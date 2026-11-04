@@ -1,0 +1,50 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+#
+# An RPC node's identity has no stake and no value: the node makes its own,
+# once, and it never leaves the node. identity.json leads to it, as SLV's
+# create-symlink.yml has it. A host whose identity.json is anything else (a
+# validator's key, say) is refused rather than relinked.
+---
+- name: Give the node its own RPC identity
+  hosts: all
+  become: true
+  gather_facts: no
+  tasks:
+    - name: Read what identity.json is now
+      ansible.builtin.stat:
+        path: /home/solv/identity.json
+        follow: false
+      register: erpc_identity_link
+
+    - name: Stop when identity.json is not the RPC identity
+      ansible.builtin.assert:
+        that:
+          - not erpc_identity_link.stat.exists or
+            (erpc_identity_link.stat.islnk and erpc_identity_link.stat.lnk_target == '/home/solv/rpc-identity.json')
+        fail_msg: "/home/solv/identity.json on {{ inventory_hostname }} is not a link to rpc-identity.json; it may be a validator's key, and erpc does not replace it. Move it away and run deploy again. Nothing was changed."
+        quiet: true
+
+    # --silent keeps the seed phrase out of the output, and no_log keeps the
+    # output out of the log: the key file is written either way.
+    - name: Make the identity with solana-keygen
+      ansible.builtin.shell:
+        cmd: |
+          sudo -u solv bash -c 'source ~/.profile && solana-keygen new --silent --outfile /home/solv/rpc-identity.json --no-passphrase'
+        creates: /home/solv/rpc-identity.json
+      no_log: true
+
+    - name: Keep the identity readable by solv alone
+      ansible.builtin.file:
+        path: /home/solv/rpc-identity.json
+        owner: solv
+        group: solv
+        mode: "0600"
+
+    - name: Point identity.json at it
+      ansible.builtin.file:
+        src: /home/solv/rpc-identity.json
+        dest: /home/solv/identity.json
+        state: link
+        owner: solv
+        group: solv

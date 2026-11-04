@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+usage = "使い方:"
+options = "オプション"
+arguments = "引数"
+commands = "コマンド"
+help = "ヘルプを表示"
+version = "バージョンを表示"
+help_command = "このメッセージ、または指定したサブコマンドのヘルプを表示"

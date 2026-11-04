@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+# 一轮对话出错时告诉用户的话：用 ERPC 自己的说法，绝不转述服务商的原话。
+
+cut_off = "回答已达到长度上限，被截断"
+too_many_rounds = "调用了 {rounds} 轮工具仍未得到回答，已停止"
+finishing = "正在完成已同意的操作；中途无法撤回"
+expired = "你的登录已过期。请用 `erpc login` 重新登录。"
+unreachable = "无法连接 ERPC AI。请检查网络后重试。"
+no_account = "当前登录还没有对应的 ERPC 账户。请运行 `erpc signup` 创建。"
+not_continuable = "保存的对话状态不完整，无法继续"

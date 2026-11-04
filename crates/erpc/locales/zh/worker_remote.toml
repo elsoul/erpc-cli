@@ -1,0 +1,121 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+unlocking = "worker 已锁定：正在传递密钥和机密设置"
+line_label = "{kind} 线路 {id}"
+its_server = "其服务器"
+must_keep = "无法从 {host} 移除它（{error}），它可能仍在那里运行"
+backup_not_revoked = "其备份访问密钥未被吊销（{why}），其服务器仍可凭它访问备份"
+
+[forget_prompt]
+other = "同时将 {lines} 从记录中移除，但不终止"
+
+[target]
+none_in_vault = "env.{env} 的服务器信息应保存在 1Password 保险库 {vault} 中，但那里还没有；`{command}` 会进行设置"
+no_host = "env.{env} 还没有主机；`{command}` 会设置它"
+no_host_key = "env.{env} 没有固定的主机密钥"
+
+[agent]
+unreachable = "无法询问服务器上的 agent：{error}"
+unreadable = "服务器上的 agent 返回了 erpc 无法读取的内容：{answer}"
+refused = "服务器上的 agent 拒绝了请求"
+
+[describe]
+unknown = "未知"
+release = "版本 {release}"
+pid = "pid {pid}"
+up = "已运行 {seconds} 秒"
+last_exit = "上次退出：{exit}"
+
+[describe.restarts]
+other = "重启 {n} 次"
+
+[status]
+title = "{host} 上的 {worker}：{agent}"
+no_answer = "agent 没有应答：{error}"
+none = "无"
+
+[status.releases]
+other = "当前 {current}，上一个 {previous}，保留 {n} 个版本"
+
+[start]
+start_prompt = "在服务器上启动 {id}"
+restart_prompt = "在服务器上重启 {id}"
+refused = "未启动任何内容"
+
+[stop]
+refused = "未停止任何内容"
+stopped = "{id} 已停止"
+locked = "{id} 已停止；密钥和机密设置已从服务器内存中清除"
+
+[rollback]
+refused = "未回滚任何内容"
+done = "{id} 已恢复运行 {release}"
+done_was = "{id} 已恢复运行 {release}（之前为 {previous}）"
+
+[releases]
+current = "当前"
+previous = "上一个"
+dirty = "（有未提交的更改）"
+none = "服务器上还没有版本。"
+
+[delete]
+refused = "未移除任何内容"
+not_removed = "无法从服务器移除它（{error}）"
+not_removed_ending = "无法从服务器移除它（{error}）；仍将终止服务器"
+nothing_removed = "未移除任何内容；{hint}"
+removed = "{id} 已从其服务器移除。"
+skipped = "[env.{env}] 已从记录中移除；按要求未连接 {host}：如果 worker 仍在那里运行，它会继续运行。"
+forgotten = "[env.{env}] 已移除。"
+still_in_toml = "[env.{env}] 仍在 erpc.toml 中：{error}"
+
+[delete_prompt]
+forget_unreached = "按要求不连接 {host}，将 [env.{env}] 从记录中移除：{id} 不会从服务器上移除"
+remove = "从 {host} 移除 {id}：其服务单元、版本和状态"
+never_reached = "将 [env.{env}] 从记录中移除（从未连接过其服务器）"
+no_server = "将 [env.{env}] 从记录中移除（记录中没有服务器）"
+then_server = "，然后终止按小时计费的服务器"
+then_lines_and_server = "，然后终止其数据线路和按小时计费的服务器"
+then_lines = "，然后终止其数据线路（记录中没有按小时计费的服务器）"
+no_server_to_end = "（记录中没有需要终止的按小时计费服务器）"
+
+[unreached]
+message = "无法连接服务器 {host}{vps}；它可能已被终止或已停机"
+plain = "如果服务器已无法连接且 worker 不在那里运行，`{command}` 会在不连接服务器的情况下将其移除"
+charged = "如果服务器已无法连接且 worker 不在那里运行，`{command}` 会在不连接服务器的情况下将其移除，并终止按小时计费的资源"
+backup = "；无论服务器是否应答，`{command}` 都会立即吊销其备份密钥"
+
+[refuse]
+plain = "{kind} {id} 在记录中，但从未连接过；未移除任何内容"
+hourly = "{kind} {id} 在记录中，但从未连接过，且正在按小时计费；未移除任何内容"
+hint = "运行 `{deploy}` 可连接它，或运行 `{delete}` 终止它及其线路"
+
+[still_charged]
+server = "{kind} {id} 仍在运行并按小时计费，而 erpc 已不再记录它；请在控制面板中将其终止"
+line_hourly = "数据线路 {ids} 仍在运行并按小时计费，而 erpc 已不再记录它；请在控制面板中将其终止"
+line_not_hourly = "数据线路 {ids} 仍在运行（不按小时计费），而 erpc 已不再记录它；请在控制面板中将其终止"
+
+[released]
+lines = "其数据线路已终止。"
+dropped = "{line} 不在账户的计费项中；已从记录中移除。"
+server = "按小时计费的服务器已终止。"
+no_server = "记录中没有需要终止的按小时计费 ERPC 服务器。"
+kept = "{line} 不按小时计费，因此 erpc 没有终止它；在控制面板中终止之前它会一直运行"
+
+[release]
+lines_failed = "数据线路：{error}"
+server_failed = "服务器：{error}"
+
+[partly]
+removed = "worker 已从其服务器移除，但并非所有操作都已完成：{problems}"
+no_host = "记录中没有可移除 worker 的服务器，且并非所有操作都已完成：{problems}"
+skipped = "按要求未连接 worker 的服务器，且并非所有操作都已完成：{problems}"
+not_removed = "worker 未从其服务器移除，且并非所有操作都已完成：{problems}"
+not_kept = "未完成的部分无法保留在记录中（{error}）：请在控制面板中将其终止"
+
+[retry]
+again = "未完成的部分仍保留在记录中：请再次运行 `{command}`"
+backup = "；备份密钥也可以用 `erpc storage keys revoke <n>` 吊销；"
+server = "；服务器也可以在控制面板中终止"
+lines = "；在 erpc 之外终止的线路可用 `--forget-line <id>` 从记录中移除，仍在运行的线路请在控制面板中终止"
+forget = "；如果服务器已无法连接且 worker 不在那里运行，`--forget` 会在不连接服务器的情况下将其移除"

@@ -1,0 +1,20 @@
+[Unit]
+Description=Firedancer validator
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=5
+User=root
+LimitNOFILE=1000000
+LimitMEMLOCK=infinity
+LogRateLimitIntervalSec=0
+ExecStartPre=/usr/local/bin/firedancer configure init all --config /home/solv/firedancer.toml --{{ erpc_fd_cluster }}
+ExecStart=/usr/local/bin/firedancer run --config /home/solv/firedancer.toml --{{ erpc_fd_cluster }}
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target

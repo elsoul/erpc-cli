@@ -1,0 +1,60 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+# node-run.sh serializes apply with confirmations and timers on /opt/erpc.
+- name: Refuse migration while a legacy firewall rollback is pending
+  ansible.builtin.stat:
+    path: /run/erpc-arc-firewall.armed
+  register: legacy_firewall
+- name: Require the previous legacy operation to settle first
+  ansible.builtin.assert:
+    that: not legacy_firewall.stat.exists
+    fail_msg: A legacy firewall operation is pending; wait for its rollback before retrying.
+- name: Stop settled legacy rollback units
+  ansible.builtin.command: systemctl stop erpc-arc-firewall-rollback.timer erpc-arc-firewall-rollback.service
+  failed_when: false
+  changed_when: false
+- name: Install the operation-bound firewall controller
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../rpc-firewall.py"
+    dest: /usr/local/lib/erpc/rpc-firewall.py
+    owner: root
+    group: root
+    mode: '0700'
+- name: Install boot policy loader
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/../../jinja/erpc-arc-firewall.service.j2"
+    dest: /etc/systemd/system/erpc-arc-firewall.service
+    owner: root
+    group: root
+    mode: '0644'
+- name: Render this run's candidate
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/../../jinja/erpc-arc.nft.j2"
+    dest: "{{ playbook_dir }}/../../firewall-candidate.nft"
+    owner: root
+    group: root
+    mode: '0600'
+- name: Validate nftables syntax
+  ansible.builtin.command: nft -c -f {{ playbook_dir }}/../../firewall-candidate.nft
+  changed_when: false
+- name: Identify the immutable submitted bundle
+  ansible.builtin.stat:
+    path: "{{ playbook_dir }}/../../../bundle.tar.gz"
+    checksum_algorithm: sha256
+  register: submitted_firewall_bundle
+- name: Apply this operation under its rollback timer
+  ansible.builtin.command:
+    argv:
+      - python3
+      - /usr/local/lib/erpc/rpc-firewall.py
+      - arc
+      - apply
+      - "{{ (playbook_dir ~ '/../../..') | realpath | basename }}"
+      - "{{ submitted_firewall_bundle.stat.checksum }}"
+  changed_when: true
+- name: Enable confirmed firewall policy at boot
+  ansible.builtin.systemd_service:
+    name: erpc-arc-firewall
+    enabled: true
+    daemon_reload: true

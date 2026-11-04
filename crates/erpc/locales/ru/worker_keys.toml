@@ -1,0 +1,77 @@
+# Что говорят `erpc worker key` и `erpc worker secret`.
+
+read_failed = "не удалось прочитать {path}: {error}"
+portability = "сведения о серверах этого приложения хранятся в 1Password, а связка ключей есть только на этой машине: с другой машины запустить его не получится. Укажите --store 1password, чтобы хранить ключ там же, где сведения о серверах."
+
+[field]
+pubkey = "публичный ключ"
+kept_at = "хранится в"
+
+[import]
+wipe_question = "Ключ сохранён. Стереть файл {file} (перезаписать, затем удалить)?"
+wiped = "Файл {file} стёрт."
+wipe_failed = "не удалось стереть {file}: {error}"
+left_on_disk = "Файл {file} всё ещё на диске. Удалите его, когда убедитесь, что ключ сохранён (`--wipe` сделает это за вас)."
+
+[already]
+no_pubkey = "его публичный ключ не задан"
+show_hint = "`erpc worker key show{dir_scope}` покажет его"
+replace_hint = "чтобы заменить его, сначала удалите [wallet] из erpc.toml"
+title = "у приложения {app} уже есть кошелёк; ничего не создано"
+refused = "у приложения {app} уже есть кошелёк ({pubkey} в {source}); ничего не создано"
+refused_hint = "`erpc worker key show{dir_scope}` покажет его; чтобы заменить его, сначала удалите [wallet] из erpc.toml"
+
+[kept]
+made = "Торговый ключ для приложения {app} создан: {pubkey}"
+imported = "Торговый ключ для приложения {app} импортирован: {pubkey}"
+where = "Хранится в {store} как {source}; на него ссылается [wallet] в erpc.toml."
+hot_wallet = "Пополняйте его только на ту сумму, которая нужна боту: это горячий кошелёк."
+by_hand = "ключ хранится в {source}; задайте вручную в erpc.toml [wallet] source = \"{source}\" и pubkey = \"{pubkey}\""
+
+[key_file]
+not_one = "{path} — не файл ключа"
+unreadable = "{path}: {error}; файл ключа — это JSON-массив из 64 чисел, который записывает `solana-keygen`"
+
+[show]
+no_wallet = "у приложения {app} ещё нет кошелька"
+new_hint = "`erpc worker key new{dir_scope}` создаст его"
+no_pubkey = "(публичный ключ не задан в erpc.toml)"
+kept_at = "хранится в {source}"
+
+[balance]
+no_pubkey = "в erpc.toml приложения {app} нет публичного ключа кошелька"
+not_json_rpc = "RPC ответил {status}, но это не JSON-RPC: {error}"
+no_balance = "RPC ответил {status} без баланса"
+failed = "не удалось получить баланс: {error}"
+
+[rpc]
+none = "у приложения нет настройки RPC (SOLANA_RPC_ENDPOINT или ERPC_API_KEY)"
+none_hint = "укажите --rpc <url>"
+unusable = "URL RPC непригоден для использования: {error}"
+
+[secret]
+prompt = "{name} (ввод не отображается)"
+ask_failed = "не удалось запросить ввод: {error}"
+stdin_failed = "не удалось прочитать стандартный ввод: {error}"
+too_long = "секрет из стандартного ввода длиннее 64 КиБ"
+empty = "{name} пуст; ничего не сохранено"
+
+[put]
+in_vars = "{name} есть в [vars]; сначала удалите его оттуда, чтобы его значение не осталось в erpc.toml"
+already = "{name} уже задан ({source})"
+replace_hint = "укажите --replace, чтобы сохранить на его место новое значение"
+by_hand = "значение хранится в {source}; добавьте {name} = \"{source}\" в [secrets] вручную"
+done = "{name} ← {source}, хранится в {store}"
+old_kept = "Старое значение всё ещё хранится в {old}; удалите его там, если оно больше не нужно."
+
+[list]
+none = "Секретов пока нет; `erpc worker secret put <NAME>{dir_scope}` сохранит первый."
+missing_plain = "не задан: {name} (run.requires)"
+title = "Секреты приложения {app}"
+missing = "{name} не задан (run.requires)"
+
+[rm]
+not_there = "{name} нет в [secrets]"
+done = "{name} больше нет в erpc.toml."
+still_kept = "Его значение всё ещё хранится в {source}; удалите его там, если оно больше нигде не используется."
+plain = "{name} больше нет в erpc.toml. Его значение всё ещё хранится в {source}; удалите его там, если оно больше нигде не используется."

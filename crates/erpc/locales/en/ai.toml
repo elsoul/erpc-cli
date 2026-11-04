@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+# What `erpc ai` says outside the console's screen: `-m` at a terminal,
+# the splash, the plan line and its errors.
+
+question_unreadable = "could not read the question: {error}"
+pick_needs_console = "picking a conversation needs the console; name it: erpc resume <id>"
+conversation_broken = "conversation {id}: {error}"
+json_needs_question = "--json needs a question: pass -m or pipe one in"
+needs_terminal = "the console needs a terminal; ask with -m or pipe a question in"
+go_ahead = "Go ahead? [y/N]"
+draw_failed = "could not draw to the terminal: {error}"
+to_continue = "To continue: erpc resume {id}"
+console_stopped = "the console stopped: {error}"
+sign_in_hint = "Sign in with `erpc login`, or create an account with `erpc signup`."
+empty_question = "the question is empty"
+open_dashboard = "Open the ERPC dashboard to buy a monthly or yearly plan: {url}"
+declined_because = "the model declined to answer: {why}"
+declined = "the model declined to answer: no reason given"
+stopped = "stopped"
+
+[choose]
+one = "A number, or your own answer:"
+several = "Numbers separated by commas, or your own answer:"
+again = "Type a number or your answer:"
+
+[splash]
+tagline = "Building the Financial Internet for the Agentic Era."
+connecting = "connecting"
+signed_in = "signed in as"
+
+[store]
+service_account = "1Password (service account)"
+file = "a file (~/.erpc)"
+
+[plan]
+hourly = "{name} (hourly)"
+left = "{left} tokens left"
+suspended = "suspended"

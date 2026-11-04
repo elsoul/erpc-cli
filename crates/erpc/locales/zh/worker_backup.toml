@@ -1,0 +1,92 @@
+# `erpc worker backup` 的输出，以及 `erpc worker delete` 关于 worker
+# 备份密钥的说明。
+
+by_hand = "`erpc storage keys list` 可列出访问密钥，`erpc storage keys revoke <n>` 可吊销其中一个"
+stuck = "如果 user-api 一直拒绝一个控制面板中已不再显示的密钥，请手动删除 [env.{env}.backup]（或 1Password 项目的 backup 字段）"
+both = "{first}；{then}"
+nothing_changed = "未做任何更改"
+no_host_key = "env.{env} 没有固定的主机密钥"
+
+[machine]
+ask_failed = "无法询问服务器的机器类型：{error}"
+unknown = "服务器没有说明其机器类型"
+
+[left]
+access_key = "访问密钥 {id}：{error}"
+no_longer_listed = "{reason}（已不在列表中）"
+still_listed = "访问密钥 {id}：吊销后仍在列表中"
+unchecked = "访问密钥 {id}：user-api 称没有该密钥，但无法读取用于核对的列表"
+not_looked_for = "未查找标签为 \"{label}\" 的密钥：无法列出密钥：{error}"
+not_revoked_label = "其访问密钥（\"{label}\"）：未吊销：{reason}"
+not_revoked = "访问密钥 {id}：未吊销：{reason}"
+line = "遗留：{what}"
+kept = "已保留，访问密钥吊销后即无害：{what}"
+
+[left.elsewhere]
+other = "另一台服务器上 worker {id} 的 {n} 个访问密钥属于它，因此保留；`erpc storage keys list` 可查看"
+
+[restic]
+list_failed = "restic 无法列出密钥：{reason}"
+list_unreadable = "无法读取 restic 的密钥列表：{error}"
+its_key = "其 restic 密钥（{host}）：{error}"
+key = "restic 密钥 {key}（{host}）：{error}"
+no_admin = "其 restic 密钥（{host}）：本机没有保存账户的备份管理密钥和密码；在本机运行 `erpc backup init` 后，或在设置该备份的机器上，可将其删除"
+
+[forget]
+not_looked_for = "未按标签查找其备份密钥：无法列出密钥：{error}"
+revoked = "其备份访问密钥已吊销；名为 {host} 的快照仍会保留"
+
+[custody]
+made = "账户的备份仓库密码刚刚创建，保存在 {place} 中。请在本机以外另存一份副本：\n  erpc backup password --show\n本机还保存着账户的备份管理密钥，因此任何接管本机的人都可以删除备份。"
+kept = "账户的备份仓库密码刚刚已保存到 {place} 中。请在本机以外另存一份副本：\n  erpc backup password --show\n本机还保存着账户的备份管理密钥，因此任何接管本机的人都可以删除备份。"
+
+[undo]
+left = "为此创建的密钥未能全部删除（{reasons}）；{by_hand}"
+
+[on]
+ask = "每天 {at}（服务器时间）将 worker {id} 备份到 ERPC Global Storage，由 restic 加密，主机名为 {host}。\n其服务器会获得一个仅可追加的访问密钥，以及一个用于访问账户唯一备份仓库的专属密钥。它无法删除快照，但接管该服务器的人可以读取账户中所有机器的快照，即使执行 `off` 之后仍持有仓库密钥，能以其他机器的名义添加快照，还能占满账户的存储空间，导致所有机器的备份停止。只有吊销其访问密钥（`off`）才能切断它的访问。"
+install_failed = "无法在服务器上安装 restic：{error}"
+old_left = "之前的 `on` 创建的密钥未能全部吊销（{reasons}）；未创建任何新内容"
+old_partly_revoked = "{by_hand}；其部分旧密钥已吊销，因此在 `on` 成功之前 worker 可能不会被备份"
+no_number = "user-api 没有给出新访问密钥的编号；请用 `erpc storage keys revoke <n>` 吊销它"
+not_in_list = "它不在密钥列表中"
+label_lost = "新访问密钥没有保留其标签，而 `off` 需要该标签"
+unchecked = "无法核对新访问密钥：{why}"
+not_recorded = "无法记录新密钥（{why}）；服务器未作更改"
+bad_credentials = "新凭据中含有服务器拒绝的字符"
+kept_in_item = "位于其 1Password 项目"
+kept_in_toml = "位于 erpc.toml；请提交此更改"
+done = "worker {id} 每天 {at}（服务器时间）起 30 分钟内进行备份。\n  快照      名为 {host}\n  立即备份  erpc worker backup now{scope}\n  恢复      erpc backup restore latest --from-host {host} --path {source} --target <dir>\n            （需先在本机运行 `erpc backup init`）\n密钥编号记录在 [env.{env}] 中（{kept_in}）。\n仓库密码保存在 {place} 中；请在本机以外的地方保留一份副本（`erpc backup password --show`）。\n\n备份会在 worker 运行时按原样复制文件：worker 写入的数据库可能需要单独导出，才能恢复到一致的状态。"
+replaced = "其旧备份密钥已吊销，因此在 `on` 成功之前 worker 不会被备份"
+
+[off]
+ask = "停止备份 worker {id} 并吊销其备份密钥。其快照会保留；`erpc backup prune --host {host}` 可精简它们。"
+server_left = "服务器上的定时器和凭据（已不再有效）：{error}"
+unfound = "服务器上有备份，但未找到其访问密钥（\"{label}\"）"
+still_recorded = "已吊销的密钥仍在记录中：{error}"
+summary = "worker {id}：{access}，{restic}{server}。"
+server_off = "，服务器上的备份已关闭"
+
+hint = "{by_hand}；待服务器响应后，再次运行 `erpc worker backup off{scope}` 即可删除其余部分；{stuck}"
+
+[off.access]
+other = "已吊销 {n} 个访问密钥"
+
+[off.restic]
+other = "已删除 {n} 个 restic 密钥"
+
+[status]
+off = "关闭"
+never = "服务器启动以来尚未运行过"
+unknown = "结果未知"
+succeeded = "成功"
+partly = "成功，但跳过了部分无法读取的文件"
+failed = "失败（{result}，退出码 {exit}）"
+on = "开启，下次运行 {next}\n  上次运行 {outcome}{at}"
+at = "，于 {at}"
+line = "worker {id} 的备份：{state}"
+
+[now]
+running = "正在备份 worker {id}…"
+refused = "服务器拒绝了请求"
+failed = "{text}\n  请查看服务器日志：journalctl -u {unit}"

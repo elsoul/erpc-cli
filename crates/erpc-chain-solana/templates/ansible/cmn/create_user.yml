@@ -1,0 +1,117 @@
+---
+- name: Create solv user with specific password and configure SSH access
+  hosts: all
+  become: yes
+  vars:
+    home_paths_authorized_keys: /home/solv/.ssh/authorized_keys
+    ansible_remote_tmp: /tmp/ansible_tmp
+  vars_files:
+    - "{{ playbook_dir }}/../../vars/config.pwd.yml"
+  tasks:
+    # erpc passes the operator's public key as solv_authorized_key: the play
+    # runs on the node, which cannot read the operator's ~/.ssh.
+    - name: Stop unless the public key to authorize is one OpenSSH public key line
+      ansible.builtin.assert:
+        that:
+          - solv_authorized_key | default('', true) | string is match('^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521|sk-ssh-ed25519@openssh.com) [A-Za-z0-9+/=]+( [^\\n]*)?\\Z')
+        fail_msg: "solv_authorized_key is not one OpenSSH public key line, so there is no key to authorize for solv on {{ inventory_hostname }}. Nothing was changed."
+        quiet: true
+
+    # The user module hands any password that is not None to useradd/usermod -p, so '' would leave solv with an empty
+    # password field, and this play gives solv sudo without a password: only a SHA-512 crypt hash goes on, with a salt
+    # of the 1 to 16 characters of ./0-9A-Za-z that openssl passwd -6 makes (the CLI checks the same pattern).
+    - name: Stop when the password hash of solv is empty or not a SHA-512 crypt hash
+      ansible.builtin.assert:
+        that:
+          - encrypted_password | default('', true) | string is match('^\\$6\\$[./0-9A-Za-z]{1,16}\\$[./0-9A-Za-z]+\\Z')
+        fail_msg: "the password hash in vars/config.pwd.yml is empty or not a $6$ hash; nothing was changed on {{ inventory_hostname }}. A SHA-512 crypt hash starts with $6$, has a salt of 1 to 16 characters of ./0-9A-Za-z, and ends with $ and the digest (openssl passwd -6 makes one): erpc writes that file from the solv password in the host's 1Password item, so check that item and run erpc v init again."
+        quiet: true
+
+    - name: Ensure solv user exists
+      user:
+        name: solv
+        password: "{{ encrypted_password }}"
+        state: present
+        shell: /bin/bash
+
+    - name: Ensure .ssh directory exists for solv user
+      file:
+        path: /home/solv/.ssh
+        state: directory
+        owner: solv
+        group: solv
+        mode: "0700"
+
+    - name: Add local public key to authorized_keys
+      lineinfile:
+        path: "{{ home_paths_authorized_keys }}"
+        line: "{{ solv_authorized_key }}"
+        create: yes
+        owner: solv
+        group: solv
+        mode: "0600"
+
+    - name: Generate SSH key for solv user if not exists
+      shell: su - solv -c "ssh-keygen -t rsa -b 4096 -N '' -f /home/solv/.ssh/id_rsa"
+      args:
+        creates: /home/solv/.ssh/id_rsa
+
+    - name: Ensure correct permissions for .ssh directory
+      file:
+        path: /home/solv/.ssh
+        state: directory
+        owner: solv
+        group: solv
+        mode: "0700"
+
+    - name: Ensure correct permissions for authorized_keys
+      file:
+        path: "{{ home_paths_authorized_keys }}"
+        state: file
+        owner: solv
+        group: solv
+        mode: "0600"
+
+    - name: Add solv user to sudoers group
+      user:
+        name: solv
+        groups: sudo
+        append: yes
+
+    - name: Configure sudoers file for solv user (no password required)
+      lineinfile:
+        path: /etc/sudoers
+        state: present
+        regexp: '^solv ALL=\(ALL\) NOPASSWD:ALL'
+        line: "solv ALL=(ALL) NOPASSWD:ALL"
+        validate: "visudo -cf %s"
+
+    - name: Ensure PubkeyAuthentication is enabled
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PubkeyAuthentication\s+.*'
+        line: "PubkeyAuthentication yes"
+      notify:
+        - restart ssh
+
+    - name: Ensure PasswordAuthentication is disabled
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PasswordAuthentication\s+.*'
+        line: "PasswordAuthentication no"
+      notify:
+        - restart ssh
+
+    - name: Ensure ChallengeResponseAuthentication is disabled
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?ChallengeResponseAuthentication\s+.*'
+        line: "ChallengeResponseAuthentication no"
+      notify:
+        - restart ssh
+
+  handlers:
+    - name: restart ssh
+      service:
+        name: ssh
+        state: restarted

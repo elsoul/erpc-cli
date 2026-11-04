@@ -1,0 +1,5 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+"--json" = "Emit machine-readable JSON instead of human-readable text"
+"--lang" = "The language erpc speaks: en, ja, zh or ru (default: the `locale` setting, else the system's)"

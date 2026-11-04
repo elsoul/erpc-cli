@@ -16,23 +16,57 @@ use erpc_auth::session::{
     LoginPrompt, ParkedReport, Revocation, SignInReport, approved_to_credential,
 };
 use erpc_auth::store::StoreKind;
+use erpc_auth::store::select::Selection;
 use erpc_auth::{AuthClient, session as auth_session};
 
 use crate::browser;
+use crate::error::{CliError, Code};
 use crate::session::{self, StoreReport};
 use crate::store_for;
 
-/// How a command ended, in the terms the exit codes are written in.
+/// How a command ended, in the terms the exit codes are written in; each
+/// failure is a [`crate::error::Code`] (see `docs/errors.md`).
 #[derive(Debug)]
 pub enum Outcome {
     /// It worked, and this is what to tell the operator.
     Done(String),
-    /// It failed, and this is why.
+    /// It failed, and this is why: [`Code::Failed`].
     Failed(String),
-    /// There is no usable session.
+    /// There is no usable session: [`Code::NotSignedIn`].
     NoSession(String),
-    /// A person is needed and there is nobody at a terminal.
+    /// A person is needed and there is nobody at a terminal:
+    /// [`Code::NeedsTerminal`].
     NeedsTerminal(String),
+    /// The command line was not usable as given: [`Code::Usage`].
+    Usage(String),
+    /// A check ran and found problems; this is its report, printed as
+    /// output, not as an error: [`Code::ProblemsFound`]. Empty when the
+    /// report was printed already (`--json`).
+    Problems(String),
+    /// A failure with its own code and hint.
+    Error(CliError),
+}
+
+impl Outcome {
+    /// The failure this is, or none for [`Self::Done`] and
+    /// [`Self::Problems`], whose text is output.
+    #[must_use]
+    pub fn error(self) -> Option<CliError> {
+        match self {
+            Self::Done(_) | Self::Problems(_) => None,
+            Self::Failed(message) => Some(CliError::new(Code::Failed, message)),
+            Self::NoSession(message) => Some(CliError::new(Code::NotSignedIn, message)),
+            Self::NeedsTerminal(message) => Some(CliError::new(Code::NeedsTerminal, message)),
+            Self::Usage(message) => Some(CliError::new(Code::Usage, message)),
+            Self::Error(error) => Some(error),
+        }
+    }
+}
+
+impl From<CliError> for Outcome {
+    fn from(error: CliError) -> Self {
+        Self::Error(error)
+    }
 }
 
 /// Prints the approval page and waits between polls.
@@ -81,11 +115,159 @@ impl LoginPrompt for Prompt {
     }
 }
 
-/// Signs in.
-pub async fn login(json: bool, requested: Option<StoreKind>, no_browser: bool) -> Outcome {
-    let selection = session::plan_store(requested);
-    let report = StoreReport::from(selection);
+/// Where `erpc login` keeps the session, and whether that was a choice to
+/// record.
+struct Destination {
+    selection: Selection,
+    vault: Option<String>,
+    /// The operator picked or named this, so it goes in the configuration.
+    record: bool,
+}
 
+/// Decides where a sign-in is kept.
+///
+/// `--store` (and `--vault`) decide without asking. Otherwise, at a
+/// terminal, the operator picks; the keychain is the default, and
+/// 1Password is offered when its app answers. Without a terminal, or with a
+/// service account token, nothing is asked: the recorded store or the
+/// default is used, because a script must never wait on a question.
+fn destination(
+    requested: Option<StoreKind>,
+    vault: Option<String>,
+    config: &crate::config::Config,
+    interactive: bool,
+) -> Result<Destination, String> {
+    let env = session::detect_environment();
+    let (selection, record) = if requested.is_some() {
+        (session::plan_store(requested, None), true)
+    } else if !interactive || env.service_account_token {
+        (session::plan_store(None, config.credential_store), false)
+    } else {
+        (pick_store(&env, config)?, true)
+    };
+
+    let is_1password = matches!(
+        selection.kind,
+        StoreKind::OnePasswordDesktop | StoreKind::OnePasswordServiceAccount
+    );
+    let vault = if !is_1password {
+        None
+    } else if vault.is_some() {
+        vault
+    } else if std::env::var_os("ERPC_CREDENTIAL_VAULT").is_some_and(|v| !v.is_empty()) {
+        // `store_for` reads it; recording it would pin a one-off override.
+        None
+    } else if interactive && selection.kind == StoreKind::OnePasswordDesktop {
+        Some(pick_vault(config.credential_vault.as_deref())?)
+    } else {
+        config.credential_vault.clone()
+    };
+    Ok(Destination {
+        selection,
+        vault,
+        record,
+    })
+}
+
+/// Asks which store to use.
+fn pick_store(
+    env: &erpc_auth::store::select::Environment,
+    config: &crate::config::Config,
+) -> Result<Selection, String> {
+    let mut kinds = Vec::new();
+    let mut labels = Vec::new();
+    if env.keychain_available {
+        kinds.push(StoreKind::OsKeychain);
+        labels.push(format!(
+            "{} (on this machine)",
+            erpc_auth::store::keychain::describe(erpc_core::i18n::Lang::En)
+        ));
+    }
+    if session::desktop_app_answers() {
+        kinds.push(StoreKind::OnePasswordDesktop);
+        labels.push(if session::signin_session() {
+            "1Password (through your `op signin` session)".to_owned()
+        } else {
+            "1Password (the desktop app asks to unlock)".to_owned()
+        });
+    }
+    if !env.keychain_available {
+        kinds.push(StoreKind::File);
+        labels.push("a file on this machine (leaves the session on disk)".to_owned());
+    }
+    let reason = erpc_auth::store::select::Reason::Configured;
+    if kinds.len() == 1 {
+        return Ok(Selection {
+            kind: kinds[0],
+            reason,
+        });
+    }
+    let default = config
+        .credential_store
+        .and_then(|kind| kinds.iter().position(|k| *k == kind))
+        .unwrap_or(0);
+    let index = crate::prompt::pick(
+        "Where should erpc keep your session?",
+        &labels,
+        Some(default),
+    )?;
+    Ok(Selection {
+        kind: kinds[index],
+        reason,
+    })
+}
+
+/// Asks which 1Password vault to use.
+fn pick_vault(recorded: Option<&str>) -> Result<String, String> {
+    let vaults = session::list_vaults()?;
+    if vaults.is_empty() {
+        return Err("the 1Password account has no vault erpc can use".to_owned());
+    }
+    let labels: Vec<String> = vaults
+        .iter()
+        .map(|v| format!("{} ({})", v.name, v.id))
+        .collect();
+    let default = recorded
+        .and_then(|id| vaults.iter().position(|v| v.id == id))
+        .or_else(|| session::personal_vault(&vaults));
+    let index = crate::prompt::pick(
+        "Which 1Password vault? (anyone who can read it can use the session)",
+        &labels,
+        default,
+    )?;
+    Ok(vaults[index].id.clone())
+}
+
+/// Everything `login` settles before the operator is sent to a browser:
+/// where erpc's files are, what was recorded, and where this session goes.
+fn prepare_login(
+    json: bool,
+    requested: Option<StoreKind>,
+    vault: Option<String>,
+) -> Result<
+    (
+        std::path::PathBuf,
+        std::path::PathBuf,
+        crate::config::Config,
+        Destination,
+    ),
+    String,
+> {
+    let state_dir = session::state_dir()?;
+    let config_path = session::config_path()?;
+    let config = crate::config::load(&config_path)?;
+    let interactive = !json && session::has_terminal();
+    let chosen = destination(requested, vault, &config, interactive)?;
+    Ok((state_dir, config_path, config, chosen))
+}
+
+/// Signs in.
+pub async fn login(
+    json: bool,
+    requested: Option<StoreKind>,
+    vault: Option<String>,
+    no_browser: bool,
+) -> Outcome {
     if no_browser || session::has_terminal() {
         // Fine: either a person is here, or they asked for the code.
     } else {
@@ -98,25 +280,26 @@ pub async fn login(json: bool, requested: Option<StoreKind>, no_browser: bool) -
     // kept anywhere should not be approved first and revoked after. That
     // covers the state directory and the store itself -- a 1Password store
     // with no vault configured, say.
-    let state_dir = match session::state_dir() {
-        Ok(dir) => dir,
+    let (state_dir, config_path, config, chosen) = match prepare_login(json, requested, vault) {
+        Ok(prepared) => prepared,
         Err(e) => return Outcome::Failed(e),
     };
+    let report = StoreReport::from(chosen.selection);
     let key = CredKey::new(session::LOGIN_AUDIENCE, session::local_account());
-    let store = match store_for(selection.kind) {
+    let store = match store_for(chosen.selection.kind, chosen.vault.as_deref()) {
         Ok(store) => store,
-        Err(e) => return Outcome::Failed(e.to_string()),
+        Err(e) => return crate::error::classify(&e).into(),
     };
     let client = match AuthClient::new() {
         Ok(client) => client,
-        Err(e) => return Outcome::Failed(e.to_string()),
+        Err(e) => return crate::error::classify(&e).into(),
     };
     let prompt = Prompt { json, no_browser };
 
     let approved =
         match auth_session::run_device_grant(&client, session::LOGIN_AUDIENCE, &prompt).await {
             Ok(approved) => approved,
-            Err(e) => return Outcome::Failed(e.to_string()),
+            Err(e) => return crate::error::classify(&e).into(),
         };
     let credential = approved_to_credential(approved, now());
 
@@ -161,12 +344,17 @@ pub async fn login(json: bool, requested: Option<StoreKind>, no_browser: bool) -
         }
     };
 
+    let (notes, moved_from) =
+        record_choice(&client, &chosen, &config, &config_path, &key, &state_dir).await;
+
     if json {
         crate::print_json(&serde_json::json!({
             "status": "signed-in",
             "account": user.label(),
             "uid": user.uid,
             "store": report,
+            "moved_from": moved_from.map(|k| k.to_string()),
+            "notes": notes,
             "previous_session_unreadable": leftover.previous_unreadable,
             "parked_file": leftover.parked.as_ref().map(|r| serde_json::json!({
                 "path": r.path.display().to_string(),
@@ -186,22 +374,115 @@ pub async fn login(json: bool, requested: Option<StoreKind>, no_browser: bool) -
         for warning in sign_in_warnings(&leftover) {
             lines.push(format!("  warning: {warning}"));
         }
+        for note in notes {
+            lines.push(format!("  {note}"));
+        }
         Outcome::Done(lines.join("\n"))
     }
 }
 
+/// After a sign-in is stored: records where it went, and signs out of the
+/// store the operator moved away from. Returns what to tell the operator,
+/// and the store moved from, if any.
+///
+/// Recorded only now, once the session is in the store: a sign-in that
+/// failed should not change where the next command looks.
+async fn record_choice(
+    client: &AuthClient,
+    chosen: &Destination,
+    config: &crate::config::Config,
+    config_path: &std::path::Path,
+    key: &CredKey,
+    state_dir: &std::path::Path,
+) -> (Vec<String>, Option<StoreKind>) {
+    let mut notes = Vec::new();
+    if chosen.record
+        && let Err(e) =
+            crate::config::save_store(config_path, chosen.selection.kind, chosen.vault.as_deref())
+    {
+        notes.push(format!(
+            "could not record the choice ({e}); pass --store {} to the next command",
+            chosen.selection.kind
+        ));
+    }
+    // The store the other commands used until now. A session left there
+    // is a second live session nobody will use, so it is signed out.
+    let previous = session::plan_store(None, config.credential_store).kind;
+    let moved_from = (chosen.record && previous != chosen.selection.kind).then_some(previous);
+    if let Some(previous) = moved_from {
+        notes.push(
+            sign_out_of_previous(
+                client,
+                previous,
+                config.credential_vault.as_deref(),
+                key,
+                state_dir,
+            )
+            .await,
+        );
+    }
+    (notes, moved_from)
+}
+
+/// Signs out of the session kept in the store the operator just moved
+/// away from, and says what happened.
+async fn sign_out_of_previous(
+    client: &AuthClient,
+    previous: StoreKind,
+    vault: Option<&str>,
+    key: &CredKey,
+    state_dir: &std::path::Path,
+) -> String {
+    let store = match store_for(previous, vault) {
+        Ok(store) => store,
+        Err(e) => {
+            return format!(
+                "a session may still be kept in the {previous} store, which could not be opened \
+                 ({e}); `erpc logout --store {previous}` removes it"
+            );
+        }
+    };
+    match auth_session::sign_out(client, store.as_ref(), key, state_dir).await {
+        Ok(Revocation::Confirmed) => {
+            format!("signed out of the session kept in the {previous} store")
+        }
+        Ok(Revocation::NotConfirmed) => format!(
+            "removed the session kept in the {previous} store; the issuer did not confirm its \
+             revocation"
+        ),
+        Ok(Revocation::NothingToRevoke) => format!("the {previous} store held no session"),
+        Err(e) => format!(
+            "could not sign out of the session kept in the {previous} store ({e}); \
+             `erpc logout --store {previous}` removes it"
+        ),
+    }
+}
+
+/// The store a command uses, and the vault for it: `--store` if given,
+/// otherwise what `erpc login` recorded, otherwise the default.
+fn planned(requested: Option<StoreKind>) -> Result<(Selection, Option<String>), String> {
+    let config = crate::config::load(&session::config_path()?)?;
+    Ok((
+        session::plan_store(requested, config.credential_store),
+        config.credential_vault,
+    ))
+}
+
 /// Signs out.
 pub async fn logout(json: bool, requested: Option<StoreKind>) -> Outcome {
-    let selection = session::plan_store(requested);
-    let store = match store_for(selection.kind) {
+    let (selection, vault) = match planned(requested) {
+        Ok(planned) => planned,
+        Err(e) => return Outcome::Failed(e),
+    };
+    let store = match store_for(selection.kind, vault.as_deref()) {
         Ok(store) => store,
-        Err(e) => return Outcome::Failed(e.to_string()),
+        Err(e) => return crate::error::classify(&e).into(),
     };
     let key = CredKey::new(session::LOGIN_AUDIENCE, session::local_account());
 
     let client = match AuthClient::new() {
         Ok(client) => client,
-        Err(e) => return Outcome::Failed(e.to_string()),
+        Err(e) => return crate::error::classify(&e).into(),
     };
     let state_dir = match session::state_dir() {
         Ok(dir) => dir,
@@ -221,21 +502,24 @@ pub async fn logout(json: bool, requested: Option<StoreKind>) -> Outcome {
                 Outcome::Done(sign_out_message(revocation).to_owned())
             }
         }
-        Err(e) => Outcome::Failed(e.to_string()),
+        Err(e) => crate::error::classify(&e).into(),
     }
 }
 
 /// Shows who the stored session belongs to.
 pub async fn whoami(json: bool, requested: Option<StoreKind>) -> Outcome {
-    let selection = session::plan_store(requested);
-    let store = match store_for(selection.kind) {
+    let (selection, vault) = match planned(requested) {
+        Ok(planned) => planned,
+        Err(e) => return Outcome::Failed(e),
+    };
+    let store = match store_for(selection.kind, vault.as_deref()) {
         Ok(store) => store,
-        Err(e) => return Outcome::Failed(e.to_string()),
+        Err(e) => return crate::error::classify(&e).into(),
     };
     let key = CredKey::new(session::LOGIN_AUDIENCE, session::local_account());
     let client = match AuthClient::new() {
         Ok(client) => client,
-        Err(e) => return Outcome::Failed(e.to_string()),
+        Err(e) => return crate::error::classify(&e).into(),
     };
 
     let state_dir = match session::state_dir() {
@@ -243,16 +527,15 @@ pub async fn whoami(json: bool, requested: Option<StoreKind>) -> Outcome {
         Err(e) => return Outcome::Failed(e),
     };
     let credential =
-        match auth_session::current_session(&client, store.as_ref(), &key, &state_dir, now()).await
-        {
+        match auth_session::current_session(&client, &store, &key, &state_dir, now()).await {
             Ok(credential) => credential,
             Err(erpc_auth::SessionError::NoSession) => {
-                return no_session(json, "not signed in");
+                return no_session("not signed in");
             }
             Err(erpc_auth::SessionError::Expired) => {
-                return no_session(json, "the session has expired or was signed out elsewhere");
+                return no_session("the session has expired or was signed out elsewhere");
             }
-            Err(e) => return Outcome::Failed(e.to_string()),
+            Err(e) => return crate::error::classify(&e).into(),
         };
 
     match erpc_api::get_user(&client, &credential.access_token).await {
@@ -275,9 +558,9 @@ pub async fn whoami(json: bool, requested: Option<StoreKind>) -> Outcome {
             }
         }
         Err(erpc_api::ApiError::Unauthorized) => {
-            no_session(json, "the session was refused by the account API")
+            no_session("the session was refused by the account API")
         }
-        Err(e) => Outcome::Failed(e.to_string()),
+        Err(e) => crate::error::classify(&e).into(),
     }
 }
 
@@ -304,28 +587,126 @@ async fn revoke_and_report(
     }
 }
 
-/// Builds the "no session" outcome in both output modes.
-fn no_session(json: bool, reason: &str) -> Outcome {
-    if json {
-        crate::print_json(&serde_json::json!({
-            "status": "no-session",
-            "reason": reason,
-            "hint": "run `erpc login`",
-        }));
-        Outcome::NoSession(String::new())
-    } else {
-        Outcome::NoSession(format!("{reason}. Run `erpc login`."))
-    }
+/// The "no session" outcome: [`crate::finish`] shows it in either output
+/// mode, with the hint to sign in.
+fn no_session(reason: &str) -> Outcome {
+    CliError::new(Code::NotSignedIn, reason).into()
 }
 
 /// Seconds since the Unix epoch.
 ///
 /// A clock before 1970 would make every session look expired, which is the
 /// safe direction, so this saturates rather than failing.
-fn now() -> i64 {
+pub fn now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+}
+
+/// The dashboard's sign-up page, in the operator's language.
+fn signup_url(locale: Option<&str>) -> &'static str {
+    if locale.is_some_and(|l| l.starts_with("ja")) {
+        "https://dashboard.erpc.global/ja/signup"
+    } else {
+        "https://dashboard.erpc.global/en/signup"
+    }
+}
+
+/// Opens the sign-up page. An account is made there, not here: erpc never
+/// sees a password.
+pub fn signup(json: bool, no_browser: bool) -> Outcome {
+    let configured = session::config_path()
+        .ok()
+        .and_then(|path| crate::config::get(&path, "locale").ok().flatten());
+    let from_env = std::env::var("LC_ALL")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .or_else(|| std::env::var("LANG").ok());
+    let url = signup_url(configured.as_deref().or(from_env.as_deref()));
+    let opened = match browser::decide(no_browser, |n| std::env::var_os(n)) {
+        Ok(()) => browser::open(url).is_ok(),
+        Err(_) => false,
+    };
+    if json {
+        crate::print_json(&serde_json::json!({ "url": url, "browser_opened": opened }));
+        return Outcome::Done(String::new());
+    }
+    let first = if opened {
+        "A browser is opening the sign-up page."
+    } else {
+        "Open the sign-up page:"
+    };
+    Outcome::Done(format!(
+        "{first}\n  {url}\nWhen your account is ready, run `erpc login`."
+    ))
+}
+
+/// What `erpc config` was asked to do.
+pub enum ConfigRequest {
+    /// Show one setting, or all of them.
+    Get(Option<String>),
+    /// Change a setting.
+    Set(String, String),
+    /// Print the file's path.
+    Path,
+    /// Write a starting file.
+    Init,
+}
+
+/// Reads or writes the configuration.
+pub fn config(json: bool, request: ConfigRequest) -> Outcome {
+    let path = match session::config_path() {
+        Ok(path) => path,
+        Err(e) => return Outcome::Failed(e),
+    };
+    let result = match request {
+        ConfigRequest::Path => Ok(if json {
+            crate::print_json(&serde_json::json!({ "path": path }));
+            String::new()
+        } else {
+            path.display().to_string()
+        }),
+        ConfigRequest::Init => crate::config::init(&path).map(|wrote| {
+            if wrote {
+                format!("Wrote {}.", path.display())
+            } else {
+                format!("{} already exists; it was left as it is.", path.display())
+            }
+        }),
+        ConfigRequest::Set(key, value) => {
+            crate::config::set(&path, &key, &value).map(|()| format!("{key} = \"{value}\""))
+        }
+        ConfigRequest::Get(Some(key)) => crate::config::get(&path, &key).map(|value| {
+            if json {
+                crate::print_json(&serde_json::json!({ key.as_str(): value }));
+                String::new()
+            } else {
+                value.unwrap_or_default()
+            }
+        }),
+        ConfigRequest::Get(None) => crate::config::all(&path).map(|pairs| {
+            if json {
+                let map: serde_json::Map<String, serde_json::Value> = pairs
+                    .into_iter()
+                    .map(|(k, v)| (k, serde_json::Value::String(v)))
+                    .collect();
+                crate::print_json(&serde_json::Value::Object(map));
+                String::new()
+            } else if pairs.is_empty() {
+                format!("No settings in {}.", path.display())
+            } else {
+                pairs
+                    .iter()
+                    .map(|(k, v)| format!("{k} = \"{v}\""))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }
+        }),
+    };
+    match result {
+        Ok(text) => Outcome::Done(text),
+        Err(e) => Outcome::Failed(e),
+    }
 }
 
 /// Reports what this machine is doing with your session.
@@ -333,13 +714,61 @@ fn now() -> i64 {
 /// Synchronous on purpose: it looks at this machine and asks nothing of
 /// the network, so it works when nothing else does.
 pub fn doctor(json: bool, requested: Option<StoreKind>) -> Outcome {
-    let selection = session::plan_store(requested);
+    let (selection, vault) = match planned(requested) {
+        Ok(planned) => planned,
+        Err(e) => return Outcome::Failed(e),
+    };
     let state_dir = match session::state_dir() {
         Ok(dir) => dir,
         Err(e) => return Outcome::Failed(e),
     };
     let on_disk = crate::doctor::secrets_on_disk(&state_dir);
-    let found = crate::doctor::findings(selection, &on_disk);
+    let mut found = crate::doctor::findings(selection, &on_disk);
+    // Which vault, for a 1Password store: the first thing to check when a
+    // session is not where the operator expected it.
+    if matches!(
+        selection.kind,
+        StoreKind::OnePasswordDesktop | StoreKind::OnePasswordServiceAccount
+    ) {
+        let overridden = std::env::var("ERPC_CREDENTIAL_VAULT")
+            .ok()
+            .filter(|v| !v.is_empty());
+        found.insert(
+            1,
+            match (overridden, vault) {
+                (Some(id), _) => crate::doctor::Finding::ok(
+                    "1Password vault",
+                    format!("{id} (from ERPC_CREDENTIAL_VAULT)"),
+                ),
+                (None, Some(id)) => crate::doctor::Finding::ok(
+                    "1Password vault",
+                    format!("{id} (chosen at `erpc login`)"),
+                ),
+                (None, None) => crate::doctor::Finding::warn(
+                    "1Password vault",
+                    "none chosen; run `erpc login` and pick one".to_owned(),
+                ),
+            },
+        );
+    }
+    // Signer key files nothing could wipe: erpc wipes those it finds when
+    // it starts, so any here are ones it could not.
+    let left = erpc_chain_solana::cli::leftovers(&state_dir);
+    if !left.is_empty() {
+        let dirs: Vec<String> = left.iter().map(|d| d.display().to_string()).collect();
+        found.push(crate::doctor::Finding::warn(
+            "Solana signer files",
+            format!(
+                "{} — left by an erpc that was stopped during a command, and they may hold keys \
+                 in cleartext. erpc could not remove them; check the permissions and delete them.",
+                dirs.join(", ")
+            ),
+        ));
+    }
+    if let Some(skills) = crate::skills::finding() {
+        found.push(skills);
+    }
+    let found = found;
     let worst = crate::doctor::worst(&found);
 
     if json {
@@ -350,6 +779,7 @@ pub fn doctor(json: bool, requested: Option<StoreKind>) -> Outcome {
                 crate::doctor::Level::Warn => "warn",
             },
             "state_dir": state_dir,
+            "config": session::config_path().ok(),
             "findings": found,
         }));
         return doctor_outcome(worst);
@@ -379,7 +809,7 @@ pub fn doctor(json: bool, requested: Option<StoreKind>) -> Outcome {
 /// say nothing to one.
 fn doctor_outcome(worst: crate::doctor::Level) -> Outcome {
     if worst == crate::doctor::Level::Warn {
-        Outcome::Failed(String::new())
+        Outcome::Problems(String::new())
     } else {
         Outcome::Done(String::new())
     }

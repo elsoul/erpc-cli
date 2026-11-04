@@ -1,0 +1,91 @@
+# `erpc worker backup` のメッセージと、`erpc worker delete` がワーカーの
+# バックアップキーについて伝えるメッセージ。
+
+by_hand = "`erpc storage keys list` でアクセスキーを一覧でき、`erpc storage keys revoke <n>` で取り消せます"
+stuck = "ダッシュボードに表示されなくなったキーを user-api が拒否し続ける場合は、[env.{env}.backup]（または 1Password アイテムの backup フィールド）を手動で削除してください"
+both = "{first}。{then}"
+nothing_changed = "何も変更していません"
+no_host_key = "env.{env} に固定されたホスト鍵がありません"
+
+[machine]
+ask_failed = "サーバーに種類を問い合わせられませんでした：{error}"
+unknown = "サーバーがマシンの種類を返しませんでした"
+
+[left]
+access_key = "アクセスキー {id}：{error}"
+no_longer_listed = "{reason}（一覧にはもうありません）"
+still_listed = "アクセスキー {id}：取り消した後も一覧に残っています"
+unchecked = "アクセスキー {id}：user-api はそのキーは存在しないと応答しましたが、確認のための一覧を読めませんでした"
+not_looked_for = "ラベル「{label}」のキーは探していません。キーを一覧表示できませんでした：{error}"
+not_revoked_label = "アクセスキー「{label}」：取り消していません：{reason}"
+not_revoked = "アクセスキー {id}：取り消していません：{reason}"
+line = "残っています：{what}"
+kept = "残していますが、アクセスキーを取り消せば無害です：{what}"
+
+[left.elsewhere]
+other = "別のサーバー上のワーカー {id} のアクセスキー {n} 個は、そちらのものなので残しています。`erpc storage keys list` で確認できます"
+
+[restic]
+list_failed = "restic が鍵を一覧表示できませんでした：{reason}"
+list_unreadable = "restic の鍵一覧を読み取れませんでした：{error}"
+its_key = "restic の鍵（{host}）：{error}"
+key = "restic の鍵 {key}（{host}）：{error}"
+no_admin = "restic の鍵（{host}）：このマシンにはアカウントのバックアップ管理キーとパスワードがありません。ここで `erpc backup init` を実行するか、バックアップを設定したマシンから削除してください"
+
+[forget]
+not_looked_for = "ラベルによるバックアップキーの検索はしていません。キーを一覧表示できませんでした：{error}"
+revoked = "バックアップのアクセスキーを取り消しました。{host} という名前のスナップショットは残ります"
+
+[custody]
+made = "アカウントのバックアップリポジトリのパスワードを作成し、{place} に保管しました。このマシン以外の場所にも控えを保管してください：\n  erpc backup password --show\nこのマシンにはアカウントのバックアップ管理キーもあるため、このマシンを乗っ取った者はバックアップを削除できます。"
+kept = "アカウントのバックアップリポジトリのパスワードを {place} に保管しました。このマシン以外の場所にも控えを保管してください：\n  erpc backup password --show\nこのマシンにはアカウントのバックアップ管理キーもあるため、このマシンを乗っ取った者はバックアップを削除できます。"
+
+[undo]
+left = "そのために作成したキーをすべては削除できていません（{reasons}）。{by_hand}"
+
+[on]
+ask = "ワーカー {id} を毎日 {at}（サーバー時刻）に、restic で暗号化して {host} として ERPC Global Storage にバックアップします。\nサーバーには、追記専用のアクセスキーと、アカウントに 1 つだけあるバックアップリポジトリ用のサーバー専用の鍵が渡されます。サーバーはスナップショットを削除できませんが、サーバーを乗っ取った者は、アカウント内のすべてのマシンのスナップショットを読むことができ、`off` の後もリポジトリの鍵を持ち続け、別のマシンの名前でスナップショットを追加でき、アカウントのストレージを使い切ってすべてのマシンのバックアップを止めることができます。サーバーのアクセスを断つのは、アクセスキーの取り消し（`off`）です。"
+install_failed = "サーバーに restic をインストールできませんでした：{error}"
+old_left = "以前の `on` が作成したキーをすべては取り消せていません（{reasons}）。新しいものは何も作成していません"
+old_partly_revoked = "{by_hand}。以前のキーの一部は取り消し済みのため、`on` が成功するまでワーカーはバックアップされない可能性があります"
+no_number = "user-api が新しいアクセスキーの番号を返しませんでした。`erpc storage keys revoke <n>` で取り消してください"
+not_in_list = "キーの一覧にありません"
+label_lost = "新しいアクセスキーのラベルが保持されませんでした。`off` にはこのラベルが必要です"
+unchecked = "新しいアクセスキーを確認できませんでした：{why}"
+not_recorded = "新しいキーを記録できませんでした（{why}）。サーバーは変更していません"
+bad_credentials = "新しい認証情報に、サーバーが受け付けない文字が含まれています"
+kept_in_item = "1Password アイテム内"
+kept_in_toml = "erpc.toml 内。変更をコミットしてください"
+done = "ワーカー {id} は毎日 {at}（サーバー時刻）から 30 分以内にバックアップされます。\n  スナップショット  {host} という名前\n  今すぐ            erpc worker backup now{scope}\n  復元              erpc backup restore latest --from-host {host} --path {source} --target <dir>\n                    （このマシンで `erpc backup init` を実行した後）\nキーの番号は [env.{env}] に記録してあります（{kept_in}）。\nリポジトリのパスワードは {place} に保管されています。このマシン以外の場所にも控えを保管してください（`erpc backup password --show`）。\n\nバックアップはワーカーの実行中にファイルをそのままコピーします。ワーカーが書き込むデータベースを整合性のとれた状態で復元するには、別途ダンプが必要な場合があります。"
+replaced = "以前のバックアップキーは取り消し済みのため、`on` が成功するまでワーカーはバックアップされません"
+
+[off]
+ask = "ワーカー {id} のバックアップを止め、バックアップキーを取り消します。スナップショットは残ります。`erpc backup prune --host {host}` で間引けます。"
+server_left = "サーバー上のタイマーと認証情報（すでに無効です）：{error}"
+unfound = "サーバーにはバックアップがありましたが、そのアクセスキー「{label}」が見つかりませんでした"
+still_recorded = "取り消したキーがまだ記録に残っています：{error}"
+summary = "ワーカー {id}：{access}、{restic}{server}。"
+server_off = "、サーバー上のバックアップを停止"
+hint = "{by_hand}。サーバーが応答するようになったら `erpc worker backup off{scope}` をもう一度実行すると残りを削除します。{stuck}"
+
+[off.access]
+other = "アクセスキー {n} 個を取り消し"
+
+[off.restic]
+other = "restic の鍵 {n} 個を削除"
+
+[status]
+off = "オフ"
+never = "サーバー起動後はまだ実行されていません"
+unknown = "結果不明"
+succeeded = "成功"
+partly = "成功（読み取れなかった一部のファイルを除く）"
+failed = "失敗（{result}、終了コード {exit}）"
+on = "オン、次回の実行 {next}\n  前回の実行 {outcome}{at}"
+at = "、実行時刻 {at}"
+line = "ワーカー {id} のバックアップ：{state}"
+
+[now]
+running = "ワーカー {id} をバックアップしています…"
+refused = "サーバーが拒否しました"
+failed = "{text}\n  サーバーのジャーナルを確認してください：journalctl -u {unit}"

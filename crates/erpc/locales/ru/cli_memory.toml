@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+"memory" = "Что erpc ai помнит о вас между разговорами"
+"memory list" = "Показать все запомненные факты с их номерами"
+"memory forget" = "Удалить один факт по номеру"
+"memory forget <id>" = "Номер факта, как его показывает `erpc memory list`"
+"memory clear" = "Удалить все факты"

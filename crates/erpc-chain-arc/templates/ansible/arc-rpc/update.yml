@@ -1,0 +1,100 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+#
+# erpc's Arc RPC node update: moves a running node to the pinned release.
+# The new release is installed and checked beside the running one; then the
+# consensus layer stops, `current` moves, and both layers start in order. If
+# the node does not come up and move, `current` goes back to the release it
+# ran, both layers start again on it, and the run fails saying so.
+---
+- import_playbook: firewall-guard.yml
+
+- name: Update an Arc RPC node
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars_files:
+    - vars.yml
+  tasks:
+    - name: Read which release is current
+      ansible.builtin.stat:
+        path: "{{ arc_opt }}/current"
+      register: arc_current
+      failed_when: not arc_current.stat.exists or not arc_current.stat.islnk
+
+    - name: Remember the release the node runs
+      ansible.builtin.set_fact:
+        arc_previous: "{{ arc_current.stat.lnk_target }}"
+
+    - name: Install the pinned release beside it
+      ansible.builtin.include_tasks: tasks/install_release.yml
+
+    - name: Say there is nothing to do
+      ansible.builtin.debug:
+        msg: The node runs {{ arc_version }} already.
+      when: arc_previous == arc_opt ~ '/' ~ arc_version
+
+    - name: Move the node to the pinned release
+      when: arc_previous != arc_opt ~ '/' ~ arc_version
+      block:
+        - name: Write the units for the new release
+          ansible.builtin.template:
+            src: "{{ arc_jinja }}/{{ item }}.j2"
+            dest: /etc/systemd/system/{{ item }}
+            owner: root
+            group: root
+            mode: "0644"
+          loop:
+            - arc-execution.service
+            - arc-consensus.service
+            - arc-snapshots.service
+
+        - name: Stop the consensus layer, then the execution layer
+          ansible.builtin.systemd_service:
+            name: "{{ item }}"
+            state: stopped
+          loop:
+            - arc-consensus
+            - arc-execution
+
+        - name: Point current at the new release
+          ansible.builtin.file:
+            src: "{{ arc_opt }}/{{ arc_version }}"
+            dest: "{{ arc_opt }}/current"
+            state: link
+            force: true
+
+        - name: Start on the new release
+          ansible.builtin.include_tasks: tasks/start.yml
+          vars:
+            arc_restart: false
+
+      rescue:
+        - name: Stop whatever started
+          ansible.builtin.systemd_service:
+            name: "{{ item }}"
+            state: stopped
+          loop:
+            - arc-consensus
+            - arc-execution
+          failed_when: false
+
+        - name: Point current back at the release the node ran
+          ansible.builtin.file:
+            src: "{{ arc_previous }}"
+            dest: "{{ arc_opt }}/current"
+            state: link
+            force: true
+
+        - name: Start again on it
+          ansible.builtin.include_tasks: tasks/start.yml
+          vars:
+            arc_restart: false
+
+        - name: Fail, saying the update was rolled back
+          ansible.builtin.fail:
+            msg: >-
+              {{ arc_version }} did not come up; the node runs
+              {{ arc_previous | basename }} again. Its logs are in
+              `erpc r --chain arc logs`.

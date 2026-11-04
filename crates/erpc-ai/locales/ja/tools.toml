@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+# ツールの実行中にコンソールに表示するラベル（ツール名ごと）。
+
+unknown = "調べています"
+run_command = "コマンドを実行しています"
+remember = "記憶しています"
+forget = "記憶から削除しています"
+secure_vps = "ログインして SSH を鍵認証のみに設定しています"
+restrict_ssh = "SSH の許可アドレスを設定しています"
+wait_until_ready = "準備ができるのを待っています（最大 5 分）"
+ask_choice = "選択を待っています"
+read_skill = "スキルを読んでいます"
+credit_balance = "クレジット残高を確認しています"
+credit_history = "クレジットの履歴を確認しています"
+card_subscriptions = "サブスクリプションを確認しています"
+rpc_usage = "RPC の利用量を確認しています"
+ai_usage = "AI プランを確認しています"
+open_dashboard = "ERPC ダッシュボードを開いています"
+my_services = "契約中のサービスを確認しています"
+server_catalog = "サーバーのカタログを確認しています"
+server_stock = "在庫を確認しています"
+plan_prices = "料金を確認しています"
+service_health = "稼働状況を確認しています"
+hourly_catalog = "時間課金の商品一覧を確認しています"
+start_hourly_product = "商品の開始を確認しています"
+end_hourly_product = "商品の終了を確認しています"
+top_up_credit = "クレジット購入を確認しています"
+create_credit_wallet = "ウォレットの作成を確認しています"

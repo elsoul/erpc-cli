@@ -1,0 +1,101 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+#
+# erpc's Solana RPC node destroy: stops the services and removes their units
+# and the firewall table with its helpers. The ledger, accounts and
+# snapshots are deleted only with `erpc_purge_data`; the mounts stay. The
+# solv user, the built clients and the node's identity stay too, so a deploy
+# sets the node up again with the same identity.
+---
+- name: Destroy a Solana RPC node
+  hosts: all
+  become: true
+  gather_facts: no
+  any_errors_fatal: true
+  vars:
+    erpc_fw_dir: /etc/erpc/solana-rpc
+    erpc_fw_marker: /run/erpc-solana-rpc-firewall.armed
+    erpc_helpers: /usr/local/lib/erpc
+  tasks:
+    - name: Require legacy firewall operations to settle before teardown
+      ansible.builtin.stat:
+        path: /run/erpc-solana-rpc-firewall.armed
+      register: legacy_firewall
+    - name: Refuse an unsettled legacy rollback
+      ansible.builtin.assert:
+        that: not legacy_firewall.stat.exists
+        fail_msg: Wait for the previous legacy firewall operation to settle before retrying destroy.
+    - name: Create guarded teardown directories
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "{{ item.mode }}"
+      loop:
+        - {path: /usr/local/lib/erpc, mode: '0755'}
+        - {path: /etc/erpc/solana-rpc, mode: '0700'}
+    - name: Install the carried teardown controller
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../rpc-firewall.py"
+        dest: /usr/local/lib/erpc/rpc-firewall.py
+        owner: root
+        group: root
+        mode: '0700'
+    - name: Fence and stop listeners before removing filtering
+      ansible.builtin.command: python3 /usr/local/lib/erpc/rpc-firewall.py solana-rpc teardown
+      changed_when: true
+
+    - name: Stop and disable the services
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        state: stopped
+        enabled: false
+      loop:
+        - solv
+        - faithful
+        - of1-index-sync.timer
+        - erpc-solana-rpc-firewall
+      failed_when: false
+
+    - name: Stop a firewall rollback still armed
+      ansible.builtin.command: systemctl stop erpc-solana-rpc-firewall-rollback.timer
+      changed_when: false
+      failed_when: false
+
+    - name: Remove the firewall table
+      ansible.builtin.command: nft delete table inet erpc_solana_rpc
+      register: erpc_fw_delete
+      changed_when: erpc_fw_delete.rc == 0
+      failed_when: false
+
+    - name: Remove what deploy put in place
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/systemd/system/solv.service
+        - /etc/systemd/system/faithful.service
+        - /etc/systemd/system/of1-index-sync.service
+        - /etc/systemd/system/of1-index-sync.timer
+        - /etc/systemd/system/erpc-solana-rpc-firewall.service
+        - "{{ erpc_fw_dir }}"
+        - "{{ erpc_fw_marker }}"
+        - "{{ erpc_helpers }}/erpc-solana-rpc-firewall-rollback.sh"
+        - "{{ erpc_helpers }}/erpc-solana-rpc-firewall-confirm.sh"
+        - /usr/local/bin/erpc-snapshot-fetch.sh
+
+    - name: Forget the removed units
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+
+    - name: Delete the chain data, keeping the mounts
+      ansible.builtin.command: find {{ item }} -mindepth 1 -delete
+      loop:
+        - /mnt/ledger
+        - /mnt/accounts
+        - /mnt/snapshot
+      register: erpc_purged
+      changed_when: true
+      failed_when: erpc_purged.rc != 0 and 'No such file' not in erpc_purged.stderr
+      when: erpc_purge_data | default(false) | bool

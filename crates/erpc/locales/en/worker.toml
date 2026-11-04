@@ -1,0 +1,86 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+# What `erpc worker` says itself: finding the app, check, init and list.
+
+[chain]
+unknown = "erpc worker has templates for {chains}"
+
+[env]
+none = "`erpc worker deploy{scope}` adds one"
+
+[find]
+no_file = "there is no {path}"
+no_cwd = "could not read the current directory: {error}"
+no_manifest = "there is no {file} in {dir} or above it"
+no_app_here = "`erpc worker init` makes an app; this directory has none"
+init_or_dir = "run `erpc worker init` to make an app, or pass --dir <app directory>"
+unknown = "erpc knows no app named {name}"
+unknown_hint = "`erpc worker list` shows the apps it knows; pass --dir <directory> for another"
+ambiguous = "more than one app is named {name}: {dirs}"
+ambiguous_hint = "pass --dir <directory> to say which"
+
+[manifest]
+fix = "fix {file} and run `erpc worker check{dir_scope}`"
+
+[check]
+ready = "{name} is ready"
+no_pubkey = "(public key not set)"
+no_server = "(no server yet)"
+in_1password = "server kept in 1Password"
+build = "{command}  → {bin} for {target}"
+no_wallet = "none; `erpc worker key new{dir_scope}` makes one"
+no_env = "none yet; `erpc worker deploy{scope}` adds one"
+env_in_1password = "{name}: server kept in 1Password (vault {vault})  service {service}"
+env = "{name}: {host}{resource}  service {service}"
+hourly = ", hourly"
+
+[check.problems]
+one = "{path}: {n} problem"
+other = "{path}: {n} problems"
+
+[init]
+what = "What to make"
+making = "Making {name} from {template}"
+at = "in {dir}"
+nothing_made = "Nothing was made"
+done = "Done"
+pick_another = "pick another --name, or --into another directory"
+funds = "This app trades with real funds once its wallet holds SOL. It comes with no warranty; fund only what you can afford to lose. Its key is never written to a file: `erpc worker key new{dir_scope}` keeps it in 1Password or the keychain."
+unlisted = "`erpc worker list` will not show it: {error}"
+bad_name = "`{name}` cannot name an app: 1 to 32 lowercase letters, digits and single hyphens, starting with a letter"
+nothing_called = "{chain} has nothing called `{asked}` to make: pick {kinds}, or the template {ids}"
+or = "or"
+no_templates = "this erpc has no {chain} templates"
+many_templates = "{chain} has more than one template; pick one with --template"
+
+[init.made]
+one = "Made {name} from {template} ({n} file)"
+other = "Made {name} from {template} ({n} files)"
+
+[init.made_in]
+one = "Made {name} from {template} in {dir} ({n} file)."
+other = "Made {name} from {template} in {dir} ({n} files)."
+
+[init.git]
+made = "It is a new git repository."
+skipped = "No git repository was made ({why})."
+failed = "no git repository was made: {why}"
+failed_drawn = "No git repository was made: {why}"
+not_installed = "git is not installed"
+inside = "it is inside a git repository already"
+
+[list]
+none = "No apps on this machine yet; `erpc worker init` makes one."
+none_drawn = "No apps on this machine yet."
+not_deployed = "not deployed"
+deployed = "deployed: {envs}"
+gone = "(no erpc.toml there any more)"
+gone_drawn = "{name}: no erpc.toml at {dir} any more"
+pruned = "Took {count} apps whose erpc.toml is gone off this list"
+prune_hint = "`erpc worker list --prune` takes the apps whose erpc.toml is gone off this list; nothing else is touched"
+invalid = "(erpc.toml has problems; `erpc worker check{dir_scope}`)"
+invalid_drawn = "{name}: erpc.toml has problems"
+in_vault = "{name}  ·  env {env} in 1Password, no app here (clone the app to take it up)"
+in_vault_heading = "In 1Password, with no app here (clone the app to take them up):"
+vault_unread = "(the worker items in vault {vault} were not listed: {error})"

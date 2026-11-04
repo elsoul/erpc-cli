@@ -1,0 +1,72 @@
+# Что erpc говорит, пока ищет, запускает, ждёт и завершает серверы ERPC
+# и линии данных, на которых работает воркер.
+
+no_session = "нет активной сессии"
+login_hint = "выполните `erpc login`"
+api_silent = "user-api не ответил: {error}"
+no_api_key = "у аккаунта нет API-ключа для общего RPC"
+no_api_key_hint = "его можно создать в панели управления ERPC"
+no_reason = "причина не указана"
+
+[vps]
+none = "у аккаунта нет VPS {id}"
+no_address = "у VPS {id} ещё нет адреса"
+not_key_only = "VPS {id} не переведён на вход только по ключу"
+bad_id = "{id} — не ID VPS"
+
+[plan]
+not_offered = "{id} сейчас не входит в тарифы {family} с почасовой оплатой"
+none = "сейчас нет тарифов {family} с почасовой оплатой"
+as_asked = "как указано"
+cheapest = "самый дешёвый"
+
+[buy]
+bad_region = "`{region}` — не регион VPS; доступны {regions}"
+buying = "Новый VPS с почасовой оплатой: {name} ({product}; {how}, €{price} в час), регион {region} ({why})"
+region_asked = "как указано"
+region_nearest = "ближайший по часовому поясу этой машины"
+not_started = "user-api не запустил его (HTTP {status}): {reason}"
+other_region_hint = "в другом регионе (--region) он может быть в наличии; `erpc worker deploy --region <name>{scope}`"
+no_id = "user-api запустил VPS, но не сообщил, какой"
+started = "VPS {id} запущен"
+
+[ready]
+waiting = "ожидание готовности VPS {id} (до пяти минут)"
+failed = "VPS {id} так и не перешёл в состояние готовности: {reason}"
+
+[end]
+not_hourly = "сервер этого окружения — не сервер ERPC с почасовой оплатой; ничего не завершено"
+ending = "Завершение почасового продукта {kind} {id}"
+failed = "user-api не завершил продукт {kind} {id}: {answer}"
+no_hourly_list = "в снимке кредитов user-api нет списка почасовых продуктов; ничего не изменено"
+
+[line]
+no_status = "erpc не умеет получать статус линий {kind}"
+no_list = "в статусе линий {kind} от user-api нет списка; ничего не изменено"
+no_region = "Unlimited RPC запускается в том же регионе ERPC, что и сервер, а регион этого сервера не записан"
+no_region_hint = "разверните приложение на ERPC VPS (`--vps <id>` или `--new-vps`)"
+buying = "Новая линия {kind} с почасовой оплатой: {name} ({product}; {how}, €{price} в час), для {ip}"
+not_started = "user-api не запустил линию {kind} (HTTP {status}): {reason}"
+made_anyway = "user-api всё же создал линию {id}, и она записана; плата может взиматься, пока её не завершат через `erpc worker delete --release-server{scope}` или в панели управления"
+no_id = "user-api запустил линию {kind}, но не сообщил, какую"
+warned = "предупреждение user-api: {warning}"
+started = "линия {kind} {id} запущена"
+no_endpoint = "линия {kind} {id} запущена, но и через минуту user-api не сообщил её эндпоинт"
+no_endpoint_hint = "за неё взимается почасовая плата, и она записана: повторный `erpc worker deploy{scope}` подхватит её, когда user-api её покажет, а `erpc worker delete --release-server{scope}` завершит её"
+bad_id = "{id} — не ID линии"
+let_in_failed = "не удалось открыть доступ к линии {id} для {ip}: {error}"
+let_in_hint = "повторите развёртывание, чтобы попробовать ещё раз; тем временем за линию взимается плата"
+not_listed = "ещё нет в списке"
+wrong_ip = "линия {kind} {id} пропускает {allowed}, а не {ip} этого сервера"
+lets_in = "линия {id} пропускает {ip}"
+lets_in_later = "линия {id} будет пропускать {ip}, когда её сервер будет настроен"
+suspended = "линия {kind} {id} приостановлена"
+suspended_hint = "причина указана в панели управления"
+waiting = "линия {id}: {status} (прошло {minutes} мин)"
+ending = "Завершение почасовой линии {kind} {id}"
+end_failed = "user-api не завершил линию {kind} {id}: {answer}"
+
+[line.not_active]
+one = "линия {kind} {id} не стала активной за {n} минуту (сейчас: {last})"
+few = "линия {kind} {id} не стала активной за {n} минуты (сейчас: {last})"
+many = "линия {kind} {id} не стала активной за {n} минут (сейчас: {last})"

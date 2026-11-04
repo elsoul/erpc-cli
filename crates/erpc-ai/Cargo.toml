@@ -14,6 +14,25 @@ authors.workspace = true
 publish = true
 
 [dependencies]
+erpc-api.workspace = true
+erpc-auth.workspace = true
+erpc-core.workspace = true
+erpc-skills.workspace = true
+erpc-wallet.workspace = true
+futures-util.workspace = true
+getrandom.workspace = true
+include_dir.workspace = true
+secrecy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+unicode-width.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["std", "process"] }
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

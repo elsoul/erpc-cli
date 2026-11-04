@@ -1,0 +1,53 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Reserve the Nitro host before firewall or provisioning mutations
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Refuse foreign ownership and insufficient capacity before host changes
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/control.py", play]
+        stdin: "{{ nitro_request | combine({'action':nitro_prepare_action}) | to_json }}"
+      changed_when: false
+
+    - name: Install host prerequisites from the operating system repository
+      ansible.builtin.apt:
+        name: [ca-certificates, python3, docker.io, iproute2]
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Create the non-login follower account
+      ansible.builtin.user:
+        name: "{{ item }}"
+        system: true
+        create_home: false
+        shell: /usr/sbin/nologin
+      loop: [erpc-nitro, erpc-nitro-upstreams]
+
+    - name: Create private data and root-controlled configuration directories
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: "{{ item.owner }}"
+        group: "{{ item.owner }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - {path: /var/lib/erpc-nitro/data, owner: erpc-nitro, mode: '0700'}
+        - {path: /var/lib/erpc-nitro/data/cache, owner: erpc-nitro, mode: '0700'}
+        - {path: /etc/erpc/nitro, owner: root, mode: '0755'}
+        - {path: /usr/local/lib/erpc, owner: root, mode: '0755'}
+
+    - name: Install reviewed ownership controller and shared L1 transport
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/{{ item.source }}"
+        dest: "/usr/local/lib/erpc/{{ item.name }}"
+        owner: root
+        group: root
+        mode: '0755'
+      loop:
+        - {source: control.py, name: nitro-control}
+        - {source: upstreams.py, name: nitro-upstreams.py}

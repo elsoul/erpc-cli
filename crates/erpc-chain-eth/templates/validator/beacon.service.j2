@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+[Unit]
+Description=ERPC validator beacon layer
+After=network-online.target erpc-eth-execution.service
+Wants=network-online.target erpc-eth-execution.service
+
+[Service]
+Type=simple
+User=ev-beacon
+ExecStart={{ eth_opt }}/current/lighthouse --network {{ ev_network }} --datadir {{ ev_root }}/beacon --logfile-max-number 0 bn --execution-endpoint http://127.0.0.1:8551 --execution-jwt /etc/erpc/eth-validator-jwt --checkpoint-sync-url {{ ev_checkpoint[ev_network] }} --http --http-address 127.0.0.1 --http-port 5052 --metrics --metrics-address 127.0.0.1 --metrics-port 5054 --disable-upnp
+Restart=on-failure
+ReadWritePaths={{ ev_root }}/beacon
+
+RestartSec=10
+KillSignal=SIGINT
+SuccessExitStatus=130 143 SIGINT SIGTERM
+TimeoutStopSec=600
+LimitNOFILE=1048576
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target

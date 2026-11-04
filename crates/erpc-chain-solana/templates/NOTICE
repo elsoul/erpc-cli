@@ -1,0 +1,6 @@
+SLV playbooks and templates
+Copyright 2021 ELSOUL LABO B.V.
+
+This directory contains files from SLV (https://github.com/ValidatorsDAO/slv),
+licensed under the Apache License, Version 2.0. See PROVENANCE.md for the exact
+files, their source version and any changes erpc made to them.

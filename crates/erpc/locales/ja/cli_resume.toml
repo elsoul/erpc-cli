@@ -1,0 +1,5 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+"resume" = "保存した会話を続ける。ID を指定しなければ一覧から選ぶ"
+"resume <id>" = "会話の ID（コンソールを閉じたときに表示される）"

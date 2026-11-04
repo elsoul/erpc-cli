@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+[Unit]
+Description=ERPC validator execution layer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ev-reth
+ExecStart={{ eth_opt }}/current/reth node --chain {{ ev_network }} --datadir {{ ev_root }}/reth --full --http --http.addr 127.0.0.1 --http.port 8545 --http.api eth,net,web3 --authrpc.addr 127.0.0.1 --authrpc.port 8551 --authrpc.jwtsecret /etc/erpc/eth-validator-jwt --metrics 127.0.0.1:9002 --ipcdisable
+Restart=on-failure
+ReadWritePaths={{ ev_root }}/reth
+
+RestartSec=10
+KillSignal=SIGINT
+SuccessExitStatus=130 143 SIGINT SIGTERM
+TimeoutStopSec=600
+LimitNOFILE=1048576
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target

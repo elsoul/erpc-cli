@@ -155,6 +155,7 @@ jobs:
           scripts/tests/check-endpoints.test.sh
           scripts/tests/build-manifest.test.sh
           scripts/tests/release-wiring.test.sh
+          scripts/tests/workflow-audit.test.sh
       - name: hygiene gate (all tracked files)
         run: scripts/check-oss-hygiene.sh
       - name: endpoint allowlist (all tracked files)
@@ -182,19 +183,21 @@ jobs:
           /bin/bash scripts/tests/check-endpoints.test.sh
           /bin/bash scripts/tests/build-manifest.test.sh
           /bin/bash scripts/tests/release-wiring.test.sh
+          /bin/bash scripts/tests/workflow-audit.test.sh
 
   zizmor:
     name: zizmor (workflow audit)
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      security-events: write
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
       - uses: zizmorcore/zizmor-action@85b2b9fb8e3325e7a23d7d0a9d7ba5ae0f999e3e # v0.7.1
         with:
+          # Fail the job on findings; this also works without paid code scanning.
+          advanced-security: false
           min-severity: medium
           persona: regular
 

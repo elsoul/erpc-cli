@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+ssh_network = "firewall.ssh_allow 中有网段 {cidr}；SSH 允许列表只接受单个地址"
+me_added = "注意：erpc 从 {me} 连接，该地址不在 firewall.ssh_allow 中；它也会被放行，以确保 erpc 仍能连入"
+no_address = "erpc 无法确定自己的连接来源地址，且 firewall.ssh_allow 为空；未做任何更改"
+no_address_hint = "请在 [env.<name>.firewall] 的 ssh_allow 中列出你的地址"
+ssh_apply_unfinished = "SSH 允许列表未能应用完成（{error}）；如果它已生效，服务器会在 {seconds} 秒内恢复之前的列表"
+ssh_locked_out = "erpc 无法通过新的 SSH 允许列表重新连入（{error}）；服务器会在 {seconds} 秒内恢复之前的列表"
+ssh_not_kept = "SSH 允许列表未被保留（{state}）"
+not_applied = "服务器防火墙未能应用：{error}；如果已应用，它会在 {seconds} 秒内自动回滚"
+not_kept = "服务器防火墙未被保留：{why}"
+no_reason = "未说明原因"
+allowing_ssh = "仅允许来自 {addresses} 的 SSH 连接"
+dropping_open = "丢弃其他所有入站连接；端口 {port} 对 {addresses} 开放"
+dropping_closed = "丢弃其他所有入站连接；应用端口保持关闭"
+ssh_network_given = "{network} 是一个网段；SSH 只允许来自单个地址"
+ssh_network_hint = "网段可用于 `--to app`"
+will_be = "防火墙将为："
+nothing_changed = "未做任何更改"
+in_force = "{worker} 的服务器防火墙已生效：SSH 允许来自 {ssh}；{app}；其余全部丢弃。"
+app_closed = "应用端口关闭"
+app_open = "端口 {port} 对 {addresses} 开放"
+
+[describe]
+nobody = "无"
+ssh = "ssh       {list}（以及 erpc 的连接来源地址）"
+app_closed = "app       关闭（erpc.toml 未设置 run.port）"
+all_else = "其他      丢弃"
+
+[list]
+title = "{host} 上的 {worker}："
+on_server = "服务器上："
+none_yet = "尚未配置 worker 防火墙；运行 `{command}` 即可应用"
+pending = "有一项更改正在等待确认，或等待自动回滚"
+
+[unchanged]
+allowed = "无需更改：{addresses} 已被允许；运行 `{command}` 会重新应用 erpc.toml"
+denied = "无需更改：{addresses} 本就未被允许；运行 `{command}` 会重新应用 erpc.toml"

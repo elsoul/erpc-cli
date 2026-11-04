@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+# What the console shows while a tool runs, by the tool's name.
+
+unknown = "Looking it up"
+run_command = "Running a command"
+remember = "Remembering this"
+forget = "Forgetting it"
+secure_vps = "Logging in to set up key-only SSH"
+restrict_ssh = "Setting the SSH allow list"
+wait_until_ready = "Waiting for it to be ready (up to 5 minutes)"
+ask_choice = "Asking you"
+read_skill = "Reading a skill"
+credit_balance = "Reading the credit balance"
+credit_history = "Reading the credit history"
+card_subscriptions = "Reading the subscriptions"
+rpc_usage = "Reading the RPC usage"
+ai_usage = "Reading the AI plan"
+open_dashboard = "Opening the ERPC dashboard"
+my_services = "Reading your services"
+server_catalog = "Reading the server catalogue"
+server_stock = "Checking the stock"
+plan_prices = "Reading the prices"
+service_health = "Reading the service health"
+hourly_catalog = "Reading the hourly catalogue"
+start_hourly_product = "Asking to start a product"
+end_hourly_product = "Asking to end a product"
+top_up_credit = "Asking to buy credit"
+create_credit_wallet = "Asking to make a wallet"

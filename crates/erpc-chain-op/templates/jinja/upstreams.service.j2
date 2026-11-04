@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+[Unit]
+Description=ERPC {{ op_family }} concealed L1 transport
+Requires=erpc-{{ op_family }}-firewall.service
+After=network-online.target erpc-{{ op_family }}-firewall.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+[Service]
+Type=exec
+User={{ op_proxy_user }}
+Group={{ op_proxy_user }}
+UMask=0077
+ExecStartPre=+/usr/bin/python3 /usr/local/lib/erpc/rollup_control.py guard upstreams {{ op_owner }} {{ op_family }} {{ op_network }} {{ op_history }}
+LoadCredentialEncrypted=l1-upstreams:/etc/credstore.encrypted/erpc-{{ op_family }}-l1-upstreams
+ExecStart=/usr/bin/python3 /usr/local/lib/erpc/rollup_upstreams.py {{ op_l1 }}
+Restart=on-failure
+RestartSec=30
+LimitCORE=0
+MemorySwapMax=0
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+[Install]
+WantedBy=multi-user.target

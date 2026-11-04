@@ -1,0 +1,18 @@
+[Unit]
+Description=ERPC restricted Avalanche API gateway
+After=avalanchego.service erpc-avax-firewall.service
+Requires=avalanchego.service
+[Service]
+User=avalanchego
+Group=avalanchego
+RuntimeDirectory=avax-proxy
+ExecStartPre=/usr/sbin/nginx -t -c /etc/avalanchego/proxy.conf
+ExecStart=/usr/sbin/nginx -c /etc/avalanchego/proxy.conf -g "daemon off;"
+Restart=on-failure
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/run/avax-proxy
+[Install]
+WantedBy=multi-user.target

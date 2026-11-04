@@ -1,0 +1,180 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Prepare or deploy an owned Bitcoin RPC node
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    btc_root: /var/lib/erpc-bitcoin
+    btc_opt: /opt/erpc-bitcoin
+    btc_release: "{{ btc_opt }}/releases/{{ btc_version }}-{{ btc_platform }}"
+  tasks:
+    # This carried helper runs BEFORE package/config/service mutations. A failed
+    # cross-network init cannot replace the old owner's installed controller.
+    - name: Check or reserve the immutable remote host contract
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/control.py"]
+        stdin: "{{ btc_request | combine({'action': 'prepare'}) | to_json }}"
+      changed_when: false
+
+    - name: Install host prerequisites
+      ansible.builtin.apt:
+        name: [ca-certificates, gnupg, python3, tar]
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Create the non-login Bitcoin service account
+      ansible.builtin.user:
+        name: bitcoin
+        system: true
+        create_home: false
+        shell: /usr/sbin/nologin
+
+    - name: Create isolated data and release directories
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: "{{ item.owner }}"
+        group: "{{ item.owner }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - { path: "{{ btc_root }}/data", owner: bitcoin, mode: '0700' }
+        - { path: "{{ btc_opt }}/releases", owner: root, mode: '0755' }
+        - { path: /etc/erpc, owner: root, mode: '0755' }
+        - { path: /usr/local/lib/erpc, owner: root, mode: '0755' }
+
+    - name: Install the ownership-checking controller
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/control.py"
+        dest: /usr/local/lib/erpc/bitcoin-control
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Install and start the selected release
+      when: btc_phase != 'init'
+      block:
+        - name: Stop the owned node and persist the desired installation
+          ansible.builtin.command:
+            argv: [python3, /usr/local/lib/erpc/bitcoin-control]
+            stdin: "{{ btc_request | combine({'action': 'begin-install'}) | to_json }}"
+          changed_when: true
+
+        - name: Authenticate both manifest signatures and exact selected archive
+          ansible.builtin.command:
+            argv:
+              - python3
+              - "{{ playbook_dir }}/verify.py"
+              - "{{ playbook_dir }}/SHA256SUMS"
+              - "{{ playbook_dir }}/SHA256SUMS.asc"
+              - "{{ playbook_dir }}/../gpg"
+              - "{{ btc_archive }}"
+              - "{{ btc_sha256 }}"
+          changed_when: false
+
+        - name: Download the archive with its authenticated pinned digest
+          ansible.builtin.get_url:
+            url: "{{ btc_archive_url }}"
+            dest: "{{ btc_opt }}/{{ btc_archive }}"
+            checksum: "sha256:{{ btc_sha256 }}"
+            owner: root
+            group: root
+            mode: '0600'
+
+        - name: Rehash the complete archive before any extraction or execution
+          ansible.builtin.command:
+            argv: [python3, "{{ playbook_dir }}/verify.py", archive, "{{ btc_opt }}/{{ btc_archive }}", "{{ btc_sha256 }}"]
+          changed_when: false
+
+        - name: Create the version-specific release directory
+          ansible.builtin.file:
+            path: "{{ btc_release }}"
+            state: directory
+            owner: root
+            group: root
+            mode: '0755'
+
+        - name: Extract only the daemon and local RPC client
+          ansible.builtin.command:
+            argv:
+              - tar
+              - -xzf
+              - "{{ btc_opt }}/{{ btc_archive }}"
+              - --no-same-owner
+              - --no-same-permissions
+              - --strip-components=1
+              - -C
+              - "{{ btc_release }}"
+              - "bitcoin-{{ btc_version }}/bin/bitcoind"
+              - "bitcoin-{{ btc_version }}/bin/bitcoin-cli"
+          changed_when: true
+
+        - name: Restrict executable ownership and clear special mode bits
+          ansible.builtin.file:
+            path: "{{ btc_release }}/bin/{{ item }}"
+            owner: root
+            group: root
+            mode: '0755'
+          loop: [bitcoind, bitcoin-cli]
+
+        - name: Check the installed daemon identifies the selected version
+          ansible.builtin.command:
+            argv: ["{{ btc_release }}/bin/bitcoind", --version]
+          register: btc_binary
+          changed_when: false
+          failed_when: btc_binary.rc != 0 or ('Bitcoin Core version v' ~ btc_version) not in btc_binary.stdout
+
+        - name: Record the authenticated release identity
+          ansible.builtin.copy:
+            content: "{{ btc_request.pin | to_json }}"
+            dest: "{{ btc_release }}/verified.json"
+            owner: root
+            group: root
+            mode: '0644'
+
+        - name: Write cookie-authenticated loopback-only configuration before enabling service
+          ansible.builtin.copy:
+            content: "{{ btc_config }}"
+            dest: /etc/erpc/bitcoin.conf
+            owner: root
+            group: bitcoin
+            mode: '0640'
+
+        - name: Select the verified release without automatic database rollback
+          ansible.builtin.file:
+            src: "{{ btc_release }}"
+            dest: "{{ btc_opt }}/current"
+            state: link
+            force: true
+
+        - name: Install the owned hardened service with a reboot guard
+          ansible.builtin.copy:
+            src: "{{ playbook_dir }}/erpc-bitcoin.service"
+            dest: /etc/systemd/system/erpc-bitcoin.service
+            owner: root
+            group: root
+            mode: '0644'
+
+        - name: End the durable installation fence
+          ansible.builtin.command:
+            argv: [python3, /usr/local/lib/erpc/bitcoin-control]
+            stdin: "{{ btc_request | combine({'action': 'finish-install'}) | to_json }}"
+          changed_when: true
+
+        - name: Reload service definitions
+          ansible.builtin.systemd_service:
+            daemon_reload: true
+
+        - name: Start through the same owner and network guard used by ongoing operations
+          ansible.builtin.command:
+            argv: [python3, /usr/local/lib/erpc/bitcoin-control]
+            stdin: "{{ btc_request | combine({'action': 'start'}) | to_json }}"
+          changed_when: true
+
+        - name: Remove the verified download archive
+          ansible.builtin.file:
+            path: "{{ btc_opt }}/{{ btc_archive }}"
+            state: absent

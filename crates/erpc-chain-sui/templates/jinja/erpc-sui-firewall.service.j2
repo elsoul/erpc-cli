@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+[Unit]
+Description=Confirmed Sui node firewall
+After=network-pre.target
+Before=sui-node.service sui-bootstrap.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/lib/erpc/erpc-sui-control.py load-firewall {{ sui_network }} {{ sui_role }} {{ sui_genesis_sha256 }}
+# Filtering remains on service stop. Listeners bind their lifecycle to this unit.
+
+[Install]
+WantedBy=multi-user.target

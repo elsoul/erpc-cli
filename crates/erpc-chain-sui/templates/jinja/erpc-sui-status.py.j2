@@ -1,0 +1,67 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+"""Observe local readiness; HTTP success alone never counts as gRPC success."""
+import pathlib
+import re
+import subprocess
+import tempfile
+import time
+import urllib.request
+
+
+def metrics():
+    try:
+        with urllib.request.urlopen('http://127.0.0.1:9184/metrics', timeout=5) as response:
+            text = response.read(8 * 1024 * 1024).decode()
+    except (OSError, UnicodeError):
+        return {}
+    result = {}
+    for key in ['highest_synced_checkpoint', 'last_executed_checkpoint', 'last_executed_checkpoint_timestamp_ms']:
+        match = re.search(r'^' + key + r'(?:\{[^\n]*\})? ([0-9]+)(?:\.0+)?$', text, re.M)
+        if match:
+            result[key] = match.group(1)
+    chain = re.search(r'^uptime\{[^\n]*chain_identifier="([a-f0-9]{8})"', text, re.M)
+    if chain:
+        result['chain_id'] = chain.group(1)
+    return result
+
+
+def grpc():
+    with tempfile.TemporaryDirectory(prefix='erpc-sui-probe-') as directory:
+        header = pathlib.Path(directory) / 'headers'
+        body = pathlib.Path(directory) / 'body'
+        try:
+            result = subprocess.run([
+                'curl', '--silent', '--show-error', '--max-time', '10',
+                '--http2-prior-knowledge', '-D', str(header), '-o', str(body),
+                '-H', 'content-type: application/grpc', '-H', 'te: trailers',
+                '--data-binary', '@-',
+                'http://127.0.0.1:9000/sui.rpc.v2.LedgerService/GetCheckpoint',
+            ], input=bytes(5), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            return result.returncode == 0 and body.stat().st_size > 5 and re.search(
+                r'^grpc-status:\s*0\s*$', header.read_text(), re.M | re.I) is not None
+        except OSError:
+            return False
+
+
+def main():
+    service = subprocess.run(['systemctl', 'is-active', 'sui-node'], capture_output=True, text=True, check=False)
+    print('service=' + service.stdout.strip())
+    first = metrics()
+    time.sleep(3)
+    second = metrics()
+    print('chain_id=' + second.get('chain_id', ''))
+    print('synced=' + second.get('highest_synced_checkpoint', ''))
+    print('executed=' + first.get('last_executed_checkpoint', ''))
+    print('later_executed=' + second.get('last_executed_checkpoint', ''))
+    stamp = int(second.get('last_executed_checkpoint_timestamp_ms', '0'))
+    age = time.time() - stamp / 1000
+    print('checkpoint_age_seconds=' + (str(int(age)) if stamp > 0 and age >= 0 else ''))
+    print('grpc=' + ('ok' if grpc() else 'unavailable'))
+    current = pathlib.Path('/opt/sui/current')
+    print('release=' + (current.resolve().name if current.is_symlink() else ''))
+
+
+if __name__ == '__main__':
+    main()

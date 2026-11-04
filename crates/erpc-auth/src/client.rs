@@ -280,6 +280,308 @@ impl AuthClient {
         let text = response.text().await.unwrap_or_default();
         Ok((status, text))
     }
+
+    /// POSTs `body` as JSON with the access token and returns the status and
+    /// body, with `idempotency_key` as the `idempotency-key` header when
+    /// given: a route that spends money takes one, and the same key sent
+    /// again is the same purchase, not a second one.
+    ///
+    /// The same allowlist check as [`Self::get_with_token`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HttpError::Allowlist`] when `url` is not a destination
+    /// this audience's token may go to, and [`HttpError::Transport`] when
+    /// the request fails.
+    pub async fn post_with_token(
+        &self,
+        audience: Audience,
+        url: &str,
+        access_token: &SecretString,
+        body: Vec<u8>,
+        idempotency_key: Option<&str>,
+    ) -> Result<(u16, String), HttpError> {
+        self.send_with_token(
+            reqwest::Method::POST,
+            audience,
+            url,
+            access_token,
+            body,
+            idempotency_key,
+        )
+        .await
+    }
+
+    /// Sends `body` as JSON in a PATCH with the access token and returns the status
+    /// and body.
+    ///
+    /// The same allowlist check as [`Self::get_with_token`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::post_with_token`].
+    pub async fn patch_with_token(
+        &self,
+        audience: Audience,
+        url: &str,
+        access_token: &SecretString,
+        body: Vec<u8>,
+    ) -> Result<(u16, String), HttpError> {
+        self.send_with_token(
+            reqwest::Method::PATCH,
+            audience,
+            url,
+            access_token,
+            body,
+            None,
+        )
+        .await
+    }
+
+    async fn send_with_token(
+        &self,
+        method: reqwest::Method,
+        audience: Audience,
+        url: &str,
+        access_token: &SecretString,
+        body: Vec<u8>,
+        idempotency_key: Option<&str>,
+    ) -> Result<(u16, String), HttpError> {
+        allowlist::ensure_token_destination(audience, url)?;
+        let host = allowlist::destinations(audience)
+            .first()
+            .copied()
+            .unwrap_or_else(|| audience.issuer_host());
+        let mut request = self
+            .inner
+            .request(method, url)
+            .bearer_auth(access_token.expose_secret())
+            .header("content-type", "application/json")
+            .body(body);
+        if let Some(key) = idempotency_key {
+            request = request.header("idempotency-key", key);
+        }
+        let response = request.send().await.map_err(|e| HttpError::Transport {
+            host,
+            reason: e.to_string(),
+        })?;
+        let status = response.status().as_u16();
+        let text = response.text().await.unwrap_or_default();
+        Ok((status, text))
+    }
+
+    /// POSTs `body` as raw bytes with the access token, allowing `timeout`
+    /// for the whole request, and returns the status and body. For a file
+    /// being uploaded a part at a time: a part is too large for
+    /// [`REQUEST_TIMEOUT`] on a slow link.
+    ///
+    /// The same allowlist check as [`Self::get_with_token`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HttpError::Allowlist`] when `url` is not a destination
+    /// this audience's token may go to, and [`HttpError::Transport`] when
+    /// the request fails.
+    pub async fn post_bytes_with_token(
+        &self,
+        audience: Audience,
+        url: &str,
+        access_token: &SecretString,
+        body: Vec<u8>,
+        timeout: Duration,
+    ) -> Result<(u16, String), HttpError> {
+        allowlist::ensure_token_destination(audience, url)?;
+        let host = allowlist::destinations(audience)
+            .first()
+            .copied()
+            .unwrap_or_else(|| audience.issuer_host());
+        let response = self
+            .inner
+            .post(url)
+            .bearer_auth(access_token.expose_secret())
+            .header("content-type", "application/octet-stream")
+            .timeout(timeout)
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| HttpError::Transport {
+                host,
+                reason: e.to_string(),
+            })?;
+        let status = response.status().as_u16();
+        let text = response.text().await.unwrap_or_default();
+        Ok((status, text))
+    }
+
+    /// Sends an authenticated GET and hands back the reply to be read as it
+    /// arrives, from byte `from` on when given (a `Range` request), allowing
+    /// `timeout` for the whole transfer. For a file being downloaded.
+    ///
+    /// The same allowlist check as [`Self::get_with_token`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HttpError::Allowlist`] when `url` is not a destination
+    /// this audience's token may go to, and [`HttpError::Transport`] when
+    /// the request fails.
+    pub async fn get_streaming(
+        &self,
+        audience: Audience,
+        url: &str,
+        access_token: &SecretString,
+        from: Option<u64>,
+        timeout: Duration,
+    ) -> Result<Streamed, HttpError> {
+        allowlist::ensure_token_destination(audience, url)?;
+        let host = allowlist::destinations(audience)
+            .first()
+            .copied()
+            .unwrap_or_else(|| audience.issuer_host());
+        let mut request = self
+            .inner
+            .get(url)
+            .bearer_auth(access_token.expose_secret())
+            .timeout(timeout);
+        if let Some(from) = from {
+            request = request.header("range", format!("bytes={from}-"));
+        }
+        let response = request.send().await.map_err(|e| HttpError::Transport {
+            host,
+            reason: e.to_string(),
+        })?;
+        Ok(Streamed {
+            status: response.status().as_u16(),
+            response,
+        })
+    }
+
+    /// Sends a DELETE with the access token, and `body` as JSON when given,
+    /// and returns the status and body.
+    ///
+    /// The same allowlist check as [`Self::get_with_token`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HttpError::Allowlist`] when `url` is not a destination
+    /// this audience's token may go to, and [`HttpError::Transport`] when
+    /// the request fails.
+    pub async fn delete_with_token(
+        &self,
+        audience: Audience,
+        url: &str,
+        access_token: &SecretString,
+        body: Option<Vec<u8>>,
+    ) -> Result<(u16, String), HttpError> {
+        allowlist::ensure_token_destination(audience, url)?;
+        let host = allowlist::destinations(audience)
+            .first()
+            .copied()
+            .unwrap_or_else(|| audience.issuer_host());
+        let mut request = self
+            .inner
+            .delete(url)
+            .bearer_auth(access_token.expose_secret());
+        if let Some(body) = body {
+            request = request
+                .header("content-type", "application/json")
+                .body(body);
+        }
+        let response = request.send().await.map_err(|e| HttpError::Transport {
+            host,
+            reason: e.to_string(),
+        })?;
+        let status = response.status().as_u16();
+        let text = response.text().await.unwrap_or_default();
+        Ok((status, text))
+    }
+
+    /// POSTs `body` as JSON with the access token, and hands back the reply
+    /// to be read as it arrives.
+    ///
+    /// The same allowlist check as [`Self::get_with_token`]. The usual
+    /// request timeout is replaced by [`STREAM_TIMEOUT`], because a
+    /// streamed answer can take minutes to finish.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HttpError::Allowlist`] when `url` is not a destination
+    /// this audience's token may go to, and [`HttpError::Transport`] when
+    /// the request fails.
+    pub async fn post_json_streaming(
+        &self,
+        audience: Audience,
+        url: &str,
+        access_token: &SecretString,
+        body: Vec<u8>,
+    ) -> Result<Streamed, HttpError> {
+        allowlist::ensure_token_destination(audience, url)?;
+        let host = allowlist::destinations(audience)
+            .first()
+            .copied()
+            .unwrap_or_else(|| audience.issuer_host());
+        let response = self
+            .inner
+            .post(url)
+            .bearer_auth(access_token.expose_secret())
+            .header("content-type", "application/json")
+            .timeout(STREAM_TIMEOUT)
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| HttpError::Transport {
+                host,
+                reason: e.to_string(),
+            })?;
+        Ok(Streamed {
+            status: response.status().as_u16(),
+            response,
+        })
+    }
+}
+
+/// How long a streamed reply may take, start to finish.
+pub const STREAM_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// A reply being read as it arrives.
+pub struct Streamed {
+    /// The HTTP status.
+    pub status: u16,
+    response: reqwest::Response,
+}
+
+impl Streamed {
+    /// The next piece of the body, or `None` at the end.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the connection fails mid-reply.
+    pub async fn next_chunk(&mut self) -> Result<Option<Vec<u8>>, String> {
+        self.response
+            .chunk()
+            .await
+            .map(|c| c.map(|b| b.to_vec()))
+            .map_err(|e| e.to_string())
+    }
+
+    /// The length the server says the body has, when it says.
+    #[must_use]
+    pub fn content_length(&self) -> Option<u64> {
+        self.response.content_length()
+    }
+
+    /// A header of the reply, when it is there and is text.
+    #[must_use]
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.response
+            .headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+    }
+
+    /// The rest of the body as text, for an error reply.
+    pub async fn text(self) -> String {
+        self.response.text().await.unwrap_or_default()
+    }
 }
 
 /// The device authorization reply, as RFC 8628 defines it.

@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+"memory" = "What erpc ai remembers about you between conversations"
+"memory list" = "Show every remembered fact, with its number"
+"memory forget" = "Delete one fact, by its number"
+"memory forget <id>" = "The fact's number, as `erpc memory list` shows it"
+"memory clear" = "Delete every fact"

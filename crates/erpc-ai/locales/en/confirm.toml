@@ -1,0 +1,85 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+# What erpc ai shows before a tool spends, ends or changes something: the
+# person reads it and says yes or no, so it must say as plainly as English
+# what is paid, what cannot be undone and what is given access.
+
+[label]
+product = "Product"
+price = "Price"
+setting = "Setting"
+credit = "Credit"
+lasts = "Lasts"
+price_now = "Price now"
+address = "Address"
+vault = "Vault"
+why = "Why"
+key = "Key"
+credits = "Credits"
+subtotal = "Subtotal"
+vat = "VAT"
+total = "Total"
+from = "From"
+to = "To"
+network = "Network"
+valid_until = "Quote valid until"
+server = "Server"
+host_key = "Host key"
+your_key = "Your key"
+changes = "Changes"
+allowed = "Allowed"
+yours_now = "Yours now"
+safety = "Safety"
+note = "Note"
+script = "Shell script"
+command = "Command"
+folder = "Folder"
+ends = "Until"
+
+[start]
+title = "Start {product} hourly? It is charged until it is ended."
+price = "{hourly} per hour ({daily} a day), from ERPC Credit"
+lasts = "about {hours} hours at {rate} per hour with everything running"
+
+[end]
+title = "End {product}? It stops, and stops being charged; this cannot be undone."
+price = "{hourly} per hour"
+
+[wallet]
+found_title = "Use your ERPC wallet that is already in 1Password?"
+new_title = "Make a new Base wallet for buying ERPC Credit?"
+vault = "1Password vault {vault}"
+ai_may_pay = "may ask to pay from it; every payment still asks you"
+ai_may_not = "may not use it"
+one_wallet = "erpc keeps one wallet, so your EURC stays in one place"
+key = "made on this machine, kept only in 1Password (never on disk)"
+
+[top_up]
+vat = "{amount} EURC (rate {rate})"
+to = "{to} (ERPC treasury)"
+network = "Base, EURC; gas paid by ERPC"
+
+[top_up.title]
+one = "Buy {n} ERPC Credit for {total} EURC from your wallet?"
+other = "Buy {n} ERPC Credits for {total} EURC from your wallet?"
+
+[secure]
+title = "Log in to {ip} for you, add your key and turn password logins off?"
+changes = "your key is added; password logins are turned off for good; if sudo asks for a password, the login user gets sudo without one"
+
+[ssh_open]
+title = "Allow SSH to {ip} from every address again?"
+
+[ssh_only]
+title = "Allow SSH to {ip} from these addresses only?"
+safety = "undone by itself unless erpc gets back in within {seconds} s"
+note = "if your address changes, SSH is refused until it is allowed again"
+
+[command]
+title = "Run a command on this computer"
+
+[every_command]
+title = "Allow every command until erpc ai ends? Commands and shell scripts will run on this computer without asking."
+ends = "when erpc ai ends, or a new conversation is started (/new or /clear)"
+note = "what a command prints goes to ERPC AI, and nothing asks first: a command can print a key file or a password"

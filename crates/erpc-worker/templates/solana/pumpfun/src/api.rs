@@ -1,0 +1,834 @@
+use crate::state::{AppState, TradeAction, TradeLog};
+use crate::i18n;
+use crate::webhook::notify_discord;
+use axum::{
+    extract::{Path, Query, Request, State},
+    http as web,
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
+    routing::{get, post, put},
+    Json, Router,
+};
+use log::warn;
+use web::{HeaderMap, StatusCode};
+use scalar_api_reference::axum::router as scalar_router;
+use serde::{Deserialize, Serialize};
+use solana_rpc_client::nonblocking::rpc_client::RpcClient;
+use solana_sdk::pubkey::Pubkey;
+use solana_sdk::signer::Signer;
+use std::str::FromStr;
+use std::sync::Arc;
+use tokio::sync::RwLock;
+use utoipa::OpenApi;
+
+pub type SharedState = Arc<RwLock<AppState>>;
+
+#[derive(Clone)]
+pub struct ApiContext {
+    pub state: SharedState,
+    pub rpc_client: Arc<RpcClient>,
+    pub api_token: String,
+}
+
+// ─── OpenAPI spec ────────────────────────────────────────────────────────────
+
+#[derive(OpenApi)]
+#[openapi(
+    info(
+        title = "Trade App — PumpSwap Auto-Trading Bot",
+        version = "1.0.0",
+        description = "API for controlling the PumpSwap auto-trading bot via Geyser gRPC."
+    ),
+    paths(
+        get_config,
+        put_config,
+        post_trade_start,
+        post_trade_stop,
+        get_trade_status,
+        get_logs,
+        get_trade_history,
+        get_trade_by_id,
+        get_profit,
+        put_watch_address,
+        get_wallet,
+        post_grpc_start,
+        post_grpc_stop,
+    ),
+    components(schemas(
+        PartialTradeConfig,
+        StartResponse,
+        StatusResponse,
+        WatchAddressBody,
+        WalletResponse,
+        TradeHistoryQuery,
+        TradeHistoryResponse,
+        ProfitPair,
+        ProfitResponse,
+    ))
+)]
+struct ApiDoc;
+
+// ─── Router ──────────────────────────────────────────────────────────────────
+
+pub fn build_router(
+    state: SharedState,
+    rpc_client: Arc<RpcClient>,
+    api_token: String,
+) -> Router {
+    let ctx = ApiContext {
+        state,
+        rpc_client,
+        api_token,
+    };
+
+    // OpenAPI JSON endpoint + Scalar docs at /docs
+    let openapi_json = ApiDoc::openapi()
+        .to_pretty_json()
+        .expect("valid openapi json");
+    let scalar_config = serde_json::json!({
+        "spec": { "content": openapi_json },
+    });
+
+    let api_router = Router::new()
+        .route("/api/config", get(get_config))
+        .route("/api/config", put(put_config))
+        .route("/api/trade/start", post(post_trade_start))
+        .route("/api/trade/stop", post(post_trade_stop))
+        .route("/api/trade/status", get(get_trade_status))
+        .route("/api/logs", get(get_logs))
+        .route("/api/trades/history", get(get_trade_history))
+        .route("/api/trades/profit", get(get_profit))
+        .route("/api/trades/{id}", get(get_trade_by_id))
+        .route("/api/watch-address", put(put_watch_address))
+        .route("/api/wallet", get(get_wallet))
+        .route("/api/grpc/start", post(post_grpc_start))
+        .route("/api/grpc/stop", post(post_grpc_stop))
+        .route(
+            "/openapi.json",
+            get(move || {
+                let json = ApiDoc::openapi()
+                    .to_pretty_json()
+                    .expect("valid openapi json");
+                async move { (StatusCode::OK, [("content-type", "application/json")], json) }
+            }),
+        )
+        .route_layer(middleware::from_fn_with_state(ctx.clone(), auth_middleware))
+        .with_state(ctx);
+
+    // No CORS layer: the API is for erpc and scripts, not for pages in a
+    // browser, so a browser refuses another origin's request to read it.
+    Router::new()
+        .route("/healthz", get(healthz))
+        .merge(scalar_router("/docs", &scalar_config))
+        .merge(api_router)
+}
+
+/// Whether the app is up, for erpc's health check. Says nothing else, so it
+/// needs no token.
+async fn healthz() -> impl IntoResponse {
+    (StatusCode::OK, "ok")
+}
+
+/// Bearer token middleware: every request carries API_TOKEN.
+async fn auth_middleware(
+    State(ctx): State<ApiContext>,
+    headers: HeaderMap,
+    request: Request,
+    next: Next,
+) -> Response {
+    let auth_header = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let provided = auth_header.strip_prefix("Bearer ").unwrap_or("");
+    if !same_token(provided.as_bytes(), ctx.api_token.as_bytes()) {
+        return (StatusCode::UNAUTHORIZED, "Invalid or missing API token").into_response();
+    }
+    next.run(request).await
+}
+
+/// Compares two tokens in time that does not depend on where they differ.
+fn same_token(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+// ─── Schemas ─────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct PartialTradeConfig {
+    pub buy_amount_lamports: Option<u64>,
+    pub sell_multiplier: Option<f64>,
+    pub slippage_bps: Option<u64>,
+    pub max_positions: Option<usize>,
+    pub min_pool_sol_lamports: Option<u64>,
+    pub sell_timeout_secs: Option<u64>,
+    pub exit_pool_sol_lamports: Option<u64>,
+    pub auto_loop: Option<bool>,
+    pub warmup_secs: Option<u64>,
+    pub creator_window_secs: Option<u64>,
+    pub creator_max_pools: Option<usize>,
+    /// Replaces the list; each one listed is banned at once.
+    pub banned_creators: Option<Vec<String>>,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct StartResponse {
+    started: bool,
+    already_running: bool,
+    message: String,
+    wallet_pubkey: Option<String>,
+    balance_sol: Option<f64>,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct StatusResponse {
+    running: bool,
+    /// Positions are sold, nothing is bought: started with
+    /// `?mode=sell_only`, or paused after a position was given up.
+    sell_only: bool,
+    grpc_streaming: bool,
+    active_positions: usize,
+    wallet_balance: Option<f64>,
+    phase: String,
+}
+
+#[derive(Deserialize, utoipa::ToSchema)]
+pub struct WatchAddressBody {
+    pub address: String,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct WalletResponse {
+    pub pubkey: Option<String>,
+    pub balance_sol: Option<f64>,
+    pub message: String,
+}
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct LogsQuery {
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct TradeHistoryQuery {
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+    /// Filter by action: "Buy" or "Sell"
+    pub action: Option<String>,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct TradeHistoryResponse {
+    pub trades: Vec<serde_json::Value>,
+    pub total: usize,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct ProfitPair {
+    pub pool: String,
+    pub base_mint: String,
+    pub buy_sol: f64,
+    pub sell_sol: f64,
+    pub profit_sol: f64,
+    pub profit_pct: f64,
+    pub buy_tx: Option<String>,
+    pub sell_tx: Option<String>,
+    pub buy_time: String,
+    pub sell_time: String,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct ProfitResponse {
+    pub pairs: Vec<ProfitPair>,
+    pub total_profit_sol: f64,
+    pub total_buys: usize,
+    pub total_sells: usize,
+}
+
+// ─── Handlers ────────────────────────────────────────────────────────────────
+
+/// Get the current trade configuration.
+#[utoipa::path(get, path = "/api/config", responses((status = 200, description = "Current trade configuration")), tag = "Config")]
+async fn get_config(State(ctx): State<ApiContext>) -> impl IntoResponse {
+    let s = ctx.state.read().await;
+    Json(s.config.clone())
+}
+
+/// Update trade configuration (partial update). A configuration that would
+/// trade badly is refused with 400 and changes nothing.
+#[utoipa::path(put, path = "/api/config", request_body = PartialTradeConfig, responses((status = 200, description = "Updated trade configuration"), (status = 400, description = "Refused, with the reason")), tag = "Config")]
+async fn put_config(
+    State(ctx): State<ApiContext>,
+    Json(body): Json<PartialTradeConfig>,
+) -> Response {
+    let mut s = ctx.state.write().await;
+    let mut next = s.config.clone();
+    if let Some(v) = body.buy_amount_lamports {
+        next.buy_amount_lamports = v;
+    }
+    if let Some(v) = body.sell_multiplier {
+        next.sell_multiplier = v;
+    }
+    if let Some(v) = body.slippage_bps {
+        next.slippage_bps = v;
+    }
+    if let Some(v) = body.max_positions {
+        next.max_positions = v;
+    }
+    if let Some(v) = body.min_pool_sol_lamports {
+        next.min_pool_sol_lamports = v;
+    }
+    if let Some(v) = body.sell_timeout_secs {
+        next.sell_timeout_secs = v;
+    }
+    if let Some(v) = body.exit_pool_sol_lamports {
+        next.exit_pool_sol_lamports = v;
+    }
+    if let Some(v) = body.auto_loop {
+        next.auto_loop = v;
+    }
+    if let Some(v) = body.warmup_secs {
+        next.warmup_secs = v;
+    }
+    if let Some(v) = body.creator_window_secs {
+        next.creator_window_secs = v;
+    }
+    if let Some(v) = body.creator_max_pools {
+        next.creator_max_pools = v;
+    }
+    if let Some(v) = body.banned_creators {
+        next.banned_creators = v;
+    }
+    if let Err(why) = next.validate() {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": why }))).into_response();
+    }
+    let listed: Vec<solana_sdk::pubkey::Pubkey> = next
+        .banned_creators
+        .iter()
+        .filter_map(|c| c.parse().ok())
+        .collect();
+    for creator in listed {
+        if s.creators.ban(creator, "listed in banned_creators") {
+            crate::creators::persist_ban(
+                s.redis_client.as_ref(),
+                creator,
+                "listed in banned_creators".to_owned(),
+            );
+        }
+    }
+    s.config = next;
+    Json(s.config.clone()).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct StartQuery {
+    /// "sell_only": sell open positions and buy nothing (no balance check).
+    mode: Option<String>,
+}
+
+/// Start auto-trading (requires sufficient wallet balance).
+/// Pass `?mode=sell_only` to sell existing positions and buy nothing; it
+/// skips the balance check. Starting without it lifts sell_only, a pause
+/// after a given-up position included.
+#[utoipa::path(post, path = "/api/trade/start", params(("mode" = Option<String>, Query, description = "sell_only: sell open positions, buy nothing")), responses((status = 200, body = StartResponse)), tag = "Trade")]
+async fn post_trade_start(State(ctx): State<ApiContext>, Query(query): Query<StartQuery>) -> impl IntoResponse {
+    let sell_only = query.mode.as_deref() == Some("sell_only");
+    let (has_wallet, pubkey, buy_amount_lamports) = {
+        let s = ctx.state.read().await;
+        let pk = s.wallet.as_ref().map(|kp| kp.pubkey());
+        (pk.is_some(), pk, s.config.buy_amount_lamports)
+    };
+
+    if !has_wallet {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(StartResponse {
+                started: false,
+                already_running: false,
+                message: "No wallet loaded.".to_string(),
+                wallet_pubkey: None,
+                balance_sol: None,
+            }),
+        );
+    }
+
+    let pubkey = pubkey.unwrap();
+    let balance = match tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        ctx.rpc_client.get_balance(&pubkey),
+    )
+    .await
+    {
+        Ok(Ok(b)) => b,
+        _ => 0,
+    };
+    let balance_sol = balance as f64 / 1e9;
+
+    if !sell_only && balance < buy_amount_lamports + 10_000_000 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(StartResponse {
+                started: false,
+                already_running: false,
+                message: format!(
+                    "Insufficient funds. Send at least {:.4} SOL to {}",
+                    (buy_amount_lamports + 10_000_000) as f64 / 1e9,
+                    pubkey
+                ),
+                wallet_pubkey: Some(pubkey.to_string()),
+                balance_sol: Some(balance_sol),
+            }),
+        );
+    }
+
+    let mut s = ctx.state.write().await;
+    // Held as state: in sell_only mode new pools are not bought. Starting
+    // again changes the mode of a run under way.
+    s.sell_only = sell_only;
+    if s.running {
+        return (
+            StatusCode::OK,
+            Json(StartResponse {
+                started: true,
+                already_running: true,
+                message: i18n::trading_already_running(),
+                wallet_pubkey: Some(pubkey.to_string()),
+                balance_sol: Some(balance_sol),
+            }),
+        );
+    }
+
+    s.running = true;
+    let msg = i18n::trading_started(
+        &pubkey.to_string(),
+        balance_sol,
+        buy_amount_lamports as f64 / 1e9,
+        s.config.sell_multiplier,
+    );
+    fire_notification(&mut s, &msg);
+    (
+        StatusCode::OK,
+        Json(StartResponse {
+            started: true,
+            already_running: false,
+            message: "Trading started.".to_string(),
+            wallet_pubkey: Some(pubkey.to_string()),
+            balance_sol: Some(balance_sol),
+        }),
+    )
+}
+
+/// Stop auto-trading.
+#[utoipa::path(post, path = "/api/trade/stop", responses((status = 200)), tag = "Trade")]
+async fn post_trade_stop(State(ctx): State<ApiContext>) -> impl IntoResponse {
+    let mut s = ctx.state.write().await;
+    s.running = false;
+    let positions = s.active_position_count();
+    let msg = i18n::trading_stopped(positions);
+    fire_notification(&mut s, &msg);
+    Json(serde_json::json!({ "stopped": true }))
+}
+
+/// Get trade status (running, gRPC streaming, positions, balance).
+#[utoipa::path(get, path = "/api/trade/status", responses((status = 200, body = StatusResponse)), tag = "Trade")]
+async fn get_trade_status(State(ctx): State<ApiContext>) -> impl IntoResponse {
+    let (running, sell_only, grpc_streaming, active, pubkey) = {
+        let s = ctx.state.read().await;
+        let pk = s.wallet.as_ref().map(|kp| kp.pubkey());
+        (s.running, s.sell_only, s.grpc_streaming, s.active_position_count(), pk)
+    };
+
+    let wallet_balance = if let Some(pk) = pubkey {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            ctx.rpc_client.get_balance(&pk),
+        )
+        .await
+        {
+            Ok(Ok(b)) => Some(b as f64 / 1e9),
+            _ => None,
+        }
+    } else {
+        None
+    };
+
+    let phase = if !grpc_streaming {
+        "grpc_paused"
+    } else if !running {
+        "stopped"
+    } else if active > 0 {
+        "position_open"
+    } else {
+        "waiting_for_buy"
+    };
+
+    Json(StatusResponse {
+        running,
+        sell_only,
+        grpc_streaming,
+        active_positions: active,
+        wallet_balance,
+        phase: phase.to_string(),
+    })
+}
+
+/// Get trade logs (newest first).
+#[utoipa::path(get, path = "/api/logs", params(("limit" = Option<usize>, Query, description = "Max logs"), ("offset" = Option<usize>, Query, description = "Skip")), responses((status = 200, description = "Recent logs")), tag = "Logs")]
+async fn get_logs(
+    State(ctx): State<ApiContext>,
+    Query(query): Query<LogsQuery>,
+) -> impl IntoResponse {
+    let s = ctx.state.read().await;
+    let limit = query.limit.unwrap_or(100).min(1000);
+    let offset = query.offset.unwrap_or(0);
+    let logs: Vec<_> = s
+        .trade_logs
+        .iter()
+        .rev()
+        .skip(offset)
+        .take(limit)
+        .cloned()
+        .collect();
+    Json(logs)
+}
+
+/// Update the watch address (AMM program to monitor).
+#[utoipa::path(put, path = "/api/watch-address", request_body = WatchAddressBody, responses((status = 200)), tag = "Config")]
+async fn put_watch_address(
+    State(ctx): State<ApiContext>,
+    Json(body): Json<WatchAddressBody>,
+) -> impl IntoResponse {
+    match Pubkey::from_str(&body.address) {
+        Ok(pubkey) => {
+            let mut s = ctx.state.write().await;
+            s.watch_address = pubkey;
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({ "watch_address": pubkey.to_string() })),
+            )
+        }
+        Err(_) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": format!("Invalid address: {}", body.address) })),
+        ),
+    }
+}
+
+/// Get wallet info and balance.
+#[utoipa::path(get, path = "/api/wallet", responses((status = 200, body = WalletResponse)), tag = "Wallet")]
+async fn get_wallet(State(ctx): State<ApiContext>) -> impl IntoResponse {
+    let pubkey = {
+        let s = ctx.state.read().await;
+        s.wallet.as_ref().map(|kp| kp.pubkey())
+    };
+
+    match pubkey {
+        Some(pk) => {
+            let balance = match tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                ctx.rpc_client.get_balance(&pk),
+            )
+            .await
+            {
+                Ok(Ok(b)) => Some(b as f64 / 1e9),
+                _ => None,
+            };
+            let message = if balance.unwrap_or(0.0) == 0.0 {
+                format!("Wallet has no funds. Send SOL to {} to start trading.", pk)
+            } else {
+                "Wallet loaded.".to_string()
+            };
+            Json(serde_json::json!({
+                "pubkey": pk.to_string(),
+                "balance_sol": balance,
+                "message": message,
+            }))
+        }
+        None => Json(serde_json::json!({
+            "pubkey": null,
+            "balance_sol": null,
+            "message": "No wallet found.",
+        })),
+    }
+}
+
+/// Start gRPC streaming (pool detection & notifications).
+#[utoipa::path(post, path = "/api/grpc/start", responses((status = 200)), tag = "gRPC")]
+async fn post_grpc_start(State(ctx): State<ApiContext>) -> impl IntoResponse {
+    let mut s = ctx.state.write().await;
+    s.grpc_streaming = true;
+    let msg = i18n::grpc_started();
+    fire_notification(&mut s, &msg);
+    Json(serde_json::json!({ "grpc_streaming": true }))
+}
+
+/// Stop gRPC streaming (pauses pool detection & notifications).
+#[utoipa::path(post, path = "/api/grpc/stop", responses((status = 200)), tag = "gRPC")]
+async fn post_grpc_stop(State(ctx): State<ApiContext>) -> impl IntoResponse {
+    let mut s = ctx.state.write().await;
+    s.grpc_streaming = false;
+    let msg = i18n::grpc_stopped();
+    fire_notification(&mut s, &msg);
+    Json(serde_json::json!({ "grpc_streaming": false }))
+}
+
+/// Get trade history (Buy/Sell only, newest first). Uses Redis if available, otherwise in-memory.
+#[utoipa::path(get, path = "/api/trades/history", params(
+    ("limit" = Option<usize>, Query, description = "Max trades (default 50)"),
+    ("offset" = Option<usize>, Query, description = "Skip"),
+    ("action" = Option<String>, Query, description = "Filter: Buy or Sell"),
+), responses((status = 200, body = TradeHistoryResponse)), tag = "Trades")]
+async fn get_trade_history(
+    State(ctx): State<ApiContext>,
+    Query(query): Query<TradeHistoryQuery>,
+) -> impl IntoResponse {
+    let limit = query.limit.unwrap_or(50).min(1000);
+    let offset = query.offset.unwrap_or(0);
+    let action_filter: Option<TradeAction> = query.action.as_deref().and_then(|a| match a {
+        "Buy" => Some(TradeAction::Buy),
+        "Sell" => Some(TradeAction::Sell),
+        _ => None,
+    });
+
+    let s = ctx.state.read().await;
+
+    // Try Redis first
+    if let Some(ref client) = s.redis_client {
+        if let Ok(result) = fetch_trade_history_from_redis(client, limit, offset, &action_filter).await {
+            return Json(result);
+        }
+        // Redis failed, fall through to in-memory
+    }
+
+    // In-memory fallback
+    let filtered: Vec<&TradeLog> = s
+        .trade_logs
+        .iter()
+        .rev()
+        .filter(|log| {
+            if log.action != TradeAction::Buy && log.action != TradeAction::Sell {
+                return false;
+            }
+            if let Some(ref af) = action_filter {
+                return &log.action == af;
+            }
+            true
+        })
+        .collect();
+    let total = filtered.len();
+    let trades: Vec<serde_json::Value> = filtered
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .map(|log| serde_json::to_value(log).unwrap_or_default())
+        .collect();
+    Json(TradeHistoryResponse { trades, total })
+}
+
+/// Get a specific trade log by id. Uses Redis if available, otherwise in-memory.
+#[utoipa::path(get, path = "/api/trades/{id}", params(
+    ("id" = String, Path, description = "Trade log ID"),
+), responses((status = 200, description = "Trade log detail"), (status = 404, description = "Not found")), tag = "Trades")]
+async fn get_trade_by_id(
+    State(ctx): State<ApiContext>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let s = ctx.state.read().await;
+
+    // Try Redis first
+    if let Some(ref client) = s.redis_client {
+        if let Ok(Some(json_val)) = fetch_trade_by_id_from_redis(client, &id).await {
+            return (StatusCode::OK, Json(json_val));
+        }
+    }
+
+    // In-memory fallback
+    if let Some(log) = s.trade_logs.iter().find(|l| l.id == id) {
+        let val = serde_json::to_value(log).unwrap_or_default();
+        return (StatusCode::OK, Json(val));
+    }
+
+    (StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": "Trade not found" })))
+}
+
+/// Get P&L for each completed buy→sell pair, matched by base_mint.
+#[utoipa::path(get, path = "/api/trades/profit", responses((status = 200, body = ProfitResponse)), tag = "Trades")]
+async fn get_profit(State(ctx): State<ApiContext>) -> impl IntoResponse {
+    let s = ctx.state.read().await;
+
+    let mut buys_by_mint: std::collections::HashMap<String, Vec<&TradeLog>> =
+        std::collections::HashMap::new();
+    let mut sells_by_mint: std::collections::HashMap<String, Vec<&TradeLog>> =
+        std::collections::HashMap::new();
+
+    for log in &s.trade_logs {
+        match log.action {
+            TradeAction::Buy => buys_by_mint
+                .entry(log.base_mint.to_string())
+                .or_default()
+                .push(log),
+            TradeAction::Sell => sells_by_mint
+                .entry(log.base_mint.to_string())
+                .or_default()
+                .push(log),
+            _ => {}
+        }
+    }
+
+    let total_buys: usize = buys_by_mint.values().map(|v| v.len()).sum();
+    let total_sells: usize = sells_by_mint.values().map(|v| v.len()).sum();
+    let mut pairs: Vec<ProfitPair> = Vec::new();
+    let mut total_profit_sol = 0.0f64;
+
+    for (mint, buys) in &buys_by_mint {
+        if let Some(sells) = sells_by_mint.get(mint) {
+            let count = buys.len().min(sells.len());
+            for i in 0..count {
+                let buy = buys[i];
+                let sell = sells[i];
+                let profit_sol = sell.amount_sol - buy.amount_sol;
+                let profit_pct = if buy.amount_sol > 0.0 {
+                    (profit_sol / buy.amount_sol) * 100.0
+                } else {
+                    0.0
+                };
+                total_profit_sol += profit_sol;
+                pairs.push(ProfitPair {
+                    pool: buy.pool.to_string(),
+                    base_mint: mint.clone(),
+                    buy_sol: buy.amount_sol,
+                    sell_sol: sell.amount_sol,
+                    profit_sol,
+                    profit_pct,
+                    buy_tx: buy.tx_signature.clone(),
+                    sell_tx: sell.tx_signature.clone(),
+                    buy_time: buy.timestamp.to_rfc3339(),
+                    sell_time: sell.timestamp.to_rfc3339(),
+                });
+            }
+        }
+    }
+
+    // Sort newest buy first
+    pairs.sort_by(|a, b| b.buy_time.cmp(&a.buy_time));
+
+    Json(ProfitResponse {
+        pairs,
+        total_profit_sol,
+        total_buys,
+        total_sells,
+    })
+}
+
+async fn fetch_trade_history_from_redis(
+    client: &redis::Client,
+    limit: usize,
+    offset: usize,
+    action_filter: &Option<TradeAction>,
+) -> Result<TradeHistoryResponse, redis::RedisError> {
+    let mut con = client.get_multiplexed_async_connection().await?;
+
+    // Get total count
+    let total: usize = redis::cmd("ZCARD")
+        .arg("trade:logs:timeline")
+        .query_async(&mut con)
+        .await?;
+
+    // Fetch ids from sorted set (newest first = ZREVRANGE)
+    // Over-fetch if we need to filter by action
+    let fetch_count = if action_filter.is_some() {
+        (limit + offset) * 3 // fetch extra to account for filtering
+    } else {
+        limit + offset
+    };
+    let ids: Vec<String> = redis::cmd("ZREVRANGE")
+        .arg("trade:logs:timeline")
+        .arg(0i64)
+        .arg((fetch_count - 1) as i64)
+        .query_async(&mut con)
+        .await?;
+
+    if ids.is_empty() {
+        return Ok(TradeHistoryResponse {
+            trades: vec![],
+            total: 0,
+        });
+    }
+
+    // MGET all trade log JSONs
+    let keys: Vec<String> = ids.iter().map(|id| format!("trade:logs:{}", id)).collect();
+    let jsons: Vec<Option<String>> = redis::cmd("MGET")
+        .arg(&keys)
+        .query_async(&mut con)
+        .await?;
+
+    let mut trades: Vec<serde_json::Value> = Vec::new();
+    let mut filtered_total = 0usize;
+    for json_opt in jsons {
+        if let Some(json_str) = json_opt {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json_str) {
+                // Filter: only Buy/Sell
+                let action_str = val.get("action").and_then(|a| a.as_str()).unwrap_or("");
+                if action_str != "Buy" && action_str != "Sell" {
+                    continue;
+                }
+                if let Some(ref af) = action_filter {
+                    let expected = match af {
+                        TradeAction::Buy => "Buy",
+                        TradeAction::Sell => "Sell",
+                        _ => "",
+                    };
+                    if action_str != expected {
+                        continue;
+                    }
+                }
+                filtered_total += 1;
+                if filtered_total > offset && trades.len() < limit {
+                    trades.push(val);
+                }
+            }
+        }
+    }
+
+    Ok(TradeHistoryResponse {
+        trades,
+        total: filtered_total,
+    })
+}
+
+async fn fetch_trade_by_id_from_redis(
+    client: &redis::Client,
+    id: &str,
+) -> Result<Option<serde_json::Value>, redis::RedisError> {
+    let mut con = client.get_multiplexed_async_connection().await?;
+    let result: Option<String> = redis::cmd("GET")
+        .arg(format!("trade:logs:{}", id))
+        .query_async(&mut con)
+        .await?;
+    match result {
+        Some(json_str) => match serde_json::from_str::<serde_json::Value>(&json_str) {
+            Ok(val) => Ok(Some(val)),
+            Err(e) => {
+                warn!("Failed to parse trade log JSON from Redis: {:?}", e);
+                Ok(None)
+            }
+        },
+        None => Ok(None),
+    }
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/// Push a notification to logs + webhook (fire-and-forget).
+fn fire_notification(state: &mut AppState, msg: &str) {
+    use solana_sdk::pubkey::Pubkey;
+    state.push_notification(Pubkey::default(), Pubkey::default(), msg.to_string());
+    if let Some(url) = &state.webhook_url {
+        let url = url.clone();
+        let discord_msg = msg.to_string();
+        tokio::spawn(async move {
+            notify_discord(&url, &discord_msg).await;
+        });
+    }
+}

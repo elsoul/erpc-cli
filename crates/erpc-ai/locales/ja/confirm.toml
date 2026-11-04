@@ -1,0 +1,84 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+# ツールが支払い・終了・変更を行う前に erpc ai が表示する確認。読んだ人が
+# はい・いいえで答えるため、支払うもの、元に戻せないこと、許可するアクセスを
+# 英語と同じくはっきり伝えること。
+
+[label]
+product = "商品"
+price = "料金"
+setting = "設定"
+credit = "クレジット残高"
+lasts = "残高で使える時間"
+price_now = "現在の料金"
+address = "アドレス"
+vault = "保管庫"
+why = "理由"
+key = "鍵"
+credits = "クレジット"
+subtotal = "小計"
+vat = "VAT"
+total = "合計"
+from = "支払元"
+to = "支払先"
+network = "ネットワーク"
+valid_until = "見積もり期限"
+server = "サーバー"
+host_key = "ホスト鍵"
+your_key = "あなたの鍵"
+changes = "変更"
+allowed = "許可するアドレス"
+yours_now = "現在のアドレス"
+safety = "安全策"
+note = "注意"
+script = "シェルスクリプト"
+command = "コマンド"
+folder = "フォルダ"
+ends = "期間"
+
+[start]
+title = "{product} を時間課金で開始しますか？終了するまで課金されます。"
+price = "1 時間あたり {hourly}（1 日 {daily}）、ERPC クレジットから支払い"
+lasts = "すべて稼働したまま 1 時間あたり {rate} の場合、約 {hours} 時間"
+
+[end]
+title = "{product} を終了しますか？停止し、課金も止まります。この操作は元に戻せません。"
+price = "1 時間あたり {hourly}"
+
+[wallet]
+found_title = "1Password にある ERPC ウォレットを使いますか？"
+new_title = "ERPC クレジット購入用の Base ウォレットを新しく作りますか？"
+vault = "1Password の保管庫 {vault}"
+ai_may_pay = "ここからの支払いを求めることがあります。支払いのたびに必ずあなたに確認します"
+ai_may_not = "使用できません"
+one_wallet = "erpc はウォレットを 1 つだけ持つため、EURC が 1 か所にまとまります"
+key = "このマシンで作成し、1Password にだけ保管します（ディスクには保存しません）"
+
+[top_up]
+vat = "{amount} EURC（税率 {rate}）"
+to = "{to}（ERPC トレジャリー）"
+network = "Base、EURC。ガス代は ERPC が負担"
+
+[top_up.title]
+other = "{n} ERPC クレジットを {total} EURC でウォレットから購入しますか？"
+
+[secure]
+title = "あなたの代わりに {ip} にログインし、あなたの鍵を登録してパスワードログインを無効にしますか？"
+changes = "あなたの鍵を登録します。パスワードログインは恒久的に無効になります。sudo がパスワードを求める場合は、ログインユーザーがパスワードなしで sudo できるようにします"
+
+[ssh_open]
+title = "{ip} への SSH を、再びすべてのアドレスから許可しますか？"
+
+[ssh_only]
+title = "{ip} への SSH を、次のアドレスからのみ許可しますか？"
+safety = "{seconds} 秒以内に erpc が再接続できなければ、自動で元に戻ります"
+note = "あなたのアドレスが変わると、許可し直すまで SSH は拒否されます"
+
+[command]
+title = "このコンピューターでコマンドを実行"
+
+[every_command]
+title = "erpc ai を終了するまで、すべてのコマンドを許可しますか？コマンドもシェルスクリプトも、確認せずにこのコンピューターで実行されます。"
+ends = "erpc ai を終了するか、新しい会話を始めるまで（/new または /clear）"
+note = "コマンドの出力は ERPC AI に渡され、実行前の確認もありません。鍵ファイルやパスワードを表示するコマンドも実行される可能性があります"

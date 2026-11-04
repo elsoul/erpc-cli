@@ -15,6 +15,12 @@ use erpc_auth::credential::Audience;
 use secrecy::SecretString;
 use serde::Deserialize;
 
+pub mod account;
+pub mod ai;
+pub mod gasless;
+pub mod hourly;
+pub mod storage;
+
 /// The account endpoint. A constant for the same reason the identity
 /// endpoints are: a destination that configuration can move is one that
 /// can be moved by whoever edits the configuration.
@@ -42,6 +48,29 @@ pub enum ApiError {
     /// The server refused for another reason.
     #[error("user-api refused the request with {0}")]
     Status(u16),
+    /// The service does not offer the model asked for.
+    #[error("user-api does not offer the model {0}")]
+    ModelNotAllowed(String),
+    /// ERPC AI could not answer. Says what a person can do about it, and
+    /// nothing in the words of a provider or a network in front of ERPC.
+    #[error("{}", trouble.line(*status, reference.as_deref(), erpc_core::i18n::Lang::En))]
+    Chat {
+        /// What went wrong, in ERPC's terms.
+        trouble: ai::ChatTrouble,
+        /// The HTTP status, 200 for an error inside an answer.
+        status: u16,
+        /// The reference that finds the request in ERPC's logs, when the
+        /// reply had one.
+        reference: Option<String>,
+    },
+    /// The server refused, and said why.
+    #[error("user-api refused the request ({status}): {message}")]
+    Refused {
+        /// The HTTP status.
+        status: u16,
+        /// The server's message, cut to one printable line.
+        message: String,
+    },
 }
 
 /// The parts of an account this version uses.
@@ -83,18 +112,23 @@ impl User {
         self.label()
             .chars()
             .map(|c| {
-                let reorders = matches!(
-                    c,
-                    '\u{061C}'
-                        | '\u{200E}'
-                        | '\u{200F}'
-                        | '\u{202A}'..='\u{202E}'
-                        | '\u{2066}'..='\u{2069}'
-                );
-                if c.is_control() || reorders { '?' } else { c }
+                if c.is_control() || reorders(c) {
+                    '?'
+                } else {
+                    c
+                }
             })
             .collect()
     }
+}
+
+/// Whether `c` is a bidirectional mark or override, which can make the text
+/// around it on a terminal read as something else.
+pub(crate) const fn reorders(c: char) -> bool {
+    matches!(
+        c,
+        '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+    )
 }
 
 /// Fetches the account behind a session.

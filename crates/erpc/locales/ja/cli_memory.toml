@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+"memory" = "erpc ai が会話をまたいで覚えている、あなたについての情報"
+"memory list" = "覚えている情報をすべて番号付きで表示する"
+"memory forget" = "情報を番号で指定して 1 件削除する"
+"memory forget <id>" = "情報の番号（`erpc memory list` に表示される番号）"
+"memory clear" = "すべての情報を削除する"

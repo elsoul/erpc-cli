@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "erpc-chain-arc"
+description = "Arc RPC node operations for the erpc CLI"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+publish = true
+
+[dependencies]
+base64.workspace = true
+ed25519-dalek.workspace = true
+erpc-auth.workspace = true
+erpc-core.workspace = true
+getrandom.workspace = true
+include_dir.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[lints]
+workspace = true

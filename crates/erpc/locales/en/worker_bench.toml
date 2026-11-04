@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+url_not_pair = "--url takes NAME=URL, not `{given}`"
+url_not_pair_unknown = "--url takes NAME=URL, not `that`"
+nothing = "there is nothing to measure"
+nothing_hint = "leave out --no-shared, or name an endpoint with --url NAME=URL"
+not_readable = "the agent's measurements are not readable: {error}"
+one_stdin = "only one --url can be read from standard input"
+url_of = "{name}'s URL"
+shared_refused = "The shared RPC refused the account's API key: the account may have no active shared RPC plan (see the ERPC dashboard), or set the app's ERPC_API_KEY secret to a key that has one."
+title = "{method} from {worker}'s server {at}, {each} after {warm}{apart}"
+apart = ", {ms} ms apart"
+faster = "{fastest} answered {times}× faster than {other} at the median ({a} against {b})."
+alone = "{name} answered in {time} at the median."
+
+[each]
+one = "{n} calls each"
+other = "{n} calls each"
+
+[warm_up]
+one = "{n} warm-up calls"
+other = "{n} warm-up calls"
+
+[failures]
+one = "{name}: {n} failed, the first with: {error}"
+other = "{name}: {n} failed, the first with: {error}"
+
+[column]
+endpoint = "endpoint"
+host = "host"
+failed = "failed"
+slots_behind = "slots behind"

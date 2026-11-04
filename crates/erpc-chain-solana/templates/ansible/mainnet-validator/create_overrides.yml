@@ -1,0 +1,13 @@
+---
+- name: Create overrides.yml for staked map
+  hosts: all
+  gather_facts: no
+
+  tasks:
+    - name: Generate overrides.yml from template
+      template:
+        src: "{{ playbook_dir }}/../../jinja/mainnet-validator/overrides.yml.j2"
+        dest: /home/solv/overrides.yml
+        mode: "0755"
+        owner: solv
+        group: solv

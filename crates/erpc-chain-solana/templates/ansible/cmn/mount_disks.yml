@@ -1,0 +1,88 @@
+- name: Mount and configure disks with NVMe prioritization
+  hosts: all
+  become: true
+  vars:
+    mount_targets:
+      - { name: ledger, path: /mnt/ledger }
+      - { name: accounts, path: /mnt/accounts }
+      - { name: snapshot, path: /mnt/snapshot }
+      - { name: OS, path: /mnt }
+  tasks:
+    - name: Set mount_dirs based on mount_targets
+      set_fact:
+        mount_dirs: "{{ mount_targets | map(attribute='path') | list }}"
+
+    - name: Ensure /mnt and subdirectories exist with correct ownership
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: solv
+        group: solv
+        mode: "0755"
+      loop: "{{ mount_dirs }}"
+
+    - name: Find unmounted NVMe disks >=800GB, sort by size desc, return as list
+      shell: |
+        lsblk -nr -o NAME,TYPE,SIZE,MOUNTPOINT | awk '
+          $2 == "disk" && 
+          $1 ~ /^nvme/ &&
+          (($3 ~ /G$/ && substr($3, 1, length($3)-1) + 0 >= 800) ||
+          ($3 ~ /T$/ && substr($3, 1, length($3)-1) + 0 >= 0.8)) &&
+          ($4 == "" || $4 ~ /^[[:space:]]*$/) &&
+          system("lsblk -nr -o TYPE /dev/" $1 " | grep -q part") != 0 {
+            print $1, $3
+          }' | sort -k2,2hr -k1,1 | awk '{print $1}'
+      register: unmounted_disks_output
+      args:
+        chdir: /home/solv
+      # erpc lists the disks itself, with the operator, and passes them as erpc_disks.
+      when: erpc_disks is not defined
+
+    - name: Set sorted unmounted disk list as array
+      set_fact:
+        unmounted_disks: "{{ (erpc_disks | map(attribute='name') | list) if erpc_disks is defined else unmounted_disks_output.stdout_lines }}"
+
+    # A disk erpc_disks marks wipe: true has only empty partitions (see files/free-disks.sh). It is checked again
+    # here, on the node, right before its partition table is removed: if anything changed since the operator
+    # agreed, the run stops with nothing wiped.
+    - name: List the disks that hold nothing, as erpc did before the run
+      command: bash "{{ playbook_dir }}/../../files/free-disks.sh"
+      register: erpc_free_disks
+      changed_when: false
+      when: erpc_disks is defined and (erpc_disks | selectattr('wipe') | list | length > 0)
+
+    - name: Stop unless each disk to wipe still holds nothing
+      assert:
+        that:
+          - erpc_free_disks.stdout_lines | select('match', '^free ' ~ item.name ~ ' [0-9]+ empty-partitions ') | list | length == 1
+        fail_msg: "/dev/{{ item.name }} no longer has only empty partitions ({{ erpc_free_disks.stdout_lines | select('search', ' ' ~ item.name ~ ' ') | join('; ') }}). Nothing was wiped."
+        quiet: true
+      loop: "{{ erpc_disks | default([]) | selectattr('wipe') | list }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Remove the empty partition table the operator agreed to wipe
+      shell: wipefs --all /dev/{{ item.name }} && blockdev --rereadpt /dev/{{ item.name }} && udevadm settle
+      loop: "{{ erpc_disks | default([]) | selectattr('wipe') | list }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Debug unmounted disks
+      debug:
+        var: unmounted_disks
+
+    - name: Skip if no unmounted disks found
+      debug:
+        msg: "No unmounted disks found, skipping disk formatting and mounting tasks."
+      when: unmounted_disks | length == 0
+
+    - name: Mount and format disks dynamically according to priority
+      include_tasks: tasks/format_and_mount.yml
+      loop: "{{ range(0, [unmounted_disks | length, mount_targets | length] | min) | list }}"
+      loop_control:
+        loop_var: idx
+        label: "{{ mount_targets[idx].name }} => /dev/{{ unmounted_disks[idx] }}"
+      vars:
+        disk_name: "{{ unmounted_disks[idx] }}"
+        mount_path: "{{ mount_targets[idx].path }}"
+      when: unmounted_disks | length > 0

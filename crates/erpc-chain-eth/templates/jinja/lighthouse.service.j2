@@ -1,0 +1,66 @@
+# Managed by erpc: `erpc r --chain eth update-config` writes it again.
+[Unit]
+Description=Lighthouse, the consensus layer ({{ eth_lighthouse_version }})
+After=network-online.target reth.service
+Wants=network-online.target reth.service
+ConditionPathExists={{ eth_jwt }}
+
+Requires=erpc-eth-firewall.service
+
+[Service]
+ExecStartPre=+/usr/bin/python3 /usr/local/lib/erpc/rpc-firewall.py eth guard
+Type=simple
+User=lighthouse
+Group=ethereum
+UMask=0027
+WorkingDirectory={{ eth_lighthouse_dir }}
+ExecStart={{ eth_opt }}/current/lighthouse bn \
+  --network mainnet \
+  --datadir {{ eth_lighthouse_dir }} \
+  --execution-endpoint http://127.0.0.1:8551 \
+  --execution-jwt {{ eth_jwt }} \
+  --checkpoint-sync-url {{ eth_checkpoint_sync_url }} \
+  --port 9000 \
+  --quic-port 9001 \
+  --disable-upnp \
+  --http \
+  --http-address 127.0.0.1 \
+  --http-port 5052 \
+  --metrics \
+  --metrics-address {{ eth_metrics_bind }} \
+  --metrics-port 5054
+
+Restart=always
+RestartSec=10
+KillSignal=SIGINT
+# A clean stop ends with the signal's exit status, not 0.
+SuccessExitStatus=130 143 SIGINT SIGTERM
+TimeoutStopSec=300
+LimitNOFILE=1048576
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lighthouse
+
+ReadWritePaths={{ eth_lighthouse_dir }}
+ReadOnlyPaths={{ eth_opt }} /etc/ethereum
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

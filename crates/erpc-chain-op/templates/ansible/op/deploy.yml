@@ -1,0 +1,115 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- import_playbook: firewall-guard.yml
+
+- name: Install the qualified follower pair behind a confirmed policy
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars_files: [vars.yml]
+  tasks:
+    - name: Fence boot and stop only the immutable owner before any installation write
+      ansible.builtin.command:
+        argv: [python3, /usr/local/lib/erpc/rollup_control.py, within-run]
+        stdin: "{{ op_request | combine({'action': 'begin-install'}) | to_json }}"
+      changed_when: true
+
+    - name: Read the actual isolated service account
+      ansible.builtin.getent:
+        database: passwd
+        key: "{{ op_user }}"
+
+    - name: Bind container identities to that service account
+      ansible.builtin.set_fact:
+        op_uid: "{{ getent_passwd[op_user][1] }}"
+        op_gid: "{{ getent_passwd[op_user][2] }}"
+
+    - name: Install the qualified client pair
+      ansible.builtin.include_tasks: tasks/install.yml
+
+    - name: Install current guarded lifecycle helpers after the old pair has stopped
+      ansible.builtin.copy:
+        src: "{{ op_scripts }}/{{ item.source }}"
+        dest: "/usr/local/lib/erpc/{{ item.target }}"
+        owner: root
+        group: root
+        mode: '0755'
+      loop:
+        - { source: control.py, target: rollup_control.py }
+        - { source: status.py, target: rollup_status.py }
+        - { source: bootstrap.py, target: rollup_bootstrap.py }
+        - { source: runtime-jwt.py, target: rollup_runtime_jwt.py }
+        - { source: container.py, target: rollup_container.py }
+
+    - name: Install the shared upstream transport without any provider data in the bundle
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../rollup-upstreams.py"
+        dest: /usr/local/lib/erpc/rollup_upstreams.py
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Install protected network identity metadata
+      ansible.builtin.copy:
+        content: "{{ op_identity | to_json }}"
+        dest: "{{ op_conf }}/network.json"
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Install the exact immutable Base manifest for a new or resumed bootstrap
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../base-manifest.json"
+        dest: "{{ op_conf }}/base-manifest.json"
+        owner: root
+        group: root
+        mode: '0644'
+      when: op_have_manifest | bool
+
+    - name: Write an initial protected execution configuration only when absent
+      ansible.builtin.copy:
+        content: ''
+        dest: "{{ op_conf }}/reth.toml"
+        owner: root
+        group: root
+        mode: '0644'
+        force: false
+
+    - name: Render isolated units and independent application access policy
+      ansible.builtin.template:
+        src: "{{ op_jinja }}/{{ item.source }}"
+        dest: "{{ item.destination }}"
+        owner: root
+        group: root
+        mode: '0644'
+      loop:
+        - { source: execution.service.j2, destination: "/etc/systemd/system/erpc-{{ op_family }}-execution.service" }
+        - { source: consensus.service.j2, destination: "/etc/systemd/system/erpc-{{ op_family }}-consensus.service" }
+        - { source: upstreams.service.j2, destination: "/etc/systemd/system/erpc-{{ op_family }}-upstreams.service" }
+        - { source: bootstrap.service.j2, destination: "/etc/systemd/system/erpc-{{ op_family }}-bootstrap.service" }
+        - { source: rpc.service.j2, destination: "/etc/systemd/system/erpc-{{ op_family }}-rpc.service" }
+        - { source: nginx.conf.j2, destination: "{{ op_conf }}/nginx.conf" }
+
+    - name: Record content hashes of the complete protected installation
+      ansible.builtin.command:
+        argv: [python3, "{{ op_scripts }}/receipt.py"]
+        stdin: "{{ op_request | to_json }}"
+      changed_when: true
+
+    - name: Complete the durable installation fence without claiming sync readiness
+      ansible.builtin.command:
+        argv: [python3, /usr/local/lib/erpc/rollup_control.py, within-run]
+        stdin: "{{ op_request | combine({'action': 'finish-install'}) | to_json }}"
+      changed_when: true
+
+    - name: Reload the validated unit definitions
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+
+    - name: Queue bootstrap or start the verified pair through the same lifecycle guard
+      ansible.builtin.command:
+        argv: [python3, /usr/local/lib/erpc/rollup_control.py, within-run]
+        stdin: "{{ op_request | combine({'action': 'start'}) | to_json }}"
+      changed_when: true

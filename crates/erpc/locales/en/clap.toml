@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+usage = "Usage:"
+options = "Options"
+arguments = "Arguments"
+commands = "Commands"
+help = "Print help"
+version = "Print version"
+help_command = "Print this message or the help of the given subcommand(s)"

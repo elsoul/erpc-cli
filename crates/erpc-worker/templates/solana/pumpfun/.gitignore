@@ -1,0 +1,22 @@
+# Build
+/target/
+
+# Environment & secrets
+.env
+.env.*
+!.env.sample
+
+# A key file must never be in the app: erpc worker keeps the key in 1Password
+# or the keychain. Ignored all the same, in case one is copied here.
+wallet.json
+*.keypair.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

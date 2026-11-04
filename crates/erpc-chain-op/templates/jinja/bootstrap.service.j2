@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+[Unit]
+Description=ERPC {{ op_family }} owned resumable bootstrap
+Requires=erpc-{{ op_family }}-firewall.service
+After=network-online.target erpc-{{ op_family }}-firewall.service
+Wants=network-online.target
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=root
+UMask=0077
+ExecStart=/usr/bin/python3 /usr/local/lib/erpc/rollup_bootstrap.py {{ op_owner }} {{ op_family }} {{ op_network }} {{ op_history }}
+TimeoutStartSec=infinity
+TimeoutStopSec=660
+KillMode=control-group
+LimitNOFILE=1048576
+LimitCORE=0
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+ReadWritePaths={{ op_data }}/execution {{ op_data }}/bootstrap-cache /etc/erpc
+[Install]
+WantedBy=multi-user.target

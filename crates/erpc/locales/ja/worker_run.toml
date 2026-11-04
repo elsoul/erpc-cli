@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+missing = "{name} は {settings} がないと起動できません"
+missing_hint = "シークレットは `erpc worker secret put {first}{dir_scope}` で保管します。通常の設定は [vars] に書きます"
+watch_only = "[wallet] がありません。アプリは監視のみのモードで起動します（鍵は `erpc worker key new{dir_scope}` で作成できます）"
+could_not_start = "{bin} を起動できませんでした：{error}"
+no_stdin = "アプリに鍵を渡す標準入力がありません"
+key_not_handed = "鍵を渡せませんでした：{error}"
+started = "{name} を起動しました（pid {pid}）"
+running = "実行中です。Ctrl-C で停止します"
+healthy = "正常に動作しています。Ctrl-C で停止します"
+stopped = "{name} を停止しました"
+ended = "{name} が終了しました：{status}"
+
+[build]
+empty = "build.command が空です"
+building = "ビルド中：{command}"
+could_not_run = "{program} を実行できませんでした：{error}"
+failed = "ビルドに失敗しました（{status}）"
+no_binary = "ビルドは完了しましたが、{bin} がありません"
+no_binary_hint = "erpc.toml の build.bin にバイナリ名を設定し、--release でビルドしてください"
+
+[check]
+ended = "アプリが自ら終了しました：{status}"
+timeout = "{secs} 秒以内に正常な状態になりませんでした"
+healthy = "{name} は正常です（起動から {secs} 秒）。停止しました"
+failed = "{name} はチェックに失敗しました：{why}"

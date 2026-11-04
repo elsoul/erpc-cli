@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+# `erpc memory`：`erpc ai` 在不同对话之间记住的内容。
+
+empty = "erpc ai 还没有记住任何内容。"
+kept_in = "保存在 {path}。用 `erpc memory forget <id>` 删除一条，用 `erpc memory clear` 全部删除。"
+forgot = "已删除第 {id} 条记忆。"
+no_such = "没有编号为 {id} 的记忆；请查看 `erpc memory list`"
+cleared = "erpc ai 的记忆已全部清除。"

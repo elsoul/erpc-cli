@@ -1,0 +1,124 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+unlocking = "the worker is locked: handing the key and the secrets over"
+line_label = "{kind} line {id}"
+its_server = "its server"
+must_keep = "it could not be removed from {host} ({error}), and may still run there"
+backup_not_revoked = "its backup access key is not revoked ({why}), and would still let its server in"
+
+[forget_prompt]
+one = "Also take {lines} off the record without ending it"
+other = "Also take {lines} off the record without ending them"
+
+[target]
+none_in_vault = "env.{env} keeps its server in 1Password vault {vault}, and there is none there yet; `{command}` sets it"
+no_host = "env.{env} has no host yet; `{command}` sets it"
+no_host_key = "env.{env} has no pinned host key"
+
+[agent]
+unreachable = "the server's agent could not be asked: {error}"
+unreadable = "the server's agent answered something erpc does not read: {answer}"
+refused = "the server's agent refused"
+
+[describe]
+unknown = "unknown"
+release = "release {release}"
+pid = "pid {pid}"
+up = "up {seconds}s"
+last_exit = "last exit: {exit}"
+
+[describe.restarts]
+one = "{n} restart"
+other = "{n} restarts"
+
+[status]
+title = "{worker} on {host}: {agent}"
+no_answer = "the agent did not answer: {error}"
+none = "none"
+
+[status.releases]
+one = "current {current}, previous {previous}, {n} release kept"
+other = "current {current}, previous {previous}, {n} releases kept"
+
+[start]
+start_prompt = "Start {id} on its server"
+restart_prompt = "Restart {id} on its server"
+refused = "nothing was started"
+
+[stop]
+refused = "nothing was stopped"
+stopped = "{id} stopped"
+locked = "{id} stopped; the key and the secrets are gone from the server's memory"
+
+[rollback]
+refused = "nothing was rolled back"
+done = "{id} runs {release} again"
+done_was = "{id} runs {release} again (was {previous})"
+
+[releases]
+current = "current"
+previous = "previous"
+dirty = " (dirty)"
+none = "No releases on the server yet."
+
+[delete]
+refused = "nothing was removed"
+not_removed = "could not remove it from the server ({error})"
+not_removed_ending = "could not remove it from the server ({error}); ending the server anyway"
+nothing_removed = "nothing was removed; {hint}"
+removed = "{id} is removed from its server."
+skipped = "[env.{env}] leaves the record; {host} was not reached, as asked: if the worker still runs there, it keeps running."
+forgotten = "[env.{env}] is removed."
+still_in_toml = "[env.{env}] is still in erpc.toml: {error}"
+
+[delete_prompt]
+forget_unreached = "Forget [env.{env}] without reaching {host}, as asked: {id} is not removed from it"
+remove = "Remove {id} from {host}: its unit, releases and state"
+never_reached = "Forget [env.{env}] (its server was never reached)"
+no_server = "Forget [env.{env}] (no server is on record)"
+then_server = ", then end the hourly server"
+then_lines_and_server = ", then end its data lines and the hourly server"
+then_lines = ", then end its data lines (no hourly server is on record)"
+no_server_to_end = " (no hourly server is on record to end)"
+
+[unreached]
+message = "could not reach the server {host}{vps}; it may have been ended or be down"
+plain = "if the server can no longer be reached and the worker does not run there, `{command}` leaves it unreached"
+charged = "if the server can no longer be reached and the worker does not run there, `{command}` leaves it unreached and ends what is charged by the hour"
+backup = "; `{command}` revokes its backup keys now, whether or not the server answers"
+
+[refuse]
+plain = "{kind} {id} is on record and was never reached; nothing was removed"
+hourly = "{kind} {id} is on record and was never reached, and it is charged by the hour; nothing was removed"
+hint = "`{deploy}` reaches it, or `{delete}` ends it and its lines"
+
+[still_charged]
+server = "{kind} {id} still runs and is charged by the hour, and erpc no longer has it on record; end it in the dashboard"
+line_hourly = "data line {ids} still runs and is charged by the hour, and erpc no longer has it on record; end it in the dashboard"
+line_not_hourly = "data line {ids} still runs and is not billed by the hour, and erpc no longer has it on record; end it in the dashboard"
+
+[released]
+lines = " Its data lines are ended."
+dropped = " {line} was not among what the account is charged for; it leaves the record."
+server = " The hourly server is ended."
+no_server = " There was no hourly ERPC server on record to end."
+kept = "{line} is not billed by the hour, so erpc did not end it; it still runs until it is ended in the dashboard"
+
+[release]
+lines_failed = "the data lines: {error}"
+server_failed = "the server: {error}"
+
+[partly]
+removed = "the worker is removed from its server, and not everything is done: {problems}"
+no_host = "no server is on record to remove the worker from, and not everything is done: {problems}"
+skipped = "the worker's server was not reached, as asked, and not everything is done: {problems}"
+not_removed = "the worker is not removed from its server, and not everything is done: {problems}"
+not_kept = "what is not done could not be kept on record ({error}): end it in the dashboard"
+
+[retry]
+again = "what is not done stays on record: run `{command}` again"
+backup = "; a backup key can also be revoked with `erpc storage keys revoke <n>`; "
+server = "; the server can also be ended in the dashboard"
+lines = "; a line ended outside erpc leaves the record with `--forget-line <id>`, and one still running ends in the dashboard"
+forget = "; if the server can no longer be reached and the worker does not run there, `--forget` leaves it unreached"

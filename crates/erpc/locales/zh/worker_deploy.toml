@@ -1,0 +1,92 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+missing = "缺少 {settings}，{name} 无法启动"
+missing_hint = "用 `erpc worker secret put {first}{dir_scope}` 保存，或在 [vars] 中设置"
+plan = "将 {name} 版本 {release} 作为 {worker} 部署到 {to}"
+nothing_deployed = "未部署任何内容"
+services = "正在确认服务器上 {names} 已运行（首次会从 Ubuntu 软件包安装）"
+target = "将 {name} 作为 {worker} 部署到 {to}"
+build_stopped = "构建中途停止：{error}"
+could_not_read = "无法读取 {path}：{error}"
+installed = "已安装版本 {release}"
+starting = "正在启动并等待其进入健康状态"
+and = " 和 "
+and_then = "{hint}；{next}"
+
+[still_charged]
+other = "{names} 正在按小时计费且已记录：再次运行 `erpc worker deploy{scope}` 可继续使用，运行 `erpc worker delete --release-server{scope}` 可将其终止"
+
+[agent]
+named = "将安装 ERPC_WORKER_AGENT 指定的 agent（sha256 {sha256}），而不是此 erpc 自带的 agent"
+no_exe = "无法确定此 erpc 所在的位置"
+none = "此 erpc 未自带 {machine} Linux 的 worker agent，{path} 处也没有（{error}）"
+none_hint = "erpc 的正式发行版自带这些 agent；如果是自行构建，请运行 scripts/build-worker-agents.sh，并将 ERPC_WORKER_AGENTS_DIR 设为它输出的目录后再构建 erpc"
+not_installed = "无法安装 agent：{error}"
+installed = "agent 已安装"
+unchanged = "agent 未变更"
+
+[upload]
+failed = "无法上传 {path}：{error}"
+not_checked = "无法校验 {path}：{error}"
+not_whole = "{path} 未完整送达；未安装任何内容"
+
+[line]
+name = "{kind} 线路 {id}"
+not_ipv4 = "数据线路只允许一个 IPv4 地址接入，而服务器的地址是 {host}"
+not_ipv4_hint = "请使用服务器的 IPv4 地址进行部署"
+taking_up = "重新接管线路 {id}"
+wait = "已记录的 {name} 暂时无法接管：{why}；未购买任何内容"
+wait_hint = "一分钟后再次部署即可接管。如果它已被终止（例如在控制面板中），在 deploy 或 delete 时加上 `--forget-line {id}` 可将其从记录中移除"
+wait_hint_unbilled = "一分钟后再次部署即可接管。如果它已被终止（例如在控制面板中），在 deploy 或 delete 时加上 `--forget-line {id}` 可将其从记录中移除；erpc 不会终止非按小时计费的线路"
+waiting = "正在等待线路 {id} 激活"
+unlimited_slow = "Unlimited RPC 会获得一台专用服务器：最长可能需要 45 分钟"
+active = "线路 {id} 已激活，端点为 {endpoint}"
+charged = "{message}；该线路按小时计费"
+ended = "线路 {id} 已终止；现在不再产生费用"
+not_ended = "线路 {id} 未被终止，erpc.toml 仍保留其记录：再次部署以继续等待，或运行 `erpc worker delete --release-server{scope}` 将其终止"
+still_waiting = "线路 {id} 已记录在 erpc.toml 中并按小时计费：使用相同参数运行 `erpc worker deploy{scope}` 会再次等待，激活后可用 `erpc worker delete --release-server{scope}` 将其终止"
+not_on_record = "记录中没有可移除的线路 {id}"
+gone = "{name} 已不在账户中（不再产生费用）；将从记录中移除"
+not_kept = "无法记录线路 {id}：{error}"
+not_kept_hint = "该线路正在按小时计费；如不需要，请在控制面板中终止"
+
+[line.forgotten]
+other = "已按要求将 {names} 从记录中移除；仍在运行的线路会持续计费，直到在控制面板中终止"
+
+[wait]
+setting_up = "已开始计费，但 user-api 尚未列出（正在设置中）"
+not_yet_charged = "user-api 已列出，但账户费用中尚未显示"
+unbilled = "它不按小时计费，且 user-api 未列出"
+not_seen_yet = "已启动，但 user-api 的列表和账户费用中都尚未显示"
+
+[vps]
+not_kept = "VPS {id} 已启动，但无法记录：{error}"
+not_kept_hint = "该 VPS 正在按小时计费：运行 `erpc worker deploy --vps {id}{scope}` 可接管，或在控制面板中终止"
+taking_up = "正在接管之前部署时记录的 VPS {id}"
+
+[server]
+no_terminal = "erpc.toml 中没有 [env.{env}]，且当前不在交互式终端中，无法选择服务器"
+no_terminal_hint = "请指定 --vps <id>、--new-vps 或 --host <address>"
+new_vps = "新开一台按小时计费的 VPS（{region} 附近最便宜的套餐，会先显示价格）"
+which = "要在哪台服务器上运行？"
+
+[failed]
+unhealthy = "未能进入健康状态"
+previous = "上一个版本"
+back_healthy = "；服务器已回滚到 {to}，状态健康"
+back_unhealthy = "；服务器已回滚到 {to}，但它同样不健康"
+no_earlier = "；没有可回滚的更早版本，因此已停止运行"
+release = "版本 {release} 失败：{why}{back}"
+logs = "运行 `erpc worker logs{scope}` 查看原因"
+
+[done]
+runs = "{name} 版本 {release} 正作为 {worker} 在 {host} 上运行，状态健康。"
+ssh_only = "仅允许来自 {from} 的 SSH 连接。"
+rollback = "`erpc worker rollback{scope}` 可回滚到 {previous}。"
+in_vault = "服务器已记录在 1Password 保险库 {vault} 中（{title}）；erpc.toml 中记录了该保险库。"
+in_toml = "erpc.toml 中的 [env.{env}] 现已指向该服务器。"
+not_kept = "未能记录服务器：{error}"
+line = "{endpoint} 上的 {name} 允许此服务器接入。"
+line_hourly = "{endpoint} 上的 {name} 允许此服务器接入；在 `erpc worker delete --release-server{scope}` 将其终止之前，会一直按小时计费。"
+hourly_vps = "这是一台按小时计费的 VPS：在 `erpc worker delete --release-server{scope}` 将其终止之前，会一直计费。"

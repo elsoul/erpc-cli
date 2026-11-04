@@ -105,11 +105,27 @@ else
   bad "the rebuild installs the packages dist installs" "not installed by rebuild-compare:$missing"
 fi
 
-# 4. No cross linker: dist builds these natively.
-if printf '%s\n' "$job" | grep -q zigbuild; then
-  bad "the rebuild does not use cargo-zigbuild" "zig links differently from the native musl-gcc build"
+# 4. No cross linker for erpc itself: dist builds it natively. The worker
+#    agents erpc embeds are cross-built with cargo-zigbuild on purpose, the
+#    same way on every runner (scripts/build-worker-agents.sh, run by
+#    release.yml's build setup and by this job), so that script and the tool
+#    install are the only lines where the word may appear.
+agent_free=$(printf '%s\n' "$job" | grep -v 'build-worker-agents\.sh' | grep -v 'cargo-zigbuild@')
+if printf '%s\n' "$agent_free" | grep -q zigbuild; then
+  bad "the rebuild does not use cargo-zigbuild for erpc" "zig links differently from the native musl-gcc build"
 else
-  ok "the rebuild does not use cargo-zigbuild"
+  ok "the rebuild does not use cargo-zigbuild for erpc"
+fi
+
+# 5. The rebuild embeds the worker agents as the release build does, or the
+#    binaries cannot match: release.yml runs the same script before each build.
+generated="$repo_root/.github/workflows/release.yml"
+if printf '%s\n' "$job" | grep -q 'run: scripts/build-worker-agents\.sh' \
+   && grep -q 'scripts/build-worker-agents\.sh' "$generated"; then
+  ok "the rebuild builds the worker agents as release.yml does"
+else
+  bad "the rebuild builds the worker agents as release.yml does" \
+      "scripts/build-worker-agents.sh must run in rebuild-compare and in the generated release.yml"
 fi
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"

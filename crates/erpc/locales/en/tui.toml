@@ -1,0 +1,77 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+# The `erpc ai` console: its header, hints, status line, commands and the
+# pickers that answer a tool's question.
+
+wait_first = "Wait for the answer, or stop it with Esc, first."
+restarted = "Started a new conversation."
+continuing = "Continuing conversation {id}."
+open_dashboard = "Open the ERPC dashboard to buy a monthly or yearly plan: {url}"
+declined_because = "Declined to answer: {why}"
+declined = "Declined to answer"
+compacted = "The conversation had grown long, so its earlier part was summarised to keep it short; the full text is still saved."
+stopped = "Stopped."
+unknown_command = "Unknown command: {command} · /help"
+hint = " enter send · shift+enter new line · esc stop · pgup/pgdn scroll · /help"
+
+[commands]
+new = "start a new conversation"
+help = "keys and commands"
+exit = "leave the console"
+
+[footer]
+first_word = "first word {seconds}s"
+seconds = "{seconds}s"
+tokens = "{input} in · {output} out"
+cached = "{cached} cached"
+
+[help]
+keys = "Enter          send\nShift+Enter    new line (or Alt+Enter, Ctrl+J)\nEsc            stop the answer\nTab            take the suggested next message shown dimmed · complete a command\nUp Down        recall what you sent\nPgUp PgDn      scroll the conversation (Shift+Up/Down a little)\nCtrl+C         clear the box · leave when it is empty"
+
+[status]
+stopping = "stopping"
+writing = "writing"
+thinking = "thinking"
+waiting_for_pick = " · waiting for your pick"
+esc_to_stop = " · esc to stop"
+scrolled_back = " · scrolled back · PgDn to follow"
+
+[status.queued]
+one = " · {n} queued"
+other = " · {n} queued"
+
+[placeholder]
+tab = "  tab to use"
+busy = "Type the next message; it is sent when this answer ends"
+idle = "Ask anything about your nodes, account or erpc"
+
+[intro]
+user = "user"
+signed_in = "signed in"
+chain = "chain"
+plan = "plan"
+chain_not_set = "not set · erpc config set default_chain solana"
+try = "Try"
+try_validator = "How do I run a testnet validator?"
+try_rpc = "I want to run an RPC node"
+try_vps = "I need a VPS"
+
+[picker]
+yes = "Go ahead"
+no = "Stop"
+always = "Go ahead, and don't ask again for this command until I quit"
+every = "Go ahead, and don't ask again for any command or script until I quit"
+own_words = "None of these (type my own answer)"
+said_yes = "Yes."
+said_no = "No; nothing was changed."
+go_ahead = "Go ahead?"
+no_terminal = "{refused}: no one is at a terminal to say yes"
+pass_yes = "pass --yes to go ahead without being asked"
+said_no_to = "{refused}: you said no"
+said_always = "Yes; this command runs without asking until erpc ai ends."
+said_every = "Every command: asking once more first."
+said_own_words = "Type your answer below."
+hint_yes_no = " ↑ to go ahead · enter decide · n/esc no"
+hint_one = " ↑↓ choose · enter decide · 1-9 pick · esc type my own"
+hint_several = " ↑↓ move · space mark · enter decide · esc type my own"

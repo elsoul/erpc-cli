@@ -50,20 +50,41 @@ grant. It does not read or store private keys. When it uses a 1Password
 service account, it reads `OP_SERVICE_ACCOUNT_TOKEN` from its environment and
 passes it to the `op` processes it starts, and to no other process: the
 browser `erpc login` opens is started without any variable whose name begins
-with `OP_`, in any case. It does not write that token anywhere.
+with `OP_`, in any case. It does not write that token anywhere. A session the
+operator opened with `op signin`, on a machine without the 1Password app, is
+handled the same way: its `OP_SESSION_<account>` variable goes to `op` and
+nowhere else.
 
 ### Where the session is kept
 
-The session is kept in one store. Unless `--store` names one, the store is the
-first of these that applies:
+The session is kept in one store. `erpc login` at a terminal asks which: the
+operating system's keychain, which is the default, or 1Password when it
+answers -- the desktop app, or without it an `op signin` session that `op
+whoami` accepts -- followed by which vault. `--store` (and
+`--vault`) choose without asking. The choice is recorded as `credential_store`
+(and `credential_vault`) in `config.toml` beside the state directory, and the
+other commands use it.
+
+Without a choice, given or recorded, the store is the first of these that
+applies:
 
 1. a 1Password service account, when `OP_SERVICE_ACCOUNT_TOKEN` is set;
-2. the 1Password desktop app, when `op` is installed and `op account list`
-   answers;
-3. the operating system's keychain, when there is one;
-4. a file in the erpc state directory.
+2. the operating system's keychain, when there is one;
+3. a file in the erpc state directory.
 
 `erpc doctor` reports which store is in use and why.
+
+On Linux the keychain is the Secret Service where one answers on the session
+bus, and otherwise the kernel's persistent keyring for the user: in memory,
+never on disk, kept across logins until a reboot or a few days unused, after
+which `erpc login` is asked for again. The kernel lets a process use that
+keyring only when it holds one of the user's keyrings, which a login gives
+it; a process started without one (`su` without `-`, `sudo -E`) is refused
+and told so.
+
+The 1Password item is titled with the machine's name, so that two machines
+never share, and keep rotating, one session. `ERPC_HOST_LABEL` overrides the
+name.
 
 ### When the session is on disk in cleartext
 
@@ -78,10 +99,16 @@ that is not an absolute path.
   the file cannot be parsed, nothing in it can be read: `erpc login` replaces
   it and `erpc logout` removes it, as a whole, and `erpc login` says so.
 - **A parked session.** If the issuer has rotated a refresh token and the
-  store then refuses the new one, the new token is written here so that it is
-  not lost. `erpc whoami` moves it into the store if the store still holds the
-  session it replaced. `erpc login` and `erpc logout` revoke it and remove it,
-  and say so when they could not.
+  new one cannot reach the store, it is written here so that it is not lost.
+  That happens when the store refuses it; when `erpc` is asked to stop
+  (Ctrl-C, and on Unix also SIGTERM and the terminal closing) and the store
+  has not taken it within ten seconds, or a second request to stop comes
+  first; and when `erpc` panics before the store has it. A save that lands
+  after all leaves a copy of what the store already holds, which the next
+  command removes. The next command that reads the session, such as `erpc
+  whoami`, moves it into the store if the store still holds the session it
+  replaced. `erpc login` and `erpc logout` revoke it and remove it, and say
+  so when they could not.
 - **An interrupted write.** The two files above are written to a temporary
   file first and then renamed into place. A crash between the two steps
   leaves that temporary file behind.
@@ -96,10 +123,78 @@ they are in.
   audience in `crates/erpc-auth/src/allowlist.rs`.
 - The refresh token is sent only to its issuer's token and revoke endpoints,
   checked against the issuer's host before each request.
-- Every request URL is a compile-time constant.
+- Every request URL's host and path is a compile-time constant. The few
+  values that follow them -- a region, a bare metal category, a page cursor,
+  a product id -- go in the query string and are letters, digits, `-` and `_`
+  only, checked before the request is sent.
 - The HTTP client is configured to accept `https` only and not to follow
   redirects. Neither setting is covered by a test; the reasons are given
   beside them in `crates/erpc-auth/src/client.rs`.
+
+### Storage and backup secrets
+
+- `erpc storage put` encrypts files with an account key before they leave the
+  machine; `docs/storage-encryption.md` describes the format.
+- `erpc backup` keeps the restic repository's master password and a
+  `read_write` storage access key in the store `erpc login` chose. Each
+  machine gets its own `append_only` access key and its own restic key, kept
+  in `~/.erpc/backup.env` (0600). `docs/backup.md` sets out who holds what.
+  The `append_only` key keeps a machine from deleting backups only where the
+  machine holds neither the erpc session nor the account's backup secrets,
+  which the machine `erpc backup init` ran on does; `docs/backup.md` explains
+  ("What the append-only key protects, and when").
+- A storage access key is sent only by the restic that `erpc backup` runs,
+  as Basic authentication, to user-api's `/v3/storage/restic`. restic gets
+  it, and the repository password, from its environment, never from its
+  command line or a URL, and runs with an otherwise cleared environment.
+- The restic program is a pinned version. Both the release archive and the
+  program inside it are checked against SHA-256 digests compiled into erpc,
+  and a newer digest is never read from the network.
+
+### What the assistant reads
+
+Everything a tool returns is sent to the model, through the ERPC AI
+gateway, as part of the conversation. The tools are in
+`crates/erpc-ai/src/tools.rs`; besides those below, the assistant reads
+ERPC's documentation (`read_skill`), asks the person to choose
+(`ask_choice`), and keeps notes between conversations (`remember`,
+`forget`), which refuse anything that looks like a secret.
+
+- **Tools that read user-api** with the session: the signed-in account's
+  credit balance and history, card subscriptions, RPC and AI usage and the
+  services it runs, and what ERPC offers -- the server catalogue, servers in
+  stock by region, plan prices, hourly products and the health of each
+  region. Each passes on only the fields it names in
+  `crates/erpc-ai/src/tools.rs` and `services.rs`: figures, product names,
+  plans, regions, states and dates, and a service endpoint only when it is
+  an ERPC host with no query, fragment or user in it; for each of the
+  account's VPSs, its IP and login user, so the person can ask where it is.
+  From these tools, server passwords, IP whitelists, endpoints that carry a key,
+  payment details, Stripe ids and metadata, API keys and the session never
+  reach the model. None calls the `/list` catalogues, which open a Stripe
+  checkout session each time they are read.
+- **Tools that act**: `start_hourly_product`, `end_hourly_product`,
+  `top_up_credit`, `create_credit_wallet`, `secure_vps` and `restrict_ssh`
+  change the account, spend credit or EURC, or change a server. Each asks
+  the person first, with the cursor on no, every time; allowing every
+  command (below) does not change that.
+- **A new VPS's address reaches the model.** `wait_until_ready` returns the
+  VPS's state and, once it runs, its IP and login user (never its
+  password). `secure_vps` returns the server as `user@ip`, its host key
+  fingerprint and the user's own public address; `restrict_ssh` returns
+  the addresses SSH is allowed from, the user's included.
+- **`run_command`** runs a command on the user's own computer, and **what it
+  prints goes to the model**, whatever the command: one that only looks
+  and runs without asking (`journalctl`, `docker logs`, `systemctl status`
+  among them, so whatever a service logged), one the person said yes to,
+  or any command once the person allowed every command for the
+  conversation. The only thing hidden is the value of each `api-key=`,
+  `api_key=`, `apikey=` and `token=` parameter (`redacted` in
+  `crates/erpc-ai/src/commands.rs`). A command that prints a key file, a
+  password or a secret under another name hands it to the model. Once every
+  command is allowed, nothing is asked before a command runs, including one
+  that spends money or changes a server when given `--yes`, until erpc ai
+  ends or a new conversation starts (`/new`, `/clear`).
 
 ### What to report
 

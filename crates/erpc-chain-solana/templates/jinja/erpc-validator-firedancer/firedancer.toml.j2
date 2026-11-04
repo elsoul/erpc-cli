@@ -1,0 +1,41 @@
+# {{ ansible_managed | default('Written by erpc') }}
+#
+# erpc's lines over Firedancer's defaults for {{ erpc_fd_cluster }}, which
+# the service passes as --{{ erpc_fd_cluster }} (entrypoints, genesis hash,
+# snapshot sources).
+name = "erpc"
+user = "solv"
+
+[log]
+    path = "/home/solv/firedancer.log"
+
+[paths]
+    base = "/mnt/ledger/firedancer"
+    identity_key = "/home/solv/identity.json"
+{% if no_voting | default(true) | bool %}
+    # Sync-only: no vote account, so the validator does not vote.
+    vote_account = ""
+{% else %}
+    vote_account = "{{ vote_account | mandatory('A voting validator needs vote_account') }}"
+{% endif %}
+    snapshots = "/mnt/snapshot"
+    accounts = "/mnt/accounts/accounts.db"
+
+[consensus]
+    # Mainnet runs Alpenglow since its genesis certificate, and testnet
+    # before it; Firedancer does not migrate from Tower.
+    alpenglow = true
+
+[layout]
+{% if no_voting | default(true) | bool %}
+    # Sync-only: an unstaked node never leads, so it needs none of the
+    # block producing tiles, and without them the default layout fits a
+    # 32-CPU host (with them it does not: available, 2026-10-24).
+    enable_block_production = false
+{% else %}
+    enable_block_production = true
+{% endif %}
+
+[tiles.rpc]
+    rpc_listen_address = "127.0.0.1"
+    rpc_listen_port = {{ port_rpc | default(7211) }}

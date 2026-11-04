@@ -1,0 +1,318 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+"""Validator credential binding and read-only gRPC state. Never signs transactions."""
+import base64
+import hmac
+import hashlib
+import json
+import os
+import pathlib
+import re
+import subprocess
+import sys
+import tempfile
+import time
+
+ENDPOINTS = {
+    'mainnet': ('https://fullnode.mainnet.sui.io:443', '35834a8a', '4btiuiMPvEENsttpZC7CZ53DruC3MAgfznDbASZ7DR6S'),
+    'testnet': ('https://fullnode.testnet.sui.io:443', '4c78adac', '69WiPg3DAQiwdxfncX6wYQ2siKwAe6L9BZthQea3JNMD'),
+}
+KEYS = ('protocol', 'network', 'worker')
+CREDENTIALS = pathlib.Path('/etc/credstore.encrypted/sui-validator')
+MARKER = pathlib.Path('/etc/sui/validator-identity-established')
+METADATA = pathlib.Path('/etc/sui/validator.json')
+
+
+def varint(data, offset):
+    value = 0
+    for shift in range(0, 70, 7):
+        if offset >= len(data):
+            raise ValueError('truncated protobuf integer')
+        byte = data[offset]
+        offset += 1
+        if shift == 63 and byte > 1:
+            raise ValueError('oversized protobuf integer')
+        value |= (byte & 127) << shift
+        if not byte & 128:
+            return value, offset
+    raise ValueError('invalid protobuf integer')
+
+
+def fields(data):
+    """Bounded protobuf wire reader; schemas are pinned in the operations guide."""
+    if len(data) > 8 * 1024 * 1024:
+        raise ValueError('oversized protobuf message')
+    result, offset = {}, 0
+    while offset < len(data):
+        tag, offset = varint(data, offset)
+        number, wire = tag >> 3, tag & 7
+        if number == 0:
+            raise ValueError('invalid protobuf field')
+        if wire == 0:
+            value, offset = varint(data, offset)
+        elif wire in (1, 2, 5):
+            if wire == 2:
+                size, offset = varint(data, offset)
+            else:
+                size = 8 if wire == 1 else 4
+            if size > len(data) - offset:
+                raise ValueError('truncated protobuf field')
+            value, offset = data[offset:offset + size], offset + size
+        else:
+            raise ValueError('unsupported protobuf wire type')
+        result.setdefault(number, []).append(value)
+    return result
+
+
+def one(message, number, default=None):
+    values = message.get(number, [])
+    if len(values) > 1:
+        raise ValueError('duplicate singular protobuf field')
+    return values[0] if values else default
+
+
+def rpc(network, method, message=b'', service='LedgerService'):
+    if (service, method) not in [('LedgerService', 'GetServiceInfo'), ('LedgerService', 'GetEpoch'), ('StateService', 'ListDynamicFields')]:
+        raise ValueError('only read-only Sui observations are supported')
+    endpoint = ENDPOINTS[network][0]
+    with tempfile.TemporaryDirectory(prefix='sui-state-', dir='/run') as directory:
+        header, body = pathlib.Path(directory) / 'headers', pathlib.Path(directory) / 'body'
+        frame = bytes([0]) + len(message).to_bytes(4, 'big') + message
+        completed = subprocess.run([
+            'curl', '--silent', '--show-error', '--http2', '--proto', '=https',
+            '--max-time', '10', '--max-filesize', '8388608',
+            '-D', str(header), '-o', str(body), '-H', 'content-type: application/grpc',
+            '-H', 'te: trailers', '--data-binary', '@-',
+            endpoint + '/sui.rpc.v2.' + service + '/' + method,
+        ], input=frame, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        if completed.returncode or not re.search(r'^grpc-status:\s*0\s*$', header.read_text(), re.M | re.I):
+            raise ValueError('public gRPC state query failed; admission remains unknown')
+        response = body.read_bytes()
+        if len(response) < 5 or response[0] != 0 or int.from_bytes(response[1:5], 'big') != len(response) - 5:
+            raise ValueError('invalid or compressed unary gRPC response')
+        return fields(response[5:])
+
+
+def encoded_varint(value):
+    out = bytearray()
+    while value >= 128:
+        out.append((value & 127) | 128)
+        value >>= 7
+    out.append(value)
+    return bytes(out)
+
+
+def blob_field(number, value):
+    return encoded_varint(number * 8 + 2) + encoded_varint(len(value)) + value
+
+
+def admission(network, validators, epoch, protocol):
+    # Field layout: sui-rust-sdk 1313d511..., system_state.proto / state_service.proto.
+    # Policy: Sui bf407391..., sui-system/sources/validator_set.move, 14-epoch phases.
+    if protocol != 139:
+        return {'status': 'unknown', 'reason': 'protocol version needs a reviewed admission policy'}
+    table = fields(one(validators, 9, b''))
+    parent = one(table, 1, b'')
+    if not parent:
+        return {'status': 'unknown', 'reason': 'validator extra-fields table was not returned'}
+    mask = b''.join(blob_field(1, value) for value in (b'name', b'value', b'value_type'))
+    request = blob_field(1, parent) + bytes([0x10]) + encoded_varint(1000) + blob_field(4, mask)
+    response = rpc(network, 'ListDynamicFields', request, service='StateService')
+    if one(response, 2, b''):
+        return {'status': 'unknown', 'reason': 'admission table exceeded one bounded page'}
+    start = None
+    for raw in response.get(1, []):
+        entry = fields(raw)
+        name = one(fields(one(entry, 5, b'')), 1, b'').decode()
+        if not name:
+            return {'status': 'unknown', 'reason': 'dynamic field omitted its type name'}
+        parts = name.split('::')
+        if len(parts) == 3 and parts[1:] == ['validator_set', 'VotingPowerAdmissionStartEpochKey'] and int(parts[0], 16) == 3:
+            value = one(fields(one(entry, 6, b'')), 2, b'')
+            if start is not None or len(value) != 8 or one(entry, 7, b'') != b'u64':
+                raise ValueError('ambiguous admission start epoch')
+            start = int.from_bytes(value, 'little')
+    # The pinned Move implementation uses epoch+1 when the field is absent.
+    effective_start = epoch + 1 if start is None else start
+    minimum = 12 if epoch < effective_start + 14 else 6 if epoch < effective_start + 28 else 3
+    return {'status': 'observed', 'epoch': epoch, 'start_epoch': start,
+            'minimum_joining_voting_power': minimum,
+            'eligibility': 'candidate stake, duplicate metadata and admission still require external transaction dry-run'}
+
+
+def observe(network, metadata):
+    service = rpc(network, 'GetServiceInfo')
+    chain = one(service, 1, b'').decode()
+    if chain not in ENDPOINTS[network][1:] or one(service, 2, b'').decode() != network:
+        raise ValueError('public endpoint reported another network')
+    stamp = one(fields(one(service, 5, b'')), 1, 0)
+    age = time.time() - stamp
+    if stamp == 0 or age < -30 or age > 120:
+        raise ValueError('public endpoint checkpoint is stale or in the future')
+    # GetEpochRequest.read_mask contains epoch and system_state.
+    mask = b'\x0a\x05epoch\x0a\x0csystem_state'
+    reply = rpc(network, 'GetEpoch', bytes([0x12, len(mask)]) + mask)
+    epoch = fields(one(reply, 1, b''))
+    if one(epoch, 1) != one(service, 3):
+        raise ValueError('epoch changed during observation; retry')
+    system = fields(one(epoch, 3, b''))
+    validators = fields(one(system, 4, b''))
+    wanted = metadata['info']
+    active = None
+    for item in validators.get(2, []):
+        validator = fields(item)
+        if one(validator, 2, b'').decode().lower() == wanted['account-address'].lower():
+            if active is not None:
+                raise ValueError('duplicate active validator address')
+            active = validator
+    matching = active is not None and all(
+        hmac.compare_digest(one(active, field, b''), base64.b64decode(wanted[key], validate=True))
+        for field, key in [(7, 'protocol-key'), (10, 'network-key'), (12, 'worker-key')]
+    )
+    policy = admission(network, validators, one(epoch, 1), one(system, 3))
+    if one(rpc(network, 'GetServiceInfo'), 3) != one(epoch, 1):
+        raise ValueError('epoch changed during admission lookup; retry')
+    return {
+        'chain_id': chain, 'epoch': one(epoch, 1), 'protocol_version': one(system, 3),
+        'observed_total_stake_mist': one(validators, 1),
+        'membership': 'active' if active is not None else 'not-in-active-set',
+        'keys_match': matching,
+        'keys_in_active_set': active is not None or any(
+            any(hmac.compare_digest(one(fields(item), field, b''), base64.b64decode(wanted[key], validate=True))
+                for field, key in [(7, 'protocol-key'), (10, 'network-key'), (12, 'worker-key')])
+            for item in validators.get(2, [])
+        ),
+        'candidate_pending_inactive': 'not classified by this active-set query',
+        'admission': policy,
+    }
+
+
+def public_key(path, directory):
+    # keytool show is local/read-only and prints public data only. Unlike
+    # make-validator-info, it never exports an account/owner key.
+    store = pathlib.Path(directory) / 'empty.keystore'
+    store.write_text('[]')
+    config = {'keystore': {'File': str(store)}, 'external_keys': None,
+              'envs': [], 'active_env': None, 'active_address': None}
+    (pathlib.Path(directory) / 'client.yaml').write_text(json.dumps(config))
+    env = dict(os.environ, SUI_CONFIG_DIR=str(directory))
+    result = subprocess.run(['/opt/sui/current/sui', 'keytool', '--json', 'show', str(path)],
+                            env=env, check=False, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    if result.returncode:
+        raise ValueError('Sui keytool rejected a validator key')
+    parsed = json.loads(result.stdout)
+    if not isinstance(parsed, dict) or not isinstance(parsed.get('publicBase64Key'), str):
+        raise ValueError('unexpected keytool public output')
+    public = base64.b64decode(parsed['publicBase64Key'], validate=True)
+    # keytool's Sui PublicKey adds its scheme byte; NetworkPublicKey in
+    # GenesisValidatorInfo is raw Ed25519. BLS authority keys have no flag.
+    if parsed.get('keyScheme') == 'ed25519' and len(public) == 33 and public[0] == 0:
+        public = public[1:]
+    elif parsed.get('keyScheme') != 'bls12381' or len(public) != 96:
+        raise ValueError('unexpected validator key scheme')
+    return base64.b64encode(public).decode()
+
+
+def decrypted(name, directory):
+    dest = pathlib.Path(directory) / (name + '.key')
+    subprocess.run(['systemd-creds', 'decrypt', '--name=' + name + '.key',
+                    str(CREDENTIALS / (name + '.key')), str(dest)],
+                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return dest
+
+
+def check_keys(metadata, require_marker=True):
+    if not CREDENTIALS.is_dir() or (require_marker and not MARKER.exists()):
+        raise ValueError('validator identity is missing; explicit recovery is required')
+    if MARKER.exists():
+        saved = json.loads(MARKER.read_text())
+        if saved['metadata'] != hashlib.sha256(METADATA.read_bytes()).hexdigest():
+            raise ValueError('reserved validator metadata changed; identity is immutable')
+    with tempfile.TemporaryDirectory(prefix='sui-key-check-', dir='/run') as directory:
+        for name in KEYS:
+            key = decrypted(name, directory)
+            if not hmac.compare_digest(public_key(key, directory), metadata['info'][name + '-key']):
+                raise ValueError('validator key does not match reserved public metadata')
+    return {'identity': 'matches-public-metadata'}
+
+
+def import_keys(metadata, network, payload, restore=False):
+    if set(payload) != set(KEYS):
+        raise ValueError('only protocol/network/worker keys may be imported; owner keys are refused')
+    if restore:
+        if not MARKER.exists():
+            raise ValueError('same-host recovery requires the original identity receipt')
+        saved = json.loads(MARKER.read_text())
+        if saved['metadata'] != hashlib.sha256(METADATA.read_bytes()).hexdigest():
+            raise ValueError('same-host recovery refuses changed public metadata')
+    elif CREDENTIALS.exists() or MARKER.exists():
+        # Never overwrite a previously established signer, even with another supplied bundle.
+        result = check_keys(metadata, require_marker=False)
+        receipt()
+        return result
+    if not restore and (observe(network, metadata)['keys_in_active_set']):
+        raise ValueError('owner already has an active validator; live signer migration is not supported')
+    with tempfile.TemporaryDirectory(prefix='sui-key-import-', dir='/run') as directory:
+        with tempfile.TemporaryDirectory(prefix='.sui-validator-', dir='/etc/credstore.encrypted') as encrypted:
+            for name in KEYS:
+                value = payload[name]
+                if not isinstance(value, str):
+                    raise ValueError('invalid key encoding')
+                raw = base64.b64decode(value, validate=True)
+                if len(raw) != (32 if name == 'protocol' else 33) or (name != 'protocol' and raw[0] != 0):
+                    raise ValueError('invalid validator key format')
+                key = pathlib.Path(directory) / (name + '.key')
+                key.write_text(value)
+                if not hmac.compare_digest(public_key(key, directory), metadata['info'][name + '-key']):
+                    raise ValueError('imported key does not match public metadata')
+                subprocess.run(['systemd-creds', 'encrypt', '--name=' + name + '.key', str(key),
+                                str(pathlib.Path(encrypted) / (name + '.key'))], check=True,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            # Publish all three encrypted files together; a partial signer is never selected.
+            if restore and CREDENTIALS.exists():
+                # Preserve the previous encrypted bundle for forensic recovery.
+                os.rename(CREDENTIALS, CREDENTIALS.with_name('sui-validator.quarantine.' + str(time.time_ns())))
+            os.rename(encrypted, CREDENTIALS)
+            # TemporaryDirectory cleanup tolerates the directory being renamed.
+    receipt()
+    return check_keys(metadata)
+
+
+def receipt():
+    value = {'metadata': hashlib.sha256(METADATA.read_bytes()).hexdigest()}
+    for name in KEYS:
+        value[name] = hashlib.sha256((CREDENTIALS / (name + '.key')).read_bytes()).hexdigest()
+    pending = MARKER.with_suffix('.pending')
+    pending.write_text(json.dumps(value))
+    os.replace(pending, MARKER)
+
+
+def main():
+    os.umask(0o077)
+    contract = json.loads(pathlib.Path('/etc/sui/contract.json').read_text())
+    if contract['role'] != 'validator':
+        raise ValueError('this host is not reserved for a validator')
+    metadata = json.loads(METADATA.read_text())
+    action = sys.argv[1] if len(sys.argv) == 2 else ''
+    if action in ('import', 'restore'):
+        payload = sys.stdin.buffer.read(4097)
+        if len(payload) > 4096:
+            raise ValueError('oversized key import')
+        result = import_keys(metadata, contract['network'], json.loads(payload), restore=action == 'restore')
+    elif action == 'check':
+        result = check_keys(metadata)
+    elif action == 'status':
+        result = observe(contract['network'], metadata)
+    else:
+        raise ValueError('unsupported validator operation')
+    print(json.dumps(result))
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (ValueError, OSError, KeyError, TypeError, AttributeError, subprocess.SubprocessError):
+        # Native/provider errors can include key-file contents; emit no exception payload.
+        print('Sui validator operation failed; identity or network state was not verified', file=sys.stderr)
+        raise SystemExit(1)

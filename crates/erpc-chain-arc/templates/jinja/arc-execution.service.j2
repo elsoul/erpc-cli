@@ -1,0 +1,80 @@
+# Managed by erpc: `erpc r --chain arc update-config` writes it again.
+[Unit]
+Description=Arc execution layer ({{ arc_chain }}, {{ arc_version }})
+After=network-online.target
+Wants=network-online.target
+
+Requires=erpc-arc-firewall.service
+
+[Service]
+ExecStartPre=+/usr/bin/python3 /usr/local/lib/erpc/rpc-firewall.py arc guard
+Type=simple
+User=arc
+Group=arc
+# /run/arc holds the IPC sockets the consensus layer drives this layer through.
+RuntimeDirectory=arc
+RuntimeDirectoryMode=0750
+Environment=RUST_LOG=info
+WorkingDirectory={{ arc_home }}
+ExecStart={{ arc_opt }}/current/arc-node-execution node \
+  --chain {{ arc_chain }} \
+  --datadir {{ arc_home }}/execution \
+{% if arc_pruned | bool %}
+  --full \
+{% endif %}
+{% if arc_provider | bool %}
+  --trusted-peers {{ arc_trusted_peers | join(',') }} \
+  --tx-propagation-policy Trusted \
+{% else %}
+  --disable-discovery \
+  --arc.tx.relays {{ arc_relays | join(',') }} \
+{% endif %}
+  --ipcpath /run/arc/reth.ipc \
+  --auth-ipc \
+  --auth-ipc.path /run/arc/auth.ipc \
+  --http \
+  --http.addr {{ arc_rpc_bind }} \
+  --http.port 8545 \
+  --http.api {{ arc_rpc_api }} \
+  --ws \
+  --ws.addr {{ arc_rpc_bind }} \
+  --ws.port 8546 \
+  --ws.api {{ arc_rpc_api }} \
+  --public-api \
+  --metrics {{ arc_metrics_bind }}:9001 \
+  --log.file.max-files 0 \
+  --enable-arc-rpc
+
+Restart=always
+RestartSec=10
+KillSignal=SIGTERM
+# reth exits 143 after a clean shutdown on SIGTERM.
+SuccessExitStatus=143
+TimeoutStopSec=300
+LimitNOFILE=1048576
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=arc-execution
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths={{ arc_home }}
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

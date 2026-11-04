@@ -1,0 +1,83 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+# `erpc worker` 自身的消息：查找应用、check、init 和 list。
+
+[chain]
+unknown = "erpc worker 提供以下链的模板：{chains}"
+
+[env]
+none = "运行 `erpc worker deploy{scope}` 可添加一个"
+
+[find]
+no_file = "{path} 不存在"
+no_cwd = "无法读取当前目录：{error}"
+no_manifest = "{dir} 及其上级目录中没有 {file}"
+no_app_here = "此目录中没有应用；`erpc worker init` 可创建一个"
+init_or_dir = "运行 `erpc worker init` 创建应用，或传入 --dir <应用目录>"
+unknown = "erpc 中没有名为 {name} 的应用"
+unknown_hint = "`erpc worker list` 会列出已知的应用；其他应用请用 --dir <目录> 指定"
+ambiguous = "有多个名为 {name} 的应用：{dirs}"
+ambiguous_hint = "请用 --dir <目录> 指定是哪一个"
+
+[manifest]
+fix = "请修正 {file}，然后运行 `erpc worker check{dir_scope}`"
+
+[check]
+ready = "{name} 已就绪"
+no_pubkey = "（未设置公钥）"
+no_server = "（尚无服务器）"
+in_1password = "服务器信息保存在 1Password"
+build = "{command}  → {bin}（目标 {target}）"
+no_wallet = "无；`erpc worker key new{dir_scope}` 可创建一个"
+no_env = "暂无；`erpc worker deploy{scope}` 可添加一个"
+env_in_1password = "{name}：服务器信息保存在 1Password（保险库 {vault}）  服务 {service}"
+env = "{name}：{host}{resource}  服务 {service}"
+hourly = "，按小时计费"
+
+[check.problems]
+other = "{path}：{n} 个问题"
+
+[init]
+what = "要创建什么"
+making = "正在从 {template} 创建 {name}"
+at = "位于 {dir}"
+nothing_made = "未创建任何内容"
+done = "完成"
+pick_another = "请换一个 --name，或用 --into 指定其他目录"
+funds = "一旦钱包中有 SOL，此应用就会使用真实资金进行交易。本应用不提供任何担保；请只投入你能承受损失的资金。其密钥绝不会写入文件：`erpc worker key new{dir_scope}` 会将其保存在 1Password 或钥匙串中。"
+unlisted = "`erpc worker list` 不会显示它：{error}"
+bad_name = "`{name}` 不能用作应用名：须由 1 到 32 个小写字母、数字和单个连字符组成，并以字母开头"
+nothing_called = "{chain} 没有名为 `{asked}` 的可创建项：请选择 {kinds}，或模板 {ids}"
+or = "或"
+no_templates = "此版本的 erpc 没有 {chain} 模板"
+many_templates = "{chain} 有多个模板；请用 --template 选择一个"
+
+[init.made]
+other = "已从 {template} 创建 {name}（{n} 个文件）"
+
+[init.made_in]
+other = "已在 {dir} 中从 {template} 创建 {name}（{n} 个文件）。"
+
+[init.git]
+made = "已初始化为新的 git 仓库。"
+skipped = "未创建 git 仓库（{why}）。"
+failed = "未能创建 git 仓库：{why}"
+failed_drawn = "未能创建 git 仓库：{why}"
+not_installed = "未安装 git"
+inside = "该目录已位于某个 git 仓库中"
+
+[list]
+none = "本机还没有应用；`erpc worker init` 可创建一个。"
+none_drawn = "本机还没有应用。"
+not_deployed = "未部署"
+deployed = "已部署：{envs}"
+gone = "（那里已没有 erpc.toml）"
+gone_drawn = "{name}：{dir} 中已没有 erpc.toml"
+pruned = "已从列表中移除 {count} 个 erpc.toml 已不存在的应用"
+prune_hint = "`erpc worker list --prune` 会把 erpc.toml 已不存在的应用从列表中移除，不改动其他任何内容"
+invalid = "（erpc.toml 有问题；`erpc worker check{dir_scope}`）"
+invalid_drawn = "{name}：erpc.toml 有问题"
+in_vault = "{name}  ·  环境 {env} 在 1Password 中，本机没有该应用（克隆该应用即可接手）"
+in_vault_heading = "在 1Password 中但本机没有对应应用（克隆该应用即可接手）："
+vault_unread = "（未能列出保险库 {vault} 中的 worker 项目：{error}）"

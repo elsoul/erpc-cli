@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+# `erpc memory`：`erpc ai` が会話をまたいで覚えていること。
+
+empty = "erpc ai が覚えていることはまだありません。"
+kept_in = "{path} に保存しています。1件消すには `erpc memory forget <id>`、すべて消すには `erpc memory clear` を使います。"
+forgot = "{id} を忘れました。"
+no_such = "番号 {id} の記憶はありません。`erpc memory list` で確認してください"
+cleared = "erpc ai の記憶をすべて消しました。"

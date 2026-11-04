@@ -1,0 +1,75 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Starts the layers in order and checks they found each other: Reth, its
+# engine port, Lighthouse, then the chain id and Lighthouse's view of the
+# execution layer. `eth_restart` restarts layers that are running already,
+# in the same order: Lighthouse is stopped first, so it never runs against a
+# Reth that is going away.
+---
+- name: Stop Lighthouse before Reth restarts
+  ansible.builtin.systemd_service:
+    name: lighthouse
+    state: stopped
+  when: eth_restart | default(false) | bool
+
+- name: Start Reth
+  ansible.builtin.systemd_service:
+    name: reth
+    state: "{{ 'restarted' if (eth_restart | default(false) | bool) else 'started' }}"
+    enabled: true
+    daemon_reload: true
+
+- name: Wait for Reth's engine port
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: 8551
+    timeout: 600
+
+- name: Start Lighthouse
+  ansible.builtin.systemd_service:
+    name: lighthouse
+    state: started
+    enabled: true
+
+- name: Check the chain is the one this node is for
+  ansible.builtin.uri:
+    url: http://127.0.0.1:8545
+    method: POST
+    body_format: json
+    body: { jsonrpc: "2.0", id: 1, method: eth_chainId, params: [] }
+    return_content: true
+  register: eth_chain_id_answer
+  until: eth_chain_id_answer.status | default(0) == 200
+  retries: 60
+  delay: 5
+  failed_when: (eth_chain_id_answer.json.result | default('0x0') | int(base=16)) != eth_chain_id | int
+
+# Lighthouse loads its checkpoint state first, then drives Reth over the
+# engine API: el_offline false is that working, JWT and all.
+- name: Wait for Lighthouse to reach Reth
+  ansible.builtin.uri:
+    url: http://127.0.0.1:5052/eth/v1/node/syncing
+    return_content: true
+  register: eth_cl_syncing
+  until: >-
+    eth_cl_syncing.status | default(0) == 200 and
+    not (eth_cl_syncing.json.data.el_offline | default(true) | bool)
+  retries: "{{ eth_cl_wait_retries | default(120) }}"
+  delay: 10
+
+- name: Read the execution layer's head
+  ansible.builtin.uri:
+    url: http://127.0.0.1:8545
+    method: POST
+    body_format: json
+    body: { jsonrpc: "2.0", id: 1, method: eth_blockNumber, params: [] }
+    return_content: true
+  register: eth_head
+
+- name: Say where the node is
+  ansible.builtin.debug:
+    msg: >-
+      execution head {{ eth_head.json.result | default('0x0') | int(base=16) }},
+      consensus head slot {{ eth_cl_syncing.json.data.head_slot | default('?') }},
+      syncing {{ eth_cl_syncing.json.data.is_syncing | default('?') }}

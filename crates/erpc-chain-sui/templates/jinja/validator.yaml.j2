@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+# Historical config key names retained by the pinned client; the API is gRPC.
+protocol-key-pair:
+  path: /run/credentials/sui-node.service/protocol.key
+worker-key-pair:
+  path: /run/credentials/sui-node.service/worker.key
+network-key-pair:
+  path: /run/credentials/sui-node.service/network.key
+db-path: /var/lib/sui/db
+network-address: /ip4/0.0.0.0/tcp/8080/http
+json-rpc-address: "{{ '0.0.0.0' if sui_rpc_allow | length else '127.0.0.1' }}:9000"
+metrics-address: "{{ '0.0.0.0' if sui_monitoring_allow | length else '127.0.0.1' }}:9184"
+admin-interface-port: 1337
+rpc:
+  enable-indexing: false
+consensus-config:
+  db-path: /var/lib/sui/consensus-db
+p2p-config:
+  listen-address: 0.0.0.0:8084
+  external-address: {{ sui_validator_metadata.info["p2p-address"] | to_json }}
+  seed-peers:
+{% if sui_network == 'mainnet' %}
+    - address: /dns/mel-00.mainnet.sui.io/udp/8084
+      peer-id: d32b55bdf1737ec415df8c88b3bf91e194b59ee3127e3f38ea46fd88ba2e7849
+    - address: /dns/ewr-00.mainnet.sui.io/udp/8084
+      peer-id: c7bf6cb93ca8fdda655c47ebb85ace28e6931464564332bf63e27e90199c50ee
+{% else %}
+    - address: /dns/yto-tnt-ssfn-01.testnet.sui.io/udp/8084
+      peer-id: 2ed53564d5581ded9b6773970ac2f1c84d39f9edf01308ff5a1ffe09b1add7b3
+    - address: /dns/yto-tnt-ssfn-00.testnet.sui.io/udp/8084
+      peer-id: 6563732e5ab33b4ae09c73a98fd37499b71b8f03c27b5cc51acc26934974aff2
+{% endif %}
+genesis:
+  genesis-file-location: /etc/sui/genesis.blob
+authority-store-pruning-config:
+  num-epochs-to-retain: 0
+  num-epochs-to-retain-for-checkpoints: 2

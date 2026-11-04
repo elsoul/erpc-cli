@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+ssh_network = "firewall.ssh_allow has the network {cidr}; the SSH allow list takes single addresses"
+me_added = "note: erpc connects from {me}, which firewall.ssh_allow does not list; it is allowed too, so erpc can still get in"
+no_address = "erpc could not tell which address it connects from, and firewall.ssh_allow is empty; nothing was changed"
+no_address_hint = "list your address in [env.<name>.firewall] ssh_allow"
+ssh_apply_unfinished = "applying the SSH allow list did not finish ({error}); if it is in force, the server puts the previous one back within {seconds} s"
+ssh_locked_out = "erpc could not get back in through the new SSH allow list ({error}); the server puts the previous one back within {seconds} s"
+ssh_not_kept = "the SSH allow list was not kept ({state})"
+not_applied = "the server's firewall was not applied: {error}; if it was, it goes back by itself within {seconds} s"
+not_kept = "the server's firewall was not kept: {why}"
+no_reason = "no reason given"
+allowing_ssh = "allowing SSH only from {addresses}"
+dropping_open = "dropping every other inbound connection; port {port} open to {addresses}"
+dropping_closed = "dropping every other inbound connection; the app's port stays closed"
+ssh_network_given = "{network} is a network; SSH is allowed from single addresses only"
+ssh_network_hint = "networks can be given to `--to app`"
+will_be = "The firewall will be:"
+nothing_changed = "nothing was changed"
+in_force = "{worker}'s server firewall is in force: SSH from {ssh}; {app}; everything else dropped."
+app_closed = "the app's port closed"
+app_open = "port {port} from {addresses}"
+
+[describe]
+nobody = "nobody"
+ssh = "ssh       {list} (and the address erpc connects from)"
+app_closed = "app       closed (erpc.toml sets no run.port)"
+all_else = "all else  dropped"
+
+[list]
+title = "{worker} on {host}:"
+on_server = "On the server:"
+none_yet = "no worker firewall yet; `{command}` applies it"
+pending = "a change is waiting to be confirmed, or to roll back by itself"
+
+[unchanged]
+allowed = "nothing to change: {addresses} is allowed already; `{command}` applies erpc.toml again"
+denied = "nothing to change: {addresses} is not allowed already; `{command}` applies erpc.toml again"

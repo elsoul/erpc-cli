@@ -1,0 +1,100 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Prepare a dedicated Sui host without formatting disks
+  hosts: all
+  become: true
+  gather_facts: false
+  vars_files: [vars.yml]
+  tasks:
+    # node-run.sh holds /opt/erpc's lock across this guard and every task.
+    - name: Verify the expected host contract before any mutation
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ sui_jinja }}/erpc-sui-control.py.j2"
+          - guard-init
+          - "{{ sui_network }}"
+          - "{{ sui_role }}"
+          - "{{ sui_genesis_sha256 }}"
+      changed_when: false
+    - name: Reject changed validator metadata before mutating this host
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ sui_jinja }}/erpc-sui-control.py.j2"
+          - guard-metadata
+          - "{{ sui_network }}"
+          - "{{ sui_role }}"
+          - "{{ sui_genesis_sha256 }}"
+        stdin: "{{ sui_validator_metadata | to_json }}"
+      changed_when: false
+      when: sui_role == 'validator'
+
+    - name: Detect an existing unmanaged Sui service
+      ansible.builtin.stat:
+        path: /etc/systemd/system/sui-node.service
+      register: sui_existing_service
+    - name: Detect the erpc host contract
+      ansible.builtin.stat:
+        path: /etc/sui/contract.json
+      register: sui_existing_contract
+    - name: Refuse adopting an unmanaged installation
+      ansible.builtin.assert:
+        that: not sui_existing_service.stat.exists or sui_existing_contract.stat.exists
+        fail_msg: An unmanaged Sui service exists; migration needs an explicit ownership and key-recovery workflow.
+        quiet: true
+    - name: Install host runtime packages
+      ansible.builtin.apt:
+        name: [ca-certificates, curl, python3, nftables, libpq5, libssl3t64]
+        state: present
+        update_cache: true
+    - name: Create the unprivileged service identity
+      ansible.builtin.user:
+        name: sui
+        system: true
+        home: /var/lib/sui
+        create_home: false
+        shell: /usr/sbin/nologin
+    - name: Create fixed service directories
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        owner: "{{ item.owner }}"
+        group: "{{ item.group }}"
+        state: directory
+        mode: "{{ item.mode }}"
+      loop:
+        - {path: /var/lib/sui, owner: sui, group: sui, mode: "0700"}
+        - {path: /etc/sui, owner: root, group: sui, mode: "0750"}
+        - {path: /opt/sui, owner: root, group: root, mode: "0755"}
+        - {path: /etc/credstore.encrypted, owner: root, group: root, mode: "0700"}
+        - {path: /etc/erpc/sui, owner: root, group: root, mode: "0700"}
+        - {path: /usr/local/lib/erpc, owner: root, group: root, mode: "0755"}
+    - name: Preserve network and role ownership of this host
+      ansible.builtin.copy:
+        content: "{{ {'network': sui_network, 'role': sui_role, 'genesis': sui_genesis_sha256} | to_json }}\n"
+        dest: /etc/sui/contract.json
+        owner: root
+        group: sui
+        mode: "0640"
+        force: false
+    - name: Check the persisted contract before any data or identity work
+      ansible.builtin.slurp:
+        src: /etc/sui/contract.json
+      register: sui_contract
+    - name: Refuse a different network or role
+      ansible.builtin.assert:
+        that:
+          - (sui_contract.content | b64decode | from_json).network == sui_network
+          - (sui_contract.content | b64decode | from_json).role == sui_role
+          - (sui_contract.content | b64decode | from_json).genesis == sui_genesis_sha256
+        quiet: true
+    - name: Reserve immutable public validator metadata
+      ansible.builtin.copy:
+        content: "{{ sui_validator_metadata | to_json }}\n"
+        dest: /etc/sui/validator.json
+        owner: root
+        group: sui
+        mode: "0640"
+        force: false
+      when: sui_role == 'validator'

@@ -1,0 +1,15 @@
+{
+  "network-id": {{ avax_network | to_json }},
+  "data-dir": "/var/lib/avalanchego",
+  "db-dir": "/var/lib/avalanchego/db",
+  "log-dir": "/var/lib/avalanchego/logs",
+  "chain-config-dir": "/etc/avalanchego/chains",
+  "http-host": "127.0.0.1",
+  "http-port": 9650,
+  "staking-port": 9651,
+  "api-admin-enabled": false,
+  "api-info-enabled": true,
+  "api-health-enabled": true,
+  "api-metrics-enabled": true,
+  "index-enabled": {{ (avax_type == 'archive') | to_json }}
+}

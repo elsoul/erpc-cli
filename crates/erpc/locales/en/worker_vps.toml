@@ -1,0 +1,71 @@
+# What erpc says while it finds, starts, waits for and ends the ERPC
+# servers and data lines a worker runs on.
+
+no_session = "there is no session"
+login_hint = "run `erpc login`"
+api_silent = "user-api did not answer: {error}"
+no_api_key = "the account has no API key for the shared RPC"
+no_api_key_hint = "the ERPC dashboard makes one"
+no_reason = "no reason given"
+
+[vps]
+none = "the account has no VPS {id}"
+no_address = "VPS {id} has no address yet"
+not_key_only = "VPS {id} was not made key-only"
+bad_id = "{id} is not a VPS id"
+
+[plan]
+not_offered = "{id} is not a {family} plan offered by the hour now"
+none = "no {family} plan is offered by the hour now"
+as_asked = "as asked"
+cheapest = "the cheapest"
+
+[buy]
+bad_region = "`{region}` is not a VPS region; there are {regions}"
+buying = "A new hourly VPS: {name} ({product}; {how}, €{price} an hour), region {region} ({why})"
+region_asked = "as asked"
+region_nearest = "nearest by this machine's time zone"
+not_started = "user-api did not start it (HTTP {status}): {reason}"
+other_region_hint = "another --region may have stock; `erpc worker deploy --region <name>{scope}`"
+no_id = "user-api started a VPS and did not say which"
+started = "VPS {id} started"
+
+[ready]
+waiting = "waiting for VPS {id} to be ready (up to five minutes)"
+failed = "VPS {id} did not get ready: {reason}"
+
+[end]
+not_hourly = "this environment's server is not an hourly ERPC server; nothing was ended"
+ending = "Ending hourly {kind} {id}"
+failed = "user-api did not end {kind} {id}: {answer}"
+no_hourly_list = "user-api's credit snapshot lists no hourly products; nothing was changed"
+
+[line]
+no_status = "erpc knows no status of {kind} lines"
+no_list = "user-api's status of {kind} lines has no list in it; nothing was changed"
+no_region = "an Unlimited RPC is started in the server's ERPC region, and this server has none on record"
+no_region_hint = "deploy to an ERPC VPS (`--vps <id>` or `--new-vps`)"
+buying = "A new hourly {kind} line: {name} ({product}; {how}, €{price} an hour), for {ip}"
+not_started = "user-api did not start the {kind} line (HTTP {status}): {reason}"
+made_anyway = "user-api made line {id} anyway, and it is on record; it may be charged until `erpc worker delete --release-server{scope}` or the dashboard ends it"
+no_id = "user-api started a {kind} line and did not say which"
+warned = "user-api warned: {warning}"
+started = "{kind} line {id} started"
+no_endpoint = "{kind} line {id} started, and user-api names no endpoint for it after a minute"
+no_endpoint_hint = "it is charged by the hour and on record: `erpc worker deploy{scope}` again takes it up once user-api lists it, `erpc worker delete --release-server{scope}` ends it"
+bad_id = "{id} is not a line id"
+let_in_failed = "could not let {ip} in to line {id}: {error}"
+let_in_hint = "deploy again to try once more; the line is charged meanwhile"
+not_listed = "not listed yet"
+wrong_ip = "{kind} line {id} lets in {allowed}, not this server's {ip}"
+lets_in = "line {id} lets in {ip}"
+lets_in_later = "line {id} lets in {ip} once its server is set up"
+suspended = "{kind} line {id} is suspended"
+suspended_hint = "the dashboard says why"
+waiting = "line {id} is {status} ({minutes} min so far)"
+ending = "Ending hourly {kind} line {id}"
+end_failed = "user-api did not end {kind} line {id}: {answer}"
+
+[line.not_active]
+one = "{kind} line {id} did not become active in {n} minute (it is {last})"
+other = "{kind} line {id} did not become active in {n} minutes (it is {last})"

@@ -1,0 +1,97 @@
+{
+  "read": "2026-10-24",
+  "reth": [
+    {
+      "tag": "v2.8.1",
+      "prerelease": false,
+      "commit": "d763342fa185e4e90ee79dc65f6a5706168b0bcb",
+      "sha256": {
+        "x86_64-unknown-linux-gnu": "466b3fe5a221ccfd40916c8fca1b3a35d986364617fbe3c7469983fd496f697f",
+        "aarch64-unknown-linux-gnu": "ef078e5c5cb18626865b688fefd51c1a7a2b63d84884f199c895ec0cb5cf8cce"
+      }
+    },
+    {
+      "tag": "v2.8.0",
+      "prerelease": false,
+      "commit": "05ba48120a0ce8d6beb65f0b2a7ad4710f4f2915",
+      "sha256": {
+        "x86_64-unknown-linux-gnu": "809bfe0f071b509980d7f9178603edd2f7432356d50ae5af256cb62213c10ed8",
+        "aarch64-unknown-linux-gnu": "7ca50a89c5953af1cd137a6ec9a0484ba513d26f64e15de48cf7f38eda436083"
+      }
+    },
+    {
+      "tag": "v2.7.0",
+      "prerelease": false,
+      "commit": "3d592ece6de8c4559987416a544fc215fd6d6921",
+      "sha256": {
+        "x86_64-unknown-linux-gnu": "c91ef845f97c28e9fdb60de04eee871f957738548d474c9b6379debbf3f1064a",
+        "aarch64-unknown-linux-gnu": "5a5ae8a380c9bf09969b39e092c09edcbbdbab61244ee51707c0529713d07d87"
+      }
+    },
+    {
+      "tag": "v2.6.0",
+      "prerelease": false,
+      "commit": "73a3a00862a8f14f89e30da8de001456f18cfae0",
+      "sha256": {
+        "x86_64-unknown-linux-gnu": "f69df85bcaacc7c911b315c078899e6968e8361c017c56fe7356365eb8fb6b9d",
+        "aarch64-unknown-linux-gnu": "e1e63386c07a1ff7e9e8735944c788c26a362b049ff1d1ce544db1943b2ed22d"
+      }
+    },
+    {
+      "tag": "v2.5.2",
+      "prerelease": false,
+      "commit": "5a6940e351fed80458fe6c9da8581cbe4b8bd036",
+      "sha256": {
+        "x86_64-unknown-linux-gnu": "e360895ac51b351ff0c44573f0f619bb1e7c3ff2df55502af1190c14c9b5ef6d",
+        "aarch64-unknown-linux-gnu": "00f714c249cd0ae0865837ba3b34ef268546670dbbacdabb39eb26efb4bf6e59"
+      }
+    }
+  ],
+  "lighthouse": [
+    {
+      "tag": "v8.4.0-rc.0",
+      "prerelease": true,
+      "commit": "484a6b1c9743cd38de2ce1f966bd77794818dc00",
+      "sha256": {
+        "x86_64-unknown-linux-gnu": "3c760c0ea53ece186aad77b53c2eea6c9bc1b2141d7755889cf8bc9bc72b8112",
+        "aarch64-unknown-linux-gnu": "559b1c94a6aa4be6cc20f6b9962de3a52d9a13b5910ea751ed2e75ac6868edc2"
+      }
+    },
+    {
+      "tag": "v8.3.2",
+      "prerelease": false,
+      "commit": "a376defa30470923556d91bdeb15a802e297f31f",
+      "sha256": {
+        "x86_64-unknown-linux-gnu": "ea914e932462d6a93ad78c21377d70f995e05ac224248be0b58c2f4d6740439a",
+        "aarch64-unknown-linux-gnu": "49da20334841317e366df32957669098cc26dd9f2fc773e5b0d88ca8f0e8e64c"
+      }
+    },
+    {
+      "tag": "v8.3.1",
+      "prerelease": false,
+      "commit": "0aba4605a9a18964a165d6c0d258ae8d1621ee40",
+      "sha256": {
+        "x86_64-unknown-linux-gnu": "46f6580d64bb3164b17d0799847fc2ec518700860a187373a6a8d5b5fed382d3",
+        "aarch64-unknown-linux-gnu": "c6cda533c83eeaf1caab1e83dfdffda9dc5ff18587f4dee9a7d6ccc5179a3dc2"
+      }
+    },
+    {
+      "tag": "v8.3.0",
+      "prerelease": false,
+      "commit": "014ba06b56514d383426f2c727e7233dad973e0d",
+      "sha256": {
+        "x86_64-unknown-linux-gnu": "686e076e23bc75ad592917c228a9c96558b2ac9a4cdaac99896f331fb7ae78f1",
+        "aarch64-unknown-linux-gnu": "cd5bda26977de81638bacb23b2bb45e86ca4046e3955271f1e3ff90c39e71d69"
+      }
+    },
+    {
+      "tag": "v8.3.0-rc.0",
+      "prerelease": true,
+      "commit": "4920af726c9999399c7678d4dce9d1f45d0383a1",
+      "sha256": {
+        "x86_64-unknown-linux-gnu": "4240f74fcbf2350071ccdef6c5e1b605227254bcc339d746e684e8dd3a53cf0d",
+        "aarch64-unknown-linux-gnu": "4d98f69aebd6b51bbb5c130b5f90caa2610407fdf29ac1355b7e747907048098"
+      }
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+# 工具运行时控制台显示的标签，按工具名排列。
+
+unknown = "正在查询"
+run_command = "正在运行命令"
+remember = "正在记下"
+forget = "正在删除这条记忆"
+secure_vps = "正在登录并将 SSH 设置为仅允许密钥登录"
+restrict_ssh = "正在设置 SSH 允许列表"
+wait_until_ready = "正在等待就绪（最多 5 分钟）"
+ask_choice = "等待你的选择"
+read_skill = "正在读取技能"
+credit_balance = "正在查看积分余额"
+credit_history = "正在查看积分记录"
+card_subscriptions = "正在查看订阅"
+rpc_usage = "正在查看 RPC 用量"
+ai_usage = "正在查看 AI 套餐"
+open_dashboard = "正在打开 ERPC 仪表板"
+my_services = "正在查看你的服务"
+server_catalog = "正在查看服务器目录"
+server_stock = "正在查看库存"
+plan_prices = "正在查看价格"
+service_health = "正在查看服务运行状况"
+hourly_catalog = "正在查看按小时计费的产品目录"
+start_hourly_product = "正在请你确认是否开通产品"
+end_hourly_product = "正在请你确认是否终止产品"
+top_up_credit = "正在请你确认是否购买积分"
+create_credit_wallet = "正在请你确认是否创建钱包"

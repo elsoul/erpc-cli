@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+[Unit]
+Description=ERPC {{ op_family }} verified firewall policy
+Before=erpc-{{ op_family }}-execution.service erpc-{{ op_family }}-consensus.service erpc-{{ op_family }}-rpc.service erpc-{{ op_family }}-upstreams.service erpc-{{ op_family }}-bootstrap.service
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/python3 /usr/local/lib/erpc/rpc-firewall.py {{ op_family }} load
+[Install]
+WantedBy=multi-user.target

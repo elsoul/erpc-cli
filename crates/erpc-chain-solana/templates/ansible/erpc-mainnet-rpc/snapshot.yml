@@ -1,0 +1,56 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+#
+# The snapshot an empty node starts from, in place of SLV's wget_snapshot.yml.
+# That play pinged the ERPC mirrors and fetched from the nearest over one
+# connection; a mirror that answers ping but not HTTPS (from outside the
+# ERPC network) held the deploy for hours, and nothing told a stale mirror
+# from a fresh one. erpc-snapshot-fetch.sh asks every source for its newest
+# archives, keeps the fresh ones, times each, and takes the fastest: aria2c
+# over many connections where the source serves ranges (Avorio's R2), curl
+# over one where it does not (the ERPC mirrors, which proxy an agave node).
+# When no source can be used the validator fetches a snapshot itself.
+#
+# `snapshot_url`, when set, is the only source.
+---
+- name: Fetch a snapshot from the best source
+  hosts: all
+  become: true
+  gather_facts: no
+  vars:
+    erpc_snapshot_sources:
+      - https://solana-snapshot-fra.erpc.global
+      - https://solana-snapshot-ams.erpc.global
+      - https://solana-snapshot-lon.erpc.global
+      - https://solana-snapshot-ny.erpc.global
+      - https://solana-snapshot-tokyo.erpc.global
+      - https://solana-snapshot-sgp.erpc.global
+      # A public mirror on Cloudflare R2, free, run by Avorio Network.
+      - https://snapshots.avorio.network/mainnet-beta
+  tasks:
+    - name: Ensure aria2 and curl are installed
+      ansible.builtin.apt:
+        name: [aria2, curl]
+        state: present
+
+    - name: Install erpc-snapshot-fetch.sh
+      ansible.builtin.copy:
+        src: files/erpc-snapshot-fetch.sh
+        dest: /usr/local/bin/erpc-snapshot-fetch.sh
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Fetch the snapshot (the full one is over 100 GB)
+      ansible.builtin.command: /usr/local/bin/erpc-snapshot-fetch.sh
+      become_user: solv
+      environment:
+        SOURCES: "{{ snapshot_url if (snapshot_url | default('')) != '' else erpc_snapshot_sources | join(' ') }}"
+        DEST: /mnt/snapshot
+      register: erpc_snapshot
+      async: 10800 # wait for 3 hours
+      poll: 30
+
+    - name: Show where the snapshot came from
+      ansible.builtin.debug:
+        msg: "{{ erpc_snapshot.stderr_lines | select('match', '^snapshot: ') | list }}"

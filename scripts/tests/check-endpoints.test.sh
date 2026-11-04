@@ -171,7 +171,32 @@ else
   fail=$((fail + 1)); printf 'FAIL --print-exceptions must report the skip list\n'
 fi
 
+# Sui runtime-only destinations belong in the embedded template tree.
+check "TRON observation host in TRON templates" allow "crates/erpc-chain-tron/templates/probe.py" \
+  'url = "https://nile.trongrid.io"'
+check "TRON node host cannot leak into Rust" block "$sample_dir/tron.rs" \
+  'const URL: &str = "https://api.trongrid.io";'
+check "TRON template rejects unknown endpoint" block "crates/erpc-chain-tron/templates/probe.py" \
+  'url = "https://unregistered.invalid"'
+check "Sui bootstrap host in Sui templates" allow "crates/erpc-chain-sui/templates/probe.yml" \
+  'source: https://formal-snapshot.testnet.sui.io/'
+check "Sui bootstrap host cannot leak into Rust" block "$sample_dir/sui.rs" \
+  'const URL: &str = "https://formal-snapshot.testnet.sui.io/";'
+check "Sui template rejects unknown mirror" block "crates/erpc-chain-sui/templates/probe.yml" \
+  'source: https://unreviewed.example.net/'
+
+# OP-family node destinations stay scoped to carried node templates.
+check "OP sequencer in OP templates" allow "crates/erpc-chain-op/templates/probe.yml" \
+  'source: https://mainnet-sequencer.optimism.io/'
+check "OP sequencer cannot leak into Rust" block "$sample_dir/op.rs" \
+  'const URL: &str = "https://mainnet-sequencer.optimism.io/";'
+check "OP template rejects unknown sequencer" block "crates/erpc-chain-op/templates/probe.yml" \
+  'source: https://unreviewed.example.net/'
+
 # --- must block -------------------------------------------------------------
+
+check "unknown host as a shell default" block "$sample_dir/g.sh" \
+  'BASE_URL="${BASE_URL:-https://evil.example.com}"'
 
 check "unknown host in rust" block "$sample_dir/a.rs" \
   'const URL: &str = "https://evil.example.com/collect";'
@@ -394,7 +419,55 @@ check "escape after an allowlisted prefix (rust)" block "$sample_dir/z3b.rs" \
 check "plaintext ws outside loopback" block "$sample_dir/z4.rs" \
   'const W: &str = "ws://relay.example.net/";'
 
+# A host a node reaches is accepted in the node's templates only.
+check "a node host in ordinary code" block "$sample_dir/n1.rs" \
+  'const M: &str = "https://metrics.solana.com:8086";'
+
+check "a node host in prose" block "$sample_dir/n2.md" \
+  'Metrics go to https://metrics.solana.com:8086.'
+
+check "an undeclared host in the node templates" block "crates/erpc-chain-solana/templates/$sample_dir/n3.j2" \
+  '--block-engine-url https://evil.block-engine.example.net'
+
+check "plaintext to an undeclared host in the node templates" block "crates/erpc-chain-solana/templates/$sample_dir/n4.j2" \
+  '--bam-url http://ny.testnet.bam.jito.wtf.evil.com'
+
+check "an undeclared host in the region table" block "crates/erpc-chain-solana/regions/$sample_dir/r1.json" \
+  '{"block_engine_url": "https://tokyo.mainnet.block-engine.jito.wtf.evil.com"}'
+
+check "an undeclared host in the Arc network table" block "crates/erpc-chain-arc/networks/$sample_dir/a1.json" \
+  '{"http": "https://rpc.testnet.arc.io.evil.com"}'
+
+check "an Arc relay in ordinary code" block "$sample_dir/a2.rs" \
+  'const R: &str = "https://rpc.testnet.arc.io";'
+
+check "a region host outside the region table" block "$sample_dir/r2.rs" \
+  'const E: &str = "https://tokyo.mainnet.block-engine.jito.wtf";'
+
+# A numeric port followed by punctuation. The port strip is anchored at the
+# end of the authority, so without the rule for this shape the colon check
+# read `:9650` as "not a port" on every nginx `proxy_pass` line.
+check "a loopback port followed by a semicolon" allow "$sample_dir/pp1.conf" \
+  '      proxy_pass http://127.0.0.1:9650;'
+
+check "a declared host with a port, closing a parenthesis" allow "$sample_dir/pp2.md" \
+  'The API (https://user-api.erpc.global:8443) answers there.'
+
+check "a node host with a port and a comma-separated tail" allow "crates/erpc-chain-solana/templates/$sample_dir/pp3.j2" \
+  'Environment=SOLANA_METRICS_CONFIG=host=https://metrics.solana.com:8086,db=tds,u=testnet_write,p=x'
+
+check_msg "a domain after the port's comma is still seen" "$sample_dir/pp4.sh" \
+  'curl https://erpc.global:8080,evil.example.net/x' \
+  'punctuation inside the host hides the rest of it'
+
+check_msg "a scheme word after the port's semicolon is still seen" "$sample_dir/pp5.sh" \
+  'curl https://erpc.global:8080;https' \
+  'punctuation inside the host hides the rest of it'
+
 # --- must allow -------------------------------------------------------------
+
+check "declared host as a shell default" allow "$sample_dir/g2.sh" \
+  'BASE_URL="${BASE_URL:-https://user-api.erpc.global}"'
 
 check "allowlisted service host" allow "$sample_dir/g.rs" \
   'const AUTH: &str = "https://auth-api.erpc.global/oauth/token";'
@@ -1292,6 +1365,29 @@ case "$nl_out" in
   *)
     fail=$((fail + 1)); printf 'FAIL a NUL before a URL on the same line does not hide it (said: %s)\n' "$nl_out";;
 esac
+check "a node host in the node templates" allow "crates/erpc-chain-solana/templates/$sample_dir/n5.j2" \
+  'Environment=SOLANA_METRICS_CONFIG=host=https://metrics.solana.com:8086,db=tds'
+
+check "a node host over the plaintext its client uses" allow "crates/erpc-chain-solana/templates/$sample_dir/n6.j2" \
+  '--bam-url {{ bam_url | default("http://ny.testnet.bam.jito.wtf") }}'
+
+check "a node host in the region table" allow "crates/erpc-chain-solana/regions/$sample_dir/r3.json" \
+  '{"relayer_url": "http://dallas.testnet.relayer.jito.wtf"}'
+
+check "an Arc relay in the Arc network table" allow "crates/erpc-chain-arc/networks/$sample_dir/a3.json" \
+  '{"http": "https://rpc.drpc.testnet.arc.io", "ws": "rpc.drpc.testnet.arc.io"}'
+
+check "an Arc relay in the Arc templates" allow "crates/erpc-chain-arc/templates/$sample_dir/a4.j2" \
+  '--rpc.forwarder https://rpc.testnet.arc.io/'
+
+check "a Nitro metadata host in its carried network table" allow "crates/erpc-chain-nitro/networks/$sample_dir/nitro.json" \
+  '{"url":"https://cdn.robinhood.com/chain-info.json"}'
+check "an unapproved Nitro metadata destination" block "crates/erpc-chain-nitro/networks/$sample_dir/nitro.json" \
+  '{"url":"https://cdn.robinhood.com.evil.example/chain-info.json"}'
+check "a Nitro snapshot host in its templates" allow "crates/erpc-chain-nitro/templates/$sample_dir/nitro.py" \
+  'URL="https://snapshot.arbitrum.foundation/arb1/latest-full-path.txt"'
+check "a Nitro-only host in ordinary controller code" block "$sample_dir/nitro.rs" \
+  'const URL: &str = "https://cdn.robinhood.com/chain-info.json";'
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

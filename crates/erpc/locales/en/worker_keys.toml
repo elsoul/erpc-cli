@@ -1,0 +1,77 @@
+# What `erpc worker key` and `erpc worker secret` say.
+
+read_failed = "could not read {path}: {error}"
+portability = "this app's servers are kept in 1Password, and the keychain is only on this machine: another machine will not be able to start it. Pass --store 1password to keep it where they are."
+
+[field]
+pubkey = "pubkey"
+kept_at = "kept at"
+
+[import]
+wipe_question = "The key is in the store now. Wipe {file} (overwrite it, then delete it)?"
+wiped = "Wiped {file}."
+wipe_failed = "could not wipe {file}: {error}"
+left_on_disk = "{file} is still on disk. Delete it once you have checked the key in the store (`--wipe` does it for you)."
+
+[already]
+no_pubkey = "its public key is not set"
+show_hint = "`erpc worker key show{dir_scope}` shows it"
+replace_hint = "to replace it, remove [wallet] from erpc.toml first"
+title = "{app} already has a wallet; nothing was made"
+refused = "{app} has a wallet already ({pubkey} in {source}); nothing was made"
+refused_hint = "`erpc worker key show{dir_scope}` shows it; remove [wallet] from erpc.toml first to replace it"
+
+[kept]
+made = "Trading key made for {app}: {pubkey}"
+imported = "Trading key imported for {app}: {pubkey}"
+where = "Kept in {store} as {source}; erpc.toml's [wallet] names it."
+hot_wallet = "Fund only what the bot needs: it is a hot wallet."
+by_hand = "the key is kept at {source}; set [wallet] source = \"{source}\" and pubkey = \"{pubkey}\" in erpc.toml by hand"
+
+[key_file]
+not_one = "{path} is not a key file"
+unreadable = "{path}: {error}; a key file is the JSON array of 64 numbers `solana-keygen` writes"
+
+[show]
+no_wallet = "{app} has no wallet yet"
+new_hint = "`erpc worker key new{dir_scope}` makes one"
+no_pubkey = "(public key not set in erpc.toml)"
+kept_at = "kept at {source}"
+
+[balance]
+no_pubkey = "{app} has no wallet public key in erpc.toml"
+not_json_rpc = "the RPC answered {status}, not JSON-RPC: {error}"
+no_balance = "the RPC answered {status} without a balance"
+failed = "could not read the balance: {error}"
+
+[rpc]
+none = "the app has no RPC setting (SOLANA_RPC_ENDPOINT or ERPC_API_KEY)"
+none_hint = "pass --rpc <url>"
+unusable = "the RPC URL is not usable: {error}"
+
+[secret]
+prompt = "{name} (not shown)"
+ask_failed = "could not ask: {error}"
+stdin_failed = "could not read standard input: {error}"
+too_long = "the secret on standard input is longer than 64 KiB"
+empty = "{name} is empty; nothing was kept"
+
+[put]
+in_vars = "{name} is in [vars]; remove it there first, so its value is not left in erpc.toml"
+already = "{name} is set already ({source})"
+replace_hint = "pass --replace to keep a new value in its place"
+by_hand = "the value is kept at {source}; add {name} = \"{source}\" to [secrets] by hand"
+done = "{name} ← {source}, kept in {store}"
+old_kept = "The old value is still kept at {old}; remove it there if it is no longer needed."
+
+[list]
+none = "No secrets yet; `erpc worker secret put <NAME>{dir_scope}` keeps one."
+missing_plain = "missing: {name} (run.requires)"
+title = "{app} secrets"
+missing = "{name} is missing (run.requires)"
+
+[rm]
+not_there = "{name} is not in [secrets]"
+done = "{name} is no longer in erpc.toml."
+still_kept = "Its value is still kept at {source}; delete it there if nothing else uses it."
+plain = "{name} is no longer in erpc.toml. Its value is still kept at {source}; delete it there if nothing else uses it."

@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+# Preserve the entire hash-pinned network/genesis configuration, not reference defaults.
+include required(file("{{ tron_release }}/network.conf"))
+storage.db.engine = "{{ tron_database }}"
+storage.db.directory = "database"
+node.discovery.enable = true
+node.discovery.persist = true
+node.dynamicConfig.enable = false
+node.walletExtensionApi = false
+node.allowShieldedTransactionApi = false
+node.backup.members = []
+node.metrics.prometheus.enable = true
+node.metrics.prometheus.port = 9527
+node.http.fullNodeEnable = true
+node.http.fullNodePort = 8090
+node.http.solidityEnable = true
+node.http.solidityPort = 8091
+node.http.PBFTEnable = false
+node.rpc.enable = true
+node.rpc.port = 50051
+node.rpc.solidityEnable = true
+node.rpc.solidityPort = 50061
+node.rpc.PBFTEnable = false
+node.jsonrpc.httpFullNodeEnable = {{ 'true' if tron_role == 'fullnode' else 'false' }}
+node.jsonrpc.httpFullNodePort = 8545
+node.jsonrpc.httpSolidityEnable = {{ 'true' if tron_role == 'fullnode' else 'false' }}
+node.jsonrpc.httpSolidityPort = 8555
+node.jsonrpc.httpPBFTEnable = false
+event.subscribe.enable = false
+# Nile's upstream default skips this production check; erpc always requires sync.
+block.needSyncCheck = true
+localwitness = []
+{% if tron_role == 'validator' %}
+localWitnessAccountAddress = {{ tron_owner | to_json }}
+# java-tron prepends user.dir; WorkingDirectory=/etc/tron makes this relative path intentional.
+localwitnesskeystore = ["credentials/witness.json"]
+{% else %}
+localwitnesskeystore = []
+{% endif %}
+

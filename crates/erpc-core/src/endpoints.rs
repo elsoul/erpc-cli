@@ -41,11 +41,17 @@ pub const BROWSER_HOSTS: &[&str] = &["dashboard.erpc.global", "erpc.global"];
 
 /// Release distribution and update checks. No credential is sent.
 pub const DISTRIBUTION_HOSTS: &[&str] = &[
+    // Public follower bootstrap metadata, bounded and pinned before node downloads.
+    "chain.base.org",
+    "datadirs.optimism.io",
+    "mainnet-v2-snapshots.base.org",
+    "sepolia-v2-snapshots.base.org",
     "install.erpc.global",
     "github.com",
     "api.github.com",
     "objects.githubusercontent.com",
     "release-assets.githubusercontent.com",
+    "bitcoincore.org",
 ];
 
 /// Build and CI tooling. Contacted by cargo, npm and workflows, never by the binary.
@@ -55,6 +61,27 @@ pub const TOOLING_HOSTS: &[&str] = &[
     "static.crates.io",
     "sh.rustup.rs",
     "registry.npmjs.org",
+    // Jito's region table, read by the scheduled job that checks the
+    // region data erpc carries against it.
+    "docs.jito.wtf",
+];
+
+/// Solana clusters' public RPC. erpc hands these to the Solana CLI on the
+/// operator's machine, which reads accounts and sends transactions there. No
+/// ERPC credential is sent.
+pub const CLUSTER_HOSTS: &[&str] = &["api.testnet.solana.com"];
+
+/// Services that answer with the address a request came from, and nothing
+/// else. `erpc ai` may run `curl` on one of them on the operator's machine
+/// without asking, to learn the operator's public address. erpc itself never
+/// contacts them, so [`all_hosts`] leaves them out.
+pub const ADDRESS_ECHO_HOSTS: &[&str] = &[
+    "api.ipify.org",
+    "api64.ipify.org",
+    "checkip.amazonaws.com",
+    "icanhazip.com",
+    "ifconfig.co",
+    "ifconfig.me",
 ];
 
 /// Host prefixes allowed with any suffix label, for the snapshot mirror pool.
@@ -78,6 +105,137 @@ pub const DOCUMENTATION_HOSTS: &[&str] = &[
     "keepachangelog.com",
     "semver.org",
     "elsoul.nl",
+    // The chains' own documentation, linked from the assistant's skills.
+    "docs.arc.io",
+    "docs.anza.xyz",
+    "docs.firedancer.io",
+    "reth.rs",
+    "lighthouse-book.sigmaprime.io",
+    "build.avax.network",
+    "docs.sui.io",
+    // Official sources in the chain deployment research.
+    "solana.com",
+    "ethereum.org",
+    "blog.ethereum.org",
+    "docs.arbitrum.io",
+    "docs.base.org",
+    "docs.optimism.io",
+    "docs.robinhood.com",
+    "docs.soneium.org",
+    "snapshot-explorer.arbitrum.io",
+    "docs.bnbchain.org",
+    "docs.kaia.io",
+    "docs.monad.xyz",
+    "docs.polygon.technology",
+    "forum.polygon.technology",
+    "hyperliquid.gitbook.io",
+    "pkg.category.xyz",
+    "bitcoin.org",
+    "developer.bitcoin.org",
+    "developers.tron.network",
+    "docs.near.org",
+    "downloads.avax.network",
+    "near.org",
+    "snapshots.node.kaia.io",
+    "tronprotocol.github.io",
+    "nileex.io",
+    "packages.ubuntu.com",
+    "www.freedesktop.org",
+];
+
+/// Hosts a node contacts while it sets itself up and runs, named in the
+/// playbooks and templates erpc carries for it
+/// (`crates/erpc-chain-solana/templates/`, `crates/erpc-chain-arc/templates/`,
+/// `crates/erpc-chain-eth/templates/`, `crates/erpc-chain-nitro/templates/`,
+/// `crates/erpc-chain-tron/templates/`),
+/// in the Jito region table (`crates/erpc-chain-solana/regions/`) and in the
+/// Arc/Nitro network tables (`crates/erpc-chain-arc/networks/`,
+/// `crates/erpc-chain-nitro/networks/`).
+///
+/// erpc never contacts them: they are written into the node's startup script
+/// and service, and the node reaches them. The endpoints gate accepts them in
+/// that tree only, plaintext included where the client's protocol is
+/// plaintext, and [`all_hosts`] leaves them out.
+pub const NODE_HOSTS: &[&str] = &[
+    // Read-only TRON membership, permission, genesis and synchronization checks.
+    "api.trongrid.io",
+    "nile.trongrid.io",
+    // Qualified OP-family clients: immutable images and public transaction sequencers.
+    "us-docker.pkg.dev",
+    "mainnet-sequencer.optimism.io",
+    "sepolia-sequencer.optimism.io",
+    "mainnet-sequencer.base.org",
+    "sepolia-sequencer.base.org",
+    "rpc.soneium.org",
+    "rpc.minato.soneium.org",
+    // Sui bootstrap tools and public state-sync peers, selected by network.
+    "fullnode.mainnet.sui.io",
+    "fullnode.testnet.sui.io",
+    "formal-snapshot.mainnet.sui.io",
+    "formal-snapshot.testnet.sui.io",
+    "checkpoints.mainnet.sui.io",
+    "checkpoints.testnet.sui.io",
+    "mel-00.mainnet.sui.io",
+    "ewr-00.mainnet.sui.io",
+    "yto-tnt-ssfn-01.testnet.sui.io",
+    "yto-tnt-ssfn-00.testnet.sui.io",
+    // Nitro's fixed official metadata, image registry and follower endpoints.
+    "raw.githubusercontent.com",
+    "cdn.robinhood.com",
+    "snapshot.arbitrum.foundation",
+    "docker.io",
+    "registry-1.docker.io",
+    "auth.docker.io",
+    "feed.mainnet.chain.robinhood.com",
+    "feed.testnet.chain.robinhood.com",
+    "delayed-feed.mainnet.chain.robinhood.com",
+    "sequencer.mainnet.chain.robinhood.com",
+    "sequencer.testnet.chain.robinhood.com",
+    // The cluster's public metrics, which the validator service reports to.
+    "metrics.solana.com",
+    // Jito defaults written into the startup scripts when no region is set.
+    "ny.testnet.block-engine.jito.wtf",
+    "ny.testnet.bam.jito.wtf",
+    "frankfurt.mainnet.block-engine.jito.wtf",
+    // The rest of the Jito region table: block engines, relayers and BAM
+    // endpoints, one of which is written into a host's startup script.
+    "mainnet.block-engine.jito.wtf",
+    "amsterdam.mainnet.block-engine.jito.wtf",
+    "dublin.mainnet.block-engine.jito.wtf",
+    "london.mainnet.block-engine.jito.wtf",
+    "ny.mainnet.block-engine.jito.wtf",
+    "slc.mainnet.block-engine.jito.wtf",
+    "singapore.mainnet.block-engine.jito.wtf",
+    "tokyo.mainnet.block-engine.jito.wtf",
+    "testnet.block-engine.jito.wtf",
+    "dallas.testnet.block-engine.jito.wtf",
+    "dallas.testnet.relayer.jito.wtf",
+    "ny.testnet.relayer.jito.wtf",
+    "dallas.testnet.bam.jito.wtf",
+    // Old Faithful: the archive a Solana Index RPC node's faithful-cli
+    // reads epochs from, and the public RPC it asks for the current epoch
+    // and proxies what it cannot answer to.
+    "files.old-faithful.net",
+    "api.mainnet-beta.solana.com",
+    // A public snapshot mirror (Cloudflare R2, run by Avorio Network) a
+    // Solana RPC node may fetch its first snapshot from, beside the ERPC
+    // mirrors.
+    "snapshots.avorio.network",
+    // Ethereum: where Reth's snapshot is listed and downloaded from, and
+    // the checkpoint server Lighthouse starts from (Sigma Prime's).
+    "snapshots.reth.rs",
+    "snapshots-r2.reth.rs",
+    "mainnet.checkpoint.sigp.io",
+    "hoodi.checkpoint.sigp.io",
+    // Arc: the public relays the consensus layer follows, the first of
+    // which the execution layer also forwards transactions to.
+    "rpc.testnet.arc.io",
+    "rpc.drpc.testnet.arc.io",
+    "rpc.blockdaemon.testnet.arc.io",
+    "rpc.mainnet.arc.io",
+    "rpc.drpc.mainnet.arc.io",
+    "rpc.blockdaemon.mainnet.arc.io",
+    "rpc.quicknode.mainnet.arc.io",
 ];
 
 /// Loopback hosts, where plaintext `http`/`ws` is allowed: the OAuth redirect
@@ -130,6 +288,7 @@ pub fn all_hosts() -> Vec<&'static str> {
         .chain(BROWSER_HOSTS)
         .chain(DISTRIBUTION_HOSTS)
         .chain(TOOLING_HOSTS)
+        .chain(CLUSTER_HOSTS)
         .chain(LOOPBACK_HOSTS)
         .copied()
         .collect();
@@ -159,6 +318,9 @@ pub fn is_allowed_host(host: &str) -> bool {
             && !host[prefix.len()..host.len() - suffix.len()].contains('.')
     })
 }
+
+/// ERPC's shared RPC; an API key goes after it as `?api-key=…`.
+pub const SHARED_RPC_URL: &str = "https://edge.erpc.global";
 
 /// Refuse any URL that `erpc` must not contact on its own initiative.
 ///
@@ -291,6 +453,11 @@ impl Parsed {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_shared_rpc_is_a_service_url() {
+        assert!(super::ensure_service_url(super::SHARED_RPC_URL).is_ok());
+    }
+
     use super::{
         EndpointError, all_hosts, ensure_service_url, ensure_user_supplied_url, is_allowed_host,
     };
@@ -393,6 +560,8 @@ mod tests {
         let mut missing: Vec<&str> = all_hosts()
             .into_iter()
             .chain(super::DOCUMENTATION_HOSTS.iter().copied())
+            .chain(super::NODE_HOSTS.iter().copied())
+            .chain(super::ADDRESS_ECHO_HOSTS.iter().copied())
             .filter(|h| !doc.contains(&format!("`{h}`")))
             .collect();
         for (prefix, suffix) in super::HOST_PATTERNS {
@@ -404,6 +573,33 @@ mod tests {
             missing.is_empty(),
             "not described in docs/public-hosts.md: {missing:?}"
         );
+    }
+
+    /// Node hosts are reached by the node, never by erpc.
+    #[test]
+    fn node_hosts_are_not_erpc_destinations() {
+        for h in super::NODE_HOSTS {
+            assert!(
+                !all_hosts().contains(h),
+                "{h} is both a node host and an erpc destination"
+            );
+            assert!(
+                super::ensure_service_url(&format!("https://{h}/")).is_err(),
+                "{h} passes as an erpc destination"
+            );
+        }
+    }
+
+    /// An echo service is reached by a `curl` the operator's assistant runs,
+    /// never by erpc.
+    #[test]
+    fn echo_hosts_are_not_erpc_destinations() {
+        for h in super::ADDRESS_ECHO_HOSTS {
+            assert!(
+                super::ensure_service_url(&format!("https://{h}/")).is_err(),
+                "{h} passes as an erpc destination"
+            );
+        }
     }
 
     /// Documentation hosts are link targets only. Letting one through

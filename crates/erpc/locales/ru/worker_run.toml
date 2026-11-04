@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+missing = "Приложение {name} не запустится без {settings}"
+missing_hint = "секрет сохраняется через `erpc worker secret put {first}{dir_scope}`, обычная настройка задаётся в [vars]"
+watch_only = "нет [wallet]: приложение запускается только для наблюдения (ключ создаёт `erpc worker key new{dir_scope}`)"
+could_not_start = "не удалось запустить {bin}: {error}"
+no_stdin = "у приложения нет стандартного ввода, чтобы принять ключ"
+key_not_handed = "не удалось передать ключ: {error}"
+started = "Приложение {name} запущено (pid {pid})"
+running = "работает; Ctrl-C — остановить"
+healthy = "работоспособно; Ctrl-C — остановить"
+stopped = "Приложение {name} остановлено"
+ended = "Приложение {name} завершилось: {status}"
+
+[build]
+empty = "build.command пуст"
+building = "сборка: {command}"
+could_not_run = "не удалось запустить {program}: {error}"
+failed = "сборка не удалась ({status})"
+no_binary = "сборка завершилась, но {bin} не найден"
+no_binary_hint = "укажите имя бинарного файла в build.bin в erpc.toml и собирайте с --release"
+
+[check]
+ended = "приложение завершилось само: {status}"
+timeout = "приложение не стало работоспособным за {secs} с"
+healthy = "Приложение {name} работоспособно ({secs} с после запуска) и остановлено"
+failed = "Приложение {name} не прошло проверку: {why}"

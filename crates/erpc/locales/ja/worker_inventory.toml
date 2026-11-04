@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+op_failed = "1Password で{doing}できませんでした：{why}"
+no_reason = "理由は示されていません"
+listing_not_json = "1Password の一覧が JSON ではありません"
+items_not_json = "1Password のアイテムが JSON ではありません"
+item_not_json = "1Password のアイテムが JSON ではありません"
+new_item_not_json = "1Password で作成したアイテムが JSON ではありません"
+more_than_one = "保管庫 {vault} に {tag} タグの付いたアイテムが複数あります。1 つを残して、ほかはアーカイブしてください"
+item_error = "アイテム {id}：{error}"
+record_unusable = "アイテムの内容を使用できません"
+not_read_back = "1Password のアイテム {id} から {label} が書き込んだとおりに読み戻せません"
+changed = "このコマンドが読み込んだ後に 1Password の {title} が変更されました（別のマシンがデプロイした可能性があります）。何も書き込んでいません。コマンドをもう一度実行してください"
+appeared = "このコマンドの実行中に 1Password に {title} が作成されました。何も書き込んでいません。コマンドをもう一度実行してください"
+
+[doing]
+list = "ワーカーのアイテムを一覧表示"
+read_all = "ワーカーのアイテムを読み込み"
+read = "ワーカーのアイテムを読み込み"
+update = "ワーカーのアイテムを更新"
+create = "ワーカーのアイテムを作成"
+archive = "ワーカーのアイテムをアーカイブ"

@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+# node-run.sh holds /opt/erpc's exclusive lock through candidate rendering/apply.
+- name: Install the operation-bound firewall controller
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../jinja/firewall.py"
+    dest: /usr/local/lib/erpc/avax-firewall.py
+    owner: root
+    group: root
+    mode: '0700'
+- name: Load only a confirmed policy at boot
+  ansible.builtin.template:
+    src: "{{ avax_jinja }}/erpc-avax-firewall.service.j2"
+    dest: /etc/systemd/system/erpc-avax-firewall.service
+    mode: '0644'
+- name: Render this operation's candidate in its own bundle directory
+  ansible.builtin.template:
+    src: "{{ avax_jinja }}/erpc-avax.nft.j2"
+    dest: "{{ playbook_dir }}/../../firewall-candidate.nft"
+    owner: root
+    group: root
+    mode: '0600'
+- name: Check nftables syntax
+  ansible.builtin.command: nft -c -f {{ playbook_dir }}/../../firewall-candidate.nft
+  changed_when: false
+- name: Read the immutable submitted bundle digest
+  ansible.builtin.stat:
+    path: "{{ playbook_dir }}/../../../bundle.tar.gz"
+    checksum_algorithm: sha256
+  register: avax_submitted_bundle
+- name: Apply this run's candidate under an operation-specific rollback timer
+  ansible.builtin.command:
+    argv:
+      - python3
+      - /usr/local/lib/erpc/avax-firewall.py
+      - apply
+      - "{{ (playbook_dir ~ '/../../..') | realpath | basename }}"
+      - "{{ avax_submitted_bundle.stat.checksum }}"
+  changed_when: true
+- name: Enable confirmed policy loading at boot
+  ansible.builtin.systemd_service:
+    name: erpc-avax-firewall
+    enabled: true
+    daemon_reload: true

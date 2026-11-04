@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+table inet erpc_tron
+delete table inet erpc_tron
+table inet erpc_tron {
+  chain input {
+    type filter hook input priority 0; policy drop;
+    iifname "lo" accept
+    ct state established,related accept
+    ct state invalid drop
+    ip protocol icmp accept
+    meta l4proto ipv6-icmp accept
+{% for network in tron_management_allow %}
+    {{ 'ip6' if ':' in network else 'ip' }} saddr {{ network }} tcp dport {{ tron_ssh_port }} accept
+{% endfor %}
+    tcp dport 18888 accept
+    udp dport 18888 accept
+{% if tron_role == 'fullnode' %}
+{% for network in tron_rpc_allow %}
+    {{ 'ip6' if ':' in network else 'ip' }} saddr {{ network }} tcp dport { 8090, 8091, 50051, 50061, 8545, 8555 } accept
+{% endfor %}
+{% endif %}
+{% for network in tron_monitoring_allow %}
+    {{ 'ip6' if ':' in network else 'ip' }} saddr {{ network }} tcp dport 9527 accept
+{% endfor %}
+  }
+}
