@@ -30,11 +30,12 @@ chains, and each chain's guide in `docs/chains/` says where it stands.
   more chains (Polygon, BNB Chain, Kaia, Monad, Hyperliquid, NEAR) are
   researched in `docs/chains/` and answer "not implemented yet". Live
   acceptance on real hosts is still under way for most chains. Every deploy
-  logs in over
-  SSH with a key from the 1Password SSH agent, pins the host key, runs the
-  client as its own user that cannot log in, checks each release against a
-  pinned checksum, and applies an nftables firewall that rolls itself back
-  unless a fresh connection still gets in. Node and validator records,
+  logs in over SSH with a key from the 1Password SSH agent or `SSH_AUTH_SOCK`
+  and pins the host key. What it sets up on the host differs by chain, and
+  `docs/nodes.md` lists the differences: Solana nodes run as a login user with
+  passwordless sudo, Solana also fetches some tools without a checksum, and
+  Solana validators, Ethereum validators and Bitcoin nodes get no firewall
+  from erpc. Node and validator records,
   identities and keys live in 1Password; nothing is written to the operator's
   disk. `docs/nodes.md` has the clients, networks and guides.
 - `erpc rpc --chain solana`: Solana mainnet RPC nodes, the port of `slv rpc`,
@@ -104,7 +105,7 @@ chains, and each chain's guide in `docs/chains/` says where it stands.
 - On Linux, sessions kept without a desktop: the kernel keyring where no
   Secret Service answers, and 1Password through an `op signin` session where
   there is no 1Password app.
-- Every command takes `--json`, and a failure reads the same everywhere: an
+- `erpc --json <command>` works for every command, and a failure reads the same everywhere: an
   `error:` line and a `hint:` line, or one JSON object, with the exit codes
   in `docs/errors.md`.
 - A scheduled workflow (`jito-regions`) checks the Jito region table erpc
@@ -217,6 +218,7 @@ version.
 - `docs/verify-release.md`: verify signatures against a key saved once from
   `main`, not against `pubkey.txt` at the tag being checked.
 
-[Unreleased]: https://github.com/elsoul/erpc-cli/compare/v0.1.0-rc.1...HEAD
+[Unreleased]: https://github.com/elsoul/erpc-cli/compare/v0.1.0-rc.2...HEAD
+[0.1.0-rc.2]: https://github.com/elsoul/erpc-cli/releases/tag/v0.1.0-rc.2
 [0.1.0-rc.1]: https://github.com/elsoul/erpc-cli/releases/tag/v0.1.0-rc.1
 [0.0.1]: https://github.com/elsoul/erpc-cli/tree/964b507d0276254aeec4451cfbdecc8effd83724

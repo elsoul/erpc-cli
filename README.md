@@ -43,14 +43,17 @@ deploy again in minutes.
 **macOS and Linux**
 
 ```bash
-curl -fsSL https://install.erpc.global | sh
+curl -fsSL https://install.erpc.global/v0.1.0-rc.2 | sh
 ```
 
 **Windows** (PowerShell)
 
 ```powershell
-irm https://install.erpc.global/ps1 | iex
+irm https://install.erpc.global/v0.1.0-rc.2/ps1 | iex
 ```
+
+These name a version because every release so far is a pre-release, and the
+unversioned `install.erpc.global` serves only the latest stable one.
 
 The installer puts `erpc` in `~/.erpc/bin` and writes the assistant's skills
 to `~/.erpc/skills`. Builds are published for Linux (x86_64, arm64), macOS
@@ -122,11 +125,14 @@ erpc validator status                 # health, slot, identity and firewall
 | **Validator** (`erpc validator`) | Solana, Ethereum, Avalanche, Sui, TRON |
 | **Researched, not implemented** | Polygon, BNB Chain, Kaia, Monad, Hyperliquid, NEAR |
 
-Every deploy logs in over SSH with your key from the 1Password SSH agent, pins
-the host key, runs the client as its own user that cannot log in, checks each
-release against a pinned checksum, and applies an nftables firewall that
-rolls itself back unless a fresh connection still gets in. You cannot lock
-yourself out.
+Every deploy logs in over SSH with your key, from the 1Password SSH agent or
+`SSH_AUTH_SOCK`, and pins the host key. Most chains run the client as its own
+user that cannot log in, check each release against a pinned checksum, and
+apply an nftables firewall that rolls itself back unless a fresh connection
+still gets in. Not all of them do: Solana nodes run as a login user with
+passwordless sudo and fetch some tools without a checksum, and Solana
+validators, Ethereum validators and Bitcoin nodes get no firewall from erpc.
+[The node guide](docs/nodes.md) has the details.
 
 `init`, `deploy`, `status`, `logs`, `start`, `stop`, `restart`, `update`,
 `update-config`, `plan` and `destroy` work the same on every implemented

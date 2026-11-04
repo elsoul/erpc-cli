@@ -55,10 +55,16 @@ How erpc handles a server:
 - It logs in over SSH as a sudo user (`ubuntu` by default) with your key,
   from the 1Password SSH agent or `SSH_AUTH_SOCK`, and pins the host key the
   first time.
-- The client runs as its own system user that cannot log in.
-- Releases are pinned by version and checksum, and checked before they are
-  installed.
-- The firewall is nftables, applied with a timed rollback that is cancelled
+- The client runs as its own system user that cannot log in. Solana is the
+  exception: its clients run as `solv`, a login user with an SSH key and
+  passwordless sudo, and erpc logs in as that user after the first run.
+- Client releases are pinned by version and checksum, and checked before they
+  are installed. Solana is the exception: its plays install `node_exporter`
+  and rustup without checking a checksum.
+- The firewall is nftables, on RPC nodes other than Bitcoin and on Avalanche,
+  Sui and TRON validators. erpc applies no firewall to Solana validators,
+  Ethereum validators or Bitcoin nodes, so filtering those hosts is yours to
+  do. Where it applies, it has a timed rollback that is cancelled
   only once a fresh connection gets in. For Ethereum, Arc and Solana RPC,
   a short preparation is confirmed before long deployment work starts.
   Confirmation is bound to the submitted run and bundle digest and checks the
