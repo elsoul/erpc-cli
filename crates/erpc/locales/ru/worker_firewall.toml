@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+ssh_network = "в firewall.ssh_allow указана сеть {cidr}, а в списке разрешённых адресов для SSH допустимы только отдельные адреса"
+me_added = "примечание: erpc подключается с адреса {me}, которого нет в firewall.ssh_allow; он тоже будет разрешён, чтобы erpc не потерял доступ"
+no_address = "erpc не смог определить, с какого адреса он подключается, а firewall.ssh_allow пуст; ничего не изменено"
+no_address_hint = "укажите свой адрес в ssh_allow секции [env.<name>.firewall]"
+ssh_apply_unfinished = "применение списка разрешённых адресов для SSH не завершилось ({error}); если он уже действует, сервер вернёт прежний в течение {seconds} с"
+ssh_locked_out = "erpc не смог снова подключиться с новым списком разрешённых адресов для SSH ({error}); сервер вернёт прежний в течение {seconds} с"
+ssh_not_kept = "список разрешённых адресов для SSH не сохранён ({state})"
+not_applied = "файрвол сервера не применён: {error}; если он всё же применился, он сам откатится в течение {seconds} с"
+not_kept = "файрвол сервера не сохранён: {why}"
+no_reason = "причина не указана"
+allowing_ssh = "SSH разрешается только с адресов: {addresses}"
+dropping_open = "все прочие входящие соединения отбрасываются; порт {port} открыт для {addresses}"
+dropping_closed = "все прочие входящие соединения отбрасываются; порт приложения остаётся закрытым"
+ssh_network_given = "{network} — это сеть; SSH разрешается только с отдельных адресов"
+ssh_network_hint = "сети можно указывать для `--to app`"
+will_be = "Файрвол будет таким:"
+nothing_changed = "ничего не изменено"
+in_force = "Файрвол сервера воркера {worker} действует: SSH с {ssh}; {app}; всё остальное отбрасывается."
+app_closed = "порт приложения закрыт"
+app_open = "порт {port} открыт для {addresses}"
+
+[describe]
+nobody = "никого"
+ssh = "ssh       {list} (и адрес, с которого подключается erpc)"
+app_closed = "app       закрыт (в erpc.toml не задан run.port)"
+all_else = "прочее    отбрасывается"
+
+[list]
+title = "{worker} на {host}:"
+on_server = "На сервере:"
+none_yet = "файрвол воркера ещё не настроен; его применит `{command}`"
+pending = "изменение ждёт подтверждения или само откатится"
+
+[unchanged]
+allowed = "менять нечего: доступ для {addresses} уже разрешён; `{command}` применит erpc.toml заново"
+denied = "менять нечего: доступ для {addresses} и так не разрешён; `{command}` применит erpc.toml заново"

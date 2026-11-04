@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+[Unit]
+Description=ERPC {{ op_family }} independent RPC and metrics access policy
+Requires=erpc-{{ op_family }}-firewall.service erpc-{{ op_family }}-execution.service erpc-{{ op_family }}-consensus.service
+After=erpc-{{ op_family }}-firewall.service erpc-{{ op_family }}-execution.service erpc-{{ op_family }}-consensus.service
+PartOf=erpc-{{ op_family }}-execution.service erpc-{{ op_family }}-consensus.service
+StartLimitIntervalSec=0
+[Service]
+Type=exec
+User=erpc-{{ op_family }}
+Group=erpc-{{ op_family }}
+RuntimeDirectory=erpc-{{ op_family }}-rpc
+RuntimeDirectoryMode=0700
+UMask=0077
+ExecStartPre=+/usr/bin/python3 /usr/local/lib/erpc/rollup_control.py guard rpc {{ op_owner }} {{ op_family }} {{ op_network }} {{ op_history }}
+ExecStartPre=/usr/sbin/nginx -t -c {{ op_conf }}/nginx.conf
+ExecStart=/usr/sbin/nginx -c {{ op_conf }}/nginx.conf -g 'daemon off;'
+Restart=on-failure
+RestartSec=60
+TimeoutStopSec=60
+LimitNOFILE=65536
+LimitCORE=0
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+ReadWritePaths=/run/erpc-{{ op_family }}-rpc
+[Install]
+WantedBy=multi-user.target

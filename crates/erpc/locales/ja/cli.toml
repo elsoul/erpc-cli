@@ -1,0 +1,5 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+"--json" = "人が読むテキストの代わりに、機械が読める JSON を出力する"
+"--lang" = "erpc が話す言語：en、ja、zh、ru のいずれか（既定：`locale` 設定、なければシステムの言語）"

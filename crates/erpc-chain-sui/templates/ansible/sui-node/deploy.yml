@@ -1,0 +1,209 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Deploy the reviewed Sui full node
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars_files: [vars.yml]
+  tasks:
+    # node-run.sh holds /opt/erpc's lock across this guard and every task.
+    - name: Verify the expected host contract before any mutation
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ sui_jinja }}/erpc-sui-control.py.j2"
+          - guard
+          - "{{ sui_network }}"
+          - "{{ sui_role }}"
+          - "{{ sui_genesis_sha256 }}"
+      changed_when: false
+    - name: Reject changed validator metadata before mutating this host
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ sui_jinja }}/erpc-sui-control.py.j2"
+          - guard-metadata
+          - "{{ sui_network }}"
+          - "{{ sui_role }}"
+          - "{{ sui_genesis_sha256 }}"
+        stdin: "{{ sui_validator_metadata | to_json }}"
+      changed_when: false
+      when: sui_role == 'validator'
+
+    - name: Bind this mutation to its caller before changing any deployment files
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ sui_jinja }}/erpc-sui-control.py.j2"
+          - begin-intent
+          - "{{ sui_network }}"
+          - "{{ sui_role }}"
+          - "{{ sui_genesis_sha256 }}"
+          - "{{ sui_confirmation_id }}"
+      changed_when: false
+    - name: Fence and stop validators during credential-only preparation
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ sui_jinja }}/erpc-sui-control.py.j2"
+          - prepare-validator
+          - "{{ sui_network }}"
+          - "{{ sui_role }}"
+          - "{{ sui_genesis_sha256 }}"
+      changed_when: true
+      when: sui_phase == 'prepare-validator'
+    - name: Read the persistent host contract
+      ansible.builtin.slurp:
+        src: /etc/sui/contract.json
+      register: sui_contract
+    - name: Refuse another network or role
+      ansible.builtin.assert:
+        that:
+          - sui_role in ['fullnode', 'validator']
+          - (sui_contract.content | b64decode | from_json).network == sui_network
+          - (sui_contract.content | b64decode | from_json).role == sui_role
+          - (sui_contract.content | b64decode | from_json).genesis == sui_genesis_sha256
+          - sui_version is match('^(mainnet|testnet)-v[0-9]+\.[0-9]+\.[0-9]+$')
+          - sui_archive_sha256 is match('^[a-f0-9]{64}$')
+        quiet: true
+    - name: Read the current release
+      ansible.builtin.stat:
+        path: /opt/sui/current
+        follow: false
+      register: sui_current
+    - name: Require explicit update to change the release
+      ansible.builtin.assert:
+        that:
+          - not sui_current.stat.exists or sui_current.stat.lnk_target == sui_release_dir or sui_phase == 'update'
+        quiet: true
+    - name: Check bootstrap completion before an update
+      ansible.builtin.stat:
+        path: /var/lib/sui/.bootstrap-complete
+      register: sui_update_bootstrap
+    - name: Refuse updates during incomplete bootstrap
+      ansible.builtin.assert:
+        that: sui_phase != 'update' or sui_update_bootstrap.stat.exists
+        fail_msg: Complete or explicitly recover bootstrap before upgrading the client.
+        quiet: true
+    - name: Create the release directory
+      ansible.builtin.file:
+        path: "{{ sui_release_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+    - name: Fetch and authenticate the selected archive
+      ansible.builtin.get_url:
+        url: "{{ sui_archive_url }}"
+        dest: "{{ sui_release_dir }}/release.tgz"
+        checksum: "sha256:{{ sui_archive_sha256 }}"
+        owner: root
+        group: root
+        mode: "0600"
+    - name: Extract only the three expected regular executable files
+      ansible.builtin.shell:
+        cmd: |
+          set -euo pipefail
+          python3 - {{ sui_release_dir | quote }} <<'PY'
+          import os, pathlib, sys, tarfile
+          root = pathlib.Path(sys.argv[1])
+          with tarfile.open(root / 'release.tgz', 'r:gz') as archive:
+              for name in ['sui-node', 'sui-tool', 'sui']:
+                  matches = [m for m in archive.getmembers() if m.name in (name, './' + name)]
+                  if len(matches) != 1 or not matches[0].isfile():
+                      raise SystemExit('Invalid Sui archive layout')
+                  pending = root / (name + '.new')
+                  with archive.extractfile(matches[0]) as src, pending.open('wb') as dst:
+                      while block := src.read(1024 * 1024):
+                          dst.write(block)
+                  os.chmod(pending, 0o755)
+                  os.replace(pending, root / name)
+          PY
+        executable: /bin/bash
+      changed_when: false
+    - name: Fetch the immutable genesis with its independent digest
+      ansible.builtin.get_url:
+        url: "{{ sui_genesis_url }}"
+        dest: /etc/sui/genesis.blob
+        checksum: "sha256:{{ sui_genesis_sha256 }}"
+        owner: root
+        group: sui
+        mode: "0640"
+    - name: Install readiness and identity helpers
+      ansible.builtin.template:
+        src: "{{ sui_jinja }}/{{ item }}.j2"
+        dest: "{{ sui_helpers }}/{{ item }}"
+        owner: root
+        group: root
+        mode: "0700"
+      loop: [erpc-sui-status.py, erpc-sui-identity.py, erpc-sui-control.py, erpc-sui-validator.py]
+    - name: Stop before changing the client without automatic database rollback
+      ansible.builtin.systemd_service:
+        name: sui-node
+        state: stopped
+      when: sui_phase == 'update' and sui_current.stat.exists
+    - name: Select the reviewed release
+      ansible.builtin.file:
+        src: "{{ sui_release_dir }}"
+        dest: /opt/sui/current
+        state: link
+        force: true
+    - name: Establish or verify persistent encrypted P2P identity
+      ansible.builtin.command: /usr/local/lib/erpc/erpc-sui-identity.py {{ sui_network }} {{ sui_role }} {{ sui_genesis_sha256 }}
+      no_log: true
+      changed_when: false
+      when: sui_role == 'fullnode'
+    - name: Store only public validator metadata
+      ansible.builtin.copy:
+        content: "{{ sui_validator_metadata | to_json }}\n"
+        force: false
+        dest: /etc/sui/validator.json
+        owner: root
+        group: sui
+        mode: "0640"
+      when: sui_role == 'validator'
+    - name: Write the role-specific configuration
+      ansible.builtin.template:
+        src: "{{ sui_jinja }}/{{ sui_role }}.yaml.j2"
+        dest: /etc/sui/node.yaml
+        owner: root
+        group: sui
+        mode: "0640"
+      register: sui_config
+    - name: Write systemd units
+      ansible.builtin.template:
+        src: "{{ sui_jinja }}/{{ item }}.j2"
+        dest: /etc/systemd/system/{{ item }}
+        owner: root
+        group: root
+        mode: "0644"
+      loop: [sui-node.service, sui-bootstrap.service]
+      register: sui_units
+    - name: Apply the firewall before any listener starts
+      ansible.builtin.include_tasks: tasks/firewall.yml
+      when: sui_phase != 'prepare-validator'
+    - name: Read whether verified bootstrap completed
+      ansible.builtin.stat:
+        path: /var/lib/sui/.bootstrap-complete
+      register: sui_bootstrap
+    - name: Check available space before initial bootstrap
+      ansible.builtin.command: df --output=avail -B1000000000 /var/lib/sui
+      register: sui_free
+      changed_when: false
+      when: not sui_bootstrap.stat.exists
+    - name: Require room for initial snapshot and growth
+      ansible.builtin.assert:
+        that: sui_free.stdout_lines[-1] | trim | int >= 3500
+        fail_msg: Mount the Sui data volume before bootstrap; at least 3500 GB free is required.
+        quiet: true
+      when: not sui_bootstrap.stat.exists
+    - name: Record a required restart without starting any listener before confirmation
+      ansible.builtin.file:
+        path: /etc/sui/restart-required
+        state: touch
+        owner: root
+        group: root
+        mode: "0600"
+      when: sui_config.changed or sui_units.changed or sui_phase == 'update'

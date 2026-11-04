@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+[Unit]
+Description=Confirmed TRON firewall
+DefaultDependencies=no
+After=local-fs.target nftables.service
+Before=network-pre.target shutdown.target tron-node.service
+Wants=network-pre.target
+Conflicts=shutdown.target
+RequiresMountsFor=/opt/erpc /etc/erpc/tron
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/python3 /usr/local/lib/erpc/rpc-firewall.py tron load
+
+[Install]
+WantedBy=multi-user.target
+

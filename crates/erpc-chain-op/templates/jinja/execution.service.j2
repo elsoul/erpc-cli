@@ -1,0 +1,78 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+[Unit]
+Description=ERPC {{ op_family }} {{ op_network }} execution follower
+Requires=erpc-{{ op_family }}-firewall.service erpc-{{ op_family }}-upstreams.service
+After=network-online.target erpc-{{ op_family }}-firewall.service erpc-{{ op_family }}-upstreams.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+[Service]
+{% if op_family == 'base' %}
+User=erpc-{{ op_family }}
+Group=erpc-{{ op_family }}
+{% else %}
+User=root
+Group=root
+RuntimeDirectory=erpc-{{ op_family }}-execution
+RuntimeDirectoryMode=0700
+{% endif %}
+Type=exec
+UMask=0077
+ExecStartPre=+/usr/bin/python3 /usr/local/lib/erpc/rollup_control.py guard execution {{ op_owner }} {{ op_family }} {{ op_network }} {{ op_history }}
+ExecStartPre=+/usr/bin/python3 /usr/local/lib/erpc/rollup_control.py wait-upstream
+LoadCredentialEncrypted=engine-jwt:/etc/credstore.encrypted/erpc-{{ op_family }}-engine-jwt
+LoadCredentialEncrypted=execution-peer:/etc/credstore.encrypted/erpc-{{ op_family }}-execution-peer
+{% if op_family != 'base' %}
+ExecStartPre=/usr/bin/python3 /usr/local/lib/erpc/rollup_runtime_jwt.py {{ op_family }} execution
+ExecStartPre=/usr/bin/python3 /usr/local/lib/erpc/rollup_container.py {{ op_family }} execution
+ExecStart=/usr/bin/docker --config {{ op_conf }}/docker run --rm --name erpc-{{ op_family }}-execution --network host --user {{ op_uid }}:{{ op_gid }} \
+  --label erpc.owner={{ op_owner }} --label erpc.family={{ op_family }} --label erpc.network={{ op_network }} --label erpc.history={{ op_history }} \
+  --cap-drop ALL --security-opt no-new-privileges --read-only --tmpfs /tmp:rw,nosuid,nodev,noexec,size=256m \
+  --mount type=bind,source={{ op_data }}/execution,target=/data \
+  --mount type=bind,source={{ op_conf }}/reth.toml,target=/reth.toml,readonly \
+  --mount type=bind,source=/run/erpc-{{ op_family }}-execution/engine-jwt,target=/engine-jwt,readonly \
+  --mount type=bind,source=/run/erpc-{{ op_family }}-execution/peer-key,target=/peer-key,readonly \
+  {{ op_execution_image }} node --datadir /data --config /reth.toml --authrpc.jwtsecret /engine-jwt --p2p-secret-key /peer-key \
+{% else %}
+ExecStart={{ op_opt }}/current/base-reth-node node --datadir {{ op_data }}/execution --config {{ op_conf }}/reth.toml --authrpc.jwtsecret %d/engine-jwt --p2p-secret-key %d/execution-peer \
+  --upgrade-signal.l1-rpc http://127.0.0.1:18545 \
+{% endif %}
+  --chain {{ op_execution_chain }} --storage.v2=true \
+{% if op_history == 'full' %}
+  --full \
+{% endif %}
+  --http --http.addr 127.0.0.1 --http.port 8545 --http.api eth,net,web3 \
+  --ws --ws.addr 127.0.0.1 --ws.port 8546 --ws.api eth,net,web3 \
+  --ipcdisable --authrpc.addr 127.0.0.1 --authrpc.port 8551 \
+  --metrics 127.0.0.1:6060 --port 30303 --discovery.port 30303 --discovery.v5.port 9200 \
+  --rollup.sequencer-http {{ op_sequencer }} --log.file.max-files 0
+{% if op_family != 'base' %}
+ExecStop=/usr/bin/docker --config {{ op_conf }}/docker stop --time 600 erpc-{{ op_family }}-execution
+{% endif %}
+Restart=on-failure
+RestartSec=30
+KillSignal=SIGTERM
+TimeoutStopSec=660
+LimitNOFILE=1048576
+LimitCORE=0
+MemorySwapMax=0
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+ReadWritePaths={{ op_data }}/execution
+{% if op_family != 'base' %}
+ReadWritePaths=/run/erpc-{{ op_family }}-execution
+{% else %}
+CapabilityBoundingSet=
+RestrictNamespaces=yes
+{% endif %}
+[Install]
+WantedBy=multi-user.target

@@ -131,6 +131,18 @@ jobs:
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
             echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           fi
+      - name: "Install zig, for the worker agents"
+        uses: "mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29"
+        with:
+          "use-cache": false
+          "version": "0.14.1"
+      - name: "Install cargo-zigbuild, for the worker agents"
+        uses: "taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177"
+        with:
+          "tool": "cargo-zigbuild@0.24.0"
+      - name: "Build the worker agents erpc embeds"
+        run: "scripts/build-worker-agents.sh"
+        shell: "bash"
       - name: Install dist
         run: ${{ matrix.install_dist.run }}
       # Get the dist-manifest

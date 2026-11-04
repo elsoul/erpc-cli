@@ -1,0 +1,47 @@
+PumpSwap auto-trader, erpc worker template solana/pumpfun
+Copyright 2025-2026 ELSOUL LABO B.V.
+
+This app is derived from trade-app in solana-stream
+(https://github.com/ValidatorsDAO/solana-stream, temp-release/trade-app,
+commit ea0c3a476b455a9db16a20aa0e82a006df300758), licensed under the Apache
+License, Version 2.0.
+
+Changes made for erpc worker:
+- The trading key arrives on a pipe named by ERPC_WORKER_KEY_FD and is held
+  as one shared keypair; the wallet.json file, the vanity key generator and
+  the per-trade copies of the secret key bytes are gone.
+- The process marks itself undumpable on Linux before the key is read.
+- Settings come from the environment only; .env and .env.erpc are no longer
+  read.
+- The API listens on 127.0.0.1 unless API_BIND says otherwise, every request
+  needs API_TOKEN (compared in constant time), the permissive CORS layer is
+  gone, and /healthz answers without a token.
+- There is no public RPC fallback: SOLANA_RPC_ENDPOINT or ERPC_API_KEY is
+  required. URLs are logged without their query or credentials, and a failed
+  webhook request is logged without the webhook URL.
+- Explorer links in notifications point at EXPLORER_URL when it is set, and
+  are plain signatures and addresses otherwise.
+- Trading no longer pays fees for nothing: the take-profit target includes
+  the transaction fees and is met by what the exact-out sell is sure to
+  bring in; transactions ask for preflight simulation; a sell that may still
+  land is settled before another is signed, and the wallet's balance is read
+  before every sell, a lower read never letting a position be sold below its
+  target; a failed sell is retried after a growing wait by a monitor that
+  keeps watching while a sell runs, and given up after five sells that
+  landed and failed or twenty failures of any kind, which pauses buying; a
+  position is claimed by one seller at a time; a pool is bought once, a
+  token still held or being bought is not bought again, and buys under way
+  count against max_positions; tokens with a freeze authority or a
+  Token-2022 extension that can stop transfers are not bought; a sell sure
+  to bring in no more than its fee is replaced by a burn; a close is retried
+  until the token account is gone, up to the give-up limits, burns exactly
+  what it was decided for, and takes a missing account for closed only after
+  a close of its own went out; a buy is settled before its slot is given
+  back, and tracked when it lands late; only WSOL/token pools are bought or
+  restored, and restore takes the deepest one and skips tokens that cannot
+  be sold; sell_only mode buys nothing; restored positions are sold only
+  once trading starts; PUT /api/config refuses settings that would trade
+  badly. The default minimum pool liquidity is 1 SOL.
+- The package and binary are named after the app; the git dependency is
+  pinned to a commit; reqwest uses rustls instead of the system's OpenSSL,
+  so the app cross-builds for Linux and needs no libssl on the server.

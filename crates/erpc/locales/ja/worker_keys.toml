@@ -1,0 +1,77 @@
+# `erpc worker key` と `erpc worker secret` のメッセージ。
+
+read_failed = "{path} を読み込めませんでした：{error}"
+portability = "このアプリのサーバーは 1Password に保管されていますが、キーチェーンはこのマシンにしかありません。別のマシンからはアプリを起動できなくなります。サーバーと同じ場所に保管するには --store 1password を指定してください。"
+
+[field]
+pubkey = "公開鍵"
+kept_at = "保管場所"
+
+[import]
+wipe_question = "鍵を保管先に保管しました。{file} を消去しますか（上書きしてから削除します）？"
+wiped = "{file} を消去しました。"
+wipe_failed = "{file} を消去できませんでした：{error}"
+left_on_disk = "{file} はまだディスク上に残っています。保管先の鍵を確認したら削除してください（`--wipe` を付けると自動で消去します）。"
+
+[already]
+no_pubkey = "公開鍵が設定されていません"
+show_hint = "`erpc worker key show{dir_scope}` で確認できます"
+replace_hint = "置き換えるには、先に erpc.toml から [wallet] を削除してください"
+title = "{app} にはすでにウォレットがあります。何も作成していません"
+refused = "{app} にはすでにウォレットがあります（{source} の {pubkey}）。何も作成していません"
+refused_hint = "`erpc worker key show{dir_scope}` で確認できます。置き換えるには、先に erpc.toml から [wallet] を削除してください"
+
+[kept]
+made = "{app} の取引用の鍵を作成しました：{pubkey}"
+imported = "{app} の取引用の鍵をインポートしました：{pubkey}"
+where = "{store} に {source} として保管しました。erpc.toml の [wallet] がこれを参照しています。"
+hot_wallet = "入金はボットに必要な額だけにしてください。これはホットウォレットです。"
+by_hand = "鍵は {source} に保管されています。erpc.toml の [wallet] に source = \"{source}\" と pubkey = \"{pubkey}\" を手動で設定してください"
+
+[key_file]
+not_one = "{path} は鍵ファイルではありません"
+unreadable = "{path}：{error}。鍵ファイルは `solana-keygen` が書き出す、64 個の数値からなる JSON 配列です"
+
+[show]
+no_wallet = "{app} にはまだウォレットがありません"
+new_hint = "`erpc worker key new{dir_scope}` で作成できます"
+no_pubkey = "（erpc.toml に公開鍵が設定されていません）"
+kept_at = "保管場所：{source}"
+
+[balance]
+no_pubkey = "{app} の erpc.toml にウォレットの公開鍵がありません"
+not_json_rpc = "RPC の応答は {status} で、JSON-RPC ではありません：{error}"
+no_balance = "RPC は {status} を返しましたが、残高が含まれていません"
+failed = "残高を取得できませんでした：{error}"
+
+[rpc]
+none = "アプリに RPC の設定（SOLANA_RPC_ENDPOINT または ERPC_API_KEY）がありません"
+none_hint = "--rpc <url> を指定してください"
+unusable = "この RPC URL は使えません：{error}"
+
+[secret]
+prompt = "{name}（入力は表示されません）"
+ask_failed = "入力プロンプトを表示できませんでした：{error}"
+stdin_failed = "標準入力を読み込めませんでした：{error}"
+too_long = "標準入力のシークレットが 64 KiB を超えています"
+empty = "{name} が空です。何も保管していません"
+
+[put]
+in_vars = "{name} は [vars] にあります。値が erpc.toml に残らないよう、先にそちらから削除してください"
+already = "{name} はすでに設定されています（{source}）"
+replace_hint = "新しい値に置き換えるには --replace を指定してください"
+by_hand = "値は {source} に保管されています。[secrets] に {name} = \"{source}\" を手動で追加してください"
+done = "{name} ← {source}（{store} に保管）"
+old_kept = "古い値はまだ {old} に保管されています。不要であればそちらで削除してください。"
+
+[list]
+none = "シークレットはまだありません。`erpc worker secret put <NAME>{dir_scope}` で保管できます。"
+missing_plain = "未設定：{name}（run.requires）"
+title = "{app} のシークレット"
+missing = "{name} が設定されていません（run.requires）"
+
+[rm]
+not_there = "{name} は [secrets] にありません"
+done = "{name} を erpc.toml から外しました。"
+still_kept = "値はまだ {source} に保管されています。ほかで使っていなければ、そちらで削除してください。"
+plain = "{name} を erpc.toml から外しました。値はまだ {source} に保管されています。ほかで使っていなければ、そちらで削除してください。"

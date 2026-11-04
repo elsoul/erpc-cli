@@ -23,7 +23,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..", "..");
 const distrib = resolve(repoRoot, "target", "distrib");
 
-const { looksLikeInstaller } = await import(resolve(here, "..", "src", "index.ts"));
+const { looksLikeInstaller, withAfterInstall } = await import(resolve(here, "..", "src", "index.ts"));
 
 const cases = [
   { file: "erpc-installer.sh", flavor: "sh" },
@@ -131,6 +131,48 @@ for (const { file } of cases) {
       `${fixtures[file]} no longer matches ${file}. In order, the first ${n} ` +
         `comparable lines differ at: ${JSON.stringify(diff)}`,
     );
+  }
+}
+
+// What AFTER_INSTALL depends on, pinned against the real installers rather
+// than remembered. Two things: the installer ENDS by calling its main
+// function in a way that stops the script on failure, so the tail runs only
+// after a successful install; and a forced install directory is used as it
+// is ("flat"), not with bin/ under it, which is where the tail looks. The
+// first tail looked under bin/ and ran a binary from an earlier install.
+const endings = {
+  "erpc-installer.sh": {
+    ending: /download_binary_and_run_installer "\$@" \|\| exit 1\s*$/,
+    // The three forced directories, in the tail's order, each flat.
+    layout:
+      /if \[ -n "\$\{ERPC_INSTALL_DIR:-\}" \]; then\n\s*_force_install_dir="\$ERPC_INSTALL_DIR"\n\s*_install_layout="flat"\n\s*elif \[ -n "\$\{CARGO_DIST_FORCE_INSTALL_DIR:-\}" \]; then\n\s*_force_install_dir="\$CARGO_DIST_FORCE_INSTALL_DIR"\n\s*_install_layout="flat"\n\s*elif \[ -n "\$UNMANAGED_INSTALL" \]; then\n\s*_force_install_dir="\$UNMANAGED_INSTALL"\n\s*_install_layout="flat"/,
+    flat: /"flat"\)\n\s*_install_dir="\$_force_install_dir"/,
+    flavor: "sh",
+  },
+  "erpc-installer.ps1": {
+    ending: /try \{\s*Install-Binary "\$Args"\s*\} catch \{[^}]*exit 1\s*\}\s*$/,
+    layout:
+      /if \(\(\$env:ERPC_INSTALL_DIR\)\) \{\n\s*\$force_install_dir = \$env:ERPC_INSTALL_DIR\n\s*\$install_layout = "flat"\n\s*\} elseif \(\(\$env:CARGO_DIST_FORCE_INSTALL_DIR\)\) \{\n\s*\$force_install_dir = \$env:CARGO_DIST_FORCE_INSTALL_DIR\n\s*\$install_layout = "flat"\n\s*\} elseif \(\$unmanaged_install\) \{\n\s*\$force_install_dir = \$unmanaged_install\n\s*\$install_layout = "flat"/,
+    flat: /"flat" \{\n\s*\$dest_dir = \$force_install_dir/,
+    flavor: "ps1",
+  },
+};
+for (const [file, want] of Object.entries(endings)) {
+  const path = resolve(distrib, file);
+  if (!existsSync(path)) continue;
+  const body = readFileSync(path, "utf8");
+  for (const [what, re] of Object.entries({ ending: want.ending, layout: want.layout, flat: want.flat })) {
+    if (re.test(body)) {
+      console.log(`ok   ${file} ${what} is as AFTER_INSTALL assumes`);
+    } else {
+      fail(`${file}: its ${what} is not what AFTER_INSTALL assumes (${re}); read the tail in installer/src/index.ts again`);
+    }
+  }
+  const served = withAfterInstall(body, want.flavor);
+  if (looksLikeInstaller(served, want.flavor) && served.endsWith(withAfterInstall("", want.flavor).trimStart())) {
+    console.log(`ok   ${file} with the tail is still accepted and ends with it`);
+  } else {
+    fail(`${file} with the tail is rejected or does not end with it`);
   }
 }
 

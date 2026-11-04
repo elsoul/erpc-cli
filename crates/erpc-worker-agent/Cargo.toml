@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "erpc-worker-agent"
+description = "The process on a server that runs an erpc worker app and holds its key in memory"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+publish = true
+
+[[bin]]
+name = "erpc-worker-agent"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+erpc-worker.workspace = true
+# `bench-rpc` times JSON-RPC calls from the server; rustls, like erpc.
+reqwest = { workspace = true, features = ["blocking"] }
+serde_json.workspace = true
+sha2.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { workspace = true, features = ["std", "process", "net", "mm"] }
+signal-hook.workspace = true
+
+[lints]
+workspace = true
+
+# Shipped to servers by erpc, not installed by the operator.
+[package.metadata.dist]
+dist = false

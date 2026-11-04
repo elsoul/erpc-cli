@@ -1,0 +1,224 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Prepare or deploy a dedicated Ethereum validator host
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    eth_opt: /opt/erpc-eth-validator
+    eth_release_dir: "{{ eth_opt }}/reth-{{ eth_reth_version }}--lighthouse-{{ eth_lighthouse_version }}"
+    eth_gpg: "{{ playbook_dir }}/../gpg"
+    eth_archives:
+      - { client: reth, url: "{{ eth_reth_url }}", sha256: "{{ eth_reth_sha256 }}", fingerprint: "{{ eth_reth_fingerprint }}" }
+      - { client: lighthouse, url: "{{ eth_lighthouse_url }}", sha256: "{{ eth_lighthouse_sha256 }}", fingerprint: "{{ eth_lighthouse_fingerprint }}" }
+    ev_root: /var/lib/erpc-eth-validator
+    ev_checkpoint:
+      mainnet: https://mainnet.checkpoint.sigp.io
+      hoodi: https://hoodi.checkpoint.sigp.io
+  tasks:
+    - name: Refuse existing RPC or unmanaged Ethereum services
+      ansible.builtin.shell:
+        cmd: |
+          set -euo pipefail
+          for unit in reth lighthouse; do
+            [ "$(systemctl show --property=LoadState --value "$unit")" = not-found ] || exit 1
+          done
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Check persistent ownership before touching the host
+      ansible.builtin.stat:
+        path: "{{ ev_root }}/owner.json"
+      register: ev_existing
+
+    - name: Read the existing owner
+      ansible.builtin.slurp:
+        src: "{{ ev_root }}/owner.json"
+      register: ev_owner_file
+      when: ev_existing.stat.exists
+
+    - name: Refuse mismatched ownership and network
+      ansible.builtin.assert:
+        that:
+          - (ev_owner_file.content | b64decode | from_json).owner == ev_owner
+          - (ev_owner_file.content | b64decode | from_json).network == ev_network
+        quiet: true
+      when: ev_existing.stat.exists
+
+    - name: Install verified-binary and service prerequisites
+      ansible.builtin.apt:
+        name: [ca-certificates, curl, gnupg, jq, openssl, python3, tar]
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Discover existing host time synchronization services
+      ansible.builtin.service_facts:
+
+    - name: Preserve a running or installed time daemon before choosing a fallback
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/time_service.py"]
+        stdin: "{{ ansible_facts.services | to_json }}"
+      register: ev_clock
+      changed_when: false
+
+    - name: Install the fallback only when no other time service was selected
+      ansible.builtin.apt:
+        name: systemd-timesyncd
+        state: present
+      when: (ev_clock.stdout | from_json).install_fallback | bool
+
+    - name: Keep the selected clock service synchronized
+      ansible.builtin.systemd_service:
+        name: "{{ (ev_clock.stdout | from_json).service }}"
+        state: started
+        enabled: true
+
+    - name: Create the engine-only group
+      ansible.builtin.group:
+        name: ev-engine
+        system: true
+
+    - name: Create isolated service users
+      ansible.builtin.user:
+        name: "{{ item }}"
+        system: true
+        create_home: false
+        shell: /usr/sbin/nologin
+      loop: [ev-reth, ev-beacon, ev-validator]
+
+    - name: Share only the engine credential between execution and beacon
+      ansible.builtin.user:
+        name: "{{ item }}"
+        groups: ev-engine
+        append: true
+      loop: [ev-reth, ev-beacon]
+
+    - name: Create persistent private directories without formatting disks
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: "{{ item.owner }}"
+        group: "{{ item.group }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - { path: "{{ ev_root }}", owner: root, group: root, mode: '0711' }
+        - { path: "{{ ev_root }}/reth", owner: ev-reth, group: ev-reth, mode: '0700' }
+        - { path: "{{ ev_root }}/beacon", owner: ev-beacon, group: ev-beacon, mode: '0700' }
+        - { path: "{{ ev_root }}/vc", owner: ev-validator, group: ev-validator, mode: '0700' }
+        - { path: "{{ eth_opt }}", owner: root, group: root, mode: '0755' }
+        - { path: /etc/erpc, owner: root, group: root, mode: '0755' }
+        - { path: /usr/local/lib/erpc, owner: root, group: root, mode: '0755' }
+
+    - name: Check free capacity on the prepared data filesystem
+      ansible.builtin.command: df --output=avail -B1000000000 {{ ev_root }}
+      register: ev_free
+      changed_when: false
+
+    - name: Refuse initial deployment without capacity for execution and beacon data
+      ansible.builtin.assert:
+        that:
+          - ev_free.stdout_lines[-1] | trim | int >= eth_min_free_gb | int
+        fail_msg: Provision the data filesystem before init; this backend never formats or purges disks.
+        quiet: true
+      when: not ev_existing.stat.exists
+
+    - name: Reserve immutable remote ownership, once
+      ansible.builtin.copy:
+        content: "{{ {'owner': ev_owner, 'network': ev_network, 'state': 'prepared', 'pubkey': ''} | to_json }}"
+        dest: "{{ ev_root }}/owner.json"
+        owner: root
+        group: root
+        mode: '0600'
+        force: false
+
+    - name: Write public configuration without private key material
+      ansible.builtin.copy:
+        content: "{{ {'owner': ev_owner, 'network': ev_network, 'fee_recipient': ev_fee_recipient, 'pair': eth_release_dir} | to_json }}"
+        dest: /etc/erpc/eth-validator.json
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Install the fixed control helper
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/control.py"
+        dest: /usr/local/lib/erpc/eth-validator-control
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Install and configure the non-signing stack
+      when: ev_phase != 'init'
+      block:
+        - name: Serialize installs and refuse a concurrently running signer
+          ansible.builtin.command:
+            argv: [python3, /usr/local/lib/erpc/eth-validator-control, install-check]
+          changed_when: false
+
+        - name: Read installed pair completeness
+          ansible.builtin.stat:
+            path: "{{ eth_release_dir }}/.verified"
+          register: eth_installed_pair
+
+        - name: Verify signatures and install both binaries
+          ansible.builtin.include_tasks: ../ansible/eth-rpc/tasks/install_release.yml
+
+        - name: Mark only a complete verified installation
+          ansible.builtin.copy:
+            content: "{{ eth_reth_commit }} {{ eth_lighthouse_commit }}"
+            dest: "{{ eth_release_dir }}/.verified"
+            owner: root
+            group: root
+            mode: '0644'
+
+        - name: Stop beacon before execution for a configuration change
+          ansible.builtin.systemd_service:
+            name: "{{ item }}"
+            state: stopped
+          loop: [erpc-eth-beacon, erpc-eth-execution]
+          when: ev_phase == 'update'
+
+        - name: Select the verified pair with no automatic database rollback
+          ansible.builtin.file:
+            src: "{{ eth_release_dir }}"
+            dest: "{{ eth_opt }}/current"
+            state: link
+            force: true
+
+        - name: Generate one shared JWT, preserving it on later runs
+          ansible.builtin.shell:
+            cmd: |
+              set -euo pipefail
+              umask 027
+              openssl rand -hex 32 > /etc/erpc/eth-validator-jwt.new
+              chown root:ev-engine /etc/erpc/eth-validator-jwt.new
+              mv /etc/erpc/eth-validator-jwt.new /etc/erpc/eth-validator-jwt
+            executable: /bin/bash
+            creates: /etc/erpc/eth-validator-jwt
+          no_log: true
+
+        - name: Write isolated service units
+          ansible.builtin.template:
+            src: "{{ playbook_dir }}/{{ item }}.service.j2"
+            dest: "/etc/systemd/system/erpc-eth-{{ item }}.service"
+            owner: root
+            group: root
+            mode: '0644'
+          loop: [execution, beacon, validator]
+          register: ev_units
+
+        - name: Start execution then beacon; signing always requires an explicit start
+          ansible.builtin.systemd_service:
+            name: "{{ item }}"
+            daemon_reload: true
+            enabled: true
+            state: "{{ 'restarted' if ev_units.changed else 'started' }}"
+          loop: [erpc-eth-execution, erpc-eth-beacon]
+
+        - name: End maintenance without starting the signer
+          ansible.builtin.command:
+            argv: [python3, /usr/local/lib/erpc/eth-validator-control, install-end]
+          changed_when: false

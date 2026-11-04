@@ -45,6 +45,8 @@ github-release = "announce"
 msvc-crt-static = true
 create-release = true
 pr-run-mode = "plan"
+# The worker agents erpc embeds are built before each build (crates/erpc/build.rs).
+github-build-setup = "../build-setup.yml"
 # Keep the `dist` cargo profile defined in Cargo.toml.
 precise-builds = false
 

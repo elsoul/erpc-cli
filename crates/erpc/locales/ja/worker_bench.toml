@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+url_not_pair = "--url は NAME=URL の形で指定してください（`{given}` ではありません）"
+url_not_pair_unknown = "--url は NAME=URL の形で指定してください"
+nothing = "計測する対象がありません"
+nothing_hint = "--no-shared を外すか、--url NAME=URL でエンドポイントを指定してください"
+not_readable = "エージェントの計測結果を読み取れません：{error}"
+one_stdin = "標準入力から読み込める --url は 1 つだけです"
+url_of = "{name} の URL"
+shared_refused = "共有 RPC がアカウントの API キーを拒否しました。アカウントに有効な共有 RPC プランがない可能性があります（ERPC ダッシュボードで確認してください）。または、アプリの ERPC_API_KEY シークレットにプランのあるキーを設定してください。"
+title = "{worker} のサーバー {at} から {method} を計測：ウォームアップ {warm}の後、各エンドポイント {each}{apart}"
+apart = "、{ms} ms 間隔"
+faster = "中央値で {fastest} が {other} より {times} 倍速く応答しました（{a} 対 {b}）。"
+alone = "{name} の応答時間は中央値で {time} でした。"
+
+[each]
+other = "{n} 回"
+
+[warm_up]
+other = "{n} 回"
+
+[failures]
+other = "{name}：{n} 回失敗、最初のエラー：{error}"
+
+[column]
+endpoint = "エンドポイント"
+host = "ホスト"
+failed = "失敗"
+slots_behind = "スロット遅れ"

@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Prepare the firewall for confirmation before long deployment work
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars_files: [vars.yml]
+  tasks:
+    - name: Ensure controller and policy directories exist
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "{{ item.mode }}"
+      loop:
+        - {path: /usr/local/lib/erpc, mode: '0755'}
+        - {path: /etc/erpc/eth, mode: '0700'}
+    - name: Apply the candidate with its bounded confirmation window
+      ansible.builtin.import_tasks: tasks/firewall.yml

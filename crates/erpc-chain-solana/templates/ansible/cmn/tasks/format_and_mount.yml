@@ -1,0 +1,75 @@
+---
+- name: Check if /dev/{{ disk_name }} is already formatted
+  command: blkid /dev/{{ disk_name }}
+  register: blkid_result
+  failed_when: false
+  changed_when: false
+
+- name: Format /dev/{{ disk_name }} to ext4 if not already formatted
+  filesystem:
+    fstype: ext4
+    dev: "/dev/{{ disk_name }}"
+  when: blkid_result.stdout == ""
+
+- name: Get UUID for /dev/{{ disk_name }}
+  command: blkid -s UUID -o value /dev/{{ disk_name }}
+  register: disk_uuid_result
+  changed_when: false
+  retries: 5
+  delay: 2
+  until: disk_uuid_result.stdout | trim != ""
+
+# A node that already runs keeps its data on the root disk under {{ mount_path }}. Before the new disk is mounted
+# there, the validator stops and what the directory holds moves onto the disk, so nothing is hidden under the
+# mount and the validator finds its ledger where it was. The deploy starts solv again at its end.
+- name: Is {{ mount_path }} already a mount point
+  command: findmnt --noheadings --mountpoint {{ mount_path }}
+  register: mount_path_mounted
+  failed_when: false
+  changed_when: false
+
+- name: Does {{ mount_path }} hold anything
+  find:
+    paths: "{{ mount_path }}"
+    file_type: any
+    hidden: true
+  register: mount_path_content
+  when: mount_path != '/mnt' and mount_path_mounted.rc != 0
+
+- name: Stop solv before {{ mount_path }} moves to /dev/{{ disk_name }}
+  systemd:
+    name: solv
+    state: stopped
+  register: solv_stopped_for_disk
+  failed_when: false
+  # Not /mnt itself, where the other disks are mounted below: SLV mounts a fourth disk over it as it is.
+  when: mount_path != '/mnt' and mount_path_mounted.rc != 0 and (mount_path_content.matched | default(0)) > 0
+
+- name: Move what {{ mount_path }} holds onto /dev/{{ disk_name }}
+  shell: |
+    set -eu
+    tmp=$(mktemp -d /mnt/.erpc-disk.XXXXXX)
+    mount -o noatime "UUID={{ disk_uuid_result.stdout | trim }}" "$tmp"
+    cp -a "{{ mount_path }}/." "$tmp/"
+    sync
+    umount "$tmp"
+    rmdir "$tmp"
+    find "{{ mount_path }}" -mindepth 1 -delete
+  # Not /mnt itself, where the other disks are mounted below: SLV mounts a fourth disk over it as it is.
+  when: mount_path != '/mnt' and mount_path_mounted.rc != 0 and (mount_path_content.matched | default(0)) > 0
+
+- name: Mount /dev/{{ disk_name }} to {{ mount_path }} using UUID
+  mount:
+    path: "{{ mount_path }}"
+    src: "UUID={{ disk_uuid_result.stdout | trim }}"
+    fstype: ext4
+    state: mounted
+    opts: defaults,noatime
+
+- name: Give {{ mount_path }} to solv
+  file:
+    path: "{{ mount_path }}"
+    state: directory
+    owner: solv
+    group: solv
+    mode: "0755"

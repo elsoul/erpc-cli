@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+[Unit]
+Description=TRON {{ tron_network }} {{ tron_role }}
+After=network-online.target erpc-tron-firewall.service
+Wants=network-online.target
+Requires=erpc-tron-firewall.service
+
+[Service]
+Type=simple
+User=tron
+Group=tron
+WorkingDirectory=/etc/tron
+ExecStartPre=+/usr/bin/python3 /usr/local/lib/erpc/tron/control.py runtime {{ tron_contract_args | join(' ') }}
+{% if tron_role == 'validator' %}
+LoadCredentialEncrypted=witness.json:/etc/credstore.encrypted/tron/current/witness.json
+LoadCredentialEncrypted=witness-password:/etc/credstore.encrypted/tron/current/witness-password
+{% endif %}
+ExecStart=/usr/bin/python3 /usr/local/lib/erpc/tron/launch.py
+Restart=on-failure
+RestartSec=10
+KillSignal=SIGTERM
+KillMode=control-group
+TimeoutStopSec=600
+SendSIGKILL=no
+LimitCORE=0
+LimitNOFILE=1048576
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/lib/tron /var/log/tron
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+

@@ -1,0 +1,53 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Stop Sui and remove service definitions while retaining identity and data
+  hosts: all
+  become: true
+  gather_facts: false
+  vars_files: [vars.yml]
+  tasks:
+    # node-run.sh holds /opt/erpc's lock across this guard and every task.
+    - name: Verify the expected host contract before any mutation
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ sui_jinja }}/erpc-sui-control.py.j2"
+          - guard
+          - "{{ sui_network }}"
+          - "{{ sui_role }}"
+          - "{{ sui_genesis_sha256 }}"
+      changed_when: false
+    - name: Bind this mutation to its caller before changing any deployment files
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ sui_jinja }}/erpc-sui-control.py.j2"
+          - begin-intent
+          - "{{ sui_network }}"
+          - "{{ sui_role }}"
+          - "{{ sui_genesis_sha256 }}"
+          - "{{ sui_confirmation_id }}"
+      changed_when: false
+    - name: Stop and disable any installed services
+      ansible.builtin.shell:
+        cmd: |
+          set -euo pipefail
+          for unit in sui-bootstrap sui-node; do
+            if systemctl cat "$unit" >/dev/null 2>&1; then
+              systemctl stop "$unit"
+              systemctl disable "$unit"
+            fi
+          done
+        executable: /bin/bash
+      changed_when: true
+    - name: Remove service definitions
+      ansible.builtin.file:
+        path: /etc/systemd/system/{{ item }}.service
+        state: absent
+      loop: [sui-node, sui-bootstrap]
+    - name: Reload systemd
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+    # The deny-by-default firewall and host contract remain. Destroy never
+    # removes keys, inventory, or chain state and never opens a former RPC port.

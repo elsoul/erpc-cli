@@ -11,3 +11,29 @@ path = ["**"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 ELSOUL LABO B.V."
 SPDX-License-Identifier = "Apache-2.0"
+
+# Playbooks and templates vendored from SLV (see their PROVENANCE.md). They keep
+# SLV's own copyright line; the files erpc wrote there carry their headers.
+[[annotations]]
+path = ["crates/erpc-chain-solana/templates/**"]
+precedence = "closest"
+SPDX-FileCopyrightText = "2021 ELSOUL LABO B.V."
+SPDX-License-Identifier = "Apache-2.0"
+
+# Chain logos from @web3icons/core 4.0.58 (github.com/0xa3k5/web3icons), with
+# rounded tile corners and Base redrawn as its solid square. Each mark is a
+# trademark of its own project.
+[[annotations]]
+path = ["docs/assets/chains/**"]
+precedence = "override"
+SPDX-FileCopyrightText = "0xa3k5 and the web3icons contributors"
+SPDX-License-Identifier = "MIT"
+
+# The erpc worker app templates, ported from solana-stream (see their
+# PROVENANCE.md). An app made from one is the operator's, so its files carry
+# no headers of erpc's own.
+[[annotations]]
+path = ["crates/erpc-worker/templates/**"]
+precedence = "closest"
+SPDX-FileCopyrightText = "2025-2026 ELSOUL LABO B.V."
+SPDX-License-Identifier = "Apache-2.0"

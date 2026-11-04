@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Read ownership before any host mutation
+  ansible.builtin.stat:
+    path: /etc/avalanchego/contract.json
+  register: avax_contract
+- name: Require an initialized host outside init
+  ansible.builtin.assert:
+    that: avax_contract.stat.exists or (avax_allow_new_contract | default(false) | bool)
+    fail_msg: Initialize this host before changing it.
+- name: Check existing remote ownership before any mutation
+  when: avax_contract.stat.exists
+  block:
+    - ansible.builtin.slurp:
+        src: /etc/avalanchego/contract.json
+      register: avax_old_contract
+    - ansible.builtin.assert:
+        that:
+          - "(avax_old_contract.content | b64decode | from_json) == {'network': avax_network, 'type': avax_type, 'validator': avax_validator}"
+        fail_msg: Remote network, validator intent or history policy differs; no mutation is authorized.

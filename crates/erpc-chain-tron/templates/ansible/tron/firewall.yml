@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Apply only this deployment's short-lived firewall candidate
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars_files: [vars.yml]
+  tasks:
+    - ansible.builtin.import_tasks: tasks/guard.yml
+      vars: {tron_guard: guard-phase}
+    - name: Install the shared operation-bound firewall controller
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../rpc-firewall.py"
+        dest: /usr/local/lib/erpc/rpc-firewall.py
+        owner: root
+        group: root
+        mode: '0700'
+    - name: Install confirmed boot policy loader
+      ansible.builtin.template:
+        src: "{{ tron_templates }}/erpc-tron-firewall.service.j2"
+        dest: /etc/systemd/system/erpc-tron-firewall.service
+        owner: root
+        group: root
+        mode: '0644'
+    - name: Render the candidate into this immutable run's directory
+      ansible.builtin.template:
+        src: "{{ tron_templates }}/firewall.nft.j2"
+        dest: "{{ playbook_dir }}/../../firewall-candidate.nft"
+        owner: root
+        group: root
+        mode: '0600'
+    - name: Verify nftables syntax
+      ansible.builtin.command: nft -c -f {{ playbook_dir }}/../../firewall-candidate.nft
+      changed_when: false
+    - name: Read the submitted bundle identity
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/../../../bundle.tar.gz"
+        checksum_algorithm: sha256
+      register: tron_bundle
+    - name: Apply the exact candidate with automatic operation-bound rollback
+      ansible.builtin.command:
+        argv: [python3, /usr/local/lib/erpc/rpc-firewall.py, tron, apply, "{{ (playbook_dir ~ '/../../..') | realpath | basename }}", "{{ tron_bundle.stat.checksum }}"]
+      changed_when: true
+

@@ -1,0 +1,76 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+# `erpc ai` のコンソール：ヘッダー、ヒント、ステータス行、コマンド、ツールの質問に
+# 答えるための選択肢。
+
+wait_first = "回答が終わるのを待つか、Esc で止めてからにしてください。"
+restarted = "新しい会話を始めました。"
+continuing = "会話 {id} の続きです。"
+open_dashboard = "月額・年額プランは ERPC ダッシュボードで購入できます：{url}"
+declined_because = "回答を断りました：{why}"
+declined = "回答を断りました"
+compacted = "会話が長くなったので、前半を要約して続けます（元のやり取りは保存されています）。"
+stopped = "中断しました。"
+unknown_command = "不明なコマンドです：{command} · /help"
+hint = " enter 送信 · shift+enter 改行 · esc 中断 · pgup/pgdn スクロール · /help"
+
+[commands]
+new = "新しい会話を始める"
+help = "キーとコマンド"
+exit = "コンソールを終了する"
+
+[footer]
+first_word = "最初の応答まで {seconds}秒"
+seconds = "{seconds}秒"
+tokens = "入力 {input} · 出力 {output}"
+cached = "キャッシュ {cached}"
+
+[help]
+keys = "Enter          送信\nShift+Enter    改行（Alt+Enter / Ctrl+J も可）\nEsc            回答を中断\nTab            薄く出ている次のメッセージの候補を入力 · コマンドを補完\n↑ ↓            送ったメッセージを呼び出す\nPgUp PgDn      会話をスクロール（Shift+↑↓ で少しずつ）\nCtrl+C         入力を消す · 空なら終了"
+
+[status]
+stopping = "中断中"
+writing = "回答中"
+thinking = "考え中"
+waiting_for_pick = " · 選択待ち"
+esc_to_stop = " · esc で中断"
+scrolled_back = " · 過去を表示中 · PgDn で最新へ"
+
+[status.queued]
+other = " · {n} 件待ち"
+
+[placeholder]
+tab = "  tab で入力"
+busy = "次のメッセージを入力できます。回答が終わると送信されます"
+idle = "ノード・アカウント・erpc について何でも聞いてください"
+
+[intro]
+user = "ユーザー"
+signed_in = "認証情報"
+chain = "チェーン"
+plan = "プラン"
+chain_not_set = "未設定 · erpc config set default_chain solana"
+try = "試してみる"
+try_validator = "testnet にバリデータを立てるには？"
+try_rpc = "RPC ノードを立てたい"
+try_vps = "VPS がほしい"
+
+[picker]
+yes = "続ける"
+no = "やめる"
+always = "続ける（erpc ai を終了するまで、このコマンドは確認しない）"
+every = "続ける（erpc ai を終了するまで、どのコマンドもシェルスクリプトも確認しない）"
+own_words = "どれでもない（自分で入力する）"
+said_yes = "はい。"
+said_no = "いいえ。何も変更していません。"
+go_ahead = "続けますか？"
+no_terminal = "{refused}：はいと答える人がターミナルにいません"
+pass_yes = "確認なしで進めるには --yes を付けてください"
+said_no_to = "{refused}：「いいえ」が選ばれました"
+said_always = "はい。erpc ai を終了するまで、このコマンドは確認せずに実行します。"
+said_every = "すべてのコマンドを許可する前に、もう一度確認します。"
+said_own_words = "下の入力欄に入力してください。"
+hint_yes_no = " ↑ で続ける · enter 決定 · n/esc やめる"
+hint_one = " ↑↓ 選択 · enter 決定 · 1-9 で選ぶ · esc 自分で入力"
+hint_several = " ↑↓ 移動 · space 選択/解除 · enter 決定 · esc 自分で入力"

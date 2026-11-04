@@ -1,0 +1,9 @@
+# Managed by erpc: kernel settings for an Ethereum RPC node.
+# Many concurrent RPC and WebSocket clients.
+net.core.somaxconn = 4096
+net.ipv4.tcp_max_syn_backlog = 8192
+net.ipv4.ip_local_port_range = 10240 65000
+# Reth keeps its database memory-mapped.
+vm.max_map_count = 1048576
+vm.swappiness = 10
+fs.file-max = 4194304

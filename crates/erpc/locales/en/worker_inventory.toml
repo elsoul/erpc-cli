@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+op_failed = "1Password could not {doing}: {why}"
+no_reason = "no reason given"
+listing_not_json = "1Password's listing was not JSON"
+items_not_json = "1Password's items were not JSON"
+item_not_json = "1Password's item was not JSON"
+new_item_not_json = "1Password's new item was not JSON"
+more_than_one = "vault {vault} has more than one item tagged {tag}; keep one and archive the others"
+item_error = "item {id}: {error}"
+record_unusable = "the item record is unusable"
+not_read_back = "1Password's item {id} does not read back {label} as written"
+changed = "{title} changed in 1Password since this command read it (another machine deployed?); nothing was written, run the command again"
+appeared = "{title} appeared in 1Password while this command ran; nothing was written, run the command again"
+
+[doing]
+list = "list the worker items"
+read_all = "read the worker items"
+read = "read the worker item"
+update = "update the worker item"
+create = "make the worker item"
+archive = "archive the worker item"

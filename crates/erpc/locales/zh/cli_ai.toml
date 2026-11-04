@@ -1,0 +1,6 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+"ai" = "与 ERPC 助手对话。不带 -m 时进入交互式对话"
+"ai --message" = "提出一个问题并输出回答"
+"ai --continue" = "继续最近一次对话：可在控制台中继续，也可通过 `-m` 或管道传入问题，该问题会保存到这次对话中"

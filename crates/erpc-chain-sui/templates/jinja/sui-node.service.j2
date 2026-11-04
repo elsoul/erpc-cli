@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+[Unit]
+Description=Sui {{ sui_network }} {{ sui_role }}
+After=network-online.target erpc-sui-firewall.service
+Wants=network-online.target
+BindsTo=erpc-sui-firewall.service
+Requires=erpc-sui-firewall.service
+ConditionPathExists=/var/lib/sui/.bootstrap-complete
+
+[Service]
+ExecStartPre=+/usr/local/lib/erpc/erpc-sui-control.py runtime {{ sui_network }} {{ sui_role }} {{ sui_genesis_sha256 }}
+Type=simple
+User=sui
+Group=sui
+WorkingDirectory=/var/lib/sui
+{% if sui_role == 'validator' %}
+LoadCredentialEncrypted=network.key:/etc/credstore.encrypted/sui-validator/network.key
+LoadCredentialEncrypted=protocol.key:/etc/credstore.encrypted/sui-validator/protocol.key
+LoadCredentialEncrypted=worker.key:/etc/credstore.encrypted/sui-validator/worker.key
+{% else %}
+LoadCredentialEncrypted=network.key:/etc/credstore.encrypted/sui-network.key
+{% endif %}
+ExecStart=/opt/sui/current/sui-node --config-path /etc/sui/node.yaml
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=600
+LimitNOFILE=1048576
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/lib/sui
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

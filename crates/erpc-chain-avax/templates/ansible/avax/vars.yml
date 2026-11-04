@@ -1,0 +1,9 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+avax_home: /var/lib/avalanchego
+avax_opt: /opt/avalanchego
+avax_release_dir: "{{ avax_opt }}/{{ avax_version }}"
+avax_jinja: "{{ playbook_dir }}/../../jinja"
+avax_fw_dir: /etc/erpc/avax
+avax_helpers: /usr/local/lib/erpc

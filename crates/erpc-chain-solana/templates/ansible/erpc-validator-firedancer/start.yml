@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Starts the Firedancer validator, after setup.yml checked its identity is
+# the unstaked one.
+---
+- name: Start Firedancer
+  hosts: all
+  become: true
+  gather_facts: no
+  tasks:
+    - name: Start firedancer
+      ansible.builtin.systemd_service:
+        name: firedancer
+        state: started
+
+    # configure runs first and can fail on a host Firedancer does not fit:
+    # say so here rather than leave a unit that restarts every five seconds.
+    - name: Wait for it to stay up
+      ansible.builtin.command: systemctl is-active firedancer
+      register: erpc_fd_active
+      until: erpc_fd_active.stdout == 'active'
+      retries: 12
+      delay: 5
+      changed_when: false

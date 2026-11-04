@@ -1,0 +1,83 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+# `erpc worker` 自身のメッセージ：アプリの特定、check、init、list。
+
+[chain]
+unknown = "erpc worker のテンプレートがあるチェーンは {chains} です"
+
+[env]
+none = "`erpc worker deploy{scope}` で追加できます"
+
+[find]
+no_file = "{path} がありません"
+no_cwd = "カレントディレクトリを読み込めませんでした：{error}"
+no_manifest = "{dir} とその上位のディレクトリに {file} がありません"
+no_app_here = "このディレクトリにはアプリがありません。`erpc worker init` で作成できます"
+init_or_dir = "`erpc worker init` でアプリを作成するか、--dir <アプリのディレクトリ> を指定してください"
+unknown = "{name} という名前のアプリは erpc に登録されていません"
+unknown_hint = "登録済みのアプリは `erpc worker list` で確認できます。ほかのアプリは --dir <ディレクトリ> で指定してください"
+ambiguous = "{name} という名前のアプリが複数あります：{dirs}"
+ambiguous_hint = "どのアプリかを --dir <ディレクトリ> で指定してください"
+
+[manifest]
+fix = "{file} を修正して `erpc worker check{dir_scope}` を実行してください"
+
+[check]
+ready = "{name} の準備ができました"
+no_pubkey = "（公開鍵が未設定）"
+no_server = "（サーバーはまだありません）"
+in_1password = "サーバー情報は 1Password に保管"
+build = "{command}  → {bin}（{target} 向け）"
+no_wallet = "なし。`erpc worker key new{dir_scope}` で作成できます"
+no_env = "まだありません。`erpc worker deploy{scope}` で追加できます"
+env_in_1password = "{name}：サーバー情報は 1Password に保管（保管庫 {vault}）  サービス {service}"
+env = "{name}：{host}{resource}  サービス {service}"
+hourly = "、時間課金"
+
+[check.problems]
+other = "{path}：問題が {n} 件あります"
+
+[init]
+what = "何を作成しますか"
+making = "{template} から {name} を作成しています"
+at = "場所：{dir}"
+nothing_made = "何も作成していません"
+done = "完了"
+pick_another = "別の --name を指定するか、--into で別のディレクトリを指定してください"
+funds = "このアプリは、ウォレットに SOL が入ると実際の資金で取引します。保証は一切ありません。失っても困らない額だけを入金してください。鍵がファイルに書き込まれることはありません。`erpc worker key new{dir_scope}` で 1Password またはキーチェーンに保管します。"
+unlisted = "`erpc worker list` には表示されません：{error}"
+bad_name = "`{name}` はアプリ名に使えません。英小文字・数字・単独のハイフンからなる 1〜32 文字で、英字で始めてください"
+nothing_called = "{chain} には `{asked}` という作成対象がありません。{kinds} か、テンプレート {ids} を選んでください"
+or = "または"
+no_templates = "この erpc には {chain} のテンプレートがありません"
+many_templates = "{chain} にはテンプレートが複数あります。--template で 1 つ選んでください"
+
+[init.made]
+other = "{template} から {name} を作成しました（ファイル {n} 個）"
+
+[init.made_in]
+other = "{template} から {name} を {dir} に作成しました（ファイル {n} 個）。"
+
+[init.git]
+made = "新しい git リポジトリにしました。"
+skipped = "git リポジトリは作成していません（{why}）。"
+failed = "git リポジトリを作成できませんでした：{why}"
+failed_drawn = "git リポジトリを作成できませんでした：{why}"
+not_installed = "git がインストールされていません"
+inside = "すでに git リポジトリの中にあります"
+
+[list]
+none = "このマシンにはまだアプリがありません。`erpc worker init` で作成できます。"
+none_drawn = "このマシンにはまだアプリがありません。"
+not_deployed = "未デプロイ"
+deployed = "デプロイ先：{envs}"
+gone = "（そこにはもう erpc.toml がありません）"
+gone_drawn = "{name}：{dir} にもう erpc.toml がありません"
+pruned = "erpc.toml が無くなったアプリ {count} 件を一覧から外しました"
+prune_hint = "`erpc worker list --prune` で erpc.toml が無くなったアプリを一覧から外せます（ほかには何も変更しません）"
+invalid = "（erpc.toml に問題があります。`erpc worker check{dir_scope}`）"
+invalid_drawn = "{name}：erpc.toml に問題があります"
+in_vault = "{name}  ·  環境 {env} は 1Password にあり、このマシンにアプリはありません（引き継ぐにはアプリを clone してください）"
+in_vault_heading = "1Password にあり、このマシンにアプリがないもの（引き継ぐにはアプリを clone してください）："
+vault_unread = "（保管庫 {vault} のワーカーのアイテムを一覧表示できませんでした：{error}）"

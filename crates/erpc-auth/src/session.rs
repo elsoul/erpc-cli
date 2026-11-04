@@ -11,9 +11,13 @@
 //! either the old session or the new one, never neither.
 
 use core::time::Duration;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock};
 
 use secrecy::SecretString;
+use tokio::sync::watch;
 
 use crate::client::{AuthClient, HttpError};
 use crate::credential::{Audience, CredKey, Credential};
@@ -39,6 +43,10 @@ pub enum SessionError {
     /// The refresh token was refused, so the family is gone.
     #[error("the session has expired or was signed out elsewhere; run `erpc login`")]
     Expired,
+    /// The session needed refreshing, and erpc is on its way out, so it
+    /// was left for the next command; see [`Leaving`].
+    #[error("erpc is leaving, so the session was not refreshed")]
+    Leaving,
     /// The session was obtained but could not be stored.
     ///
     /// Carries the path the tokens were parked at, so the operator is told
@@ -83,6 +91,33 @@ impl Revoker for AuthClient {
     }
 }
 
+/// Exchanges a refresh token for a new session.
+///
+/// A trait for the same reason as [`Revoker`]: the rotation in
+/// [`current_session`] is where a session is lost if anything goes wrong
+/// between spending the old token and saving the new one, and a test
+/// cannot reach it if that needs a network.
+pub trait Refresher {
+    /// Presents `refresh_token` to the issuer for `audience`.
+    fn refresh(
+        &self,
+        audience: Audience,
+        refresh_token: &SecretString,
+        now: i64,
+    ) -> impl Future<Output = Result<Credential, HttpError>> + Send;
+}
+
+impl Refresher for AuthClient {
+    fn refresh(
+        &self,
+        audience: Audience,
+        refresh_token: &SecretString,
+        now: i64,
+    ) -> impl Future<Output = Result<Credential, HttpError>> + Send {
+        Self::refresh(self, audience, refresh_token, now)
+    }
+}
+
 /// What a caller must do while the operator approves the sign-in.
 pub trait LoginPrompt {
     /// Shows the verification page and code to the operator.
@@ -122,7 +157,9 @@ pub async fn run_device_grant<P: LoginPrompt>(
     }
 }
 
-/// Where a session is parked when the store refuses it after a rotation.
+/// Where a session is parked when it cannot reach the store after a
+/// rotation: when the store refuses it, or when erpc has to end before the
+/// store has taken it (see [`Leaving::park`]).
 ///
 /// A refresh that succeeds at the issuer and then fails to save would
 /// otherwise lose the only copy of the new token, and the old one is
@@ -154,21 +191,356 @@ pub fn refresh_lock_path(state_dir: &Path, audience: Audience) -> PathBuf {
 /// would present the issuer with a token it has already seen, which
 /// revokes the family and signs the operator out everywhere.
 ///
+/// Taking the lock and every store call run on the blocking pool, so the
+/// caller's task keeps running while 1Password or the keychain answers.
+///
+/// A rotation -- the refresh and the save of what it returns -- runs as a
+/// task of its own once it starts. A caller that stops waiting, as Ctrl-C
+/// on the console's splash does, cannot cut it off between spending the
+/// old refresh token and saving the new one; that would leave the store
+/// holding a spent token, and the next refresh would revoke the family.
+/// A process leaves through [`Leaving`], which waits for a rotation under
+/// way or parks what it has not saved, and starts no new one.
+///
 /// # Errors
 ///
 /// Returns [`SessionError::NoSession`] when nothing is stored,
 /// [`SessionError::Expired`] when the issuer refuses the refresh token,
-/// and [`SessionError::SavedToFallback`] when the new session could not be
-/// written to the store.
-pub async fn current_session(
-    client: &AuthClient,
-    store: &dyn CredentialStore,
+/// [`SessionError::SavedToFallback`] when the new session could not be
+/// written to the store, and [`SessionError::Leaving`] when it needed
+/// refreshing after the process had begun to leave.
+pub async fn current_session<R, S>(
+    client: &R,
+    store: &Arc<S>,
     key: &CredKey,
     state_dir: &Path,
     now: i64,
-) -> Result<Credential, SessionError> {
+) -> Result<Credential, SessionError>
+where
+    R: Refresher + Clone + Send + Sync + 'static,
+    S: CredentialStore + Send + Sync + ?Sized + 'static,
+{
+    let (guard, held) = {
+        let (key, state_dir) = (key.clone(), state_dir.to_owned());
+        off_thread(store, move |store| read_locked(store, &key, &state_dir)).await?
+    };
+    let Some(existing) = held else {
+        return Err(SessionError::NoSession);
+    };
+    if !existing.needs_refresh(now) {
+        return Ok(existing);
+    }
+
+    // Counted before it starts, and refused once the process has begun to
+    // leave: a process on its way out neither misses one nor sees one
+    // start after it has decided.
+    let Some(counted) = Rotating::begin() else {
+        return Err(SessionError::Leaving);
+    };
+    let rotation = Rotation {
+        client: client.clone(),
+        store: Arc::clone(store),
+        key: key.clone(),
+        state_dir: state_dir.to_owned(),
+        existing,
+        lock: guard,
+        counted,
+    };
+    match tokio::spawn(rotation.run(now)).await {
+        Ok(done) => done,
+        Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
+        // Only when the runtime shuts down before the rotation finished.
+        Err(_) => Err(SessionError::Leaving),
+    }
+}
+
+/// A rotation under way: what it needs to refresh `existing` and file what
+/// comes back.
+struct Rotation<R, S: ?Sized> {
+    client: R,
+    store: Arc<S>,
+    key: CredKey,
+    state_dir: PathBuf,
+    existing: Credential,
+    /// The refresh lock, held until the save is done.
+    lock: crate::lock::ExclusiveLock,
+    /// Counts it as under way, for a process about to leave.
+    counted: Rotating,
+}
+
+impl<R, S> Rotation<R, S>
+where
+    R: Refresher,
+    S: CredentialStore + Send + Sync + ?Sized + 'static,
+{
+    /// Refreshes, then saves or parks what comes back.
+    async fn run(self, now: i64) -> Result<Credential, SessionError> {
+        let Self {
+            client,
+            store,
+            key,
+            state_dir,
+            existing,
+            lock,
+            mut counted,
+        } = self;
+        let rotated = match client
+            .refresh(key.audience(), &existing.refresh_token, now)
+            .await
+        {
+            Ok(rotated) => rotated,
+            // 400 is what RFC 6749 specifies for invalid_grant, but an
+            // issuer that answers 401 or 403 to a spent refresh token means
+            // the same thing to the operator: sign in again.
+            Err(HttpError::Status {
+                status: 400 | 401 | 403,
+                ..
+            }) => return Err(SessionError::Expired),
+            Err(e) => return Err(e.into()),
+        };
+
+        // The old refresh token is spent, and the new session exists only
+        // here until the store has it. A process that cannot wait for the
+        // store parks it from this record.
+        let lock = Arc::new(lock);
+        counted.answered(
+            &rotated,
+            &existing,
+            parked_path(&state_dir, key.audience()),
+            Arc::clone(&lock),
+        );
+        let filed = off_thread(&store, move |store| {
+            // The lock goes with the write, so it is held until the write
+            // is done.
+            let _lock = lock;
+            file_rotation(store, &key, &state_dir, rotated, &existing)
+        })
+        .await;
+        counted.filed();
+        filed
+    }
+}
+
+/// What the rotations in this process are doing, for a process about to
+/// leave.
+#[derive(Default)]
+struct InFlight {
+    /// Rotations under way.
+    rotations: usize,
+    /// Of those, the ones the issuer has answered whose new session the
+    /// store does not have yet, by rotation.
+    unsaved: BTreeMap<u64, Unsaved>,
+    /// How many [`Leaving`]s there are. While there is one, no rotation
+    /// starts.
+    leaving: usize,
+}
+
+/// A rotated session the store does not have yet, and what parking it
+/// takes.
+struct Unsaved {
+    rotated: Credential,
+    replaces: Credential,
+    parked_at: PathBuf,
+}
+
+static IN_FLIGHT: LazyLock<watch::Sender<InFlight>> =
+    LazyLock::new(|| watch::Sender::new(InFlight::default()));
+
+/// One rotation under way, counted in [`IN_FLIGHT`] for as long as it lives.
+struct Rotating {
+    id: u64,
+    /// The refresh lock, shared with the save from the moment the issuer
+    /// answers. If this is dropped unfiled, it parks the session before the
+    /// lock can go, so no other erpc reads the store in between.
+    lock: Option<Arc<crate::lock::ExclusiveLock>>,
+}
+
+impl Rotating {
+    /// Counts a rotation, unless the process has begun to leave.
+    fn begin() -> Option<Self> {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let id = NEXT.fetch_add(1, Ordering::Relaxed);
+        let mut begun = false;
+        IN_FLIGHT.send_if_modified(|in_flight| {
+            if in_flight.leaving > 0 {
+                return false;
+            }
+            in_flight.rotations += 1;
+            begun = true;
+            true
+        });
+        begun.then_some(Self { id, lock: None })
+    }
+
+    /// The issuer has answered with `rotated`, which replaces `replaces`.
+    /// Until the store has it, a process that has to leave parks it at
+    /// `parked_at`.
+    fn answered(
+        &mut self,
+        rotated: &Credential,
+        replaces: &Credential,
+        parked_at: PathBuf,
+        lock: Arc<crate::lock::ExclusiveLock>,
+    ) {
+        self.lock = Some(lock);
+        let unsaved = Unsaved {
+            rotated: rotated.clone(),
+            replaces: replaces.clone(),
+            parked_at,
+        };
+        IN_FLIGHT.send_modify(|in_flight| {
+            in_flight.unsaved.insert(self.id, unsaved);
+        });
+    }
+
+    /// The store has the new session, or it is parked, or parking it failed
+    /// and the caller is told: either way there is nothing left to keep.
+    fn filed(&mut self) {
+        IN_FLIGHT.send_modify(|in_flight| {
+            in_flight.unsaved.remove(&self.id);
+        });
+        self.lock = None;
+    }
+}
+
+impl Drop for Rotating {
+    /// A rotation dropped before it was filed -- its task cancelled by a
+    /// runtime shutting down, or unwound by a panic -- parks what the issuer
+    /// handed back, so that settling does not mean losing it.
+    fn drop(&mut self) {
+        let mut left = None;
+        IN_FLIGHT.send_modify(|in_flight| {
+            left = in_flight.unsaved.remove(&self.id);
+            in_flight.rotations = in_flight.rotations.saturating_sub(1);
+        });
+        if let Some(left) = left {
+            let _ = crate::lock::park_credential(&left.parked_at, &left.rotated, &left.replaces);
+        }
+        // Only now, after the park, may the lock go.
+        self.lock = None;
+    }
+}
+
+/// A process on its way out. While one exists no rotation starts, and it
+/// can wait for the rotations under way or park what they have not saved.
+///
+/// A rotation spends the old refresh token at the issuer before the store
+/// has the new one. A process that ends in between leaves the store
+/// holding a spent token; the next refresh presents it, and the issuer
+/// revokes the family, signing the operator out everywhere.
+/// [`current_session`] runs a rotation as a task of its own, so a caller
+/// that stops waiting does not cut it off. A process that leaves without
+/// this first does.
+#[must_use = "rotations can start again as soon as it is dropped"]
+pub struct Leaving {
+    _private: (),
+}
+
+impl Leaving {
+    /// Stops new rotations from starting in this process.
+    pub fn start() -> Self {
+        IN_FLIGHT.send_modify(|in_flight| in_flight.leaving += 1);
+        Self { _private: () }
+    }
+
+    /// Whether a rotation is still under way.
+    #[must_use]
+    pub fn rotating(&self) -> bool {
+        IN_FLIGHT.borrow().rotations > 0
+    }
+
+    /// Resolves once no rotation is under way.
+    pub async fn settled(&self) {
+        wait_for(|in_flight| in_flight.rotations == 0).await;
+    }
+
+    /// Resolves once no rotation is still waiting for the issuer, which
+    /// [`crate::client::REQUEST_TIMEOUT`] bounds.
+    pub async fn answered(&self) {
+        wait_for(|in_flight| in_flight.rotations == in_flight.unsaved.len()).await;
+    }
+
+    /// Parks every rotated session the store does not have yet, where the
+    /// next [`current_session`] files it into the store, and says where.
+    /// For a process that cannot wait for the store any longer.
+    ///
+    /// A rotation still waiting for the issuer has nothing to park yet;
+    /// wait for [`Self::answered`] first. A save that lands after all leaves
+    /// a parked copy of what the store holds, which the next
+    /// `current_session` deletes.
+    #[must_use]
+    pub fn park(&self) -> Vec<Result<PathBuf, StoreError>> {
+        let unsaved: Vec<(Credential, Credential, PathBuf)> = IN_FLIGHT
+            .borrow()
+            .unsaved
+            .values()
+            .map(|u| (u.rotated.clone(), u.replaces.clone(), u.parked_at.clone()))
+            .collect();
+        unsaved
+            .into_iter()
+            .map(|(rotated, replaces, at)| {
+                crate::lock::park_credential(&at, &rotated, &replaces).map(|()| at)
+            })
+            .collect()
+    }
+}
+
+impl Drop for Leaving {
+    fn drop(&mut self) {
+        IN_FLIGHT.send_modify(|in_flight| in_flight.leaving = in_flight.leaving.saturating_sub(1));
+    }
+}
+
+async fn wait_for(done: impl FnMut(&InFlight) -> bool) {
+    let mut watching = IN_FLIGHT.subscribe();
+    // The sender is a static and is never dropped.
+    let _ = watching.wait_for(done).await;
+}
+
+/// Runs store work on the blocking pool, and waits for it without
+/// holding up the caller's task.
+///
+/// The stores are synchronous, and the slow ones are processes waited on:
+/// `op` takes seconds while the 1Password app asks for approval, and
+/// `security` can sit behind a keychain prompt. The refresh lock can wait
+/// on another erpc. Waited on in the task, that stopped the task, and on
+/// erpc's single-threaded runtime every other task with it: the console's
+/// splash drew nothing until 1Password had answered.
+///
+/// Work that has started runs to the end even if the caller stops
+/// waiting, unless the process leaves first; a rotation's save is kept
+/// from that by [`Leaving`].
+async fn off_thread<S, T>(
+    store: &Arc<S>,
+    work: impl FnOnce(&S) -> Result<T, SessionError> + Send + 'static,
+) -> Result<T, SessionError>
+where
+    S: CredentialStore + Send + Sync + ?Sized + 'static,
+    T: Send + 'static,
+{
+    let kind = store.kind();
+    let store = Arc::clone(store);
+    match tokio::task::spawn_blocking(move || work(store.as_ref())).await {
+        Ok(done) => done,
+        Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
+        // Only when the runtime shuts down before the work started.
+        Err(_) => Err(SessionError::Store(StoreError::Unavailable {
+            kind,
+            reason: "erpc was shutting down".to_owned(),
+        })),
+    }
+}
+
+/// Takes the refresh lock, files away a parked session that is newer than
+/// the stored one, and reads the store. The first half of
+/// [`current_session`], and blocking.
+fn read_locked<S: CredentialStore + ?Sized>(
+    store: &S,
+    key: &CredKey,
+    state_dir: &Path,
+) -> Result<(crate::lock::ExclusiveLock, Option<Credential>), SessionError> {
     let lock_path = refresh_lock_path(state_dir, key.audience());
-    let _guard = crate::lock::ExclusiveLock::acquire(&lock_path)?;
+    let guard = crate::lock::ExclusiveLock::acquire(&lock_path)?;
 
     // A session parked by an earlier rotation is newer than what the
     // store holds while the store still holds the token that rotation
@@ -210,35 +582,26 @@ pub async fn current_session(
 
     // Read inside the lock, not before it. A session read before waiting
     // is a session that may already have been replaced.
-    let Some(existing) = store.load(key)? else {
-        return Err(SessionError::NoSession);
-    };
-    if !existing.needs_refresh(now) {
-        return Ok(existing);
-    }
+    let held = store.load(key)?;
+    Ok((guard, held))
+}
 
-    let rotated = match client
-        .refresh(key.audience(), &existing.refresh_token, now)
-        .await
-    {
-        Ok(rotated) => rotated,
-        // 400 is what RFC 6749 specifies for invalid_grant, but an
-        // issuer that answers 401 or 403 to a spent refresh token means
-        // the same thing to the operator: sign in again.
-        Err(HttpError::Status {
-            status: 400 | 401 | 403,
-            ..
-        }) => return Err(SessionError::Expired),
-        Err(e) => return Err(e.into()),
-    };
-
+/// Saves a rotated session, or parks it if the store refuses. The last
+/// step of [`current_session`], and blocking.
+fn file_rotation<S: CredentialStore + ?Sized>(
+    store: &S,
+    key: &CredKey,
+    state_dir: &Path,
+    rotated: Credential,
+    existing: &Credential,
+) -> Result<Credential, SessionError> {
     if let Err(e) = store.save(key, &rotated) {
         // The issuer has already rotated: the old refresh token is spent
         // and the new one exists only here. Losing it now would mean a
         // forced sign-in, so it is parked where the next run can pick it
         // up, and the operator is told where.
         let parked = parked_path(state_dir, key.audience());
-        crate::lock::park_credential(&parked, &rotated, &existing)?;
+        crate::lock::park_credential(&parked, &rotated, existing)?;
         return Err(SessionError::SavedToFallback {
             store: store.kind().to_string(),
             reason: e.to_string(),
@@ -502,9 +865,11 @@ mod tests {
     use secrecy::ExposeSecret as _;
 
     use std::cell::Cell;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
 
     use super::current_session;
-    use crate::client::AuthClient;
+    use crate::client::{AuthClient, HttpError};
     use crate::credential::{CredKey, Credential};
     use crate::lock::{park_credential, read_parked};
     use crate::store::{CredentialStore, StoreError, StoreKind};
@@ -529,21 +894,28 @@ mod tests {
 
     /// A store that can be told to refuse writes, so the condition that
     /// creates a parked file can be reproduced.
+    ///
+    /// `Sync`, because `current_session` calls a store from the blocking
+    /// pool.
     struct FlakyStore {
-        held: std::cell::RefCell<Option<Credential>>,
-        refuse_saves: Cell<bool>,
+        held: Mutex<Option<Credential>>,
+        refuse_saves: AtomicBool,
     }
 
     impl FlakyStore {
         fn new() -> Self {
             Self {
-                held: std::cell::RefCell::new(None),
-                refuse_saves: Cell::new(false),
+                held: Mutex::new(None),
+                refuse_saves: AtomicBool::new(false),
             }
+        }
+        fn refuse_saves(&self, refuse: bool) {
+            self.refuse_saves.store(refuse, Ordering::SeqCst);
         }
         fn refresh_token(&self) -> Option<String> {
             self.held
-                .borrow()
+                .lock()
+                .expect("not poisoned")
                 .as_ref()
                 .map(|c| c.refresh_token.expose_secret().to_owned())
         }
@@ -551,21 +923,21 @@ mod tests {
 
     impl CredentialStore for FlakyStore {
         fn load(&self, _key: &CredKey) -> Result<Option<Credential>, StoreError> {
-            Ok(self.held.borrow().clone())
+            Ok(self.held.lock().expect("not poisoned").clone())
         }
         fn save(&self, _key: &CredKey, cred: &Credential) -> Result<(), StoreError> {
-            if self.refuse_saves.get() {
+            if self.refuse_saves.load(Ordering::SeqCst) {
                 return Err(StoreError::Backend {
                     kind: StoreKind::OnePasswordDesktop,
                     operation: "write the item",
                     reason: "authorization prompt dismissed".to_owned(),
                 });
             }
-            *self.held.borrow_mut() = Some(cred.clone());
+            *self.held.lock().expect("not poisoned") = Some(cred.clone());
             Ok(())
         }
         fn delete(&self, _key: &CredKey) -> Result<(), StoreError> {
-            *self.held.borrow_mut() = None;
+            *self.held.lock().expect("not poisoned") = None;
             Ok(())
         }
         fn kind(&self) -> StoreKind {
@@ -587,9 +959,9 @@ mod tests {
         let at = parked_path(dir.path(), Audience::AuthApi);
         park(&at, "ROTATED", "SPENT");
 
-        let store = FlakyStore::new();
+        let store = Arc::new(FlakyStore::new());
         store.save(&key(), &cred("SPENT")).expect("save");
-        store.refuse_saves.set(true);
+        store.refuse_saves(true);
         let client = AuthClient::new().expect("a client");
 
         // The real function. An earlier version of this test wrote the
@@ -612,7 +984,7 @@ mod tests {
         );
 
         // Once the store works, the recovery completes and clears it.
-        store.refuse_saves.set(false);
+        store.refuse_saves(false);
         let recovered = current_session(&client, &store, &key(), dir.path(), NOW)
             .await
             .expect("the recovery completes");
@@ -635,7 +1007,7 @@ mod tests {
         .expect("write the fixture");
         assert!(read_parked(&at).is_err(), "this build cannot read it");
 
-        let store = FlakyStore::new();
+        let store = Arc::new(FlakyStore::new());
         store.save(&key(), &cred("GOOD")).expect("save");
         let client = AuthClient::new().expect("a client");
 
@@ -647,6 +1019,386 @@ mod tests {
             assert_eq!(got.refresh_token.expose_secret(), "ref.GOOD.s");
         }
         assert!(at.exists(), "and it is still there for doctor to report");
+    }
+
+    /// A store that blocks its thread for a while before it answers, the
+    /// way `op` does while the 1Password app waits for approval.
+    struct SlowStore {
+        held: Credential,
+        delay: Duration,
+    }
+
+    impl CredentialStore for SlowStore {
+        fn load(&self, _key: &CredKey) -> Result<Option<Credential>, StoreError> {
+            std::thread::sleep(self.delay);
+            Ok(Some(self.held.clone()))
+        }
+        fn save(&self, _key: &CredKey, _cred: &Credential) -> Result<(), StoreError> {
+            Ok(())
+        }
+        fn delete(&self, _key: &CredKey) -> Result<(), StoreError> {
+            Ok(())
+        }
+        fn kind(&self) -> StoreKind {
+            StoreKind::OnePasswordDesktop
+        }
+    }
+
+    #[tokio::test]
+    async fn a_slow_store_does_not_stop_the_runtime() {
+        // A single-threaded runtime, as erpc's is. The console's splash
+        // is a task on it, and a store read that blocked the thread froze
+        // the splash for as long as 1Password took: one frame, then nothing.
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let store = Arc::new(SlowStore {
+            held: cred("SLOW"),
+            delay: Duration::from_millis(300),
+        });
+        let client = AuthClient::new().expect("a client");
+
+        let mut ticks = 0;
+        let mut tick = tokio::time::interval(Duration::from_millis(10));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let key = key();
+        let mut read = std::pin::pin!(current_session(&client, &store, &key, dir.path(), NOW));
+        let got = loop {
+            tokio::select! {
+                got = &mut read => break got,
+                _ = tick.tick() => ticks += 1,
+            }
+        };
+        assert_eq!(
+            got.expect("the stored session is fine")
+                .refresh_token
+                .expose_secret(),
+            "ref.SLOW.s"
+        );
+        // About 30; at most one if the read held the thread.
+        assert!(ticks >= 10, "the runtime ticked {ticks} times in 300 ms");
+    }
+
+    /// A time at which `cred(..)` needs refreshing.
+    const EXPIRING: i64 = 1_700_000_000;
+
+    /// Taken by every test that rotates or leaves. What rotations are under
+    /// way, and whether the process is leaving, is one record per process,
+    /// and a test that leaves would otherwise refuse another's rotation.
+    static ROTATIONS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    /// Rotates any refresh token into `cred(tag)`, `delay` after it is
+    /// asked, and notes which tokens it was given.
+    #[derive(Clone)]
+    struct FakeIssuer {
+        tag: &'static str,
+        delay: Duration,
+        seen: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl FakeIssuer {
+        fn new(tag: &'static str, delay: Duration) -> Self {
+            Self {
+                tag,
+                delay,
+                seen: Arc::default(),
+            }
+        }
+        fn seen(&self) -> Vec<String> {
+            self.seen.lock().expect("not poisoned").clone()
+        }
+    }
+
+    impl super::Refresher for FakeIssuer {
+        fn refresh(
+            &self,
+            _audience: Audience,
+            refresh_token: &SecretString,
+            _now: i64,
+        ) -> impl Future<Output = Result<Credential, HttpError>> + Send {
+            self.seen
+                .lock()
+                .expect("not poisoned")
+                .push(refresh_token.expose_secret().to_owned());
+            let (rotated, delay) = (cred(self.tag), self.delay);
+            async move {
+                tokio::time::sleep(delay).await;
+                Ok(rotated)
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn an_expiring_session_is_rotated_and_saved() {
+        let _rotations = ROTATIONS.lock().await;
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let store = Arc::new(FlakyStore::new());
+        store.save(&key(), &cred("OLD")).expect("save");
+        let issuer = FakeIssuer::new("ROTATED", Duration::ZERO);
+
+        let got = current_session(&issuer, &store, &key(), dir.path(), EXPIRING)
+            .await
+            .expect("rotated");
+        assert_eq!(got.refresh_token.expose_secret(), "ref.ROTATED.s");
+        assert_eq!(store.refresh_token().as_deref(), Some("ref.ROTATED.s"));
+        assert_eq!(issuer.seen(), ["ref.OLD.s"]);
+        assert!(!parked_path(dir.path(), Audience::AuthApi).exists());
+    }
+
+    #[tokio::test]
+    async fn a_rotation_the_store_refuses_is_parked() {
+        let _rotations = ROTATIONS.lock().await;
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let store = Arc::new(FlakyStore::new());
+        store.save(&key(), &cred("OLD")).expect("save");
+        store.refuse_saves(true);
+        let issuer = FakeIssuer::new("ROTATED", Duration::ZERO);
+
+        let outcome = current_session(&issuer, &store, &key(), dir.path(), EXPIRING).await;
+        let Err(super::SessionError::SavedToFallback { parked, .. }) = outcome else {
+            panic!("expected the rotation to be parked: {outcome:?}");
+        };
+        assert_eq!(parked, parked_path(dir.path(), Audience::AuthApi));
+        let parked = read_parked(&parked).expect("readable").expect("parked");
+        assert_eq!(
+            parked.credential.refresh_token.expose_secret(),
+            "ref.ROTATED.s"
+        );
+        assert!(parked.supersedes(Some(&cred("OLD"))));
+        assert_eq!(store.refresh_token().as_deref(), Some("ref.OLD.s"));
+    }
+
+    #[tokio::test]
+    async fn a_rotation_outlives_a_caller_that_stops_waiting() {
+        // Ctrl-C on the console's splash drops the future that asked for
+        // the session. Dropped while the refresh was out, the issuer spent
+        // the old token and the new one went nowhere.
+        let _rotations = ROTATIONS.lock().await;
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let store = Arc::new(FlakyStore::new());
+        store.save(&key(), &cred("OLD")).expect("save");
+        let issuer = FakeIssuer::new("ROTATED", Duration::from_millis(200));
+        {
+            let key = key();
+            let mut asking =
+                std::pin::pin!(current_session(&issuer, &store, &key, dir.path(), EXPIRING));
+            while issuer.seen().is_empty() {
+                tokio::select! {
+                    _ = &mut asking => panic!("done before the caller stopped waiting"),
+                    () = tokio::time::sleep(Duration::from_millis(5)) => {}
+                }
+            }
+        }
+        let leaving = super::Leaving::start();
+        assert!(leaving.rotating(), "the rotation is still under way");
+
+        // The lock is still held, and is released only once the rotation
+        // is saved.
+        let lock = refresh_lock_path(dir.path(), Audience::AuthApi);
+        let probe = Arc::clone(&store);
+        let held_once_free = tokio::task::spawn_blocking(move || {
+            let _lock = crate::lock::ExclusiveLock::acquire(&lock).expect("the lock");
+            probe.refresh_token()
+        })
+        .await
+        .expect("the probe");
+        assert_eq!(held_once_free.as_deref(), Some("ref.ROTATED.s"));
+        leaving.settled().await;
+    }
+
+    #[tokio::test]
+    async fn a_process_that_is_leaving_starts_no_rotation() {
+        // Deciding to leave and a rotation starting a moment later would
+        // spend the old token with nobody left to save the new one.
+        let _rotations = ROTATIONS.lock().await;
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let store = Arc::new(FlakyStore::new());
+        store.save(&key(), &cred("OLD")).expect("save");
+        let issuer = FakeIssuer::new("ROTATED", Duration::ZERO);
+
+        let leaving = super::Leaving::start();
+        let outcome = current_session(&issuer, &store, &key(), dir.path(), EXPIRING).await;
+        assert!(
+            matches!(outcome, Err(super::SessionError::Leaving)),
+            "{outcome:?}"
+        );
+        assert!(issuer.seen().is_empty(), "the issuer was never asked");
+        assert_eq!(store.refresh_token().as_deref(), Some("ref.OLD.s"));
+
+        drop(leaving);
+        let got = current_session(&issuer, &store, &key(), dir.path(), EXPIRING)
+            .await
+            .expect("rotations start again");
+        assert_eq!(got.refresh_token.expose_secret(), "ref.ROTATED.s");
+    }
+
+    /// A store whose saves wait until [`GatedStore::open`] is called, the
+    /// way a keyring save waits on an unlock prompt.
+    struct GatedStore {
+        held: Mutex<Credential>,
+        saving: AtomicBool,
+        open: (Mutex<bool>, std::sync::Condvar),
+    }
+
+    impl GatedStore {
+        fn holding(cred: Credential) -> Self {
+            Self {
+                held: Mutex::new(cred),
+                saving: AtomicBool::new(false),
+                open: (Mutex::new(false), std::sync::Condvar::new()),
+            }
+        }
+        fn open(&self) {
+            *self.open.0.lock().expect("not poisoned") = true;
+            self.open.1.notify_all();
+        }
+        fn refresh_token(&self) -> String {
+            let held = self.held.lock().expect("not poisoned");
+            held.refresh_token.expose_secret().to_owned()
+        }
+    }
+
+    impl CredentialStore for GatedStore {
+        fn load(&self, _key: &CredKey) -> Result<Option<Credential>, StoreError> {
+            Ok(Some(self.held.lock().expect("not poisoned").clone()))
+        }
+        fn save(&self, _key: &CredKey, cred: &Credential) -> Result<(), StoreError> {
+            self.saving.store(true, Ordering::SeqCst);
+            let mut open = self.open.0.lock().expect("not poisoned");
+            while !*open {
+                open = self.open.1.wait(open).expect("not poisoned");
+            }
+            *self.held.lock().expect("not poisoned") = cred.clone();
+            Ok(())
+        }
+        fn delete(&self, _key: &CredKey) -> Result<(), StoreError> {
+            Ok(())
+        }
+        fn kind(&self) -> StoreKind {
+            StoreKind::OsKeychain
+        }
+    }
+
+    #[tokio::test]
+    async fn a_process_that_cannot_wait_parks_what_the_store_has_not_taken() {
+        // The store is stuck, and erpc has to go: the new session goes where
+        // the next command files it, not nowhere.
+        let _rotations = ROTATIONS.lock().await;
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let store = Arc::new(GatedStore::holding(cred("OLD")));
+        let issuer = FakeIssuer::new("ROTATED", Duration::ZERO);
+        let rotation = tokio::spawn({
+            let (issuer, store, dir) = (issuer.clone(), Arc::clone(&store), dir.path().to_owned());
+            async move { current_session(&issuer, &store, &key(), &dir, EXPIRING).await }
+        });
+        while !store.saving.load(Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+
+        let leaving = super::Leaving::start();
+        assert!(leaving.rotating());
+        leaving.answered().await;
+        let at = parked_path(dir.path(), Audience::AuthApi);
+        let parked: Vec<_> = leaving
+            .park()
+            .into_iter()
+            .map(|p| p.expect("parked"))
+            .collect();
+        assert_eq!(parked, std::slice::from_ref(&at));
+        let record = read_parked(&at).expect("readable").expect("there");
+        assert_eq!(
+            record.credential.refresh_token.expose_secret(),
+            "ref.ROTATED.s"
+        );
+        assert!(
+            record.supersedes(Some(&cred("OLD"))),
+            "the next command files it over the spent token"
+        );
+
+        // The save lands after all: the parked copy is then of what the
+        // store holds, and the next read deletes it.
+        store.open();
+        rotation
+            .await
+            .expect("the rotation")
+            .expect("saved after all");
+        leaving.settled().await;
+        drop(leaving);
+        assert_eq!(store.refresh_token(), "ref.ROTATED.s");
+        current_session(&issuer, &store, &key(), dir.path(), NOW)
+            .await
+            .expect("the stored session");
+        assert!(!at.exists(), "the parked copy is gone");
+    }
+
+    #[tokio::test]
+    async fn parking_waits_for_a_refresh_the_issuer_has_not_answered() {
+        // Nothing comes back from the issuer yet, so there is nothing to
+        // park. Leaving then would spend the old token with the new one
+        // still on its way.
+        let _rotations = ROTATIONS.lock().await;
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let store = Arc::new(GatedStore::holding(cred("OLD")));
+        let issuer = FakeIssuer::new("ROTATED", Duration::from_millis(300));
+        let rotation = tokio::spawn({
+            let (issuer, store, dir) = (issuer.clone(), Arc::clone(&store), dir.path().to_owned());
+            async move { current_session(&issuer, &store, &key(), &dir, EXPIRING).await }
+        });
+        while issuer.seen().is_empty() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+
+        let leaving = super::Leaving::start();
+        assert!(leaving.park().is_empty(), "the issuer has not answered");
+        let asked = std::time::Instant::now();
+        leaving.answered().await;
+        assert!(
+            asked.elapsed() >= Duration::from_millis(200),
+            "answered() waited for the issuer: {:?}",
+            asked.elapsed()
+        );
+        let parked = leaving.park();
+        assert_eq!(parked.len(), 1);
+        assert!(parked[0].is_ok());
+
+        store.open();
+        rotation.await.expect("the rotation").expect("saved");
+        leaving.settled().await;
+    }
+
+    #[test]
+    fn a_rotation_cut_off_before_it_is_saved_parks_what_came_back() {
+        // A runtime shutting down drops its tasks. A rotation dropped that
+        // way used to count as settled, and the new session went with it.
+        let _rotations = ROTATIONS.blocking_lock();
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let store = Arc::new(GatedStore::holding(cred("OLD")));
+        let issuer = FakeIssuer::new("ROTATED", Duration::ZERO);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime");
+        runtime.block_on({
+            let (rotating, dir) = (Arc::clone(&store), dir.path().to_owned());
+            let store = Arc::clone(&store);
+            async move {
+                tokio::spawn(async move {
+                    let _ = current_session(&issuer, &rotating, &key(), &dir, EXPIRING).await;
+                });
+                while !store.saving.load(Ordering::SeqCst) {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            }
+        });
+        runtime.shutdown_background();
+
+        let at = parked_path(dir.path(), Audience::AuthApi);
+        let record = read_parked(&at).expect("readable").expect("parked");
+        assert_eq!(
+            record.credential.refresh_token.expose_secret(),
+            "ref.ROTATED.s"
+        );
+        assert!(record.supersedes(Some(&cred("OLD"))));
+        // The save is still waiting on its own thread; let it go.
+        store.open();
     }
 
     /// Records what it was asked to revoke, and agrees to everything.
@@ -879,7 +1631,7 @@ mod tests {
             park(&at, "OLD-PARKED", "PREVIOUS");
             std::fs::create_dir_all(dir.path().join("locks")).expect("the lock directory");
 
-            let store = FlakyStore::new();
+            let store = Arc::new(FlakyStore::new());
             store.save(&key(), &cred("PREVIOUS")).expect("save");
             let revoker = RecordingRevoker::default();
             let client = AuthClient::new().expect("a client");
@@ -887,9 +1639,14 @@ mod tests {
             if !hold_files_down(dir.path()) {
                 return;
             }
-            let leftover =
-                super::store_new_session(&revoker, &store, &key(), dir.path(), &cred("NEW-LOGIN"))
-                    .await;
+            let leftover = super::store_new_session(
+                &revoker,
+                store.as_ref(),
+                &key(),
+                dir.path(),
+                &cred("NEW-LOGIN"),
+            )
+            .await;
             if !stays_read_only {
                 release_files(dir.path());
             }
@@ -923,7 +1680,7 @@ mod tests {
         let at = parked_path(dir.path(), Audience::AuthApi);
         park(&at, "PARKED", "SOMEONE-ELSE");
 
-        let store = FlakyStore::new();
+        let store = Arc::new(FlakyStore::new());
         store.save(&key(), &cred("CURRENT")).expect("save");
         let client = AuthClient::new().expect("a client");
 
@@ -990,7 +1747,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temporary directory");
         let at = parked_path(dir.path(), Audience::AuthApi);
         park(&at, "LANDED", "SPENT");
-        let store = FlakyStore::new();
+        let store = Arc::new(FlakyStore::new());
         store.save(&key(), &cred("LANDED")).expect("save");
         let client = AuthClient::new().expect("a client");
 

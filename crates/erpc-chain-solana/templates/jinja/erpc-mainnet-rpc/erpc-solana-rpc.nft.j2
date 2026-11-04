@@ -1,0 +1,71 @@
+#!/usr/sbin/nft -f
+# Managed by erpc: the Solana RPC node's firewall, a table of its own that is
+# replaced whole. Inbound is dropped unless listed here; outbound is open.
+# Other tables on the host are left as they are, and a packet any of them
+# drops stays dropped.
+
+table inet erpc_solana_rpc
+delete table inet erpc_solana_rpc
+
+table inet erpc_solana_rpc {
+  set management_v4 {
+    type ipv4_addr
+    flags interval
+{% if erpc_fw_management_v4 | length > 0 %}
+    elements = { {{ erpc_fw_management_v4 | join(', ') }} }
+{% endif %}
+  }
+
+  set management_v6 {
+    type ipv6_addr
+    flags interval
+{% if erpc_fw_management_v6 | length > 0 %}
+    elements = { {{ erpc_fw_management_v6 | join(', ') }} }
+{% endif %}
+  }
+
+  set rpc_v4 {
+    type ipv4_addr
+    flags interval
+{% if erpc_fw_rpc_v4 | length > 0 %}
+    elements = { {{ erpc_fw_rpc_v4 | join(', ') }} }
+{% endif %}
+  }
+
+  set monitoring_v4 {
+    type ipv4_addr
+    flags interval
+{% if erpc_fw_monitoring_v4 | length > 0 %}
+    elements = { {{ erpc_fw_monitoring_v4 | join(', ') }} }
+{% endif %}
+  }
+
+  chain input {
+    type filter hook input priority 0
+    policy drop
+
+    ct state invalid drop
+    ct state established,related accept
+    iifname "lo" accept
+
+    ip protocol icmp accept
+    ip6 nexthdr ipv6-icmp accept
+
+    tcp dport {{ erpc_ssh_port }} ip saddr @management_v4 accept
+    tcp dport {{ erpc_ssh_port }} ip6 saddr @management_v6 accept
+
+    # JSON-RPC, WebSocket, Geyser gRPC and Old Faithful: the proxies only.
+    tcp dport { {{ erpc_fw_client_ports | join(', ') }} } ip saddr @rpc_v4 accept
+    tcp dport { {{ erpc_fw_client_ports | join(', ') }} } counter drop
+
+    # Node exporter and the Geyser plugin's metrics.
+    tcp dport { {{ erpc_fw_metrics_ports | join(', ') }} } ip saddr @monitoring_v4 accept
+    tcp dport { {{ erpc_fw_metrics_ports | join(', ') }} } counter drop
+
+    # The cluster: gossip, turbine, repair and TPU, from anyone.
+    tcp dport {{ erpc_fw_cluster_ports }} accept
+    udp dport {{ erpc_fw_cluster_ports }} accept
+
+    counter drop
+  }
+}

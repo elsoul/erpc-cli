@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+[Unit]
+Description=ERPC Bitcoin Core RPC node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=bitcoin
+Group=bitcoin
+UMask=0077
+ExecStartPre=+/usr/local/lib/erpc/bitcoin-control guard
+ExecStart=/opt/erpc-bitcoin/current/bin/bitcoind -nosettings -conf=/etc/erpc/bitcoin.conf -datadir=/var/lib/erpc-bitcoin/data
+Restart=on-failure
+RestartSec=30
+TimeoutStopSec=600
+KillSignal=SIGTERM
+LimitNOFILE=65536
+ReadWritePaths=/var/lib/erpc-bitcoin/data
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

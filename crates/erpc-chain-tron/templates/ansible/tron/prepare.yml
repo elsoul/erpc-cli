@@ -1,0 +1,95 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Prepare authenticated TRON binaries and configuration with startup fenced
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars_files: [vars.yml]
+  tasks:
+    - ansible.builtin.import_tasks: tasks/guard.yml
+      vars: {tron_guard: guard}
+    - name: Fence this operation and gracefully stop any existing node
+      ansible.builtin.command:
+        argv: "{{ ['python3', tron_control, 'prepare'] + tron_contract_args + [tron_intent, tron_release_target | to_json] }}"
+      changed_when: true
+    - name: Create the reviewed release directory
+      ansible.builtin.file:
+        path: "{{ tron_release }}/erpc"
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+    - name: Download exact client and detached signature
+      ansible.builtin.get_url:
+        url: "{{ item.url }}"
+        dest: "{{ tron_release }}/{{ item.name }}"
+        checksum: "sha256:{{ item.sha256 }}"
+        owner: root
+        group: root
+        mode: '0644'
+      loop:
+        - {url: "{{ tron_jar_url }}", name: FullNode.jar, sha256: "{{ tron_jar_sha256 }}"}
+        - {url: "{{ tron_signature_url }}", name: FullNode.jar.sig, sha256: "{{ tron_signature_sha256 }}"}
+        - {url: "{{ tron_config_url }}", name: network.conf, sha256: "{{ tron_config_sha256 }}"}
+    - name: Authenticate the exact network signer and Java platform
+      ansible.builtin.command:
+        argv: [python3, "{{ tron_templates }}/verify.py", "{{ tron_release }}", "{{ playbook_dir }}/../../gpg/{{ tron_network }}.asc", "{{ tron_primary_fingerprint }}", "{{ tron_signing_fingerprint }}", "{{ tron_java }}", "{{ tron_java_major | string }}", "{{ tron_javac }}", "{{ playbook_dir }}/../../ErpcTronKey.java"]
+      changed_when: false
+    - name: Install root-owned host controllers
+      ansible.builtin.copy:
+        src: "{{ tron_templates }}/{{ item }}"
+        dest: "/usr/local/lib/erpc/tron/{{ item }}"
+        owner: root
+        group: root
+        mode: '0755'
+      loop: [control.py, identity.py, observe.py, launch.py]
+    - name: Select the verified release while the node is stopped
+      ansible.builtin.file:
+        src: "{{ tron_release }}"
+        dest: /opt/tron/current
+        state: link
+        force: true
+    - name: Link only the service's private credential directory
+      ansible.builtin.file:
+        src: /run/credentials/tron-node.service
+        dest: /etc/tron/credentials
+        state: link
+        force: true
+        owner: root
+        group: root
+      when: tron_role == 'validator'
+    - name: Configure the full upstream network plus narrow operational overrides
+      ansible.builtin.template:
+        src: "{{ tron_templates }}/node.conf.j2"
+        dest: /etc/tron/node.conf
+        owner: root
+        group: tron
+        mode: '0640'
+    - name: Keep node logs on the journal and silence credential-inspector libraries
+      ansible.builtin.copy:
+        content: "{{ item.content }}"
+        dest: "/etc/tron/{{ item.name }}"
+        owner: root
+        group: tron
+        mode: '0640'
+      loop:
+        - {name: quiet-logback.xml, content: '<configuration><root level="OFF"/></configuration>'}
+        - name: logback.xml
+          content: '<configuration><appender name="JOURNAL" class="ch.qos.logback.core.ConsoleAppender"><encoder><pattern>%date %-5level %logger{32} - %msg%n</pattern></encoder></appender><root level="INFO"><appender-ref ref="JOURNAL"/></root></configuration>'
+    - name: Install the stopped, guarded service
+      ansible.builtin.template:
+        src: "{{ tron_templates }}/tron-node.service.j2"
+        dest: /etc/systemd/system/tron-node.service
+        owner: root
+        group: root
+        mode: '0644'
+    - name: Record the exact installed public files
+      ansible.builtin.command:
+        argv: [python3, "{{ tron_templates }}/manifest.py", "{{ tron_release }}", "{{ tron_intent }}", "{{ tron_release_target | to_json }}"]
+      changed_when: true
+    - name: Reload unit definitions without starting a listener
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+

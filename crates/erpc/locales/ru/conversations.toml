@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+# Сохранённые разговоры `erpc ai`: список, из которого выбирает `erpc resume`,
+# и почему разговор не удаётся прочитать или сохранить.
+
+none_yet = "сохранённых разговоров пока нет; начните разговор командой `erpc`"
+which = "Какой разговор продолжить"
+nothing_chosen = "ничего не выбрано"
+not_saved = "не удалось сохранить: {error}"
+bad_id = "{id} — не ID разговора; список разговоров выводит `erpc resume`"
+no_such = "разговора {id} нет"
+unreadable = "не удалось прочитать {path}: {error}"
+not_a_conversation = "{path} — не сохранённый разговор: {error}"
+other_version = "разговор {id} сохранён другой версией erpc"
+not_created = "не удалось создать {path}: {error}"
+
+[age]
+just_now = "только что"
+
+[age.minutes]
+one = "{n} мин назад"
+few = "{n} мин назад"
+many = "{n} мин назад"
+
+[age.hours]
+one = "{n} ч назад"
+few = "{n} ч назад"
+many = "{n} ч назад"
+
+[age.days]
+one = "{n} дн. назад"
+few = "{n} дн. назад"
+many = "{n} дн. назад"

@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+url_not_pair = "--url 的格式为 NAME=URL，而不是 `{given}`"
+url_not_pair_unknown = "--url 的格式为 NAME=URL"
+nothing = "没有可测量的对象"
+nothing_hint = "去掉 --no-shared，或用 --url NAME=URL 指定一个端点"
+not_readable = "无法读取 agent 的测量结果：{error}"
+one_stdin = "只能有一个 --url 从标准输入读取"
+url_of = "{name} 的 URL"
+shared_refused = "共享 RPC 拒绝了该账户的 API 密钥：该账户可能没有有效的共享 RPC 套餐（请查看 ERPC 控制面板），或者请将应用的 ERPC_API_KEY 机密设置设为拥有该套餐的密钥。"
+title = "从 {worker} 的服务器 {at} 调用 {method}：预热 {warm}后，每个端点 {each}{apart}"
+apart = "，间隔 {ms} ms"
+faster = "按中位数，{fastest} 的响应比 {other} 快 {times} 倍（{a} 对 {b}）。"
+alone = "{name} 的响应时间中位数为 {time}。"
+
+[each]
+other = "{n} 次"
+
+[warm_up]
+other = "{n} 次"
+
+[failures]
+other = "{name}：失败 {n} 次，第一次的错误：{error}"
+
+[column]
+endpoint = "端点"
+host = "主机"
+failed = "失败"
+slots_behind = "落后槽位数"

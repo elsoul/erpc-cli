@@ -1,0 +1,89 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+# Что говорит сам `erpc worker`: поиск приложения, check, init и list.
+
+[chain]
+unknown = "у erpc worker есть шаблоны для {chains}"
+
+[env]
+none = "`erpc worker deploy{scope}` добавит окружение"
+
+[find]
+no_file = "{path} не существует"
+no_cwd = "не удалось прочитать текущий каталог: {error}"
+no_manifest = "в {dir} и выше нет {file}"
+no_app_here = "в этом каталоге нет приложения; `erpc worker init` создаст его"
+init_or_dir = "запустите `erpc worker init`, чтобы создать приложение, или укажите --dir <каталог приложения>"
+unknown = "erpc не знает приложения {name}"
+unknown_hint = "`erpc worker list` покажет известные приложения; для другого укажите --dir <каталог>"
+ambiguous = "приложений с именем {name} больше одного: {dirs}"
+ambiguous_hint = "укажите нужное через --dir <каталог>"
+
+[manifest]
+fix = "исправьте {file} и запустите `erpc worker check{dir_scope}`"
+
+[check]
+ready = "Приложение {name} готово"
+no_pubkey = "(публичный ключ не задан)"
+no_server = "(сервера пока нет)"
+in_1password = "сведения о сервере хранятся в 1Password"
+build = "{command}  → {bin} для {target}"
+no_wallet = "нет; `erpc worker key new{dir_scope}` создаст кошелёк"
+no_env = "пока нет; `erpc worker deploy{scope}` добавит окружение"
+env_in_1password = "{name}: сведения о сервере хранятся в 1Password (хранилище {vault})  служба {service}"
+env = "{name}: {host}{resource}  служба {service}"
+hourly = ", почасовая оплата"
+
+[check.problems]
+one = "{path}: {n} проблема"
+few = "{path}: {n} проблемы"
+many = "{path}: {n} проблем"
+
+[init]
+what = "Что создать"
+making = "Создание приложения {name} из шаблона {template}"
+at = "в {dir}"
+nothing_made = "Ничего не создано"
+done = "Готово"
+pick_another = "выберите другое --name или другой каталог через --into"
+funds = "Это приложение торгует реальными средствами, как только в его кошельке появляется SOL. Оно предоставляется без каких-либо гарантий; вносите только ту сумму, потерю которой можете себе позволить. Его ключ никогда не записывается в файл: `erpc worker key new{dir_scope}` хранит его в 1Password или в связке ключей."
+unlisted = "`erpc worker list` не покажет его: {error}"
+bad_name = "`{name}` не может быть именем приложения: от 1 до 32 строчных латинских букв, цифр и одиночных дефисов, начиная с буквы"
+nothing_called = "для {chain} нельзя создать `{asked}`: выберите {kinds} или шаблон {ids}"
+or = "или"
+no_templates = "в этой сборке erpc нет шаблонов для {chain}"
+many_templates = "для {chain} есть несколько шаблонов; выберите один через --template"
+
+[init.made]
+one = "Приложение {name} создано из шаблона {template} ({n} файл)"
+few = "Приложение {name} создано из шаблона {template} ({n} файла)"
+many = "Приложение {name} создано из шаблона {template} ({n} файлов)"
+
+[init.made_in]
+one = "Приложение {name} создано из шаблона {template} в {dir} ({n} файл)."
+few = "Приложение {name} создано из шаблона {template} в {dir} ({n} файла)."
+many = "Приложение {name} создано из шаблона {template} в {dir} ({n} файлов)."
+
+[init.git]
+made = "Это новый git-репозиторий."
+skipped = "Git-репозиторий не создан ({why})."
+failed = "не удалось создать git-репозиторий: {why}"
+failed_drawn = "Не удалось создать git-репозиторий: {why}"
+not_installed = "git не установлен"
+inside = "каталог уже находится внутри git-репозитория"
+
+[list]
+none = "На этой машине пока нет приложений; `erpc worker init` создаст первое."
+none_drawn = "На этой машине пока нет приложений."
+not_deployed = "не развёрнуто"
+deployed = "развёрнуто: {envs}"
+gone = "(erpc.toml там больше нет)"
+gone_drawn = "{name}: в {dir} больше нет erpc.toml"
+pruned = "Убрано из списка приложений без erpc.toml: {count}"
+prune_hint = "`erpc worker list --prune` убирает из списка приложения, у которых больше нет erpc.toml; больше ничего не меняется"
+invalid = "(в erpc.toml есть проблемы; `erpc worker check{dir_scope}`)"
+invalid_drawn = "{name}: в erpc.toml есть проблемы"
+in_vault = "{name}  ·  окружение {env} в 1Password, приложения на этой машине нет (клонируйте приложение, чтобы продолжить с ним работу)"
+in_vault_heading = "В 1Password, но без приложения на этой машине (клонируйте приложение, чтобы продолжить с ним работу):"
+vault_unread = "(не удалось получить список элементов воркеров в хранилище {vault}: {error})"

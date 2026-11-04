@@ -1,0 +1,78 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Starts the layers in order and waits for the node to move: the execution
+# layer, its IPC sockets, the consensus layer, then a head that rises.
+# `arc_restart` restarts layers that are running already, in the same order:
+# the consensus layer is stopped first, so it never starts before the
+# execution layer's sockets are back.
+---
+- name: Stop the consensus layer before the execution layer restarts
+  ansible.builtin.systemd_service:
+    name: arc-consensus
+    state: stopped
+  when: arc_restart | default(false) | bool
+
+- name: Start the execution layer
+  ansible.builtin.systemd_service:
+    name: arc-execution
+    state: "{{ 'restarted' if (arc_restart | default(false) | bool) else 'started' }}"
+    enabled: true
+    daemon_reload: true
+
+- name: Wait for the execution layer's IPC sockets
+  ansible.builtin.wait_for:
+    path: "{{ item }}"
+    timeout: 300
+  loop:
+    - /run/arc/reth.ipc
+    - /run/arc/auth.ipc
+
+- name: Start the consensus layer
+  ansible.builtin.systemd_service:
+    name: arc-consensus
+    state: started
+    enabled: true
+
+- name: Check the chain is the one this node is for
+  ansible.builtin.uri:
+    url: http://127.0.0.1:8545
+    method: POST
+    body_format: json
+    body: { jsonrpc: "2.0", id: 1, method: eth_chainId, params: [] }
+    return_content: true
+  register: arc_chain_id_answer
+  until: arc_chain_id_answer.status | default(0) == 200
+  retries: 30
+  delay: 5
+  failed_when: (arc_chain_id_answer.json.result | default('0x0') | int(base=16)) != arc_chain_id | int
+
+- name: Read the head
+  ansible.builtin.uri:
+    url: http://127.0.0.1:8545
+    method: POST
+    body_format: json
+    body: { jsonrpc: "2.0", id: 1, method: eth_blockNumber, params: [] }
+    return_content: true
+  register: arc_head_before
+
+- name: Wait for the head to rise
+  ansible.builtin.uri:
+    url: http://127.0.0.1:8545
+    method: POST
+    body_format: json
+    body: { jsonrpc: "2.0", id: 1, method: eth_blockNumber, params: [] }
+    return_content: true
+  register: arc_head_after
+  until: >-
+    arc_head_after.status | default(0) == 200 and
+    (arc_head_after.json.result | default('0x0') | int(base=16)) >
+    (arc_head_before.json.result | default('0x0') | int(base=16))
+  retries: "{{ arc_head_wait_retries | default(120) }}"
+  delay: 10
+
+- name: Say where the node is
+  ansible.builtin.debug:
+    msg: >-
+      head {{ arc_head_after.json.result | int(base=16) }}
+      (was {{ arc_head_before.json.result | int(base=16) }})

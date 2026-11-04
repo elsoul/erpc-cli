@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+usage = "用法:"
+options = "选项"
+arguments = "参数"
+commands = "命令"
+help = "显示帮助"
+version = "显示版本"
+help_command = "显示此信息或指定子命令的帮助"

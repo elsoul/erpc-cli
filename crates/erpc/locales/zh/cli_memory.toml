@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+"memory" = "erpc ai 跨对话记住的关于你的信息"
+"memory list" = "显示所有记忆及其编号"
+"memory forget" = "按编号删除一条记忆"
+"memory forget <id>" = "记忆的编号，即 `erpc memory list` 显示的编号"
+"memory clear" = "删除所有记忆"

@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+# Что `erpc ai` говорит вне экрана консоли: `-m` в терминале, заставка,
+# строка тарифа и ошибки.
+
+question_unreadable = "не удалось прочитать вопрос: {error}"
+pick_needs_console = "чтобы выбрать разговор, нужна консоль; укажите его: erpc resume <id>"
+conversation_broken = "разговор {id}: {error}"
+json_needs_question = "для --json нужен вопрос: передайте его через -m или stdin"
+needs_terminal = "консоли нужен терминал; задайте вопрос через -m или передайте его через stdin"
+go_ahead = "Продолжить? [y/N]"
+draw_failed = "не удалось вывести данные в терминал: {error}"
+to_continue = "Продолжить: erpc resume {id}"
+console_stopped = "консоль остановилась: {error}"
+sign_in_hint = "Войдите командой `erpc login` или создайте аккаунт командой `erpc signup`."
+empty_question = "вопрос пуст"
+open_dashboard = "Месячный или годовой план покупается в панели управления ERPC: {url}"
+declined_because = "модель отказалась отвечать: {why}"
+declined = "модель отказалась отвечать, не назвав причины"
+stopped = "остановлено"
+
+[choose]
+one = "Номер или свой ответ:"
+several = "Номера через запятую или свой ответ:"
+again = "Введите номер или свой ответ:"
+
+[splash]
+tagline = "Строим финансовый интернет для эпохи ИИ-агентов."
+connecting = "подключение"
+signed_in = "вход выполнен:"
+
+[store]
+service_account = "1Password (сервисный аккаунт)"
+file = "файл (~/.erpc)"
+
+[plan]
+hourly = "{name} (почасовая оплата)"
+left = "осталось токенов: {left}"
+suspended = "приостановлен"

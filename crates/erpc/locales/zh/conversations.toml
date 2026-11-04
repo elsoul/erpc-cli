@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+# 已保存的 `erpc ai` 对话：`erpc resume` 选择用的列表，以及无法读取或保存的原因。
+
+none_yet = "还没有已保存的对话；运行 `erpc` 开始新对话"
+which = "选择要继续的对话"
+nothing_chosen = "未选择任何对话"
+not_saved = "无法保存：{error}"
+bad_id = "{id} 不是有效的对话 ID；运行 `erpc resume` 可列出所有对话"
+no_such = "对话 {id} 不存在"
+unreadable = "无法读取 {path}：{error}"
+not_a_conversation = "{path} 不是已保存的对话：{error}"
+other_version = "对话 {id} 是由其他版本的 erpc 保存的"
+not_created = "无法创建 {path}：{error}"
+
+[age]
+just_now = "刚刚"
+
+[age.minutes]
+other = "{n} 分钟前"
+
+[age.hours]
+other = "{n} 小时前"
+
+[age.days]
+other = "{n} 天前"

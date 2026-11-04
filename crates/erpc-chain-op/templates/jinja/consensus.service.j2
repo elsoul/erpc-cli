@@ -1,0 +1,77 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+[Unit]
+Description=ERPC {{ op_family }} {{ op_network }} derivation follower
+Requires=erpc-{{ op_family }}-firewall.service erpc-{{ op_family }}-execution.service erpc-{{ op_family }}-upstreams.service
+After=network-online.target erpc-{{ op_family }}-firewall.service erpc-{{ op_family }}-execution.service erpc-{{ op_family }}-upstreams.service
+PartOf=erpc-{{ op_family }}-execution.service
+StartLimitIntervalSec=0
+[Service]
+{% if op_family == 'base' %}
+User=erpc-{{ op_family }}
+Group=erpc-{{ op_family }}
+Environment=BASE_NODE_L1_TRUST_RPC=false BASE_NODE_L2_TRUST_RPC=false
+{% else %}
+User=root
+Group=root
+RuntimeDirectory=erpc-{{ op_family }}-consensus
+RuntimeDirectoryMode=0700
+{% endif %}
+Type=exec
+UMask=0077
+ExecStartPre=+/usr/bin/python3 /usr/local/lib/erpc/rollup_control.py guard consensus {{ op_owner }} {{ op_family }} {{ op_network }} {{ op_history }}
+ExecStartPre=+/usr/bin/python3 /usr/local/lib/erpc/rollup_control.py wait-engine
+LoadCredentialEncrypted=engine-jwt:/etc/credstore.encrypted/erpc-{{ op_family }}-engine-jwt
+LoadCredentialEncrypted=consensus-peer:/etc/credstore.encrypted/erpc-{{ op_family }}-consensus-peer
+{% if op_family != 'base' %}
+ExecStartPre=/usr/bin/python3 /usr/local/lib/erpc/rollup_runtime_jwt.py {{ op_family }} consensus
+ExecStartPre=/usr/bin/python3 /usr/local/lib/erpc/rollup_container.py {{ op_family }} consensus
+ExecStart=/usr/bin/docker --config {{ op_conf }}/docker run --rm --name erpc-{{ op_family }}-consensus --network host --user {{ op_uid }}:{{ op_gid }} \
+  --label erpc.owner={{ op_owner }} --label erpc.family={{ op_family }} --label erpc.network={{ op_network }} --label erpc.history={{ op_history }} \
+  --cap-drop ALL --security-opt no-new-privileges --read-only --tmpfs /tmp:rw,nosuid,nodev,noexec,size=256m \
+  --mount type=bind,source={{ op_data }}/consensus,target=/data \
+  --mount type=bind,source=/run/erpc-{{ op_family }}-consensus/engine-jwt,target=/engine-jwt,readonly \
+  --mount type=bind,source=/run/erpc-{{ op_family }}-consensus/peer-key,target=/peer-key,readonly \
+  {{ op_consensus_image }} op-node --network {{ op_consensus_chain }} \
+  --l2.jwt-secret /engine-jwt --p2p.priv.path /peer-key --safedb.path /data/safedb --p2p.peerstore.path /data/peerstore --p2p.discovery.path /data/discovery \
+  --l1.rpckind basic --l1.trustrpc=false --l1.http-poll-interval 12s \
+  --syncmode execution-layer --l2.enginekind reth --p2p.listen.udp 9222 \
+{% else %}
+ExecStart={{ op_opt }}/current/base-consensus node --chain {{ op_consensus_chain }} --mode validator \
+  --l2.jwt-secret %d/engine-jwt --p2p.priv.path %d/consensus-peer \
+  --p2p.bootstore {{ op_data }}/consensus/bootstore --safedb.path {{ op_data }}/consensus/safedb --checkpoint.path {{ op_data }}/consensus/checkpoints \
+  --p2p.listen.udp 9223 \
+{% endif %}
+  --l1 http://127.0.0.1:18545 --l1.beacon http://127.0.0.1:15052 --l2 http://127.0.0.1:8551 \
+  --p2p.listen.ip 0.0.0.0 --p2p.listen.tcp 9222 --p2p.advertise.ip {{ op_advertise_ip }} \
+  --rpc.addr 127.0.0.1 --rpc.port 9545 --metrics.enabled --metrics.addr 127.0.0.1 --metrics.port 7300
+{% if op_family != 'base' %}
+ExecStop=/usr/bin/docker --config {{ op_conf }}/docker stop --time 600 erpc-{{ op_family }}-consensus
+{% endif %}
+Restart=on-failure
+RestartSec=30
+KillSignal=SIGTERM
+TimeoutStopSec=660
+LimitNOFILE=1048576
+LimitCORE=0
+MemorySwapMax=0
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+ReadWritePaths={{ op_data }}/consensus
+{% if op_family != 'base' %}
+ReadWritePaths=/run/erpc-{{ op_family }}-consensus
+{% else %}
+CapabilityBoundingSet=
+RestrictNamespaces=yes
+{% endif %}
+[Install]
+WantedBy=multi-user.target

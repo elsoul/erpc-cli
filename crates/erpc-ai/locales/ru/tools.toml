@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+# Что консоль показывает, пока работает инструмент, по имени инструмента.
+
+unknown = "Ищу"
+run_command = "Выполняю команду"
+remember = "Запоминаю"
+forget = "Забываю"
+secure_vps = "Вхожу на сервер, чтобы настроить вход по SSH только по ключу"
+restrict_ssh = "Настраиваю список разрешённых адресов для SSH"
+wait_until_ready = "Жду готовности (до 5 минут)"
+ask_choice = "Жду вашего выбора"
+read_skill = "Читаю навык"
+credit_balance = "Смотрю баланс кредитов"
+credit_history = "Смотрю историю кредитов"
+card_subscriptions = "Смотрю подписки"
+rpc_usage = "Смотрю расход RPC"
+ai_usage = "Смотрю тариф AI"
+open_dashboard = "Открываю панель управления ERPC"
+my_services = "Смотрю ваши сервисы"
+server_catalog = "Смотрю каталог серверов"
+server_stock = "Проверяю наличие"
+plan_prices = "Смотрю цены"
+service_health = "Смотрю состояние сервисов"
+hourly_catalog = "Смотрю каталог почасовых продуктов"
+start_hourly_product = "Спрашиваю, запускать ли продукт"
+end_hourly_product = "Спрашиваю, завершать ли продукт"
+top_up_credit = "Спрашиваю о покупке кредитов"
+create_credit_wallet = "Спрашиваю о создании кошелька"

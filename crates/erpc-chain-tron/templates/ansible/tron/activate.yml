@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Activate only the confirmed deployment and original signing identity
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars_files: [vars.yml]
+  tasks:
+    - ansible.builtin.import_tasks: tasks/guard.yml
+      vars: {tron_guard: guard-phase}
+    - name: Verify the exact firewall receipt, artifacts and signing permission before startup
+      ansible.builtin.command:
+        argv: "{{ ['python3', tron_control, 'activate'] + tron_contract_args + [tron_intent, erpc_fw_confirmed_run, erpc_fw_confirmed_bundle, tron_release_target | to_json] }}"
+      changed_when: true
+

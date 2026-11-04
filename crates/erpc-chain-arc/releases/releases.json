@@ -1,0 +1,57 @@
+{
+  "source": "https://api.github.com/repos/circlefin/arc-node/releases",
+  "read": "2026-10-23",
+  "releases": [
+    {
+      "tag": "v0.8.1",
+      "prerelease": false,
+      "commit": "ab09dbfd9553a7ad48f9c134ec5e808c36512c74",
+      "sha256": {
+        "x86_64-unknown-linux-gnu": "04127c5bb9488de743755b5089f4434c335cf349386d5d01347abfbc402d932a",
+        "aarch64-unknown-linux-gnu": "b6b4de979c457e0ff595a75b2987104f6b69d71492ca372ff35cff3648a99d69"
+      }
+    },
+    {
+      "tag": "v0.8.0",
+      "prerelease": false,
+      "commit": "66ad2d5aa6d9b41e8f689812004be4c7233a9e16",
+      "sha256": {
+        "x86_64-unknown-linux-gnu": "265441e478a91773ecabc293b9824bff27d20afd125d4413481c65613336c933",
+        "aarch64-unknown-linux-gnu": "590675e527c7b39f245b1038301c737ad7001a32ab3d3ad36469aa662303a68f"
+      }
+    },
+    {
+      "tag": "v0.7.3",
+      "prerelease": false,
+      "commit": "79b6fddf18345732007bb94b4af3add4c2efd12d",
+      "sha256": {
+        "x86_64-unknown-linux-gnu": "b4515575ea387ad37c74e2745972e4c8c781750136a8ed2d7e5fdb1393c1f9ef",
+        "aarch64-unknown-linux-gnu": "66106949429c3072a9096263c6df189855ff11c96166fd198cc9fe0518f7e1bb"
+      }
+    },
+    {
+      "tag": "v0.7.2",
+      "prerelease": false,
+      "commit": "a85368c0b0a7924e4c74035d195f96deb0291622",
+      "sha256": {
+        "x86_64-unknown-linux-gnu": "d482b31fb98c71793fb61f6a8069e4639c797c7a77732c146a1c06aef40ab449",
+        "aarch64-unknown-linux-gnu": "742954de7e2a67a4a0e6d5926c00c3669096985e4179680ce7079d4c06722ffb"
+      }
+    },
+    {
+      "tag": "v0.7.1",
+      "prerelease": false,
+      "commit": "205d270246d2ac5a0db7974c1a323b2ba9fb5fa2",
+      "sha256": {
+        "x86_64-unknown-linux-gnu": "0e1081e169d871201b2ca7ff781d8c85e6abb6713ddfd4c51e28a8b66d03d432",
+        "aarch64-unknown-linux-gnu": "bed973a3d366f11e79f65d6832812dd37a632b0d9e652441c83de26ef917a8fd"
+      }
+    },
+    {
+      "tag": "v0.6.0",
+      "prerelease": false,
+      "commit": "ab6b9608e3f61128315b4ce6e10590d911057b9a",
+      "sha256": {}
+    }
+  ]
+}

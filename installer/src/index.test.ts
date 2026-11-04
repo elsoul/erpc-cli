@@ -74,3 +74,22 @@ test("rejects a plain-text error body", () => {
 test("does not accept a PowerShell installer as a shell one", () => {
   assert.equal(looksLikeInstaller(REAL_PS1, "sh"), false);
 });
+
+test("the installer is served with the skills step after it", async () => {
+  const { AFTER_INSTALL, withAfterInstall } = await import("./index.ts");
+  const sh = withAfterInstall(`${REAL_SH}download_binary_and_run_installer "$@" || exit 1\n`, "sh");
+  assert.ok(sh.startsWith("#!/bin/sh"), "still a shell script");
+  assert.ok(sh.endsWith(AFTER_INSTALL.sh));
+  assert.ok(sh.indexOf("|| exit 1") < sh.indexOf("skills install"), "after the install");
+  // The forced directory itself, as the generated installer's "flat" layout
+  // installs there; a `bin/` under it was an earlier tail's mistake, and it
+  // ran a binary from an earlier install.
+  assert.ok(sh.includes('"${ERPC_INSTALL_DIR:-}"'), "the forced directory, not a bin/ under it");
+  assert.ok(!sh.includes("ERPC_INSTALL_DIR/bin"), "no bin/ under the forced directory");
+  assert.ok(sh.includes('"$_erpc_dir/erpc" "$_erpc_dir/bin/erpc"'), "itself first, bin/ for Cargo's home");
+  const ps1 = withAfterInstall(REAL_PS1, "ps1");
+  assert.equal(looksLikeInstaller(ps1, "ps1"), true);
+  assert.ok(ps1.includes('Join-Path $HOME ".erpc\\bin"'));
+  assert.ok(ps1.includes('Join-Path $erpcDir "erpc.exe"'), "the forced directory itself");
+  assert.ok(!ps1.includes('Join-Path $env:ERPC_INSTALL_DIR "bin"'), "no bin under the forced directory");
+});

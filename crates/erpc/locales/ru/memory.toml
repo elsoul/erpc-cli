@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+# `erpc memory`: что `erpc ai` помнит между разговорами.
+
+empty = "erpc ai пока ничего не помнит."
+kept_in = "Хранится в {path}. Удалить один факт: `erpc memory forget <id>`, все: `erpc memory clear`."
+forgot = "Факт {id} забыт."
+no_such = "запомненного факта {id} нет; см. `erpc memory list`"
+cleared = "erpc ai больше ничего не помнит."

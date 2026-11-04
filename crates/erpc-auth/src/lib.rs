@@ -30,7 +30,7 @@ pub mod lock;
 pub mod session;
 pub mod store;
 
-pub use client::{AuthClient, HttpError};
+pub use client::{AuthClient, HttpError, Streamed};
 pub use credential::{Audience, CredKey, Credential, check_token_shape};
 pub use session::{SessionError, current_session, run_device_grant, sign_out};
 pub use store::{CredentialStore, StoreError, StoreKind};

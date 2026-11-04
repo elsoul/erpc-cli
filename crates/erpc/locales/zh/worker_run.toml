@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+missing = "缺少 {settings}，{name} 无法启动"
+missing_hint = "用 `erpc worker secret put {first}{dir_scope}` 保存机密设置；普通设置写在 [vars] 中"
+watch_only = "没有 [wallet]：应用以仅观察模式启动（`erpc worker key new{dir_scope}` 可生成密钥）"
+could_not_start = "无法启动 {bin}：{error}"
+no_stdin = "应用没有可接收密钥的标准输入"
+key_not_handed = "无法传递密钥：{error}"
+started = "{name} 已启动（pid {pid}）"
+running = "运行中；按 Ctrl-C 停止"
+healthy = "状态健康；按 Ctrl-C 停止"
+stopped = "{name} 已停止"
+ended = "{name} 已退出：{status}"
+
+[build]
+empty = "build.command 为空"
+building = "正在构建：{command}"
+could_not_run = "无法运行 {program}：{error}"
+failed = "构建失败（{status}）"
+no_binary = "构建已完成，但 {bin} 不存在"
+no_binary_hint = "请将 erpc.toml 中的 build.bin 设为二进制文件名，并使用 --release 构建"
+
+[check]
+ended = "应用自行退出：{status}"
+timeout = "{secs} 秒内未进入健康状态"
+healthy = "{name} 状态健康（启动后 {secs} 秒）；已停止"
+failed = "{name} 未通过检查：{why}"

@@ -70,6 +70,46 @@ jobs:
       - run: cargo test --workspace --locked
       - run: cargo run --locked -- version --json
 
+  # The worker agents erpc embeds are cross-built with zig before every
+  # release build (.github/build-setup.yml) on cargo-dist's five runners. Those
+  # steps never ran in CI before the first tag, so the same script runs here,
+  # on the same runner images (`dist plan` names them; rebuild-runners.test.sh
+  # checks the Linux pair). The agents' bytes are not compared across runners
+  # here; rebuild-compare does that for the Linux targets at release time.
+  worker-agents:
+    name: worker agents (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-22.04, ubuntu-22.04-arm, macos-14, macos-15-intel, windows-2022]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: 1.98.0
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: 0.14.1
+          use-cache: false
+      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
+        with:
+          tool: cargo-zigbuild@0.24.0
+      - name: build the worker agents as a release build does
+        shell: bash
+        run: scripts/build-worker-agents.sh
+      - name: the binary refuses to build without them
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The script exported ERPC_WORKER_AGENTS_DIR and
+          # ERPC_REQUIRE_WORKER_AGENTS=1 for the steps after it; a build of
+          # erpc here embeds them, as the release build does.
+          cargo check -p erpc --locked
+
   deny:
     name: cargo-deny
     runs-on: ubuntu-latest
@@ -155,6 +195,7 @@ jobs:
           scripts/tests/check-endpoints.test.sh
           scripts/tests/build-manifest.test.sh
           scripts/tests/release-wiring.test.sh
+          scripts/tests/workflow-audit.test.sh
       - name: hygiene gate (all tracked files)
         run: scripts/check-oss-hygiene.sh
       - name: endpoint allowlist (all tracked files)
@@ -182,19 +223,21 @@ jobs:
           /bin/bash scripts/tests/check-endpoints.test.sh
           /bin/bash scripts/tests/build-manifest.test.sh
           /bin/bash scripts/tests/release-wiring.test.sh
+          /bin/bash scripts/tests/workflow-audit.test.sh
 
   zizmor:
     name: zizmor (workflow audit)
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      security-events: write
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
       - uses: zizmorcore/zizmor-action@85b2b9fb8e3325e7a23d7d0a9d7ba5ae0f999e3e # v0.7.1
         with:
+          # Fail the job on findings; this also works without paid code scanning.
+          advanced-security: false
           min-severity: medium
           persona: regular
 

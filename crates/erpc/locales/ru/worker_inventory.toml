@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+op_failed = "1Password не смог {doing}: {why}"
+no_reason = "причина не указана"
+listing_not_json = "1Password вернул список не в формате JSON"
+items_not_json = "1Password вернул элементы не в формате JSON"
+item_not_json = "1Password вернул элемент не в формате JSON"
+new_item_not_json = "1Password вернул новый элемент не в формате JSON"
+more_than_one = "в хранилище {vault} больше одного элемента с тегом {tag}; оставьте один, остальные отправьте в архив"
+item_error = "элемент {id}: {error}"
+record_unusable = "запись в элементе непригодна для использования"
+not_read_back = "элемент 1Password {id} возвращает поле {label} не в том виде, в каком оно было записано"
+changed = "элемент {title} изменился в 1Password после того, как команда его прочитала (развёртывание с другой машины?); ничего не записано, запустите команду снова"
+appeared = "элемент {title} появился в 1Password во время работы команды; ничего не записано, запустите команду снова"
+
+[doing]
+list = "получить список элементов воркеров"
+read_all = "прочитать элементы воркеров"
+read = "прочитать элемент воркера"
+update = "обновить элемент воркера"
+create = "создать элемент воркера"
+archive = "отправить элемент воркера в архив"

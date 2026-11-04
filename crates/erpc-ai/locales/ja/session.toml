@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+# 会話のターンがうまくいかなかったときに伝える言葉。ERPC の言葉で伝え、
+# プロバイダーの言葉は使わない。
+
+cut_off = "回答が長さの上限に達し、途中で切れました"
+too_many_rounds = "ツールを {rounds} 回呼び出しても回答が得られなかったため、中断しました"
+finishing = "同意した操作を最後まで行っています。途中で取り消すことはできません"
+expired = "サインインの有効期限が切れました。`erpc login` でサインインし直してください。"
+unreachable = "ERPC AI に接続できませんでした。ネットワークを確認して、もう一度お試しください。"
+no_account = "このサインインには ERPC のアカウントがまだありません。`erpc signup` で作成してください。"
+not_continuable = "保存された会話は、続きから再開できる状態ではありません"

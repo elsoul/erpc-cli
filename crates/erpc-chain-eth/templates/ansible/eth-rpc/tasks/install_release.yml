@@ -1,0 +1,99 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Puts the pinned pair under /opt/ethereum/<pair>/, unless it is there. Each
+# archive is checked against the digest pinned at init and against its
+# release's GPG signature, made by the key erpc carries for that client,
+# before it is unpacked; each binary must then report the pinned release.
+# The `current` link is not touched here.
+---
+- name: Install the pinned pair, unless it is there
+  when: not (eth_installed_pair.stat.exists | default(false))
+  block:
+    - name: Download each archive, refused unless it has the pinned digest
+      ansible.builtin.get_url:
+        url: "{{ item.url }}"
+        dest: "{{ eth_opt }}/{{ item.url | basename }}"
+        checksum: "sha256:{{ item.sha256 }}"
+        owner: root
+        group: root
+        mode: "0644"
+      loop: "{{ eth_archives }}"
+      loop_control:
+        label: "{{ item.client }}"
+
+    - name: Download each archive's signature
+      ansible.builtin.get_url:
+        url: "{{ item.url }}.asc"
+        dest: "{{ eth_opt }}/{{ item.url | basename }}.asc"
+        owner: root
+        group: root
+        mode: "0644"
+      loop: "{{ eth_archives }}"
+      loop_control:
+        label: "{{ item.client }}"
+
+    # A keyring made for this check only, holding the one key that signs
+    # the client's releases; the signature must be good and made by it.
+    - name: Check each archive's signature against its client's key
+      ansible.builtin.shell:
+        cmd: |
+          set -euo pipefail
+          home=$(mktemp -d)
+          trap 'rm -rf "$home"' EXIT
+          gpg --batch --quiet --homedir "$home" --import "{{ eth_gpg }}/{{ item.client }}.asc" 2>/dev/null
+          gpg --batch --homedir "$home" --status-fd 1 \
+            --verify "{{ eth_opt }}/{{ item.url | basename }}.asc" "{{ eth_opt }}/{{ item.url | basename }}" 2>/dev/null \
+            | grep -E '^\[GNUPG:\] VALIDSIG .*\b{{ item.fingerprint }}$'
+        executable: /bin/bash
+      loop: "{{ eth_archives }}"
+      loop_control:
+        label: "{{ item.client }}"
+      changed_when: false
+
+    - name: Make the pair's directory
+      ansible.builtin.file:
+        path: "{{ eth_release_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Unpack each binary into it
+      ansible.builtin.unarchive:
+        src: "{{ eth_opt }}/{{ item.url | basename }}"
+        dest: "{{ eth_release_dir }}"
+        remote_src: true
+        owner: root
+        group: root
+        include: ["{{ item.client }}"]
+        creates: "{{ eth_release_dir }}/{{ item.client }}"
+      loop: "{{ eth_archives }}"
+      loop_control:
+        label: "{{ item.client }}"
+
+    - name: Remove the downloaded archives and signatures
+      ansible.builtin.file:
+        path: "{{ eth_opt }}/{{ item.0.url | basename }}{{ item.1 }}"
+        state: absent
+      loop: "{{ eth_archives | product(['', '.asc']) | list }}"
+      loop_control:
+        label: "{{ item.0.client }}{{ item.1 }}"
+
+# Reth prints its version and full commit; Lighthouse only its tag.
+- name: Check Reth is the pinned release
+  ansible.builtin.command: "{{ eth_release_dir }}/reth --version"
+  register: eth_reth_reported
+  changed_when: false
+  failed_when: >-
+    eth_reth_reported.rc != 0 or
+    ('Version: ' ~ eth_reth_version[1:]) not in eth_reth_reported.stdout or
+    ('Commit SHA: ' ~ eth_reth_commit) not in eth_reth_reported.stdout
+
+- name: Check Lighthouse is the pinned release
+  ansible.builtin.command: "{{ eth_release_dir }}/lighthouse --version"
+  register: eth_lighthouse_reported
+  changed_when: false
+  failed_when: >-
+    eth_lighthouse_reported.rc != 0 or
+    ('Lighthouse ' ~ eth_lighthouse_version) not in eth_lighthouse_reported.stdout

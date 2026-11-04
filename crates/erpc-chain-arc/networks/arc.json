@@ -1,0 +1,29 @@
+{
+  "source": "docs.arc.io/arc/references/node-requirements",
+  "read": "2026-10-23",
+  "networks": {
+    "testnet": {
+      "chain": "arc-testnet",
+      "chain_id": 5042002,
+      "forwarder": "https://rpc.testnet.arc.io/",
+      "public_rpc": "https://rpc.testnet.arc.io",
+      "follow": [
+        { "http": "https://rpc.testnet.arc.io", "ws": "rpc.testnet.arc.io" },
+        { "http": "https://rpc.drpc.testnet.arc.io", "ws": "rpc.drpc.testnet.arc.io" },
+        { "http": "https://rpc.blockdaemon.testnet.arc.io", "ws": "rpc.blockdaemon.testnet.arc.io/websocket" }
+      ]
+    },
+    "mainnet": {
+      "chain": "arc-mainnet",
+      "chain_id": 5042,
+      "forwarder": "https://rpc.mainnet.arc.io/",
+      "public_rpc": "https://rpc.mainnet.arc.io",
+      "follow": [
+        { "http": "https://rpc.mainnet.arc.io", "ws": "rpc.mainnet.arc.io" },
+        { "http": "https://rpc.drpc.mainnet.arc.io", "ws": "rpc.drpc.mainnet.arc.io" },
+        { "http": "https://rpc.blockdaemon.mainnet.arc.io", "ws": "rpc.blockdaemon.mainnet.arc.io/websocket" },
+        { "http": "https://rpc.quicknode.mainnet.arc.io", "ws": "rpc.quicknode.mainnet.arc.io" }
+      ]
+    }
+  }
+}

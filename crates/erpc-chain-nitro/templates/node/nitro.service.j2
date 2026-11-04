@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+[Unit]
+Description=ERPC {{ nitro_family }} Nitro follower
+Requires=docker.service erpc-{{ nitro_family }}-upstreams.service
+Requires=erpc-{{ nitro_family }}-firewall.service
+After=erpc-{{ nitro_family }}-firewall.service network-online.target docker.service erpc-{{ nitro_family }}-upstreams.service
+Wants=network-online.target
+RequiresMountsFor=/var/lib/erpc-nitro/data /etc/erpc/nitro
+
+[Service]
+LimitCORE=0
+Type=exec
+UMask=0077
+ExecStartPre=/usr/local/lib/erpc/nitro-control guard-node
+ExecStart=/usr/local/lib/erpc/nitro-control execute
+ExecStop=/usr/local/lib/erpc/nitro-control stop-container
+TimeoutStartSec=180
+TimeoutStopSec=1860
+Restart=on-failure
+RestartSec=30
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/erpc-nitro/data
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,92 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+missing = "{name} は {settings} がないと起動できません"
+missing_hint = "`erpc worker secret put {first}{dir_scope}` で保管するか、[vars] に設定してください"
+plan = "{name} のリリース {release} を {to} に {worker} としてデプロイします"
+nothing_deployed = "何もデプロイしていません"
+services = "サーバーで {names} が動いているか確かめています（初回は Ubuntu のパッケージから入れます）"
+target = "{name} を {to} に {worker} としてデプロイします"
+build_stopped = "ビルドが途中で止まりました: {error}"
+could_not_read = "{path} を読み込めませんでした：{error}"
+installed = "リリース {release} をインストールしました"
+starting = "起動して、正常な状態になるのを待っています"
+and = "、"
+and_then = "{hint}。{next}"
+
+[still_charged]
+other = "{names} は時間単位で課金され、記録に残っています。`erpc worker deploy{scope}` をもう一度実行すると引き継ぎ、`erpc worker delete --release-server{scope}` で終了します"
+
+[agent]
+named = "この erpc に同梱のエージェントではなく、ERPC_WORKER_AGENT が指すエージェント（sha256 {sha256}）をインストールします"
+no_exe = "この erpc の場所を特定できませんでした"
+none = "この erpc には {machine} Linux 向けのワーカーエージェントが同梱されておらず、{path} にもありません（{error}）"
+none_hint = "erpc のリリース版には同梱されています。自分でビルドする場合は、scripts/build-worker-agents.sh を実行し、出力されたディレクトリを ERPC_WORKER_AGENTS_DIR に設定して erpc をビルドしてください"
+not_installed = "エージェントをインストールできませんでした：{error}"
+installed = "エージェントをインストールしました"
+unchanged = "エージェントは変更ありません"
+
+[upload]
+failed = "{path} をアップロードできませんでした：{error}"
+not_checked = "{path} を確認できませんでした：{error}"
+not_whole = "{path} が完全に届きませんでした。何もインストールしていません"
+
+[line]
+name = "{kind} 回線 {id}"
+not_ipv4 = "データ回線が許可するのは IPv4 アドレス 1 つだけですが、サーバーのアドレスは {host} です"
+not_ipv4_hint = "サーバーの IPv4 アドレスを指定してデプロイしてください"
+taking_up = "回線 {id} を引き継ぎます"
+wait = "記録済みの {name} はまだ引き継げません：{why}。何も購入していません"
+wait_hint = "1 分ほどしてからもう一度デプロイすると引き継げます。（ダッシュボードなどで）終了済みの場合は、deploy か delete に `--forget-line {id}` を付けると記録から外せます"
+wait_hint_unbilled = "1 分ほどしてからもう一度デプロイすると引き継げます。（ダッシュボードなどで）終了済みの場合は、deploy か delete に `--forget-line {id}` を付けると記録から外せます。時間単位で課金されない回線を erpc は終了しません"
+waiting = "回線 {id} が有効になるのを待っています"
+unlimited_slow = "Unlimited RPC には専用のサーバーが用意されるため、最大 45 分かかることがあります"
+active = "回線 {id} が {endpoint} で有効になりました"
+charged = "{message}。この回線は時間単位で課金されます"
+ended = "回線 {id} を終了しました。今後は課金されません"
+not_ended = "回線 {id} は終了しておらず、erpc.toml に記録されたままです。もう一度デプロイして待つか、`erpc worker delete --release-server{scope}` で終了してください"
+still_waiting = "回線 {id} は erpc.toml に記録されており、時間単位で課金されます。同じフラグで `erpc worker deploy{scope}` を実行するとまた待機し、有効になった後は `erpc worker delete --release-server{scope}` で終了できます"
+not_on_record = "回線 {id} は記録にないため、記録から外せません"
+gone = "{name} はもうアカウントにありません（課金もされていません）。記録から外します"
+not_kept = "回線 {id} を記録できませんでした：{error}"
+not_kept_hint = "時間単位で課金されます。不要ならダッシュボードで終了してください"
+
+[line.forgotten]
+other = "指定どおり {names} を記録から外しました。まだ動いている回線は、ダッシュボードで終了するまで課金されます"
+
+[wait]
+setting_up = "課金は始まっていますが、user-api の一覧にはまだありません（セットアップ中）"
+not_yet_charged = "user-api の一覧にはありますが、アカウントの課金にはまだ表示されていません"
+unbilled = "時間単位の課金ではなく、user-api の一覧にもありません"
+not_seen_yet = "開始済みですが、user-api の一覧にもアカウントの課金にもまだ表示されていません"
+
+[vps]
+not_kept = "VPS {id} は起動しましたが、記録できませんでした：{error}"
+not_kept_hint = "時間単位で課金されます。`erpc worker deploy --vps {id}{scope}` で引き継ぐか、ダッシュボードで終了してください"
+taking_up = "以前のデプロイで記録された VPS {id} を引き継ぎます"
+
+[server]
+no_terminal = "erpc.toml に [env.{env}] がなく、ターミナルがないためサーバーを選べません"
+no_terminal_hint = "--vps <id>、--new-vps、--host <address> のいずれかを指定してください"
+new_vps = "新しい時間課金 VPS を起動する（{region} 付近の最安プラン。先に料金を表示）"
+which = "どのサーバーで実行しますか？"
+
+[failed]
+unhealthy = "正常な状態になりませんでした"
+previous = "前のリリース"
+back_healthy = "。サーバーは {to} に戻り、正常に動作しています"
+back_unhealthy = "。サーバーは {to} に戻りましたが、こちらも正常ではありません"
+no_earlier = "。戻れる以前のリリースがないため、停止しています"
+release = "リリース {release} が失敗しました：{why}{back}"
+logs = "原因は `erpc worker logs{scope}` で確認できます"
+
+[done]
+runs = "{name} のリリース {release} が {host} 上で {worker} として正常に動作しています。"
+ssh_only = "SSH は {from} からのみ許可されています。"
+rollback = "`erpc worker rollback{scope}` で {previous} に戻せます。"
+in_vault = "サーバーは 1Password の保管庫 {vault} に記録されています（{title}）。erpc.toml にはその保管庫を記載しています。"
+in_toml = "erpc.toml の [env.{env}] にサーバーを記載しました。"
+not_kept = "サーバーを記録できませんでした：{error}"
+line = "{endpoint} の {name} はこのサーバーからの接続を許可しています。"
+line_hourly = "{endpoint} の {name} はこのサーバーからの接続を許可しています。`erpc worker delete --release-server{scope}` で終了するまで時間単位で課金されます。"
+hourly_vps = "これは時間課金の VPS です。`erpc worker delete --release-server{scope}` で終了するまで課金されます。"

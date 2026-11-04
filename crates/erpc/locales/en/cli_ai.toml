@@ -1,0 +1,6 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+"ai" = "Talk to the ERPC assistant. Without -m, a conversation"
+"ai --message" = "Ask one question and print the answer"
+"ai --continue" = "Continue the most recent conversation: in the console, or with `-m` or a question piped in, which is then saved to it"

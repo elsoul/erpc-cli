@@ -1,0 +1,23 @@
+[Unit]
+Description=ERPC AvalancheGo ({{ avax_network }})
+After=network-online.target erpc-avax-firewall.service
+Wants=network-online.target
+[Service]
+User=avalanchego
+Group=avalanchego
+UMask=0077
+ExecStartPre=/usr/bin/python3 /usr/local/lib/erpc/avax-identity.py guard
+ExecStart=/opt/avalanchego/current/avalanchego --config-file=/etc/avalanchego/node.json
+ExecStartPost=/usr/bin/python3 /usr/local/lib/erpc/avax-identity.py seal
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=120
+TimeoutStopSec=180
+LimitNOFILE=65536
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/avalanchego
+[Install]
+WantedBy=multi-user.target

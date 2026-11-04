@@ -1,0 +1,140 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+#
+# arc RPC deployment runs only after a separate short firewall preparation
+# has been confirmed over fresh SSH. The first play checks that immutable receipt
+# before installation, snapshots, service changes or lengthy health waits.
+---
+- import_playbook: firewall-guard.yml
+
+- name: Deploy an Arc RPC node
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars_files:
+    - vars.yml
+  vars:
+    arc_config_only: "{{ arc_phase | default('deploy') == 'config' }}"
+  tasks:
+    - name: Stop unless init has prepared this host
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ arc_home }}"
+        - /etc/credstore.encrypted
+      register: arc_prepared
+      failed_when: not arc_prepared.stat.exists
+
+    # Destroy removes some of these, and a later deploy sets the node up
+    # again without another init.
+    - name: Make the directories deploy uses
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: "{{ item.owner }}"
+        group: "{{ item.owner }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - { path: "{{ arc_home }}/execution", owner: arc, mode: "0750" }
+        - { path: "{{ arc_home }}/consensus", owner: arc, mode: "0750" }
+        - { path: "{{ arc_opt }}", owner: root, mode: "0755" }
+        - { path: "{{ arc_fw_dir }}", owner: root, mode: "0700" }
+        - { path: "{{ arc_helpers }}", owner: root, mode: "0755" }
+      loop_control:
+        label: "{{ item.path }}"
+
+    - name: Stop unless the consensus key is in place
+      ansible.builtin.stat:
+        path: "{{ arc_credential }}"
+      register: arc_key_file
+      failed_when: not arc_key_file.stat.exists
+
+    - name: Keep the encrypted key readable by root only
+      ansible.builtin.file:
+        path: "{{ arc_credential }}"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Read which release is current
+      ansible.builtin.stat:
+        path: "{{ arc_opt }}/current"
+      register: arc_current
+
+    - name: Install the pinned release
+      ansible.builtin.include_tasks: tasks/install_release.yml
+      when: not arc_config_only
+
+    - name: Stop unless the pinned release is installed
+      ansible.builtin.stat:
+        path: "{{ arc_opt }}/{{ arc_version }}/arc-node-execution"
+      register: arc_installed
+      failed_when: not arc_installed.stat.exists
+
+    - name: Point current at the pinned release on a new node
+      ansible.builtin.file:
+        src: "{{ arc_opt }}/{{ arc_version }}"
+        dest: "{{ arc_opt }}/current"
+        state: link
+        force: true
+      when: not arc_current.stat.exists
+      register: arc_link
+
+    - name: Stop when the node runs another release
+      ansible.builtin.assert:
+        that:
+          - arc_current.stat.lnk_target | default(arc_opt ~ '/' ~ arc_version) == arc_opt ~ '/' ~ arc_version
+        fail_msg: >-
+          The node runs {{ arc_current.stat.lnk_target | default('') | basename }}, not the pinned
+          {{ arc_version }}. Use `erpc r --chain arc update` to move it. Nothing was changed.
+        quiet: true
+
+    - name: Write the units
+      ansible.builtin.template:
+        src: "{{ arc_jinja }}/{{ item }}.j2"
+        dest: /etc/systemd/system/{{ item }}
+        owner: root
+        group: root
+        mode: "0644"
+      loop:
+        - arc-execution.service
+        - arc-consensus.service
+        - arc-snapshots.service
+      register: arc_units
+
+    - name: Read whether the node has its snapshots
+      ansible.builtin.stat:
+        path: "{{ arc_snapshot_marker }}"
+      register: arc_snapshotted
+
+    # Init made the data directories empty, and only arc-snapshots writes to
+    # them before the marker exists: a run that stopped part way is picked up
+    # by arc-snapshots' own records of what it restored.
+    - name: Fetch the snapshots into the new node's data directories
+      when: not arc_snapshotted.stat.exists
+      block:
+        - name: Start fetching the snapshots
+          ansible.builtin.command: systemctl start --no-block arc-snapshots.service
+          changed_when: true
+
+        - name: Wait for the snapshots (tens of minutes; progress is in `erpc r --chain arc logs`)
+          ansible.builtin.command: systemctl is-active arc-snapshots.service
+          register: arc_snapshot_state
+          until: arc_snapshot_state.stdout not in ['activating', 'active']
+          retries: 1080
+          delay: 10
+          changed_when: false
+          failed_when: false
+
+        - name: Stop unless the snapshots finished
+          ansible.builtin.stat:
+            path: "{{ arc_snapshot_marker }}"
+          register: arc_snapshot_done
+          failed_when: not arc_snapshot_done.stat.exists
+
+
+    - name: Start the node, or restart it when its units or release changed
+      ansible.builtin.include_tasks: tasks/start.yml
+      vars:
+        arc_restart: "{{ (arc_units is changed) and arc_current.stat.exists }}"

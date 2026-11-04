@@ -1,0 +1,5 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+"resume" = "Продолжить сохранённый разговор. Без ID — выбрать из списка"
+"resume <id>" = "ID разговора, который выводится при закрытии консоли"

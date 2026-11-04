@@ -7,16 +7,21 @@ SPDX-License-Identifier: Apache-2.0
 
 > GitHub Releases, starting with `v0.1.0-rc.1`, are signed with the minisign
 > key in `crates/erpc-release/pubkey.txt`, key ID `A84D7BB71B974545`.
-> Version 0.0.1 exists only on crates.io, as a name reservation published
-> from a commit that still held a placeholder key; it has no GitHub Release,
-> no binary and no signature.
+> Version 0.0.1 exists only on crates.io, as a name reservation: for the
+> first fifteen crates, published from a commit that still held a
+> placeholder key; for a crate added since, an empty placeholder package
+> (`scripts/reserve-crates.sh`). It has no GitHub Release, no binary and no
+> signature.
 
 Two paths are offered.
 
 The convenience path (`curl | bash`) trusts DNS, TLS, the
 `install.erpc.global` worker and GitHub Releases. That worker serves the
 installer only from GitHub Releases, because it cannot verify a signature and
-the script it returns is executed. It verifies nothing itself, and neither
+the script it returns is executed. The one thing it adds is a fixed tail, kept
+in `installer/src/index.ts`, that runs the installed binary with
+`erpc skills install` to write the assistant's skills to `~/.erpc/skills`. It
+verifies nothing itself, and neither
 does the installer script it serves. A self-updating command that would check
 the signatures below does not exist yet, so nothing on this path is verified
 at any point.
@@ -74,7 +79,9 @@ anything today. Operators of mainnet validators should use it.
    gh attestation verify erpc-x86_64-unknown-linux-musl.tar.xz --repo elsoul/erpc-cli
    ```
 
-5. Extract and place the binary on your `PATH`.
+5. Extract and place the binary on your `PATH`, then run
+   `erpc skills install` to write the assistant's skills to `~/.erpc/skills`
+   (add `--agent claude` for Claude Code's skills directory too).
 
 ## What the signature covers
 
@@ -84,15 +91,32 @@ whole of it: there is no revocation list and no signed "latest version"
 document, because nothing would read them. A self-update command that needs
 either will add it then.
 
+Each erpc binary also carries the erpc worker agents (static musl, `x86_64`
+and `aarch64` Linux) that `erpc worker deploy` installs on a server, built by
+`scripts/build-worker-agents.sh` before the release build. They are part of the
+binary, so the archive's digest covers them. `erpc version` prints their
+SHA-256, and a deploy reports whether the server's agent changed.
+`ERPC_WORKER_AGENT` makes a deploy install another agent instead (a build
+of your own). When it differs from the embedded one, the deploy warns on
+standard error, `--json` or not; its report names the agent installed either
+way (`agent.sha256`,
+`agent.source`: `embedded`, `ERPC_WORKER_AGENT` or `beside erpc`, and
+`agent.changed`).
+
 ## Reproducible build check
 
 Each release rebuilds the two Linux musl targets on a second runner of the
 same image, with the same Rust toolchain and C compiler, and compares the
 hash of the `erpc` binary with the one in the first runner's archive before
-publishing. A match shows that the build is deterministic and that the
+publishing. The rebuild makes the embedded worker agents again first, in the
+same way (`scripts/build-worker-agents.sh`), so for those two builds the
+comparison covers the agents too. A match shows that the build is deterministic and that the
 `erpc` binary in that archive was not altered; it does not show that a
 different machine would produce the same binary, and it does not cover the
-other files in the archive. cargo-auditable is installed separately on each
+other files in the archive. The agents inside the macOS and Windows builds,
+where most operators run `erpc worker deploy`, are built the same way but are
+not compared: `erpc version` prints their SHA-256, to set beside a Linux
+build's. cargo-auditable is installed separately on each
 side, so a new cargo-auditable release between the two installs makes the
 hashes differ and stops the release. The macOS and Windows builds are
 **not** compared. Treat this page, not the release notes, as the statement

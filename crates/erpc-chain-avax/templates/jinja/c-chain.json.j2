@@ -1,0 +1,5 @@
+{
+  "pruning-enabled": {{ (avax_type != 'archive') | to_json }},
+  "state-sync-enabled": {{ (avax_type != 'archive') | to_json }},
+  "apis": {{ (['web3', 'net', 'price', 'chain', 'tx', 'subscription', 'avalanche'] + (['trace'] if avax_type == 'archive' else [])) | to_json }}
+}

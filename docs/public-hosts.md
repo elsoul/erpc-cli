@@ -138,8 +138,9 @@ code as authoritative if the two ever disagree.
     complement of the closed set rather than as a list of open shapes,
     because a list was written once and the next review found members of
     the class that were on neither side of it. Precisely:
-    - a quote ending a host, followed by any character not listed as closed
-      above. That includes `.`, which is a method call in Rust, TypeScript
+    - a quote ending a host, or a host, with or without a numeric port, and
+      the `,` `;` or `)` that ends it, followed by any character not listed
+      as closed above. That includes `.`, which is a method call in Rust, TypeScript
       and Python (`"https://erpc.global".to_string()`), and a letter, which
       includes a quote *inside* the host as the URL Standard permits —
       `https://api.github.com'evil.example.net/x` resolves to that host,
@@ -236,11 +237,17 @@ scheme and shape only.
 | `erpc.global` | project home page, linked from package metadata | none |
 | `solana-snapshot-*.erpc.global` | snapshot mirrors | none |
 | `install.erpc.global` | installer script | none |
-| `github.com`, `api.github.com` | releases, attestations | none |
+| `github.com`, `api.github.com` | releases, attestations, the pinned restic `erpc backup` installs | none |
 | `objects.githubusercontent.com`, `release-assets.githubusercontent.com` | release artifact downloads | none |
+| `bitcoincore.org` | Bitcoin Core signed checksum manifests and official release archives | none |
+| `chain.base.org` | Base public snapshot discovery and protocol documentation | none |
+| `datadirs.optimism.io` | OP Mainnet storage-v2 snapshot catalog, checksums and archives | none |
+| `mainnet-v2-snapshots.base.org`, `sepolia-v2-snapshots.base.org` | Base network-specific public manifests and snapshot components | none |
 | `crates.io`, `index.crates.io`, `static.crates.io` | dependencies (cargo, build time) | none |
 | `registry.npmjs.org` | installer worker dependencies (npm, build time) | none |
 | `sh.rustup.rs` | toolchain installation in CI | none |
+| `api.testnet.solana.com` | Solana testnet's public RPC, which the Solana CLI erpc runs on the operator's machine reads and sends transactions to | none |
+| `docs.jito.wtf` | Jito's region table, read by the scheduled job that checks erpc's copy of it | none |
 | `127.0.0.1`, `localhost`, `[::1]` | planned OAuth redirect listener and local MCP server; plaintext `http`/`ws` allowed here only | session token for the local MCP server |
 
 This version of `erpc` contacts `auth-api.erpc.global` and
@@ -248,6 +255,60 @@ This version of `erpc` contacts `auth-api.erpc.global` and
 `auth-api.erpc.global` in a browser during `erpc login`. The other rows are
 contacted by a later version, by the release pipeline, or at build time, as
 their purpose says.
+
+The restic that `erpc backup` runs sends one more credential to
+`user-api.erpc.global`: a storage access key, as Basic authentication, to
+`/v3/storage/restic` only. It is not a session token, and erpc itself never
+sends it.
+
+## Address echo services
+
+`ADDRESS_ECHO_HOSTS` lists services that answer a request with the address it
+came from, and nothing else. `erpc ai` may run `curl` on one of them on the
+operator's computer without asking first, to learn the operator's public
+address; only the bare host is allowed, with no path or query. `erpc` itself
+never contacts them, and nothing is sent but the request.
+
+| Host | Purpose | Credentials that may be sent |
+|---|---|---|
+| `api.ipify.org`, `api64.ipify.org`, `checkip.amazonaws.com`, `icanhazip.com`, `ifconfig.co`, `ifconfig.me` | the operator's public address, as plain text | none |
+
+## Hosts a node contacts
+
+`NODE_HOSTS` lists hosts named in the playbooks and templates erpc carries for
+a node (`crates/erpc-chain-solana/templates/`, `crates/erpc-chain-arc/templates/`,
+`crates/erpc-chain-eth/templates/`, `crates/erpc-chain-sui/templates/`,
+`crates/erpc-chain-tron/templates/`, `crates/erpc-chain-op/templates/`,
+`crates/erpc-chain-nitro/templates/`), in the Jito region table (`crates/erpc-chain-solana/regions/`) and in the Arc
+network tables (`crates/erpc-chain-arc/networks/`, `crates/erpc-chain-nitro/networks/`). The node reaches them once it runs the
+scripts those templates write; `erpc` itself never contacts them, and the gate
+accepts them in those trees and nowhere else. A plaintext URL is
+accepted there when the node's client uses plaintext for that service.
+
+| Host | Why the node reaches it |
+|---|---|
+| `raw.githubusercontent.com`, `cdn.robinhood.com` | Nitro's exact source-pinned Arbitrum chain information and official Robinhood chain/genesis metadata; byte digests are checked |
+| `snapshot.arbitrum.foundation` | Nitro's official checksummed snapshot catalog and bootstrap archives |
+| `docker.io`, `registry-1.docker.io`, `auth.docker.io` | Official Nitro container content, pulled by reviewed manifest digest; Docker registry authorization only, never ERPC or L1 provider credentials |
+| `feed.mainnet.chain.robinhood.com`, `feed.testnet.chain.robinhood.com`, `delayed-feed.mainnet.chain.robinhood.com` | Official Robinhood sequencer feeds for their respective networks |
+| `sequencer.mainnet.chain.robinhood.com`, `sequencer.testnet.chain.robinhood.com` | Official Robinhood transaction forwarding endpoints; no signing key or provider credential is sent |
+| `metrics.solana.com` | the cluster's public metrics, which the validator service reports to |
+| `ny.testnet.block-engine.jito.wtf` | the testnet startup script's Jito block engine when no region is set |
+| `ny.testnet.bam.jito.wtf` | the testnet Jito startup script's BAM endpoint when none is set |
+| `frankfurt.mainnet.block-engine.jito.wtf` | the mainnet startup script's Jito block engine when no region is set |
+| `mainnet.block-engine.jito.wtf`, `testnet.block-engine.jito.wtf` | the region table's network-wide block engines |
+| `amsterdam.mainnet.block-engine.jito.wtf`, `dublin.mainnet.block-engine.jito.wtf`, `london.mainnet.block-engine.jito.wtf`, `ny.mainnet.block-engine.jito.wtf`, `slc.mainnet.block-engine.jito.wtf`, `singapore.mainnet.block-engine.jito.wtf`, `tokyo.mainnet.block-engine.jito.wtf` | the region table's mainnet block engines; the host's nearest is written into its startup script |
+| `dallas.testnet.block-engine.jito.wtf` | the region table's other testnet block engine |
+| `dallas.testnet.relayer.jito.wtf`, `ny.testnet.relayer.jito.wtf` | the testnet relayers, one per region |
+| `dallas.testnet.bam.jito.wtf` | the other testnet BAM endpoint |
+| `files.old-faithful.net` | the Old Faithful archive a Solana Index RPC node's `faithful-cli` reads epoch indexes and blocks from |
+| `api.mainnet-beta.solana.com` | Solana mainnet's public RPC: Old Faithful asks it for the current epoch and proxies to it what its archive cannot answer |
+| `snapshots.reth.rs`, `snapshots-r2.reth.rs` | where an Ethereum RPC node's `reth download` lists Reth's official snapshot and fetches its archives |
+| `hoodi.checkpoint.sigp.io` | Sigma Prime's Hoodi checkpoint server for a dedicated validator beacon node |
+| `mainnet.checkpoint.sigp.io` | Sigma Prime's checkpoint server, which an Ethereum RPC node's Lighthouse starts from |
+| `snapshots.avorio.network` | a public Solana snapshot mirror on Cloudflare R2, run by Avorio Network; a Solana RPC node may fetch its first snapshot from it when it is fresher or faster than the ERPC mirrors |
+| `rpc.testnet.arc.io`, `rpc.mainnet.arc.io` | Arc's own relays: the consensus layer follows them, and the execution layer forwards transactions it is sent to them |
+| `rpc.drpc.testnet.arc.io`, `rpc.blockdaemon.testnet.arc.io`, `rpc.drpc.mainnet.arc.io`, `rpc.blockdaemon.mainnet.arc.io`, `rpc.quicknode.mainnet.arc.io` | the other relays the Arc consensus layer follows, for redundancy |
 
 ## Documentation links
 
@@ -263,6 +324,37 @@ an instruction a reader will run.
 | `keepachangelog.com` | `CHANGELOG.md` |
 | `semver.org` | `CHANGELOG.md` |
 | `elsoul.nl` | `NOTICE` |
+| `docs.arc.io` | the Arc RPC skill (`crates/erpc-skills/skills/arc-rpc`) |
+| `docs.anza.xyz` | the Solana skills: Agave's operator guide |
+| `docs.firedancer.io` | the Solana validator skills: Firedancer's guide |
+| `reth.rs` | the Ethereum skill: Reth's documentation |
+| `lighthouse-book.sigmaprime.io` | the Ethereum skill: Lighthouse's book |
+| `build.avax.network` | the Avalanche skill |
+| `docs.sui.io` | the Sui skill |
+| `solana.com` | Solana network, RPC and staking references in `docs/chains/solana.md` |
+| `ethereum.org` | Ethereum networks, clients and validator rules in `docs/chains/ethereum.md` |
+| `blog.ethereum.org` | Ethereum Foundation protocol upgrade announcements in `docs/chains/ethereum.md` |
+| `docs.arbitrum.io` | Nitro node and validator documentation in `docs/chains/` |
+| `docs.base.org` | Base node documentation in `docs/chains/` |
+| `docs.optimism.io` | OP Mainnet and OP Stack node documentation in `docs/chains/` |
+| `docs.robinhood.com` | Robinhood Chain node documentation in `docs/chains/` |
+| `docs.soneium.org` | Soneium network documentation in `docs/chains/` |
+| `snapshot-explorer.arbitrum.io` | Official Arbitrum and Robinhood snapshot catalog in `docs/chains/` |
+| `docs.bnbchain.org` | BNB Smart Chain node and validator documentation in `docs/chains/` |
+| `docs.kaia.io` | Kaia node documentation in `docs/chains/` |
+| `docs.monad.xyz` | Monad node and validator documentation in `docs/chains/` |
+| `docs.polygon.technology` | Polygon PoS node documentation in `docs/chains/` |
+| `forum.polygon.technology` | Polygon official upgrade announcements in `docs/chains/` |
+| `hyperliquid.gitbook.io` | Hyperliquid node and staking documentation in `docs/chains/` |
+| `pkg.category.xyz` | Category Labs Monad package-signing public key in `docs/chains/` |
+| `bitcoin.org` | Bitcoin full-node operator guide in `docs/chains/` |
+| `developer.bitcoin.org` | Bitcoin Core RPC reference in `docs/chains/` |
+| `developers.tron.network` | TRON node and Super Representative documentation in `docs/chains/` |
+| `docs.near.org` | NEAR node and validator documentation in `docs/chains/` |
+| `downloads.avax.network` | Avalanche release-signing public key in `docs/chains/` |
+| `near.org` | NEAR validator requirements in `docs/chains/` |
+| `snapshots.node.kaia.io` | Official Kaia snapshot manifests in `docs/chains/` |
+| `tronprotocol.github.io` | Official TRON deployment reference in `docs/chains/` |
 
 Each row names a file that links the host today. Four hosts were removed from
 this list, for two different reasons, neither of them "we might need it".
@@ -275,3 +367,59 @@ This is a standing grant: once a host is here, a later change can turn a prose
 link into an install command without the gate objecting. Keep the list short,
 and treat an addition as a review question rather than a formality. The same
 unit test that checks the table above also checks this one.
+
+## Sui node bootstrap and peering
+
+The Sui node templates use these public network destinations. The CLI does not
+send credentials to them. Snapshot verification checks the genesis network and
+committee commitments; release archives use pinned GitHub SHA-256 metadata.
+
+| Host | Purpose |
+|---|---|
+| `fullnode.mainnet.sui.io` | Read-only Mainnet validator membership observations |
+| `fullnode.testnet.sui.io` | Read-only Testnet validator membership observations |
+| `formal-snapshot.mainnet.sui.io` | Mainnet formal snapshots |
+| `formal-snapshot.testnet.sui.io` | Testnet formal snapshots |
+| `checkpoints.mainnet.sui.io` | Mainnet snapshot epoch/checkpoint metadata |
+| `checkpoints.testnet.sui.io` | Testnet snapshot epoch/checkpoint metadata |
+| `mel-00.mainnet.sui.io` | Mainnet state-sync peer |
+| `ewr-00.mainnet.sui.io` | Mainnet state-sync peer |
+| `yto-tnt-ssfn-01.testnet.sui.io` | Testnet state-sync peer |
+| `yto-tnt-ssfn-00.testnet.sui.io` | Testnet state-sync peer |
+
+## TRON node observations and documentation
+
+- `api.trongrid.io` and `nile.trongrid.io`: fixed official Mainnet and Nile
+  read-only HTTP APIs used on the managed node to verify genesis, advancing
+  heads, SR membership, current chain parameters and dedicated Witness-only
+  permissions. These destinations are allowed only in node templates. Neither
+  ERPC credentials nor witness keys/passwords are sent to them; no transaction
+  construction, signing or broadcast endpoint is called.
+- `nileex.io`: official Nile release/signing-key documentation, linked only.
+- `www.freedesktop.org`: official systemd encrypted-credential semantics, linked only.
+- `packages.ubuntu.com`: Ubuntu package documentation for the selected
+  architecture-specific OpenJDK packages, linked only.
+
+TRON Java release JARs, detached signatures and immutable network configuration
+are fetched from the already declared GitHub distribution host. Bundled public
+signing certificates and pinned SHA-256 digests authenticate the release.
+
+## OP-family follower nodes
+
+The carried follower templates select these node destinations. The controller
+never sends ERPC account credentials to them. OP images are selected by immutable
+platform digest; Base native archives require the pinned public signer and digest.
+
+| Host | Purpose |
+|---|---|
+| `us-docker.pkg.dev` | Official OP Labs op-node/op-reth image distribution |
+| `mainnet-sequencer.optimism.io`, `sepolia-sequencer.optimism.io` | OP transaction forwarding |
+| `mainnet-sequencer.base.org`, `sepolia-sequencer.base.org` | Base transaction forwarding |
+| `rpc.soneium.org`, `rpc.minato.soneium.org` | Sequencer endpoints selected by Soneium's pinned registry configurations |
+
+Operator-selected Ethereum execution and beacon upstreams are a separate node
+input. Their URLs and authentication headers live in a concealed 1Password field
+and an encrypted systemd credential, not the public node record or Ansible bundle.
+The shared loopback transport checks DNS/IP destinations, TLS, redirects and L1
+identity, and excludes ERPC service hosts. This does not replace the fixed ERPC
+account/payment endpoint lists. See the [transport contract](../crates/erpc-chain-rollup/README.md).

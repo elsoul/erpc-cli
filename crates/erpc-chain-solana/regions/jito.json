@@ -1,0 +1,23 @@
+{
+  "source": "https://docs.jito.wtf/lowlatencytxnsend/",
+  "read": "2026-10-23",
+  "note": "block_engine_url, shred_receiver_address and ntp_server are the docs' table. The docs do not list relayers or BAM, so relayer_url and bam_url follow SLV's table, for testnet only until erpc deploys mainnet.",
+  "networks": {
+    "mainnet": [
+      { "key": "global", "name": "Global", "block_engine_url": "https://mainnet.block-engine.jito.wtf" },
+      { "key": "amsterdam", "name": "Amsterdam", "block_engine_url": "https://amsterdam.mainnet.block-engine.jito.wtf", "shred_receiver_address": "74.118.140.240:1002", "ntp_server": "ntp.amsterdam.jito.wtf" },
+      { "key": "dublin", "name": "Dublin", "block_engine_url": "https://dublin.mainnet.block-engine.jito.wtf", "shred_receiver_address": "64.130.61.8:1002", "ntp_server": "ntp.dublin.jito.wtf" },
+      { "key": "frankfurt", "name": "Frankfurt", "block_engine_url": "https://frankfurt.mainnet.block-engine.jito.wtf", "shred_receiver_address": "64.130.50.14:1002", "ntp_server": "ntp.frankfurt.jito.wtf" },
+      { "key": "london", "name": "London", "block_engine_url": "https://london.mainnet.block-engine.jito.wtf", "shred_receiver_address": "64.130.46.153:1002", "ntp_server": "ntp.london.jito.wtf" },
+      { "key": "ny", "name": "New York", "block_engine_url": "https://ny.mainnet.block-engine.jito.wtf", "shred_receiver_address": "141.98.216.96:1002", "ntp_server": "ntp.dallas.jito.wtf" },
+      { "key": "slc", "name": "Salt Lake City", "block_engine_url": "https://slc.mainnet.block-engine.jito.wtf", "shred_receiver_address": "64.130.53.8:1002", "ntp_server": "ntp.slc.jito.wtf" },
+      { "key": "singapore", "name": "Singapore", "block_engine_url": "https://singapore.mainnet.block-engine.jito.wtf", "shred_receiver_address": "202.8.11.224:1002", "ntp_server": "ntp.singapore.jito.wtf" },
+      { "key": "tokyo", "name": "Tokyo", "block_engine_url": "https://tokyo.mainnet.block-engine.jito.wtf", "shred_receiver_address": "202.8.9.160:1002", "ntp_server": "ntp.tokyo.jito.wtf" }
+    ],
+    "testnet": [
+      { "key": "global", "name": "Global", "block_engine_url": "https://testnet.block-engine.jito.wtf" },
+      { "key": "dallas", "name": "Dallas", "block_engine_url": "https://dallas.testnet.block-engine.jito.wtf", "shred_receiver_address": "141.98.218.12:1002", "ntp_server": "ntp.dallas.jito.wtf", "relayer_url": "http://dallas.testnet.relayer.jito.wtf:8100", "bam_url": "http://dallas.testnet.bam.jito.wtf" },
+      { "key": "ny", "name": "New York", "block_engine_url": "https://ny.testnet.block-engine.jito.wtf", "shred_receiver_address": "64.130.35.224:1002", "ntp_server": "ntp.dallas.jito.wtf", "relayer_url": "http://ny.testnet.relayer.jito.wtf:8100", "bam_url": "http://ny.testnet.bam.jito.wtf" }
+    ]
+  }
+}

@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Where things live on an Arc RPC node, for every play. What differs per
+# node comes from the inventory erpc writes for the run.
+---
+arc_home: /var/lib/arc
+arc_opt: /opt/arc
+arc_jinja: "{{ playbook_dir }}/../../jinja"
+arc_credential: /etc/credstore.encrypted/arc-consensus-key
+arc_snapshot_marker: "{{ arc_home }}/.erpc-snapshot-done"
+arc_fw_dir: /etc/erpc/arc
+arc_fw_file: "{{ arc_fw_dir }}/firewall.nft"
+arc_fw_marker: /run/erpc-arc-firewall.armed
+arc_fw_rollback_seconds: 120
+arc_helpers: /usr/local/lib/erpc
+# Namespaces the node serves; --public-api warns past the first four, and
+# debug and trace only come with --debug-api (never on a provider node).
+arc_rpc_api: "eth,net,web3,rpc{{ ',debug,trace' if (arc_debug_api | default(false) | bool) else '' }}"
+# full and provider prune to the --full preset; archive keeps everything.
+arc_pruned: "{{ arc_rpc_type | default('full') != 'archive' }}"
+arc_provider: "{{ arc_rpc_type | default('full') == 'provider' }}"
+arc_backpressure_threshold: 16
+# Bind RPC and metrics to the node's interfaces only when someone is allowed
+# to reach them; the firewall decides who.
+arc_rpc_bind: "{{ '0.0.0.0' if (arc_rpc_allow | default([]) | length > 0) else '127.0.0.1' }}"
+arc_metrics_bind: "{{ '0.0.0.0' if (arc_monitoring_allow | default([]) | length > 0) else '127.0.0.1' }}"

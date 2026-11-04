@@ -1,0 +1,85 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Applies the node's firewall table under a rollback timer. Runs last in a
+# play: erpc then connects again over a fresh SSH connection and runs the
+# confirm helper; if it cannot get in, the timer puts the previous table
+# back. Every run records its own intent, including when the rules are unchanged.
+---
+- name: Load the firewall at boot
+  ansible.builtin.template:
+    src: "{{ sui_jinja }}/erpc-sui-firewall.service.j2"
+    dest: /etc/systemd/system/erpc-sui-firewall.service
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Reload installed service definitions before arming rollback
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+- name: Write the table this run wants
+  ansible.builtin.template:
+    src: "{{ sui_jinja }}/erpc-sui.nft.j2"
+    dest: "{{ sui_fw_dir }}/candidate.nft"
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Check the table parses
+  ansible.builtin.command: nft -c -f {{ sui_fw_dir }}/candidate.nft
+  changed_when: false
+
+- name: Apply the table under a rollback timer
+  block:
+    - name: Keep the live table to roll back to
+      ansible.builtin.shell:
+        cmd: |
+          set -euo pipefail
+          umask 077
+          previous={{ sui_fw_dir }}/previous.nft
+          if [ -e {{ sui_fw_marker }} ]; then
+            # The live table is an earlier run's, never confirmed: roll back
+            # to the confirmed one, or to none.
+            if [ -f {{ sui_fw_file }} ]; then cp {{ sui_fw_file }} "$previous"; else : > "$previous"; fi
+          elif nft list table inet erpc_sui > "$previous.live" 2>/dev/null; then
+            # A listing only adds to a table; load it over a deleted one.
+            { echo 'table inet erpc_sui'; echo 'delete table inet erpc_sui'; cat "$previous.live"; } > "$previous"
+          else
+            : > "$previous"
+          fi
+          rm -f "$previous.live"
+          chmod 0600 "$previous"
+        executable: /bin/bash
+      changed_when: true
+
+    - name: Prepare this operation's pending table
+      ansible.builtin.copy:
+        src: "{{ sui_fw_dir }}/candidate.nft"
+        dest: "{{ sui_fw_dir }}/pending.nft"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Arm a callback bound to this immutable deployment intent
+      ansible.builtin.command: >-
+        /usr/local/lib/erpc/erpc-sui-control.py arm
+        {{ sui_network }} {{ sui_role }} {{ sui_genesis_sha256 }} {{ sui_confirmation_id }}
+      changed_when: true
+
+    - name: Apply the new table
+      ansible.builtin.command: nft -f {{ sui_fw_dir }}/pending.nft
+      changed_when: true
+
+    - name: Capture the applied candidate while this play still holds the run lock
+      ansible.builtin.command: >-
+        /usr/local/lib/erpc/erpc-sui-control.py capture
+        {{ sui_network }} {{ sui_role }} {{ sui_genesis_sha256 }} {{ sui_confirmation_id }}
+      changed_when: true
+
+    - name: Say what erpc does next
+      ansible.builtin.debug:
+        msg: >-
+          The firewall table is applied and rolls back in {{ sui_fw_rollback_seconds }} s
+          unless erpc confirms it over a fresh SSH connection.

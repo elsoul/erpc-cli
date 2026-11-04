@@ -1,0 +1,94 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+missing = "{name} cannot start without {settings}"
+missing_hint = "`erpc worker secret put {first}{dir_scope}`, or set it in [vars]"
+plan = "Deploy {name} release {release} to {to} as {worker}"
+nothing_deployed = "nothing was deployed"
+services = "making sure {names} run on the server (installed from Ubuntu's packages the first time)"
+target = "Deploy {name} to {to} as {worker}"
+build_stopped = "the build stopped: {error}"
+could_not_read = "could not read {path}: {error}"
+installed = "release {release} installed"
+starting = "starting it and waiting for it to be healthy"
+and = " and "
+and_then = "{hint}; {next}"
+
+[still_charged]
+one = "{names} is charged by the hour and on record: `erpc worker deploy{scope}` again carries on with it, `erpc worker delete --release-server{scope}` ends it"
+other = "{names} are charged by the hour and on record: `erpc worker deploy{scope}` again carries on with them, `erpc worker delete --release-server{scope}` ends them"
+
+[agent]
+named = "installing the agent ERPC_WORKER_AGENT names (sha256 {sha256}), not the one this erpc carries"
+no_exe = "could not tell where this erpc is"
+none = "this erpc carries no worker agent for {machine} Linux, and none is at {path} ({error})"
+none_hint = "a release of erpc carries them; for a build of your own, run scripts/build-worker-agents.sh and build erpc with ERPC_WORKER_AGENTS_DIR set to the directory it prints"
+not_installed = "could not install the agent: {error}"
+installed = "agent installed"
+unchanged = "agent unchanged"
+
+[upload]
+failed = "could not upload {path}: {error}"
+not_checked = "could not check {path}: {error}"
+not_whole = "{path} did not arrive whole; nothing was installed"
+
+[line]
+name = "{kind} line {id}"
+not_ipv4 = "a data line lets in one IPv4 address, and the server is at {host}"
+not_ipv4_hint = "deploy to the server by its IPv4 address"
+taking_up = "taking up line {id} again"
+wait = "{name} on record cannot be taken up yet: {why}; nothing was bought"
+wait_hint = "deploy again in a minute to take it up. If it was ended (in the dashboard, say), `--forget-line {id}` on deploy or delete takes it off the record"
+wait_hint_unbilled = "deploy again in a minute to take it up. If it was ended (in the dashboard, say), `--forget-line {id}` on deploy or delete takes it off the record; erpc does not end a line that is not billed by the hour"
+waiting = "waiting for line {id} to be active"
+unlimited_slow = "an Unlimited RPC gets a server of its own: this can take up to 45 minutes"
+active = "line {id} is active at {endpoint}"
+charged = "{message}; it is charged by the hour"
+ended = "line {id} is ended; nothing is charged for it now"
+not_ended = "line {id} was not ended, and erpc.toml keeps it: deploy again to wait for it, or `erpc worker delete --release-server{scope}` to end it"
+still_waiting = "line {id} is in erpc.toml and charged by the hour: `erpc worker deploy{scope}` with the same flags waits for it again, and `erpc worker delete --release-server{scope}` ends it once it is active"
+not_on_record = "there is no line {id} on record to forget"
+gone = "{name} is not on the account any more (nothing is charged for it); it leaves the record"
+not_kept = "line {id} could not be put on record: {error}"
+not_kept_hint = "it is charged by the hour; end it in the dashboard if it is not wanted"
+
+[line.forgotten]
+one = "{names} leaves the record, as asked; one that still runs is charged until it is ended in the dashboard"
+other = "{names} leave the record, as asked; one that still runs is charged until it is ended in the dashboard"
+
+[wait]
+setting_up = "it is charged, and user-api does not list it yet (being set up)"
+not_yet_charged = "user-api lists it, and the account's charges do not show it yet"
+unbilled = "it is not billed by the hour, and user-api does not list it"
+not_seen_yet = "it was started, and neither user-api's list nor the account's charges show it yet"
+
+[vps]
+not_kept = "VPS {id} was started and could not be put on record: {error}"
+not_kept_hint = "it is charged by the hour: `erpc worker deploy --vps {id}{scope}` takes it up, or end it in the dashboard"
+taking_up = "taking up VPS {id}, on record from an earlier deploy"
+
+[server]
+no_terminal = "erpc.toml has no [env.{env}], and no one is at a terminal to choose a server"
+no_terminal_hint = "pass --vps <id>, --new-vps, or --host <address>"
+new_vps = "Start a new hourly VPS (the cheapest plan, near {region}), with its price shown first"
+which = "Which server should it run on?"
+
+[failed]
+unhealthy = "it did not become healthy"
+previous = "the previous release"
+back_healthy = "; the server went back to {to}, which is healthy"
+back_unhealthy = "; the server went back to {to}, which is not healthy either"
+no_earlier = "; there was no earlier release to go back to, so it is stopped"
+release = "release {release} failed: {why}{back}"
+logs = "`erpc worker logs{scope}` shows why"
+
+[done]
+runs = "{name} release {release} runs on {host} as {worker}, healthy."
+ssh_only = "SSH is allowed only from {from}."
+rollback = "`erpc worker rollback{scope}` goes back to {previous}."
+in_vault = "The server is on record in 1Password vault {vault} ({title}); erpc.toml names the vault."
+in_toml = "[env.{env}] in erpc.toml names the server now."
+not_kept = "the server was not put on record: {error}"
+line = "{name} at {endpoint} lets in this server."
+line_hourly = "{name} at {endpoint} lets in this server; it is charged by the hour until `erpc worker delete --release-server{scope}` ends it."
+hourly_vps = "It is an hourly VPS: it is charged until `erpc worker delete --release-server{scope}` ends it."

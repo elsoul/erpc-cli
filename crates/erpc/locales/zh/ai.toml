@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+# `erpc ai` 在控制台画面之外说的话：终端中的 `-m`、启动画面、套餐信息和错误。
+
+question_unreadable = "无法读取问题：{error}"
+pick_needs_console = "选择对话需要控制台；请直接指定 ID：erpc resume <id>"
+conversation_broken = "对话 {id}：{error}"
+json_needs_question = "--json 需要一个问题：用 -m 传入，或通过管道输入"
+needs_terminal = "控制台需要终端；请用 -m 提问，或通过管道输入问题"
+go_ahead = "是否继续？[y/N]"
+draw_failed = "无法在终端中绘制界面：{error}"
+to_continue = "继续此对话：erpc resume {id}"
+console_stopped = "控制台已停止：{error}"
+sign_in_hint = "请运行 `erpc login` 登录，或运行 `erpc signup` 创建账户。"
+empty_question = "问题为空"
+open_dashboard = "在 ERPC 仪表板购买月付或年付套餐：{url}"
+declined_because = "模型拒绝回答：{why}"
+declined = "模型拒绝回答（未说明原因）"
+stopped = "已中断"
+
+[choose]
+one = "输入编号，或你自己的回答："
+several = "输入编号（多个用逗号分隔），或你自己的回答："
+again = "请输入编号或你的回答："
+
+[splash]
+tagline = "为智能体时代构建金融互联网。"
+connecting = "正在连接"
+signed_in = "已登录："
+
+[store]
+service_account = "1Password（服务账户）"
+file = "文件（~/.erpc）"
+
+[plan]
+hourly = "{name}（按小时计费）"
+left = "剩余 {left} Token"
+suspended = "已暂停"

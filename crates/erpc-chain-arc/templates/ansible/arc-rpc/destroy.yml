@@ -1,0 +1,99 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+#
+# erpc's Arc RPC node destroy: stops both layers and removes what deploy put
+# on the host: units, releases, the firewall table and its helpers, and the
+# encrypted consensus key (1Password keeps it). The chain data stays unless
+# `arc_purge_data`. The arc user, the data disk's mount and the kernel and
+# journal settings stay; init's other changes are harmless to keep.
+---
+- name: Destroy an Arc RPC node
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars_files:
+    - vars.yml
+  tasks:
+    - name: Require legacy firewall operations to settle before teardown
+      ansible.builtin.stat:
+        path: /run/erpc-arc-firewall.armed
+      register: legacy_firewall
+    - name: Refuse an unsettled legacy rollback
+      ansible.builtin.assert:
+        that: not legacy_firewall.stat.exists
+        fail_msg: Wait for the previous legacy firewall operation to settle before retrying destroy.
+    - name: Create guarded teardown directories
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "{{ item.mode }}"
+      loop:
+        - {path: /usr/local/lib/erpc, mode: '0755'}
+        - {path: /etc/erpc/arc, mode: '0700'}
+    - name: Install the carried teardown controller
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../rpc-firewall.py"
+        dest: /usr/local/lib/erpc/rpc-firewall.py
+        owner: root
+        group: root
+        mode: '0700'
+    - name: Fence and stop listeners before removing filtering
+      ansible.builtin.command: python3 /usr/local/lib/erpc/rpc-firewall.py arc teardown
+      changed_when: true
+
+    - name: Stop and disable the services
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        state: stopped
+        enabled: false
+      loop:
+        - arc-consensus
+        - arc-execution
+        - arc-snapshots
+        - erpc-arc-firewall
+      failed_when: false
+
+    - name: Stop a firewall rollback still armed
+      ansible.builtin.command: systemctl stop erpc-arc-firewall-rollback.timer
+      changed_when: false
+      failed_when: false
+
+    - name: Remove the firewall table
+      ansible.builtin.command: nft delete table inet erpc_arc
+      register: arc_fw_delete
+      changed_when: arc_fw_delete.rc == 0
+      failed_when: false
+
+    - name: Remove what deploy put in place
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/systemd/system/arc-execution.service
+        - /etc/systemd/system/arc-consensus.service
+        - /etc/systemd/system/arc-snapshots.service
+        - /etc/systemd/system/erpc-arc-firewall.service
+        - "{{ arc_fw_dir }}"
+        - "{{ arc_fw_marker }}"
+        - "{{ arc_helpers }}/erpc-arc-firewall-rollback.sh"
+        - "{{ arc_helpers }}/erpc-arc-firewall-confirm.sh"
+        - "{{ arc_credential }}"
+        - "{{ arc_opt }}"
+
+    - name: Forget the removed units
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+
+    - name: Delete the chain data
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ arc_home }}/execution"
+        - "{{ arc_home }}/consensus"
+        - "{{ arc_snapshot_marker }}"
+        - "{{ arc_home }}/.cache"
+      when: arc_purge_data | default(false) | bool

@@ -1,0 +1,5 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+"resume" = "Continue a saved conversation. Without an id, pick one from a list"
+"resume <id>" = "The conversation's id, as printed when the console closes"

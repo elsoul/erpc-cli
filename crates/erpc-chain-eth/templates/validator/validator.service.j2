@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+[Unit]
+Description=ERPC Lighthouse validator signing client
+After=network-online.target erpc-eth-beacon.service
+Wants=network-online.target erpc-eth-beacon.service
+ConditionPathExists={{ ev_root }}/vc/validators/slashing_protection.sqlite
+
+[Service]
+Type=simple
+User=ev-validator
+# Root checks immutable custody, chain identity and sync before every boot/start.
+ExecStartPre=+/usr/local/lib/erpc/eth-validator-control guard
+ExecStart={{ eth_opt }}/current/lighthouse --network {{ ev_network }} --datadir {{ ev_root }}/vc --logfile-max-number 0 vc --beacon-nodes http://127.0.0.1:5052 --suggested-fee-recipient {{ ev_fee_recipient }} --enable-doppelganger-protection --metrics --metrics-address 127.0.0.1 --metrics-port 5064
+# Do not auto-restart after detecting another signer.
+Restart=no
+ReadWritePaths={{ ev_root }}/vc
+
+RestartSec=10
+KillSignal=SIGINT
+SuccessExitStatus=130 143 SIGINT SIGTERM
+TimeoutStartSec=660
+TimeoutStopSec=600
+LimitNOFILE=1048576
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target

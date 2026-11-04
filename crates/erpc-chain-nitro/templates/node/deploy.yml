@@ -1,0 +1,80 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Install a network-qualified Nitro follower behind confirmed ingress policy
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Require this caller's confirmed firewall receipt before deployment changes
+      ansible.builtin.command:
+        argv: [python3, /usr/local/lib/erpc/rpc-firewall.py, "{{ nitro_family }}", require-confirmed, "{{ erpc_fw_confirmed_run }}", "{{ erpc_fw_confirmed_bundle }}"]
+      changed_when: false
+
+    - name: Persist the installation fence and stop the owned services
+      ansible.builtin.command:
+        argv: [python3, /usr/local/lib/erpc/nitro-control, play]
+        stdin: "{{ nitro_request | combine({'action':'begin-install'}) | to_json }}"
+      changed_when: true
+
+    - name: Fetch exact official chain metadata over verified TLS
+      ansible.builtin.get_url:
+        url: "{{ nitro_info_url }}"
+        dest: /etc/erpc/nitro/chain-info.json
+        checksum: "sha256:{{ nitro_info_sha }}"
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Fetch Robinhood mainnet custom genesis only for that network
+      ansible.builtin.get_url:
+        url: "{{ nitro_genesis_url }}"
+        dest: /etc/erpc/nitro/genesis.json
+        checksum: "sha256:{{ nitro_genesis_sha }}"
+        owner: root
+        group: root
+        mode: '0644'
+      when: nitro_custom_genesis | bool
+
+    - name: Start the distribution-provided Docker service
+      ansible.builtin.systemd_service:
+        name: docker
+        enabled: true
+        state: started
+
+    - name: Pull the reviewed architecture-specific content digest
+      ansible.builtin.command:
+        argv: [python3, /usr/local/lib/erpc/nitro-control, play]
+        stdin: "{{ nitro_request | combine({'action':'pull-image'}) | to_json }}"
+      changed_when: true
+
+    - name: Resolve the dedicated service account identity
+      ansible.builtin.getent:
+        database: passwd
+        key: erpc-nitro
+
+    - name: Install network-scoped services
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/{{ item }}.service.j2"
+        dest: "/etc/systemd/system/erpc-{{ nitro_family }}-{{ item }}.service"
+        owner: root
+        group: root
+        mode: '0644'
+      loop: [nitro, upstreams]
+
+    - name: Finish only with matching artifacts, image, credentials and firewall receipt
+      ansible.builtin.command:
+        argv: [python3, /usr/local/lib/erpc/nitro-control, play]
+        stdin: "{{ nitro_request | combine({'action':'finish-install','service_uid':getent_passwd['erpc-nitro'][1] | int,'service_gid':getent_passwd['erpc-nitro'][2] | int,'firewall':{'run':erpc_fw_confirmed_run,'bundle':erpc_fw_confirmed_bundle}}) | to_json }}"
+      changed_when: true
+
+    - name: Reload services
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+
+    - name: Start through the owner and firewall guarded lifecycle
+      ansible.builtin.command:
+        argv: [python3, /usr/local/lib/erpc/nitro-control, play]
+        stdin: "{{ nitro_request | combine({'action':'start'}) | to_json }}"
+      changed_when: true

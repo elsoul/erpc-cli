@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+# `erpc ai` がコンソール画面の外で話す言葉：ターミナルでの `-m`、スプラッシュ、
+# プランの表示とエラー。
+
+question_unreadable = "質問を読み込めませんでした：{error}"
+pick_needs_console = "会話を選ぶにはコンソールが必要です。ID を指定してください：erpc resume <id>"
+conversation_broken = "会話 {id}：{error}"
+json_needs_question = "--json には質問が必要です。-m で渡すか、パイプで入力してください"
+needs_terminal = "コンソールにはターミナルが必要です。-m で質問するか、パイプで入力してください"
+go_ahead = "続けますか？ [y/N]"
+draw_failed = "ターミナルに描画できませんでした：{error}"
+to_continue = "続けるには：erpc resume {id}"
+console_stopped = "コンソールが停止しました：{error}"
+sign_in_hint = "`erpc login` でサインインするか、`erpc signup` でアカウントを作成してください。"
+empty_question = "質問が空です"
+open_dashboard = "月額・年額プランは ERPC ダッシュボードで購入できます：{url}"
+declined_because = "モデルが回答を断りました：{why}"
+declined = "モデルが回答を断りました（理由は示されていません）"
+stopped = "中断しました"
+
+[choose]
+one = "番号、または回答を入力："
+several = "番号（複数ならカンマ区切り）、または回答を入力："
+again = "番号か回答を入力してください："
+
+[splash]
+tagline = "AIエージェント時代の、金融インターネットをつくる。"
+connecting = "接続中"
+signed_in = "サインイン中"
+
+[store]
+service_account = "1Password（サービスアカウント）"
+file = "ファイル（~/.erpc）"
+
+[plan]
+hourly = "{name}（時間課金）"
+left = "残り {left} トークン"
+suspended = "利用停止中"

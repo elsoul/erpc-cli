@@ -1,0 +1,93 @@
+# SPDX-FileCopyrightText: 2021 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+#
+# erpc's Solana mainnet RPC node deploy: SLV's mainnet-rpc/init.yml at the
+# version in ../../PROVENANCE.md, with the imports rewritten for this
+# directory and these changes:
+# - the node makes its own identity (identity.yml) instead of copy_keys.yml
+#   copying one from the operator's machine;
+# - Firedancer is not carried: Frankendancer ends with Alpenglow, and the
+#   full Firedancer's RPC serves no transactions, history or plugins;
+# - the snapshot is fetched only into an empty ledger, so a re-run converges,
+#   and from the freshest and fastest of several sources (snapshot.yml)
+#   instead of cmn/wget_snapshot.yml's nearest ERPC mirror;
+# - richat is not offered (no release for agave 4.3 or later);
+# - cmn/update_ubuntu.yml is left out, as the validator's deploy leaves it:
+#   it rewrote the apt sources to a mirror chosen by region and ran a
+#   dist-upgrade with no reboot after;
+# - the CLI separately prepares and confirms filtering before this long-running play.
+# It sits two levels under the template root, like SLV's entry plays, because
+# the plays find the templates at {{ playbook_dir }}/../../jinja.
+---
+- import_playbook: firewall-guard.yml
+
+- name: Check what this node runs, before anything changes
+  hosts: all
+  gather_facts: no
+  any_errors_fatal: true
+  tasks:
+    - name: Fail unless the client and the RPC type are ones erpc deploys
+      ansible.builtin.assert:
+        that:
+          - validator_type | default('') in ['agave', 'jito']
+          - rpc_type | default('') in ['SendTx RPC', 'Index RPC', 'Geyser gRPC', 'Index RPC + gRPC']
+        fail_msg: "validator_type '{{ validator_type | default('') }}' with rpc_type '{{ rpc_type | default('') }}' is not one erpc deploys on {{ inventory_hostname }}. Nothing was changed."
+        quiet: true
+
+    - name: Read whether the ledger is empty
+      ansible.builtin.stat:
+        path: /mnt/ledger/rocksdb
+      register: erpc_ledger
+
+    - name: Remember whether a snapshot is needed
+      ansible.builtin.set_fact:
+        erpc_fresh_ledger: "{{ not erpc_ledger.stat.exists }}"
+
+- import_playbook: ../cmn/check_alpenglow_floor.yml
+  vars:
+    versions_section: mainnet_rpcs
+
+- import_playbook: ../cmn/fix_permissions.yml
+- import_playbook: ../cmn/copy_restart_sh.yml
+  vars:
+    restarter_snapshot_network: mainnet
+- import_playbook: ../mainnet-rpc/add_solv.yml
+- import_playbook: ../cmn/install_package.yml
+- import_playbook: ../cmn/setup_node_exporter.yml
+- import_playbook: ../cmn/disable_swap.yml
+- import_playbook: ../cmn/mount_disks.yml
+- import_playbook: ../cmn/optimize_system.yml
+- import_playbook: ../cmn/setup_norestart.yml
+- import_playbook: ../cmn/setup_logrotate.yml
+
+- import_playbook: ../cmn/build_solana.yml
+  vars:
+    versions_section: mainnet_rpcs
+
+- import_playbook: identity.yml
+
+- import_playbook: ../mainnet-rpc/setup-solv-service.yml
+
+- import_playbook: ../mainnet-rpc/create-start-validator-sh.yml
+
+- import_playbook: ../mainnet-rpc/geyser_build.yml
+  when: erpc_geyser | default(false) | bool
+
+- import_playbook: ../cmn/stop_richat.yml
+  when: erpc_geyser | default(false) | bool
+
+- import_playbook: snapshot.yml
+  when: erpc_fresh_ledger | bool
+
+- import_playbook: ../mainnet-rpc/start_solv.yml
+
+- import_playbook: ../mainnet-rpc/install_of1.yml
+  when: erpc_faithful | default(false) | bool
+
+- import_playbook: ../mainnet-rpc/install_of1_service.yml
+  when: erpc_faithful | default(false) | bool
+
+# Rolling cache: the last 30 epochs of Old Faithful's indexes kept on the
+# node, so getTransaction answers fast; the CAR files stay remote.
+- import_playbook: ../cmn/of1_index_cache_sync.yml
+  when: erpc_faithful | default(false) | bool

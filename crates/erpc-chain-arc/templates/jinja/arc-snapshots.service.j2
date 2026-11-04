@@ -1,0 +1,40 @@
+# Managed by erpc. Fetches the snapshots a new node starts from; the deploy
+# runs it once, into empty data directories, and waits for it.
+[Unit]
+Description=Arc snapshots for {{ arc_chain }}
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=!{{ arc_snapshot_marker }}
+
+[Service]
+Type=oneshot
+User=arc
+Group=arc
+WorkingDirectory={{ arc_home }}
+Environment=RUST_LOG=info
+# A manifest restore runs the execution binary, which is not on systemd's PATH.
+Environment=ARC_EXECUTION_BINARY={{ arc_opt }}/current/arc-node-execution
+ExecStart={{ arc_opt }}/current/arc-snapshots download \
+  --chain {{ arc_chain }} \
+  --el-profile {{ 'full' if (arc_pruned | bool) else 'archive' }} \
+  --execution-path {{ arc_home }}/execution \
+  --consensus-path {{ arc_home }}/consensus
+ExecStartPost=/usr/bin/touch {{ arc_snapshot_marker }}
+TimeoutStartSec=infinity
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=arc-snapshots
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths={{ arc_home }}
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=

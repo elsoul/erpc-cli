@@ -5,8 +5,10 @@
 //!
 //! Two modes share everything but how they authenticate:
 //!
-//! * [`Desktop`] talks to the 1Password application, which asks the
-//!   operator for biometrics. This is the default on a person's machine.
+//! * [`Desktop`] acts as the operator: through the 1Password application,
+//!   which asks for biometrics, or -- on a machine without the app, such as
+//!   a Linux server reached over SSH -- through a session the operator
+//!   opened with `op signin`, whose `OP_SESSION_*` variable is passed on.
 //! * [`ServiceAccount`] uses a token from the environment. This is how CI,
 //!   a headless server or a resident agent reaches a session.
 //!
@@ -56,6 +58,14 @@ const KNOWN_OP_PATHS: &[&str] = &[
     "/home/linuxbrew/.linuxbrew/bin/op",
     "C:\\Program Files\\1Password CLI\\op.exe",
 ];
+
+/// Whether `name` is a session `op signin` exports: `OP_SESSION_` and the
+/// account's id, letters and digits.
+#[must_use]
+pub fn is_signin_session(name: &str) -> bool {
+    name.strip_prefix("OP_SESSION_")
+        .is_some_and(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric()))
+}
 
 /// What `op` printed.
 ///
@@ -169,15 +179,40 @@ impl OpCli {
             kind: mode.kind(),
             reason: "the 1Password CLI (op) was not found at any known absolute path".to_owned(),
         })?;
+        let names = std::env::vars_os().filter_map(|(name, _)| name.into_string().ok());
+        Self::at(path, Self::mode_env(mode, var, names)?)
+    }
+
+    /// The environment `op` runs with in `mode`: the base variables, and
+    /// the mode's own. `names` are the variable names in this process's
+    /// environment, which is how a sign-in session is found: its name
+    /// carries the account's id.
+    fn mode_env(
+        mode: Mode,
+        var: impl Fn(&str) -> Option<OsString>,
+        names: impl Iterator<Item = String>,
+    ) -> Result<BTreeMap<String, OsString>, StoreError> {
         let mut env = Self::base_env(&var);
         match mode {
             Mode::Desktop => {
-                // Desktop integration is what makes the app prompt for
-                // biometrics instead of failing in the background.
-                env.insert(
-                    "OP_BIOMETRIC_UNLOCK_ENABLED".to_owned(),
-                    OsString::from("true"),
-                );
+                let sessions: Vec<(String, OsString)> = names
+                    .filter(|name| is_signin_session(name))
+                    .filter_map(|name| var(&name).filter(|v| !v.is_empty()).map(|v| (name, v)))
+                    .collect();
+                if sessions.is_empty() {
+                    // Desktop integration is what makes the app prompt for
+                    // biometrics instead of failing in the background.
+                    env.insert(
+                        "OP_BIOMETRIC_UNLOCK_ENABLED".to_owned(),
+                        OsString::from("true"),
+                    );
+                } else {
+                    // A session from `op signin`: the operator unlocked the
+                    // account in this shell, with no app to ask. With
+                    // integration on, `op` would go to the app first and
+                    // fail where there is none.
+                    env.extend(sessions);
+                }
             }
             Mode::ServiceAccount => {
                 let token = var("OP_SERVICE_ACCOUNT_TOKEN")
@@ -190,7 +225,7 @@ impl OpCli {
                 env.insert("OP_SERVICE_ACCOUNT_TOKEN".to_owned(), token);
             }
         }
-        Self::at(path, env)
+        Ok(env)
     }
 
     /// The variables `op` is allowed to see, beyond the mode's own.
@@ -199,7 +234,17 @@ impl OpCli {
     /// for a surprise variable to change which account `op` talks to.
     fn base_env(var: impl Fn(&str) -> Option<OsString>) -> BTreeMap<String, OsString> {
         let mut env = BTreeMap::new();
-        for name in ["HOME", "PATH", "USER", "LANG", "TMPDIR", "OP_ACCOUNT"] {
+        // XDG_CONFIG_HOME, where set, is where `op` keeps the accounts
+        // `op account add` added.
+        for name in [
+            "HOME",
+            "PATH",
+            "USER",
+            "LANG",
+            "TMPDIR",
+            "XDG_CONFIG_HOME",
+            "OP_ACCOUNT",
+        ] {
             if let Some(value) = var(name) {
                 env.insert(name.to_owned(), value);
             }
@@ -357,7 +402,8 @@ fn without_the_tokens(reason: String, cred: &Credential) -> String {
 /// How a 1Password store authenticates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
-    /// Through the desktop application, with biometrics.
+    /// As the operator: through the desktop application, with biometrics,
+    /// or through a session from `op signin` where there is no app.
     Desktop,
     /// With a service account token from the environment.
     ServiceAccount,
@@ -1024,6 +1070,62 @@ mod tests {
         assert!(
             !env.contains_key("SECRET_SAUCE"),
             "only the named variables are passed through"
+        );
+    }
+
+    #[test]
+    fn a_signin_session_replaces_the_app_and_nothing_else_comes_with_it() {
+        let var = |name: &str| match name {
+            "HOME" => Some(OsString::from("/home/alice")),
+            "OP_SESSION_ABC123" => Some(OsString::from("session-value")),
+            "OP_SESSION_" | "OP_SESSION_bad-id" | "OP_SESSION_EMPTY" => Some(OsString::new()),
+            "OP_SESSIONS" => Some(OsString::from("not a session")),
+            _ => None,
+        };
+        let names = [
+            "HOME",
+            "OP_SESSION_ABC123",
+            "OP_SESSION_",
+            "OP_SESSION_bad-id",
+            "OP_SESSION_EMPTY",
+            "OP_SESSIONS",
+        ]
+        .map(ToOwned::to_owned);
+        let env = OpCli::mode_env(Mode::Desktop, var, names.into_iter()).expect("an env");
+        assert_eq!(
+            env.get("OP_SESSION_ABC123"),
+            Some(&OsString::from("session-value"))
+        );
+        assert!(
+            !env.contains_key("OP_BIOMETRIC_UNLOCK_ENABLED"),
+            "with a session, op must not go looking for the app"
+        );
+        for name in [
+            "OP_SESSION_",
+            "OP_SESSION_bad-id",
+            "OP_SESSION_EMPTY",
+            "OP_SESSIONS",
+        ] {
+            assert!(!env.contains_key(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn without_a_session_the_app_is_asked() {
+        let env = OpCli::mode_env(Mode::Desktop, |_| None, core::iter::empty()).expect("an env");
+        assert_eq!(
+            env.get("OP_BIOMETRIC_UNLOCK_ENABLED"),
+            Some(&OsString::from("true"))
+        );
+        let env = OpCli::mode_env(
+            Mode::ServiceAccount,
+            |name| (name == "OP_SERVICE_ACCOUNT_TOKEN").then(|| OsString::from("t")),
+            ["OP_SESSION_ABC".to_owned()].into_iter(),
+        )
+        .expect("an env");
+        assert!(
+            !env.contains_key("OP_SESSION_ABC"),
+            "a service account runs as itself, never as the operator"
         );
     }
 

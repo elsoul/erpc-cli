@@ -1,0 +1,6 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+"ai" = "ERPC アシスタントと話す。-m を付けなければ対話になる"
+"ai --message" = "質問を 1 つして回答を表示する"
+"ai --continue" = "最新の会話を続ける：コンソールで、または `-m` やパイプで渡した質問で続け、その質問も会話に保存される"

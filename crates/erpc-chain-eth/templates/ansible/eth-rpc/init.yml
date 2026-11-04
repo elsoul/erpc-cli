@@ -1,0 +1,202 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+#
+# erpc's Ethereum RPC node init: the host Reth and Lighthouse need, before
+# either is installed. Ubuntu 24.04 or later (Reth's binary needs glibc 2.38)
+# on a processor Reth's x86_64 build runs on, the packages, the `reth` and
+# `lighthouse` system users in group `ethereum` (no login, no password), the
+# data disk at /var/lib/ethereum when the operator agreed to one, kernel
+# settings and persistent, bounded logs. Re-running changes nothing on a host
+# that has all of it.
+---
+- name: Prepare the host for an Ethereum RPC node
+  hosts: all
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  vars_files:
+    - vars.yml
+  tasks:
+    - name: Stop unless the host is Ubuntu 24.04 or later on x86_64 or aarch64
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.distribution == 'Ubuntu'
+          - ansible_facts.distribution_version is version('24.04', '>=')
+          - ansible_facts.architecture in ['x86_64', 'aarch64']
+        fail_msg: >-
+          {{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }} on
+          {{ ansible_facts.architecture }}: erpc sets Ethereum nodes up on Ubuntu 24.04 or later
+          (Reth's release needs glibc 2.38), x86_64 or aarch64. Nothing was changed.
+        quiet: true
+
+    # Reth's x86_64 release is built for x86-64-v3 (AVX2, BMI2, FMA, MOVBE).
+    - name: Count the x86-64-v3 features the processor has
+      ansible.builtin.shell: grep -m1 '^flags' /proc/cpuinfo | tr ' ' '\n' | grep -c -x -E 'avx2|bmi2|fma|movbe' || true
+      register: eth_cpu_v3
+      changed_when: false
+      when: ansible_facts.architecture == 'x86_64'
+
+    - name: Stop unless the processor runs Reth's x86_64 build
+      ansible.builtin.assert:
+        that:
+          - eth_cpu_v3.stdout | int == 4
+        fail_msg: >-
+          The processor lacks AVX2, BMI2, FMA or MOVBE; Reth's x86_64 release is built for
+          x86-64-v3 and would not start. Nothing was changed.
+        quiet: true
+      when: ansible_facts.architecture == 'x86_64'
+
+    - name: Stop unless the host has the memory a node needs
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.memtotal_mb >= eth_min_memory_mb | default(30000) | int
+        fail_msg: >-
+          The host has {{ ansible_facts.memtotal_mb }} MB of memory; a Reth and Lighthouse node
+          wants 32 GB. Nothing was changed.
+        quiet: true
+
+    - name: Install the packages the node uses
+      ansible.builtin.apt:
+        name:
+          - ca-certificates
+          - curl
+          - gnupg
+          - jq
+          - nftables
+          - openssl
+          - tar
+          - e2fsprogs
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Keep the clock in time
+      ansible.builtin.systemd_service:
+        name: systemd-timesyncd
+        state: started
+        enabled: true
+
+    - name: Make the ethereum group the two layers share
+      ansible.builtin.group:
+        name: ethereum
+        system: true
+
+    - name: Make the reth and lighthouse system users
+      ansible.builtin.user:
+        name: "{{ item }}"
+        group: ethereum
+        system: true
+        create_home: false
+        home: "{{ eth_home }}/{{ item }}"
+        shell: /usr/sbin/nologin
+        password: "!"
+      loop:
+        - reth
+        - lighthouse
+
+    # A disk erpc offered and the operator agreed to is formatted and mounted
+    # at /var/lib/ethereum. It is checked again here, right before anything is
+    # wiped: if it changed since, the run stops with nothing wiped.
+    - name: Take the agreed disk
+      when: eth_disk is defined and eth_disk
+      block:
+        - name: Read whether the data directory is a mount already
+          ansible.builtin.command: findmnt -n -o SOURCE --target {{ eth_home }} --mountpoint {{ eth_home }}
+          register: eth_mounted
+          changed_when: false
+          failed_when: false
+
+        - name: List the disks that hold nothing, as erpc did before the run
+          ansible.builtin.command: bash "{{ playbook_dir }}/../../files/free-disks.sh"
+          register: eth_free_disks
+          changed_when: false
+          when: eth_mounted.rc != 0
+
+        - name: Stop unless the disk still holds nothing
+          ansible.builtin.assert:
+            that:
+              - eth_free_disks.stdout_lines | select('match', '^free ' ~ eth_disk.name ~ ' [0-9]+ ') | list | length == 1
+            fail_msg: >-
+              /dev/{{ eth_disk.name }} is no longer free
+              ({{ eth_free_disks.stdout_lines | select('search', ' ' ~ eth_disk.name ~ ' ') | join('; ') }}).
+              Nothing was wiped.
+            quiet: true
+          when: eth_mounted.rc != 0
+
+        - name: Remove the empty partition table the operator agreed to wipe
+          ansible.builtin.shell:
+            cmd: >-
+              wipefs --all /dev/{{ eth_disk.name }} &&
+              blockdev --rereadpt /dev/{{ eth_disk.name }} &&
+              udevadm settle
+          when: eth_mounted.rc != 0 and eth_disk.wipe | default(false)
+          changed_when: true
+
+        - name: Make the file system
+          community.general.filesystem:
+            dev: /dev/{{ eth_disk.name }}
+            fstype: ext4
+            opts: -m 0 -L eth-data
+          when: eth_mounted.rc != 0
+
+        - name: Read the new file system's UUID
+          ansible.builtin.command: blkid -s UUID -o value /dev/{{ eth_disk.name }}
+          register: eth_disk_uuid
+          changed_when: false
+          when: eth_mounted.rc != 0
+
+        - name: Mount it at the data directory, now and at boot
+          ansible.posix.mount:
+            path: "{{ eth_home }}"
+            src: UUID={{ eth_disk_uuid.stdout }}
+            fstype: ext4
+            opts: defaults,noatime
+            state: mounted
+          when: eth_mounted.rc != 0
+
+    - name: Make the data, release and firewall directories
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: "{{ item.owner }}"
+        group: "{{ item.group }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - { path: "{{ eth_home }}", owner: root, group: ethereum, mode: "0750" }
+        - { path: "{{ eth_reth_dir }}", owner: reth, group: ethereum, mode: "0750" }
+        - { path: "{{ eth_lighthouse_dir }}", owner: lighthouse, group: ethereum, mode: "0750" }
+        - { path: "{{ eth_opt }}", owner: root, group: root, mode: "0755" }
+        - { path: /etc/ethereum, owner: root, group: ethereum, mode: "0750" }
+        - { path: "{{ eth_fw_dir }}", owner: root, group: root, mode: "0700" }
+        - { path: "{{ eth_helpers }}", owner: root, group: root, mode: "0755" }
+        - { path: /etc/systemd/journald.conf.d, owner: root, group: root, mode: "0755" }
+      loop_control:
+        label: "{{ item.path }}"
+
+    - name: Set the kernel up for many RPC clients
+      ansible.builtin.template:
+        src: "{{ eth_jinja }}/90-erpc-eth.conf.j2"
+        dest: /etc/sysctl.d/90-erpc-eth.conf
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Apply kernel settings
+
+    - name: Keep the logs across reboots, within bounds
+      ansible.builtin.template:
+        src: "{{ eth_jinja }}/90-erpc-eth-journald.conf.j2"
+        dest: /etc/systemd/journald.conf.d/90-erpc-eth.conf
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart journald
+
+  handlers:
+    - name: Apply kernel settings
+      ansible.builtin.command: sysctl --system
+      changed_when: true
+
+    - name: Restart journald
+      ansible.builtin.systemd_service:
+        name: systemd-journald
+        state: restarted

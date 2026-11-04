@@ -1,0 +1,20 @@
+# Managed by erpc: loads the Ethereum node's firewall table at boot.
+[Unit]
+Description=erpc Ethereum node firewall
+# Early in boot, as nftables.service is: the default dependencies would
+# order it after basic.target, which with Before=network-pre.target is a cycle.
+DefaultDependencies=no
+After=nftables.service
+Before=network-pre.target shutdown.target reth.service
+Wants=network-pre.target
+Conflicts=shutdown.target
+
+RequiresMountsFor=/opt/erpc /etc/erpc/eth
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/python3 /usr/local/lib/erpc/rpc-firewall.py eth load
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,309 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+"""Atomic Sui mutation boundary and fail-closed runtime firewall checks."""
+import fcntl
+import hashlib
+import json
+import os
+import pathlib
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+
+class Control:
+    def __init__(self, root=pathlib.Path('/'), run=subprocess.run):
+        self.root, self.run = root, run
+
+    def path(self, name):
+        return self.root / name.lstrip('/')
+
+    def command(self, *args, check=True):
+        return self.run(list(args), check=check, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    def contract(self, expected, initial=False):
+        path = self.path('/etc/sui/contract.json')
+        if not path.exists():
+            if initial and not any(self.path(p).exists() for p in [
+                '/etc/systemd/system/sui-node.service', '/etc/sui/node.yaml',
+                '/etc/credstore.encrypted/sui-network.key', '/etc/sui/identity-established',
+                '/etc/credstore.encrypted/sui-validator',
+                '/etc/sui/validator-identity-established', '/etc/sui/validator.json',
+                '/etc/sui/validator-preparing', '/var/lib/sui/db', '/var/lib/sui/consensus-db',
+            ]):
+                return
+            raise ValueError('Sui host ownership is absent; no operation was authorized')
+        if json.loads(path.read_text()) != expected:
+            raise ValueError('Sui network, role or genesis differs; no operation was authorized')
+
+    def fingerprint(self):
+        live = json.loads(self.command('nft', '-j', 'list', 'table', 'inet', 'erpc_sui').stdout)
+        def normalized(value):
+            if isinstance(value, dict):
+                return {k: normalized(v) for k, v in value.items()
+                        if k not in ('handle', 'packets', 'bytes', 'metainfo')}
+            if isinstance(value, list):
+                return [normalized(v) for v in value if not (isinstance(v, dict) and 'metainfo' in v)]
+            return value
+        return hashlib.sha256(json.dumps(normalized(live), sort_keys=True).encode()).hexdigest()
+
+    def firewall_record(self, filename):
+        path = self.path('/etc/erpc/sui/' + filename)
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    def runtime(self, expected, confirming=False):
+        self.contract(expected)
+        if not confirming and self.path('/etc/sui/validator-preparing').exists():
+            raise ValueError('validator credential preparation has not been confirmed')
+        record = json.loads(self.path('/etc/erpc/sui/confirmed.json').read_text())
+        if record['contract'] != expected or record['file'] != self.firewall_record('firewall.nft'):
+            raise ValueError('no confirmed matching firewall configuration')
+        if record['live'] != self.fingerprint():
+            raise ValueError('confirmed firewall is not currently applied')
+        if expected['role'] == 'validator':
+            receipt = json.loads(self.path('/etc/sui/validator-identity-established').read_text())
+            metadata = hashlib.sha256(self.path('/etc/sui/validator.json').read_bytes()).hexdigest()
+            if receipt['metadata'] != metadata:
+                raise ValueError('validator metadata differs from the key-binding receipt')
+            for name in ('protocol', 'network', 'worker'):
+                digest = hashlib.sha256(self.path('/etc/credstore.encrypted/sui-validator/' + name + '.key').read_bytes()).hexdigest()
+                if receipt[name] != digest:
+                    raise ValueError('validator credential differs from the key-binding receipt')
+
+    def begin(self, expected, intent):
+        self.contract(expected)
+        marker = self.path('/run/erpc-sui-firewall.armed')
+        if marker.exists() and not re.fullmatch('[a-f0-9]{32}', marker.read_text()):
+            raise ValueError('wait for the legacy firewall rollback before upgrading this host')
+        pending = self.path('/etc/erpc/sui/latest-intent.pending')
+        pending.write_text(intent)
+        os.replace(pending, self.path('/etc/erpc/sui/latest-intent'))
+
+    def invalidate(self, reason):
+        current = self.path('/etc/erpc/sui/latest-intent')
+        if current.exists():
+            current.write_text(reason + ':' + current.read_text())
+
+    @staticmethod
+    def timer(intent):
+        if not intent or not re.fullmatch('[a-f0-9]{32}', intent):
+            raise ValueError('rollback requires its original deployment intent')
+        return 'erpc-sui-firewall-rollback-' + intent
+
+    def arm(self, expected, intent):
+        self.contract(expected)
+        self.intended(intent)
+        unit = self.timer(intent)
+        marker = self.path('/run/erpc-sui-firewall.armed')
+        if marker.exists():
+            previous = marker.read_text()
+            self.command('systemctl', 'stop', self.timer(previous) + '.timer', check=False)
+        record = {'contract': expected, 'intent': intent,
+                  'file': self.firewall_record('pending.nft'), 'live': None}
+        self.path('/etc/erpc/sui/pending.json').write_text(json.dumps(record))
+        pending = marker.with_suffix('.pending')
+        pending.write_text(intent)
+        os.replace(pending, marker)
+        try:
+            # Arguments are copied into the transient unit. A later deployment
+            # cannot rewrite the callback's identity through a shared wrapper.
+            self.command('systemd-run', '--quiet', '--collect', '--unit=' + unit,
+                         '--on-active=120', '/usr/bin/python3',
+                         '/usr/local/lib/erpc/erpc-sui-control.py', 'rollback',
+                         expected['network'], expected['role'], expected['genesis'], intent)
+        except subprocess.SubprocessError:
+            self.rollback(expected, intent)
+            raise
+
+    def prepare_validator(self, expected):
+        self.contract(expected)
+        if expected['role'] != 'validator':
+            raise ValueError('credential preparation requires validator ownership')
+        # Persistent across reboot and user prompts; cleared only after the
+        # final deployment confirms both its firewall and credential receipt.
+        self.path('/etc/sui/validator-preparing').touch()
+        self.invalidate('key-preparation')
+        present = []
+        for unit in ('sui-bootstrap', 'sui-node'):
+            state = self.command('systemctl', 'show', '--property=LoadState', '--value', unit, check=False)
+            loaded = state.stdout.decode().strip()
+            if loaded == 'not-found':
+                continue
+            if state.returncode or loaded not in ('loaded', 'masked'):
+                raise ValueError('cannot verify service state before credential preparation')
+            present.append(unit)
+        if present:
+            self.command('systemctl', 'stop', *present)
+
+    def capture(self, expected, intent):
+        self.contract(expected)
+        self.intended(intent)
+        if self.path('/run/erpc-sui-firewall.armed').read_text() != intent:
+            raise ValueError('candidate rollback belongs to another deployment')
+        record = {'contract': expected, 'intent': intent, 'file': self.firewall_record('pending.nft'), 'live': self.fingerprint()}
+        self.path('/etc/erpc/sui/pending.json').write_text(json.dumps(record))
+
+    def intended(self, intent):
+        if not intent or self.path('/etc/erpc/sui/latest-intent').read_text() != intent:
+            raise ValueError('deployment intent was superseded')
+
+    def confirm(self, expected, intent):
+        self.contract(expected)
+        self.intended(intent)
+        marker = self.path('/run/erpc-sui-firewall.armed')
+        if marker.exists():
+            if marker.read_text() != intent:
+                raise ValueError('rollback belongs to another deployment')
+            record = json.loads(self.path('/etc/erpc/sui/pending.json').read_text())
+            if record != {'contract': expected, 'intent': intent, 'file': self.firewall_record('pending.nft'), 'live': self.fingerprint()}:
+                raise ValueError('the live firewall differs from the pending candidate')
+            self.command('systemctl', 'stop', self.timer(intent) + '.timer', check=False)
+            os.replace(self.path('/etc/erpc/sui/pending.nft'), self.path('/etc/erpc/sui/firewall.nft'))
+            os.replace(self.path('/etc/erpc/sui/pending.json'), self.path('/etc/erpc/sui/confirmed.json'))
+            marker.unlink()
+        if json.loads(self.path('/etc/erpc/sui/confirmed.json').read_text()).get('intent') != intent:
+            raise ValueError('this deployment was not confirmed; its candidate was rolled back')
+        self.runtime(expected, confirming=True)
+        self.path('/etc/sui/validator-preparing').unlink(missing_ok=True)
+        # Enable only after a fresh connection proved the candidate is reachable.
+        self.command('systemctl', 'daemon-reload')
+        self.command('systemctl', 'enable', 'erpc-sui-firewall', 'sui-node', 'sui-bootstrap')
+
+    def load_firewall(self, expected):
+        self.contract(expected)
+        record = json.loads(self.path('/etc/erpc/sui/confirmed.json').read_text())
+        if record['contract'] != expected or record['file'] != self.firewall_record('firewall.nft'):
+            raise ValueError('no confirmed firewall to load at boot')
+        self.command('nft', '-f', str(self.path('/etc/erpc/sui/firewall.nft')))
+        self.runtime(expected)
+
+    def stop(self):
+        self.command('systemctl', 'stop', 'sui-bootstrap', 'sui-node')
+
+    def rollback(self, expected, intent):
+        self.contract(expected)
+        marker = self.path('/run/erpc-sui-firewall.armed')
+        self.timer(intent)
+        if not marker.exists() or marker.read_text() != intent:
+            return
+        record = json.loads(self.path('/etc/erpc/sui/pending.json').read_text())
+        if record['intent'] != intent or record['contract'] != expected:
+            raise ValueError('pending rollback ownership differs')
+        # Stop every possible listener before removing/restoring filtering.
+        self.invalidate('rolled-back')
+        self.stop()
+        previous = self.path('/etc/erpc/sui/previous.nft')
+        if previous.exists() and previous.stat().st_size:
+            restored = self.command('nft', '-f', str(previous), check=False)
+            if restored.returncode:
+                self.command('nft', 'delete', 'table', 'inet', 'erpc_sui', check=False)
+        else:
+            self.command('nft', 'delete', 'table', 'inet', 'erpc_sui', check=False)
+        for name in ['pending.nft', 'pending.json']:
+            self.path('/etc/erpc/sui/' + name).unlink(missing_ok=True)
+        marker.unlink()
+
+    def service(self, action, expected):
+        self.contract(expected)
+        if action == 'stop':
+            self.invalidate('stopped')
+            self.stop()
+            return
+        self.runtime(expected)
+        if self.path('/var/lib/sui/.bootstrap-complete').exists():
+            restart = self.path('/etc/sui/restart-required')
+            operation = 'restart' if action == 'restart' or restart.exists() else 'start'
+            self.command('systemctl', operation, '--no-block', 'sui-node')
+            restart.unlink(missing_ok=True)
+        else:
+            self.command('systemctl', 'start', '--no-block', 'sui-bootstrap')
+
+    def recover(self, expected):
+        self.contract(expected)
+        marker = self.path('/var/lib/sui/.bootstrap-complete')
+        if marker.exists():
+            raise ValueError('completed bootstrap cannot be discarded by recovery')
+        home = self.path('/var/lib/sui')
+        if shutil.disk_usage(home).free < 3_500_000_000_000:
+            raise ValueError('recovery retains old data and needs 3.5 TB additional free space')
+        self.invalidate('recovery')
+        self.stop()
+        if marker.exists():
+            raise ValueError('bootstrap completed while stopping; data retained, use start')
+        db = home / 'db'
+        if db.exists():
+            quarantine = home / ('db.quarantine.' + str(time.time_ns()))
+            os.rename(db, quarantine)
+            print('quarantined=' + quarantine.name)
+        # The service user creates a new db on the next verified bootstrap.
+
+    def dispatch(self, action, expected, intent=None):
+        if action in ('guard-init', 'guard', 'runtime', 'capture', 'begin-intent', 'guard-metadata', 'arm', 'prepare-validator'):
+            # Ansible holds /opt/erpc's run lock for these mutation phases.
+            # Runtime is the separate read-only systemd precondition.
+            if action == 'guard-init': self.contract(expected, initial=True)
+            elif action == 'guard': self.contract(expected)
+            elif action == 'guard-metadata':
+                self.contract(expected, initial=True)
+                supplied = json.loads(sys.stdin.buffer.read(32769))
+                previous = self.path('/etc/sui/validator.json')
+                if expected['role'] != 'validator' or (previous.exists() and json.loads(previous.read_text()) != supplied):
+                    raise ValueError('validator metadata is immutable on this host')
+            elif action == 'runtime': self.runtime(expected)
+            elif action == 'begin-intent': self.begin(expected, intent)
+            elif action == 'arm': self.arm(expected, intent)
+            elif action == 'prepare-validator': self.prepare_validator(expected)
+            else: self.capture(expected, intent)
+            return
+        lock = os.open(self.path('/opt/erpc'), os.O_RDONLY)
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            self.contract(expected)
+            if action == 'confirm': self.confirm(expected, intent)
+            elif action == 'load-firewall': self.load_firewall(expected)
+            elif action == 'rollback': self.rollback(expected, intent)
+            elif action == 'recover-bootstrap': self.recover(expected)
+            elif action == 'start-confirmed':
+                self.intended(intent)
+                if json.loads(self.path('/etc/erpc/sui/confirmed.json').read_text()).get('intent') != intent:
+                    raise ValueError('startup intent is not the confirmed deployment')
+                self.service('start', expected)
+            elif action in ('import-validator', 'restore-validator', 'check-validator', 'validator-status'):
+                if expected['role'] != 'validator':
+                    raise ValueError('validator operation requires validator ownership')
+                operation = {'import-validator': 'import', 'restore-validator': 'restore', 'check-validator': 'check', 'validator-status': 'status'}[action]
+                if operation == 'restore':
+                    self.service('stop', expected)
+                result = self.run(['/usr/local/lib/erpc/erpc-sui-validator.py', operation],
+                                  stdin=sys.stdin.buffer if operation in ('import', 'restore') else subprocess.DEVNULL,
+                                  check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                print(result.stdout.decode().strip())
+            elif action in ('start', 'stop', 'restart'): self.service(action, expected)
+            else: raise ValueError('unknown Sui operation')
+        finally:
+            os.close(lock)
+
+
+def main():
+    os.umask(0o077)
+    if len(sys.argv) not in (5, 6):
+        raise ValueError('expected operation, network, role and genesis')
+    operation, network, role, genesis = sys.argv[1:5]
+    intent = sys.argv[5] if len(sys.argv) == 6 else None
+    if operation in ('confirm', 'capture', 'start-confirmed', 'begin-intent', 'arm', 'rollback') and (intent is None or len(intent) != 32 or any(c not in '0123456789abcdef' for c in intent)):
+        raise ValueError('a deployment confirmation needs its original intent')
+    if network not in ('mainnet', 'testnet') or role not in ('fullnode', 'validator') or len(genesis) != 64 or any(c not in '0123456789abcdef' for c in genesis):
+        raise ValueError('invalid expected host contract')
+    Control().dispatch(operation, {'network': network, 'role': role, 'genesis': genesis}, intent)
+    print('sui_operation=' + operation)
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (ValueError, KeyError, OSError, subprocess.SubprocessError):
+        print('Sui operation refused: host contract, runtime firewall or recovery prerequisite failed', file=sys.stderr)
+        raise SystemExit(1)

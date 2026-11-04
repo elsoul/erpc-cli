@@ -1,0 +1,95 @@
+# What `erpc worker backup` says, and what `erpc worker delete` says of a
+# worker's backup keys.
+
+by_hand = "`erpc storage keys list` shows the access keys and `erpc storage keys revoke <n>` revokes one"
+stuck = "if user-api keeps refusing a key the dashboard no longer shows, remove [env.{env}.backup] (or the 1Password item's backup field) by hand"
+# Two hints, or a hint and what to do after it, said as one.
+both = "{first}; {then}"
+nothing_changed = "nothing was changed"
+no_host_key = "env.{env} has no pinned host key"
+
+[machine]
+ask_failed = "could not ask the server what it is: {error}"
+unknown = "the server did not say what machine it is"
+
+[left]
+access_key = "access key {id}: {error}"
+no_longer_listed = "{reason} (no longer listed)"
+still_listed = "access key {id}: still listed after it was revoked"
+unchecked = "access key {id}: user-api said it has no such key, and the list to check that could not be read"
+not_looked_for = "keys labelled \"{label}\" were not looked for: the keys could not be listed: {error}"
+not_revoked_label = "its access key (\"{label}\"): not revoked: {reason}"
+not_revoked = "access key {id}: not revoked: {reason}"
+line = "left: {what}"
+kept = "kept, harmless once its access key is revoked: {what}"
+
+[left.elsewhere]
+one = "{n} access key of a worker {id} on another server is left, as it belongs to it; `erpc storage keys list` shows it"
+other = "{n} access keys of a worker {id} on another server are left, as they belong to it; `erpc storage keys list` shows them"
+
+[restic]
+list_failed = "restic could not list the keys: {reason}"
+list_unreadable = "restic's list of keys did not read: {error}"
+its_key = "its restic key ({host}): {error}"
+key = "restic key {key} ({host}): {error}"
+no_admin = "its restic key ({host}): this machine does not keep the account's backup admin key and password; `erpc backup init` here, or the machine that set the backup up, removes it"
+
+[forget]
+not_looked_for = "its backup keys were not looked for by label: the keys could not be listed: {error}"
+revoked = "its backup access key is revoked; its snapshots, named {host}, stay"
+
+[custody]
+made = "The account's backup repository password was made now and is kept in {place}. Keep a copy away from this machine:\n  erpc backup password --show\nThis machine also holds the account's backup admin key, so whoever takes it over can delete backups."
+kept = "The account's backup repository password was kept now and is kept in {place}. Keep a copy away from this machine:\n  erpc backup password --show\nThis machine also holds the account's backup admin key, so whoever takes it over can delete backups."
+
+[undo]
+left = "the keys made for it are not all removed ({reasons}); {by_hand}"
+
+[on]
+ask = "Back up worker {id} every day at {at} (server time) to ERPC Global Storage, encrypted by restic, as {host}.\nIts server gets an append-only key and its own key to the account's one backup repository. It cannot delete snapshots, but whoever takes the server over can read every machine's snapshots in the account, keeps the repository's key even after `off`, can add snapshots under another machine's name, and can fill the account's storage, which stops every machine's backups. Revoking its access key (`off`) is what cuts it off."
+install_failed = "could not install restic on the server: {error}"
+old_left = "the keys an earlier `on` made are not all revoked ({reasons}); nothing new was made"
+old_partly_revoked = "{by_hand}; some of its earlier keys are revoked, so the worker may not be backed up until `on` goes through"
+no_number = "user-api did not say the new access key's number; revoke it with `erpc storage keys revoke <n>`"
+not_in_list = "it is not in the list of keys"
+label_lost = "the new access key did not keep its label, which `off` needs"
+unchecked = "the new access key could not be checked: {why}"
+not_recorded = "the new keys could not be kept on record ({why}); the server was not changed"
+bad_credentials = "the new credentials hold a character the server refuses"
+kept_in_item = "its 1Password item"
+kept_in_toml = "erpc.toml; commit the change"
+done = "Worker {id} is backed up every day at {at} (server time), within 30 minutes after.\n  snapshots  named {host}\n  now        erpc worker backup now{scope}\n  restore    erpc backup restore latest --from-host {host} --path {source} --target <dir>\n             (after `erpc backup init` on this machine)\nThe keys' numbers are on record in [env.{env}], in {kept_in}.\nThe repository password is kept in {place}; keep a copy away from this machine (`erpc backup password --show`).\n\nThe backup copies the files as they are while the worker runs: a database it writes may need its own dump to restore consistent."
+replaced = "its earlier backup keys are revoked, so the worker is not backed up until `on` goes through"
+
+[off]
+ask = "Stop backing up worker {id} and revoke its backup keys. Its snapshots stay; `erpc backup prune --host {host}` thins them out."
+server_left = "the timer and credentials on the server, which no longer work: {error}"
+unfound = "the server had a backup, and no access key of it was found (\"{label}\")"
+still_recorded = "the keys, revoked, are still on record: {error}"
+summary = "Worker {id}: {access}, {restic}{server}."
+server_off = ", the backup off its server"
+hint = "{by_hand}; `erpc worker backup off{scope}` again removes the rest once the server answers; {stuck}"
+
+[off.access]
+one = "{n} access key revoked"
+other = "{n} access keys revoked"
+
+[off.restic]
+one = "{n} restic key removed"
+other = "{n} restic keys removed"
+
+[status]
+off = "off"
+never = "none since the server started"
+unknown = "of unknown outcome"
+succeeded = "succeeded"
+partly = "succeeded, without some files it could not read"
+failed = "failed ({result}, exit {exit})"
+on = "on, next run {next}\n  last run {outcome}{at}"
+at = ", at {at}"
+line = "Backup of worker {id}: {state}"
+
+[now]
+running = "Backing up worker {id}..."
+refused = "the server refused"
+failed = "{text}\n  see the server's journal: journalctl -u {unit}"

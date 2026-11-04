@@ -1,0 +1,75 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+# `erpc ai` 控制台：页头、提示、状态行、命令，以及回答工具提问的选择器。
+
+wait_first = "请先等待回答结束，或按 Esc 停止。"
+restarted = "已开始新对话。"
+continuing = "继续对话 {id}。"
+open_dashboard = "在 ERPC 仪表板购买月付或年付套餐：{url}"
+declined_because = "拒绝回答：{why}"
+declined = "拒绝回答"
+compacted = "对话较长，已将前面的部分压缩为摘要；完整内容仍已保存。"
+stopped = "已中断。"
+unknown_command = "未知命令：{command} · /help"
+hint = " enter 发送 · shift+enter 换行 · esc 停止 · pgup/pgdn 滚动 · /help"
+
+[commands]
+new = "开始新对话"
+help = "按键和命令"
+exit = "退出控制台"
+
+[footer]
+first_word = "首字 {seconds} 秒"
+seconds = "{seconds} 秒"
+tokens = "输入 {input} · 输出 {output}"
+cached = "缓存 {cached}"
+
+[help]
+keys = "Enter          发送\nShift+Enter    换行（也可用 Alt+Enter、Ctrl+J）\nEsc            停止回答\nTab            填入灰色显示的下一条消息建议 · 补全命令\n↑ ↓            调出已发送的消息\nPgUp PgDn      滚动对话（Shift+↑↓ 少量滚动）\nCtrl+C         清空输入框 · 为空时退出"
+
+[status]
+stopping = "正在停止"
+writing = "正在回答"
+thinking = "正在思考"
+waiting_for_pick = " · 等待你的选择"
+esc_to_stop = " · 按 esc 停止"
+scrolled_back = " · 正在查看历史 · 按 PgDn 回到最新"
+
+[status.queued]
+other = " · {n} 条排队中"
+
+[placeholder]
+tab = "  按 tab 填入"
+busy = "可以输入下一条消息，本次回答结束后发送"
+idle = "关于你的节点、账户或 erpc，尽管问"
+
+[intro]
+user = "用户"
+signed_in = "登录凭据"
+chain = "链"
+plan = "套餐"
+chain_not_set = "未设置 · erpc config set default_chain solana"
+try = "试试"
+try_validator = "怎么在 testnet 上运行验证节点？"
+try_rpc = "我想运行一个 RPC 节点"
+try_vps = "我需要一台 VPS"
+
+[picker]
+yes = "继续"
+no = "停止"
+always = "继续，并且在我退出之前不再就这条命令询问"
+every = "继续，并且在我退出之前不再就任何命令或脚本询问"
+own_words = "都不是（自己输入回答）"
+said_yes = "是。"
+said_no = "否；未做任何更改。"
+go_ahead = "继续吗？"
+no_terminal = "{refused}：终端前没有人可以确认"
+pass_yes = "加上 --yes 可不经询问直接继续"
+said_no_to = "{refused}：你选择了否"
+said_always = "是；在 erpc ai 退出之前，这条命令将直接运行，不再询问。"
+said_every = "所有命令：先再确认一次。"
+said_own_words = "请在下方输入你的回答。"
+hint_yes_no = " ↑ 继续 · enter 确定 · n/esc 否"
+hint_one = " ↑↓ 选择 · enter 确定 · 1-9 直接选 · esc 自己输入"
+hint_several = " ↑↓ 移动 · space 选中/取消 · enter 确定 · esc 自己输入"

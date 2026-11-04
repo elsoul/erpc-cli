@@ -1,0 +1,49 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+#
+# erpc's Solana RPC node update: the client (and, for the gRPC types, the
+# Yellowstone plugin built for it) at the pins of the bundle's
+# vars/versions.yml, built beside the running one, then the startup script
+# written again and the service restarted onto it. The build is SLV's
+# (cmn/build_solana.yml), which checks each tag still points at its pinned
+# commit before building.
+---
+- import_playbook: firewall-guard.yml
+
+- name: Check what this node runs, before anything changes
+  hosts: all
+  gather_facts: no
+  any_errors_fatal: true
+  tasks:
+    - name: Fail unless the client and the RPC type are ones erpc deploys
+      ansible.builtin.assert:
+        that:
+          - validator_type | default('') in ['agave', 'jito']
+          - rpc_type | default('') in ['SendTx RPC', 'Index RPC', 'Geyser gRPC', 'Index RPC + gRPC']
+        fail_msg: "validator_type '{{ validator_type | default('') }}' with rpc_type '{{ rpc_type | default('') }}' is not one erpc updates on {{ inventory_hostname }}. Nothing was changed."
+        quiet: true
+
+- import_playbook: ../cmn/check_alpenglow_floor.yml
+  vars:
+    versions_section: mainnet_rpcs
+
+- import_playbook: ../cmn/build_solana.yml
+  vars:
+    versions_section: mainnet_rpcs
+
+
+- import_playbook: ../mainnet-rpc/geyser_build.yml
+  when: erpc_geyser | default(false) | bool
+
+- import_playbook: ../mainnet-rpc/create-start-validator-sh.yml
+
+- name: Restart the validator service onto the new build
+  hosts: all
+  become: true
+  gather_facts: no
+  tasks:
+    - name: Restart it
+      ansible.builtin.systemd_service:
+        name: solv
+        state: restarted
+        daemon_reload: true

@@ -1,0 +1,54 @@
+# Managed by erpc. Fetches Reth's official snapshot into the new node's empty
+# datadir; the deploy runs it once and waits for it. A download that stops
+# part way resumes on the next start (--resumable).
+[Unit]
+Description=Reth's {{ eth_rpc_type }} snapshot
+After=network-online.target
+Wants=network-online.target
+Conflicts=reth.service lighthouse.service
+ConditionPathExists=!{{ eth_snapshot_marker }}
+
+[Service]
+Type=oneshot
+User=reth
+Group=ethereum
+UMask=0027
+WorkingDirectory={{ eth_reth_dir }}
+# A preset (--full or --archive) is what runs unattended; -y alone would
+# take the minimal set. It writes reth.toml with the preset's prune config.
+ExecStart={{ eth_opt }}/current/reth --color never --log.file.max-files 0 download \
+  --chain mainnet \
+  --datadir {{ eth_reth_dir }} \
+  --{{ eth_rpc_type }} \
+  --resumable=true \
+  --download-concurrency 8 \
+  -y
+ExecStartPost=/usr/bin/touch {{ eth_snapshot_marker }}
+TimeoutStartSec=infinity
+Nice=5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=reth-snapshot
+
+ReadWritePaths={{ eth_reth_dir }}
+ReadOnlyPaths={{ eth_opt }}
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+SystemCallArchitectures=native

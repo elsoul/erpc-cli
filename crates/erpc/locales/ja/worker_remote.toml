@@ -1,0 +1,121 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+unlocking = "ワーカーはロックされています。鍵とシークレットを渡します"
+line_label = "{kind} 回線 {id}"
+its_server = "そのサーバー"
+must_keep = "{host} から削除できず（{error}）、まだそこで動いている可能性があります"
+backup_not_revoked = "バックアップのアクセスキーを取り消せていません（{why}）。サーバーからのアクセスがまだ可能です"
+
+[forget_prompt]
+other = "{lines} も終了せずに記録から外します"
+
+[target]
+none_in_vault = "env.{env} はサーバー情報を 1Password の保管庫 {vault} に保管する設定ですが、まだ登録されていません。`{command}` で設定できます"
+no_host = "env.{env} にはまだホストがありません。`{command}` で設定できます"
+no_host_key = "env.{env} には固定されたホスト鍵がありません"
+
+[agent]
+unreachable = "サーバーのエージェントに問い合わせられませんでした：{error}"
+unreadable = "サーバーのエージェントが erpc の読めない応答を返しました：{answer}"
+refused = "サーバーのエージェントが拒否しました"
+
+[describe]
+unknown = "不明"
+release = "リリース {release}"
+pid = "pid {pid}"
+up = "稼働 {seconds} 秒"
+last_exit = "前回の終了：{exit}"
+
+[describe.restarts]
+other = "再起動 {n} 回"
+
+[status]
+title = "{host} 上の {worker}：{agent}"
+no_answer = "エージェントが応答しませんでした：{error}"
+none = "なし"
+
+[status.releases]
+other = "現在 {current}、前回 {previous}、保持しているリリース {n} 件"
+
+[start]
+start_prompt = "サーバー上で {id} を起動します"
+restart_prompt = "サーバー上で {id} を再起動します"
+refused = "何も起動していません"
+
+[stop]
+refused = "何も停止していません"
+stopped = "{id} を停止しました"
+locked = "{id} を停止しました。鍵とシークレットはサーバーのメモリから消去されています"
+
+[rollback]
+refused = "何もロールバックしていません"
+done = "{id} は再び {release} で動いています"
+done_was = "{id} は再び {release} で動いています（以前は {previous}）"
+
+[releases]
+current = "現在"
+previous = "前回"
+dirty = "（未コミットの変更あり）"
+none = "サーバーにはまだリリースがありません。"
+
+[delete]
+refused = "何も削除していません"
+not_removed = "サーバーから削除できませんでした（{error}）"
+not_removed_ending = "サーバーから削除できませんでした（{error}）。それでもサーバーを終了します"
+nothing_removed = "何も削除していません。{hint}"
+removed = "{id} をサーバーから削除しました。"
+skipped = "[env.{env}] を記録から外しました。指定どおり {host} には接続していません。ワーカーがまだそこで動いていれば、動き続けます。"
+forgotten = "[env.{env}] を削除しました。"
+still_in_toml = "[env.{env}] はまだ erpc.toml に残っています：{error}"
+
+[delete_prompt]
+forget_unreached = "指定どおり {host} に接続せずに [env.{env}] を記録から外します。{id} はサーバーから削除されません"
+remove = "{host} から {id} を削除します：ユニット、リリース、状態"
+never_reached = "[env.{env}] を記録から外します（サーバーには一度も接続していません）"
+no_server = "[env.{env}] を記録から外します（記録にサーバーはありません）"
+then_server = "。その後、時間課金のサーバーを終了します"
+then_lines_and_server = "。その後、データ回線と時間課金のサーバーを終了します"
+then_lines = "。その後、データ回線を終了します（記録に時間課金のサーバーはありません）"
+no_server_to_end = "（終了する時間課金のサーバーは記録にありません）"
+
+[unreached]
+message = "サーバー {host}{vps} に接続できませんでした。終了済みか、停止している可能性があります"
+plain = "サーバーにもう接続できず、ワーカーもそこで動いていない場合は、`{command}` でサーバーに接続せずに記録から外せます"
+charged = "サーバーにもう接続できず、ワーカーもそこで動いていない場合は、`{command}` でサーバーに接続せずに記録から外し、時間課金のものを終了できます"
+backup = "。`{command}` を実行すると、サーバーが応答するかどうかにかかわらず、バックアップキーをすぐに取り消します"
+
+[refuse]
+plain = "{kind} {id} は記録にありますが、一度も接続していません。何も削除していません"
+hourly = "{kind} {id} は記録にありますが、一度も接続しておらず、時間単位で課金されています。何も削除していません"
+hint = "`{deploy}` で接続するか、`{delete}` でデータ回線ごと終了してください"
+
+[still_charged]
+server = "{kind} {id} はまだ動いていて時間単位で課金されていますが、erpc の記録からは外れました。ダッシュボードで終了してください"
+line_hourly = "データ回線 {ids} はまだ動いていて時間単位で課金されていますが、erpc の記録からは外れました。ダッシュボードで終了してください"
+line_not_hourly = "データ回線 {ids} はまだ動いています（時間課金ではありません）が、erpc の記録からは外れました。ダッシュボードで終了してください"
+
+[released]
+lines = "データ回線を終了しました。"
+dropped = "{line} はアカウントの課金対象ではなかったため、記録から外します。"
+server = "時間課金のサーバーを終了しました。"
+no_server = "終了する時間課金の ERPC サーバーは記録にありませんでした。"
+kept = "{line} は時間課金ではないため、erpc は終了していません。ダッシュボードで終了するまで動き続けます"
+
+[release]
+lines_failed = "データ回線：{error}"
+server_failed = "サーバー：{error}"
+
+[partly]
+removed = "ワーカーはサーバーから削除しましたが、完了していないものがあります：{problems}"
+no_host = "ワーカーを削除するサーバーは記録になく、完了していないものがあります：{problems}"
+skipped = "指定どおりワーカーのサーバーには接続しておらず、完了していないものがあります：{problems}"
+not_removed = "ワーカーはサーバーから削除されておらず、完了していないものがあります：{problems}"
+not_kept = "完了していないものを記録に残せませんでした（{error}）。ダッシュボードで終了してください"
+
+[retry]
+again = "完了していないものは記録に残っています。`{command}` をもう一度実行してください"
+backup = "。バックアップキーは `erpc storage keys revoke <n>` でも取り消せます。"
+server = "。サーバーはダッシュボードからも終了できます"
+lines = "。erpc の外で終了した回線は `--forget-line <id>` で記録から外せます。まだ動いている回線はダッシュボードで終了してください"
+forget = "。サーバーにもう接続できず、ワーカーもそこで動いていない場合は、`--forget` でサーバーに接続せずに記録から外せます"

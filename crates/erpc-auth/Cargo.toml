@@ -28,14 +28,15 @@ sha2 = { workspace = true }
 fs2 = { workspace = true }
 tempfile = { workspace = true }
 
-[target.'cfg(target_os = "macos")'.dependencies]
-keyring = { workspace = true, features = ["apple-native"] }
-
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { workspace = true, features = ["windows-native"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { workspace = true, features = ["sync-secret-service"] }
+# The kernel keyring, where no Secret Service answers. Directly, not through
+# keyring's `linux-native`, which needs a session keyring a process started
+# outside a PAM login does not have.
+linux-keyutils = { version = "0.2", features = ["std"] }
 # crypto-rust and vendored are enabled on dbus-secret-service directly, not
 # through keyring's features of the same name. Those forward to
 # `secret-service?/crypto-rust` and `openssl?/vendored`, and a weak feature

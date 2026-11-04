@@ -25,6 +25,17 @@ erpc-ssh = { path = "crates/erpc-ssh", version = "0.1.0-rc.1" }
 erpc-ops = { path = "crates/erpc-ops", version = "0.1.0-rc.1" }
 erpc-chain = { path = "crates/erpc-chain", version = "0.1.0-rc.1" }
 erpc-chain-solana = { path = "crates/erpc-chain-solana", version = "0.1.0-rc.1" }
+erpc-chain-arc = { path = "crates/erpc-chain-arc", version = "0.1.0-rc.1" }
+erpc-chain-avax = { path = "crates/erpc-chain-avax", version = "0.1.0-rc.1" }
+erpc-chain-tron = { path = "crates/erpc-chain-tron", version = "0.1.0-rc.1" }
+erpc-chain-sui = { path = "crates/erpc-chain-sui", version = "0.1.0-rc.1" }
+erpc-chain-nitro = { path = "crates/erpc-chain-nitro", version = "0.1.0-rc.1" }
+erpc-chain-eth = { path = "crates/erpc-chain-eth", version = "0.1.0-rc.1" }
+erpc-chain-rollup = { path = "crates/erpc-chain-rollup", version = "0.1.0-rc.1" }
+erpc-chain-bitcoin = { path = "crates/erpc-chain-bitcoin", version = "0.1.0-rc.1" }
+erpc-chain-op = { path = "crates/erpc-chain-op", version = "0.1.0-rc.1" }
+# Without its templates by default: the agent on a server has no use for them.
+erpc-worker = { path = "crates/erpc-worker", version = "0.1.0-rc.1", default-features = false }
 erpc-ai = { path = "crates/erpc-ai", version = "0.1.0-rc.1" }
 erpc-wallet = { path = "crates/erpc-wallet", version = "0.1.0-rc.1" }
 erpc-x402 = { path = "crates/erpc-x402", version = "0.1.0-rc.1" }
@@ -37,7 +48,7 @@ clap = { version = "4.6", features = ["derive", "env", "wrap_help"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
-tokio = { version = "1.53", features = ["rt", "macros", "time", "process", "fs"] }
+tokio = { version = "1.53.3", features = ["rt", "macros", "time", "process", "fs", "signal", "sync", "io-util"] }
 # rustls only: the Linux release targets are static musl, and linking
 # OpenSSL there is what "no system libraries" exists to avoid.
 reqwest = { version = "0.13", default-features = false, features = [
@@ -50,9 +61,47 @@ reqwest = { version = "0.13", default-features = false, features = [
 ] }
 secrecy = { version = "0.10", features = ["serde"] }
 zeroize = { version = "1.8", features = ["zeroize_derive"] }
+# Already in the lock through rustls. `erpc storage` encrypts files with its
+# ChaCha20-Poly1305 and HKDF, so the format costs no new crate.
+aws-lc-rs = { version = "1.18.2", default-features = false, features = ["aws-lc-sys"] }
 # Already in the lock through dbus-secret-service; the parked file uses it to
 # name the session a rotation replaced without writing that token down.
 sha2 = { version = "0.10.9", default-features = false }
+# Hidden input (`erpc worker secret put`); asked only at a terminal.
+dialoguer = { version = "0.12.0", default-features = false }
+# Arrow-key choices, drawn with a description beside each option; asked only
+# at a terminal, drawn on stderr. It brings indicatif, textwrap (held at
+# 0.16.2, before it moved to the ICU segmenter), smawk, unicode-linebreak and
+# unit-prefix into the lock.
+cliclack = "0.5.6"
+# The full-screen console: drawing, and terminal events read as a stream so
+# they can be awaited alongside an answer.
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
+crossterm = { version = "0.29.0", default-features = false, features = ["bracketed-paste", "events", "event-stream", "windows"] }
+unicode-width = { version = "0.2.2", default-features = false }
+# Playbooks and templates carried in the binary, so a deploy uses exactly
+# the files this version was tested with.
+include_dir = { version = "0.7.4", default-features = false }
+# A run's bundle: a deterministic gzipped tar, pure Rust.
+tar = { version = "0.4.46", default-features = false }
+flate2 = { version = "1.1.10", default-features = false, features = ["rust_backend"] }
+# Validator identities, made in memory: the Ed25519 key and the system random
+# source it is seeded from.
+ed25519-dalek = { version = "3.0.0", default-features = false, features = ["zeroize"] }
+getrandom = { version = "0.4.3", default-features = false }
+# The Arc consensus key's file form: its seed in standard base64.
+base64 = { version = "0.22.1", default-features = false, features = ["alloc"] }
+futures-util = { version = "0.3.31", default-features = false }
+# EURC credit top-ups: an EIP-712 TransferWithAuthorization signed with the
+# operator's Base wallet key, in memory (secp256k1 and keccak-256, RustCrypto).
+k256 = { version = "0.14.0", default-features = false, features = ["ecdsa", "std"] }
+sha3 = { version = "0.10.8", default-features = false }
+# Ending erpc by the signal that asked it to stop, once no session rotation
+# is lost by it, so a shell sees what the default action would have shown.
+signal-hook = { version = "0.3.18", default-features = false }
+# Already in the lock through tempfile; safe wrappers for what the worker
+# agent asks of Linux (prctl, mlockall, socket peer credentials, kill).
+rustix = { version = "1.1", default-features = false }
 # Platform features are chosen per target in crates/erpc-auth/Cargo.toml.
 # On Linux the Secret Service backend is vendored, so the build does not
 # need a system libdbus: the release targets are static musl.
@@ -60,6 +109,8 @@ keyring = { version = "3.6", default-features = false }
 fs2 = "0.4"
 tempfile = "3.14"
 toml = "0.8"
+# Already in the lock through `toml`; edits erpc.toml keeping its comments.
+toml_edit = "0.22"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+usage = "Использование:"
+options = "Параметры"
+arguments = "Аргументы"
+commands = "Команды"
+help = "Показать справку"
+version = "Показать версию"
+help_command = "Показать это сообщение или справку по указанным подкомандам"

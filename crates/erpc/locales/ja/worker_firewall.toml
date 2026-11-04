@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+ssh_network = "firewall.ssh_allow にネットワーク {cidr} があります。SSH 許可リストには単一のアドレスしか指定できません"
+me_added = "注意：erpc の接続元 {me} は firewall.ssh_allow にありません。erpc が引き続き接続できるよう、このアドレスも許可します"
+no_address = "erpc の接続元アドレスがわからず、firewall.ssh_allow も空です。何も変更していません"
+no_address_hint = "[env.<name>.firewall] の ssh_allow に自分のアドレスを記載してください"
+ssh_apply_unfinished = "SSH 許可リストの適用が完了しませんでした（{error}）。適用されている場合、サーバーは {seconds} 秒以内に以前のリストへ戻します"
+ssh_locked_out = "新しい SSH 許可リストを通して erpc が再接続できませんでした（{error}）。サーバーは {seconds} 秒以内に以前のリストへ戻します"
+ssh_not_kept = "SSH 許可リストは確定されませんでした（{state}）"
+not_applied = "サーバーのファイアウォールを適用できませんでした：{error}。適用されていた場合は {seconds} 秒以内に自動で元に戻ります"
+not_kept = "サーバーのファイアウォールは確定されませんでした：{why}"
+no_reason = "理由は示されていません"
+allowing_ssh = "SSH を {addresses} からのみ許可しています"
+dropping_open = "その他の受信接続をすべて破棄し、ポート {port} を {addresses} に開放しています"
+dropping_closed = "その他の受信接続をすべて破棄しています。アプリのポートは閉じたままです"
+ssh_network_given = "{network} はネットワークです。SSH は単一のアドレスからのみ許可できます"
+ssh_network_hint = "ネットワークは `--to app` に指定できます"
+will_be = "ファイアウォールは次のようになります："
+nothing_changed = "何も変更していません"
+in_force = "{worker} のサーバーファイアウォールが有効になりました：SSH は {ssh} から、{app}、その他はすべて破棄します。"
+app_closed = "アプリのポートは閉じたまま"
+app_open = "ポート {port} は {addresses} から"
+
+[describe]
+nobody = "なし"
+ssh = "ssh       {list}（および erpc の接続元アドレス）"
+app_closed = "app       閉じている（erpc.toml に run.port の指定なし）"
+all_else = "その他    破棄"
+
+[list]
+title = "{host} 上の {worker}："
+on_server = "サーバー上の設定："
+none_yet = "ワーカーのファイアウォールはまだありません。`{command}` で適用できます"
+pending = "変更が確定待ち、または自動ロールバック待ちです"
+
+[unchanged]
+allowed = "変更はありません：{addresses} はすでに許可されています。`{command}` で erpc.toml をもう一度適用します"
+denied = "変更はありません：{addresses} はすでに許可されていません。`{command}` で erpc.toml をもう一度適用します"

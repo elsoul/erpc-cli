@@ -1,0 +1,6 @@
+# SPDX-FileCopyrightText: 2021 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+#
+# erpc's first step on a new server: SLV's cmn/create_user.yml, which makes
+# the solv user that every later play runs as.
+- import_playbook: ../cmn/create_user.yml

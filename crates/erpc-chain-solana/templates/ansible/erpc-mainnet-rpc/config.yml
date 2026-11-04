@@ -1,0 +1,51 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+#
+# erpc's Solana RPC node update-config: the startup script written again
+# from the carried templates and the inventory, the service restarted only when what it starts from changed,
+# and the firewall applied again under its rollback timer.
+---
+- import_playbook: firewall-guard.yml
+
+- name: Read what the service starts from now
+  hosts: all
+  become: true
+  gather_facts: no
+  any_errors_fatal: true
+  tasks:
+    - name: Fail unless the client and the RPC type are ones erpc deploys
+      ansible.builtin.assert:
+        that:
+          - validator_type | default('') in ['agave', 'jito']
+          - rpc_type | default('') in ['SendTx RPC', 'Index RPC', 'Geyser gRPC', 'Index RPC + gRPC']
+        fail_msg: "validator_type '{{ validator_type | default('') }}' with rpc_type '{{ rpc_type | default('') }}' is not one erpc configures on {{ inventory_hostname }}. Nothing was changed."
+        quiet: true
+
+    - name: Read the startup file
+      ansible.builtin.stat:
+        path: /home/solv/start-validator.sh
+        checksum_algorithm: sha256
+      register: erpc_startup_before
+
+- import_playbook: ../cmn/check_alpenglow_floor.yml
+  vars:
+    versions_section: mainnet_rpcs
+
+- import_playbook: ../mainnet-rpc/create-start-validator-sh.yml
+
+- name: Restart the service only when what it starts from changed
+  hosts: all
+  become: true
+  gather_facts: no
+  tasks:
+    - name: Read the startup file again
+      ansible.builtin.stat:
+        path: /home/solv/start-validator.sh
+        checksum_algorithm: sha256
+      register: erpc_startup_after
+
+    - name: Restart it
+      ansible.builtin.systemd_service:
+        name: solv
+        state: restarted
+      when: erpc_startup_before.stat.checksum | default('') != erpc_startup_after.stat.checksum | default('')

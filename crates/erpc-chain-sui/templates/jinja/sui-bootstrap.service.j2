@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+# The pinned tool contacts network-matched formal snapshots and checkpoint metadata:
+# https://formal-snapshot.mainnet.sui.io and https://checkpoints.mainnet.sui.io
+# https://formal-snapshot.testnet.sui.io and https://checkpoints.testnet.sui.io
+[Unit]
+Description=Verify and restore the latest Sui {{ sui_network }} formal snapshot
+After=network-online.target erpc-sui-firewall.service
+Wants=network-online.target
+BindsTo=erpc-sui-firewall.service
+Requires=erpc-sui-firewall.service
+ConditionPathExists=!/var/lib/sui/.bootstrap-complete
+
+[Service]
+ExecStartPre=+/usr/local/lib/erpc/erpc-sui-control.py runtime {{ sui_network }} {{ sui_role }} {{ sui_genesis_sha256 }}
+Type=oneshot
+User=sui
+Group=sui
+WorkingDirectory=/var/lib/sui
+ExecStartPre=/usr/bin/test ! -e /var/lib/sui/db/live
+ExecStart=/opt/sui/current/sui-tool download-formal-snapshot --latest --genesis /etc/sui/genesis.blob --network {{ sui_network }} --path /var/lib/sui/db --no-sign-request --verify strict
+ExecStartPost=/usr/bin/touch /var/lib/sui/.bootstrap-complete
+ExecStartPost=+/usr/bin/systemctl --no-block start sui-node.service
+TimeoutStartSec=infinity
+TimeoutStopSec=600
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/sui
+
+[Install]
+WantedBy=multi-user.target

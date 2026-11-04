@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+url_not_pair = "--url принимает NAME=URL, а не `{given}`"
+url_not_pair_unknown = "--url принимает значение в виде NAME=URL"
+nothing = "измерять нечего"
+nothing_hint = "уберите --no-shared или укажите эндпоинт через --url NAME=URL"
+not_readable = "не удалось прочитать результаты измерений агента: {error}"
+one_stdin = "из стандартного ввода можно прочитать только один --url"
+url_of = "URL для {name}"
+shared_refused = "Общий RPC отклонил API-ключ аккаунта: возможно, у аккаунта нет активного тарифа общего RPC (см. панель управления ERPC). Либо укажите в секрете ERPC_API_KEY приложения ключ с таким тарифом."
+title = "{method} с сервера воркера {worker} {at}: {each} после {warm}{apart}"
+apart = ", с интервалом {ms} мс"
+faster = "По медиане {fastest} ответил в {times} раза быстрее, чем {other} ({a} против {b})."
+alone = "Медианное время ответа {name}: {time}."
+
+[each]
+one = "по {n} вызову"
+few = "по {n} вызова"
+many = "по {n} вызовов"
+
+[warm_up]
+one = "{n} прогревочного вызова"
+few = "{n} прогревочных вызовов"
+many = "{n} прогревочных вызовов"
+
+[failures]
+one = "{name}: {n} ошибка, первая: {error}"
+few = "{name}: {n} ошибки, первая: {error}"
+many = "{name}: {n} ошибок, первая: {error}"
+
+[column]
+endpoint = "эндпоинт"
+host = "хост"
+failed = "ошибки"
+slots_behind = "отставание в слотах"
