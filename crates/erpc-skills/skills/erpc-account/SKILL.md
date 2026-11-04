@@ -28,9 +28,10 @@ description: Signing in to ERPC with erpc (login, logout, whoami, doctor, config
   `sudo -E`) cannot use the kernel keyring; log in as yourself.
 - Without the 1Password app (a Linux server over SSH), sign in to 1Password with
   `op account add` once and `eval $(op signin)` per shell; erpc uses that session. It expires
-  after 30 minutes unused, and `eval $(op signin)` renews it. For node work that runs unattended
-  on testnet, a 1Password service account (`OP_SERVICE_ACCOUNT_TOKEN` in the environment, for a
-  vault it may read) works instead; erpc refuses one for mainnet keys.
+  after 30 minutes unused, and `eval $(op signin)` renews it. For node work that runs unattended,
+  a 1Password service account (`OP_SERVICE_ACCOUNT_TOKEN` in the environment, for a vault it may
+  read) works instead. Node commands do not check the network for one, so keep mainnet keys in a
+  vault it cannot read. `erpc worker` trading keys and the credit wallet do refuse one.
 - On macOS erpc reaches the keychain through Apple's `security` tool, so an update does not make
   it ask again. A session saved by an older erpc may ask once; "Always Allow" ends that, and the
   next save makes the item `security`'s own.

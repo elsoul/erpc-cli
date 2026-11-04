@@ -26,7 +26,8 @@ use core::fmt;
 /// Which chain network a key belongs to.
 ///
 /// Mainnet is separated because every mainnet row of the table is stricter:
-/// a service account may never reach a mainnet key.
+/// the table refuses a service account for a mainnet key. Node commands do not
+/// call this gate yet, so only its callers get that refusal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Network {
     /// Real funds and real stake.

@@ -31,13 +31,16 @@ The inventory (each node: address, SSH user and port, pinned host key, release p
 lists, type) lives in 1Password, in one vault per network shared by every
 chain: the first `init` on a network asks for it (`--vault`), and a different `--vault` later is
 refused. erpc keeps none of it on the operator's disk. 1Password is the desktop app, or on a
-machine without one a service account (`OP_SERVICE_ACCOUNT_TOKEN`), which reaches testnet only.
+machine without one a service account (`OP_SERVICE_ACCOUNT_TOKEN`). erpc does not check the network
+for a service account: it reads whatever vault the account is granted, with nobody asked. Keep
+mainnet keys in a vault a service account cannot read.
 
 Keys differ by chain, and `docs/nodes.md` has the table. A Solana validator's staked identity is in
 1Password, and so is its withdraw authority unless only a public key was given; a deploy never
 copies either to the node. A Solana RPC
 node's identity and an Ethereum validator's keystores and unlock password stay on the host, so
-those hosts need backups. Keys sent to a node go over SSH standard input, never on a command
+those hosts need backups (`erpc backup` skips files named like `*identity*.json`, so it will not
+cover a Solana RPC identity, which holds no stake). Keys sent to a node go over SSH standard input, never on a command
 line; some hosts then store them.
 
 ## Logging in to the node

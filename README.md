@@ -293,7 +293,8 @@ The rules for these, and for writing a message, are in
 | `~/.erpc/memory.json` | What the assistant remembers |
 | `~/.erpc/vps_hosts.json` | Host keys of VPSs the assistant logged in to |
 | `~/.erpc/skills/` | Skills written by `erpc skills install` |
-| `~/.erpc/storage-key` | The storage encryption key, when `erpc login` keeps the session in a file; the backup master password and `read_write` key are in that store too |
+| `~/.erpc/storage-key` | The storage encryption key, when `erpc login` keeps the session in a file |
+| `~/.erpc/backup-password`, `~/.erpc/backup-admin-key` | The backup master password and `read_write` key, when `erpc login` keeps the session in a file |
 | `~/.erpc/backup.env` | This machine's backup credentials (0600) |
 | `~/.erpc/bin/restic-0.19.1` | The pinned restic `erpc backup` installs |
 
