@@ -7,7 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # erpc
 
-**Run validators and RPC nodes on 12 chains, and your own apps on Linux servers, with no keys on your servers.**
+**Run validators and RPC nodes on 12 chains, and your own apps on Linux servers.**
 
 One command line for your nodes, your apps and your [ERPC](https://erpc.global) account,
 and an assistant that runs it for you when you ask.
@@ -16,41 +16,45 @@ and an assistant that runs it for you when you ask.
 
 </div>
 
-## No keys on your servers
+## Where your keys are
 
-A server that holds no secret has nothing to steal and nothing to lose.
-erpc keeps every key in **1Password** (or your operating system's keychain)
-and hands a server only what it needs, when it needs it.
+erpc stores keys in **1Password** or your operating system's keychain where it
+can, and hands a server only what it needs. What has to live on a server depends
+on the chain: [Running nodes](docs/nodes.md#where-keys-are-kept) has the table.
 
-- **Validators.** The staked identity, the vote account key and the withdraw
-  authority are kept in 1Password. A new validator syncs under a throwaway
-  identity, and the withdraw authority never goes to a server at all.
-- **Trading bots and Web3 apps.** An `erpc worker` app gets its wallet key on
-  a pipe when it starts. The worker holds it in memory only, locked and
+- **Solana validators.** The staked identity is kept in 1Password, and so is the
+  withdraw authority unless you give erpc only its public key. A deploy never copies the staked key to the node: it starts under
+  a throwaway identity, and the withdraw authority never goes to a server at all.
+- **Trading bots and Web3 apps.** An `erpc worker` app gets its wallet key from
+  1Password or the keychain, on a pipe, when it starts. The worker holds it in memory only, locked and
   undumpable; there is no `wallet.json`, no `.env`, no copy on disk. After a
   reboot the app stays locked until you send the key again.
-- **Secrets.** API tokens and RPC keys are stored as `op://…` references.
+- **Secrets.** API tokens and RPC keys are stored as `op://…` or `keychain:…`
+  references.
   The values reach the server over standard input, never on a command line.
 - **Your team.** The node inventory lives in 1Password too. Share the vault
   and everyone on the team manages the same nodes from their own machine,
   with 1Password deciding who can do what.
-
-Because nothing on the server is precious, you can rebuild any server and
-deploy again in minutes.
+- **Keys that stay on a server.** Many nodes hold a key on the host. A Solana RPC
+  node's identity never leaves it, and an Ethereum validator's keystores and
+  unlock password live on it. Those hosts need backups of their own.
 
 ## Install
 
 **macOS and Linux**
 
 ```bash
-curl -fsSL https://install.erpc.global | sh
+curl -fsSL https://install.erpc.global/v0.1.0-rc.2 | sh
 ```
 
 **Windows** (PowerShell)
 
 ```powershell
-irm https://install.erpc.global/ps1 | iex
+irm https://install.erpc.global/v0.1.0-rc.2/ps1 | iex
 ```
+
+These name a version because every release so far is a pre-release, and the
+unversioned `install.erpc.global` serves only the latest stable one.
 
 The installer puts `erpc` in `~/.erpc/bin` and writes the assistant's skills
 to `~/.erpc/skills`. Builds are published for Linux (x86_64, arm64), macOS
@@ -113,7 +117,7 @@ erpc rpc deploy --chain ethereum      # install, fetch a snapshot, apply the fir
 
 erpc validator init --chain solana -n testnet
 erpc validator deploy --chain solana -n testnet
-erpc validator status                 # health, slot, identity and firewall
+erpc validator status                 # health, slot and identity
 ```
 
 | | Chains |
@@ -122,18 +126,22 @@ erpc validator status                 # health, slot, identity and firewall
 | **Validator** (`erpc validator`) | Solana, Ethereum, Avalanche, Sui, TRON |
 | **Researched, not implemented** | Polygon, BNB Chain, Kaia, Monad, Hyperliquid, NEAR |
 
-Every deploy logs in over SSH with your key from the 1Password SSH agent, pins
-the host key, runs the client as its own user that cannot log in, checks each
-release against a pinned checksum, and applies an nftables firewall that
-rolls itself back unless a fresh connection still gets in. You cannot lock
-yourself out.
+Every deploy logs in over SSH with your key, from the 1Password SSH agent or
+`SSH_AUTH_SOCK`, and pins the host key. Most chains run the client as its own
+user that cannot log in, check each release against a pinned checksum, and
+apply an nftables firewall that rolls itself back unless a fresh connection
+still gets in. Not all of them do: Solana nodes run as a login user with
+passwordless sudo and fetch some tools without a checksum, and Solana
+validators, Ethereum validators and Bitcoin nodes get no firewall from erpc.
+[The node guide](docs/nodes.md) has the details.
 
 `init`, `deploy`, `status`, `logs`, `start`, `stop`, `restart`, `update`,
-`update-config`, `plan` and `destroy` work the same on every implemented
-chain. Live acceptance on real hosts is still under way for most of them;
-[the chain source map](docs/chains/README.md) says where each one stands.
-[Running nodes](docs/nodes.md) has the clients, networks and guides for each
-chain, and the [chain source map](docs/chains/README.md) where each one stands.
+`update-config`, `plan` and `destroy` work the same on every implemented chain
+except Solana validators, which have `init`, `deploy`, `list`, `status`, `keys`
+and `vote-account` so far. Live acceptance on real hosts is still under way for
+most chains. [Running nodes](docs/nodes.md) has the clients, networks and guides
+for each chain, and the [chain source map](docs/chains/README.md) says where
+each one stands.
 
 ## `erpc ai`: just ask
 
@@ -147,11 +155,13 @@ them for you.
 
 - **It asks before it acts.** Anything that spends money or changes a server
   is shown first, with the cursor on **Stop**. Choices are picked with the
-  arrow keys.
-- **It runs erpc, not improvised scripts.** The assistant drives the same
-  commands you would type, so the settings that matter (pinned releases,
-  checksums, the firewall, where keys live) are enforced by erpc's code every
-  time, not left to what a model writes.
+  arrow keys. You can allow every command for one conversation, behind a second
+  question, and then nothing is asked until it ends.
+- **It prefers erpc to improvised scripts.** The assistant drives the same
+  commands you would type, and can run other commands and scripts only as you
+  allow them. What erpc enforces on a chain is enforced by its
+  code every time, not left to what a model writes. What that covers differs by
+  chain: [the node guide](docs/nodes.md) lists it.
 - **It sets up the server too.** It can start an hourly VPS, wait for it,
   install your SSH key, turn off password logins and allow SSH only from your
   address.
@@ -185,11 +195,16 @@ talking to `erpc ai`.
   erpc worker firewall allow --to ssh 203.0.113.10 198.51.100.7
   ```
 
-- **Lost access?** Rebuild the server from the
-  [dashboard](https://dashboard.erpc.global) and deploy again. Nothing secret
-  was on it, so nothing is lost.
-- **App state** is backed up daily to ERPC Global Storage, encrypted on the
-  server: `erpc worker backup on`.
+- **Lost access?** If the server may have been taken over, first run
+  `erpc worker backup off` to revoke its backup access key, and move funds off its
+  trading key and replace its secrets. `off` does not undo what the server already
+  read: [the worker guide](docs/worker.md) has the limits. Then rebuild it from the
+  [dashboard](https://dashboard.erpc.global) and deploy again. If the rebuild
+  changed its SSH host key, erpc refuses it until you update the pinned key. A
+  deploy brings back the code, not the app's state, which only a backup can restore.
+- **App state** can be backed up daily to ERPC Global Storage, encrypted on the
+  server, once you run `erpc worker backup on`. Redis and PostgreSQL data are not
+  covered.
 
 Everything about an app is in `erpc.toml`, which holds no secret and can be
 committed. [docs/worker.md](docs/worker.md) has the full guide.
@@ -202,7 +217,8 @@ erpc backup init          # back this machine up with restic, on a schedule if y
 ```
 
 Files are encrypted on your machine before they leave it, and each machine
-gets an append-only key that cannot delete its own backups.
+gets an append-only key that cannot delete its own backups. The machine where you
+ran `erpc backup init` also holds the keys that can.
 See [storage encryption](docs/storage-encryption.md) and [backups](docs/backup.md).
 
 ## Free to start
@@ -227,7 +243,8 @@ erpc whoami
 ## All commands
 
 Run any command group without a verb (`erpc validator`, `erpc worker`) to
-list its verbs. Every command takes `--json` for machine-readable output.
+list its verbs. `erpc --json <command>` gives machine-readable output. On node
+commands the flag has to go before the command.
 
 | Command | What it does |
 |---|---|
@@ -277,6 +294,7 @@ The rules for these, and for writing a message, are in
 | `~/.erpc/vps_hosts.json` | Host keys of VPSs the assistant logged in to |
 | `~/.erpc/skills/` | Skills written by `erpc skills install` |
 | `~/.erpc/storage-key` | The storage encryption key, when `erpc login` keeps the session in a file |
+| `~/.erpc/backup-password`, `~/.erpc/backup-admin-key` | The backup master password and `read_write` key, when `erpc login` keeps the session in a file |
 | `~/.erpc/backup.env` | This machine's backup credentials (0600) |
 | `~/.erpc/bin/restic-0.19.1` | The pinned restic `erpc backup` installs |
 
@@ -303,7 +321,7 @@ The rules for these, and for writing a message, are in
 
 ## Status
 
-Pre-release (`v0.1.0-rc`). The commands above exist and pass their offline
+Pre-release (`v0.1.0-rc.2`). The commands above exist and pass their offline
 checks; acceptance on real hosts is still under way for most chains, and each
 chain's guide says where it stands. erpc is the Rust successor of
 [SLV](https://github.com/ValidatorsDAO/slv).

@@ -193,7 +193,7 @@ enum Command {
         #[arg(long, value_enum)]
         store: Option<StoreChoice>,
     },
-    /// Validator commands (Solana, Ethereum and Avalanche).
+    /// Validator commands (Solana, Ethereum, Avalanche, Sui and TRON).
     #[command(visible_alias = "v", disable_help_flag = true)]
     Validator {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]

@@ -24,8 +24,8 @@ unless you prefer otherwise.
 
 ## Supported versions
 
-Only the latest minor release line receives security fixes. No release has
-been published yet, so nothing is currently supported or unsupported.
+Only the latest release receives security fixes. Every release so far is a
+pre-release.
 
 ## Scope
 
@@ -44,9 +44,24 @@ SBOM and GitHub build provenance attestations. See `docs/verify-release.md`.
 
 ## Secret handling
 
-`erpc` keeps one kind of secret: the session for your ERPC account, an access
-token and a refresh token obtained through the OAuth device authorization
-grant. It does not read or store private keys. When it uses a 1Password
+On the operator's machine `erpc` keeps these secrets:
+
+- the session for your ERPC account, an access token and a refresh token obtained
+  through the OAuth device authorization grant, in the store described below;
+- the storage and backup secrets listed under the storage section below, in the
+  same store, and a machine's own backup keys in `~/.erpc/backup.env`;
+- an `erpc worker` app's trading key and secret settings, in 1Password or the
+  keychain.
+
+Node keys that erpc holds for you, and the `erpc wallet` key, are made or read in
+memory and stored in 1Password; `docs/nodes.md` lists the keys that stay on node
+hosts instead. One command writes them to disk: `erpc validator vote-account` writes
+the identity and vote keys to 0600 files under the state directory while the
+Solana CLI runs, and wipes them afterwards. A process that dies can leave a file
+until a later run sweeps it. Adding a restic key also keeps its password in a
+temporary file in the configuration directory while restic runs, and a process that dies can leave that file behind.
+
+When it uses a 1Password
 service account, it reads `OP_SERVICE_ACCOUNT_TOKEN` from its environment and
 passes it to the `op` processes it starts, and to no other process: the
 browser `erpc login` opens is started without any variable whose name begins
@@ -146,7 +161,9 @@ they are in.
 ### Storage and backup secrets
 
 - `erpc storage put` encrypts files with an account key before they leave the
-  machine; `docs/storage-encryption.md` describes the format.
+  machine; `docs/storage-encryption.md` describes the format. With the file
+  store that key sits in `~/.erpc/storage-key` (0600), not encrypted, and the
+  backup secrets below are not encrypted either.
 - `erpc backup` keeps the restic repository's master password and a
   `read_write` storage access key in the store `erpc login` chose. Each
   machine gets its own `append_only` access key and its own restic key, kept

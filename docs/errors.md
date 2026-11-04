@@ -65,8 +65,10 @@ command has more to say to a script about what it did before it failed: an
 object whose fields are the command's own (`erpc worker delete`'s says what
 was ended, dropped and forgotten, and what stays on record). It never
 appears at a terminal. A command line clap cannot parse is
-reported the same way under `--json` (`usage`); at a terminal clap prints its
-own message, with its own tips, and exits 2.
+reported the same way under `--json` (`usage`). Two cases print clap's own
+message and exit 2 instead: any such command line at a terminal, and an
+argument the verb of a node tree (`erpc validator`, `rpc`, `node`) does not
+take, even under `--json`.
 
 ## Codes
 

@@ -29,8 +29,8 @@ the OS keychain. No `wallet.json`, no `.env`, no copy on the server.
 - **After a reboot,** the worker comes back **locked**: the app does not run
   until `erpc worker start` sends the key again. There is no encrypted copy on
   disk to fall back to.
-- **Secrets** (API tokens, RPC keys) work the same way.
-  `erpc worker secret put <NAME>` keeps the value in 1Password or the
+- **Secrets** (API tokens, RPC keys) are kept the same way but reach the app as
+  environment variables, not on a pipe. `erpc worker secret put <NAME>` keeps the value in 1Password or the
   keychain, and `[secrets]` holds only `op://…` or `keychain:…` references.
 
 ## From nothing to a running app
@@ -413,7 +413,10 @@ ones a worker meets most:
 
 ## What erpc never does
 
-- Write a key, a secret, or a URL that carries one to a file or a command line.
+- Put a key, a secret, or a URL that carries one on a command line.
+- Write a trading key or an app's secret to a file. The exception on a server is
+  `erpc worker backup on`, which leaves the server's own backup keys in a
+  root-only file.
 - Start, buy or end anything without showing its price and asking.
 - Leave a server open: the firewall is in force before the app first starts.
 - Reach a server whose host key does not match the pinned one.

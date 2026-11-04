@@ -12,6 +12,8 @@ whose version has no entry below.
 
 ## [Unreleased]
 
+## [0.1.0-rc.2] - 2026-11-04
+
 Everything erpc does beyond signing in, developed since 0.1.0-rc.1 and
 brought into this repository as one change. The commands exist and pass
 their offline checks; acceptance on real hosts is still under way for most
@@ -22,23 +24,25 @@ chains, and each chain's guide in `docs/chains/` says where it stands.
 - `erpc validator` (`v`), `erpc rpc` (`r`) and `erpc node` (`n`): RPC nodes
   on 12 chains (Solana, Ethereum, Base, Optimism, Soneium, Arbitrum,
   Robinhood Chain, Avalanche, Bitcoin, Sui, TRON, Arc) and validators on
-  five (Solana, Ethereum, Avalanche, Sui, TRON), with the same verbs on
-  every implemented chain: `init`, `deploy`, `status`, `logs`, `start`,
-  `stop`, `restart`, `update`, `update-config`, `plan` and `destroy`. Six
+  five (Solana, Ethereum, Avalanche, Sui, TRON), with the same verbs:
+  `init`, `deploy`, `status`, `logs`, `start`, `stop`, `restart`, `update`,
+  `update-config`, `plan` and `destroy`. Solana validators have only `init`,
+  `deploy` and `status` of these so far, plus `list`, `keys` and `vote-account`. Six
   more chains (Polygon, BNB Chain, Kaia, Monad, Hyperliquid, NEAR) are
   researched in `docs/chains/` and answer "not implemented yet". Live
   acceptance on real hosts is still under way for most chains. Every deploy
-  logs in over
-  SSH with a key from the 1Password SSH agent, pins the host key, runs the
-  client as its own user that cannot log in, checks each release against a
-  pinned checksum, and applies an nftables firewall that rolls itself back
-  unless a fresh connection still gets in. Node and validator records,
-  identities and keys live in 1Password; nothing is written to the operator's
-  disk. `docs/nodes.md` has the clients, networks and guides.
+  logs in over SSH with a key from the 1Password SSH agent or `SSH_AUTH_SOCK`
+  and pins the host key. What it sets up on the host differs by chain, and
+  `docs/nodes.md` lists the differences: Solana nodes run as a login user with
+  passwordless sudo, Solana builds its clients at a pinned commit and fetches
+  some tools without a checksum, and Solana validators, Ethereum validators and
+  Bitcoin nodes get no firewall from erpc. Node and validator records
+  live in 1Password, not on the operator's disk. Which keys are in 1Password and which stay on the host differs by chain.
+  `docs/nodes.md` has that table, the clients, networks and guides.
 - `erpc rpc --chain solana`: Solana mainnet RPC nodes, the port of `slv rpc`,
-  with agave, jito or Firedancer (Frankendancer) and SLV's four RPC types
-  (SendTx, Index with Old Faithful, Geyser gRPC, Index + gRPC). Every
-  release the node builds or downloads is pinned in its 1Password item;
+  with agave or jito and SLV's four RPC types
+  (SendTx, Index with Old Faithful, Geyser gRPC, Index + gRPC). The client
+  and plugin versions are pinned in its 1Password item;
   the node makes its own identity; an nftables table admits RPC from the
   operator's proxies only and rolls itself back unless erpc reconnects.
 - `erpc validator --chain solana`: testnet and mainnet validators with
@@ -102,8 +106,8 @@ chains, and each chain's guide in `docs/chains/` says where it stands.
 - On Linux, sessions kept without a desktop: the kernel keyring where no
   Secret Service answers, and 1Password through an `op signin` session where
   there is no 1Password app.
-- Every command takes `--json`, and a failure reads the same everywhere: an
-  `error:` line and a `hint:` line, or one JSON object, with the exit codes
+- `erpc --json <command>` works for every command, and a failure reads the
+  same everywhere: an `error:` line and a `hint:` line, or one JSON object, with the exit codes
   in `docs/errors.md`.
 - A scheduled workflow (`jito-regions`) checks the Jito region table erpc
   carries against Jito's documentation once a week and opens an issue when
@@ -215,6 +219,7 @@ version.
 - `docs/verify-release.md`: verify signatures against a key saved once from
   `main`, not against `pubkey.txt` at the tag being checked.
 
-[Unreleased]: https://github.com/elsoul/erpc-cli/compare/v0.1.0-rc.1...HEAD
+[Unreleased]: https://github.com/elsoul/erpc-cli/compare/v0.1.0-rc.2...HEAD
+[0.1.0-rc.2]: https://github.com/elsoul/erpc-cli/releases/tag/v0.1.0-rc.2
 [0.1.0-rc.1]: https://github.com/elsoul/erpc-cli/releases/tag/v0.1.0-rc.1
 [0.0.1]: https://github.com/elsoul/erpc-cli/tree/964b507d0276254aeec4451cfbdecc8effd83724
