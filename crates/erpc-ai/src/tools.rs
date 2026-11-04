@@ -346,11 +346,12 @@ const TOOLS: &[Tool] = &[
                       top-ups (ERPC pays the gas). erpc asks user-api for a quote (VAT added), \
                       shows the person the credits, the EURC total, their wallet and ERPC's \
                       treasury, and signs and sends only on their yes; the result says whether \
-                      the credit was granted. A result with state `unknown` means the signed \
-                      transfer may have been taken: never call this again for the same \
-                      purchase until my_account shows the balance or the person has checked. \
-                      Call it only when the user asked to buy credit, with the amount they \
-                      named.",
+                      the credit was granted. Only `paid: false` means nothing was paid. A \
+                      result with state `unknown`, `submitted`, `relayed` or `ready` means \
+                      the signed transfer may have been or may still be taken: never call \
+                      this again for the same purchase until my_account shows the balance or \
+                      the person has checked. Call it only when the user asked to buy credit, \
+                      with the amount they named.",
     },
     Tool {
         name: "create_credit_wallet",

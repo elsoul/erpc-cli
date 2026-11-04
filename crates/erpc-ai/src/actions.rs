@@ -662,18 +662,28 @@ pub(crate) async fn top_up_credit(
     // the session id, never as "not sent": a second top-up on that word
     // would be a second purchase.
     let what = format!("buy {credits} credits");
-    let (submitted, submit_failed) = match gasless::submit(client, token, &id, &signature).await {
-        Ok(reply) => (reply, false),
-        Err(e) => {
-            let asked = erpc_api::gasless::status(client, token, &id).await;
-            match after_failed_submit(asked, &id, &what, &e) {
-                Ok(reply) => (reply, true),
-                Err(unknown) => return Ok(unknown),
+    // Once the signature has left this machine, nothing short of a definite
+    // answer may be reported as definite: user-api may have taken it before
+    // the connection broke or the gateway answered 502. So the submit's
+    // answer is sorted into three: accepted, refused outright, or unclear.
+    let (submitted, unclear) =
+        match classify_submit(gasless::submit(client, token, &id, &signature).await) {
+            Submitted::Accepted(reply) => (reply, false),
+            Submitted::Refused(reply) => return Ok(refusal(&reply, &id, &what)),
+            Submitted::Unclear(why) => {
+                // Ask the session before saying anything; and when it cannot be
+                // asked, the outcome is unknown, never "not sent": a second
+                // top-up on that word would be a second purchase.
+                match erpc_api::gasless::status(client, token, &id).await {
+                    Ok(reply) => (reply, true),
+                    Err(_) => {
+                        return Ok(unknown(&id, &what, &format!("no answer came back: {why}")));
+                    }
+                }
             }
-        }
-    };
+        };
     let mut last = follow(client, token, &id, submitted).await;
-    if submit_failed && state_of(&last.body) == "ready" {
+    if unclear && cancels_after_unclear_submit(state_of(&last.body)) {
         // `ready` is the state before user-api has a signature: the one
         // this machine sent never arrived. Closing the session makes that
         // final, so a late arrival is refused rather than paid after the
@@ -685,31 +695,108 @@ pub(crate) async fn top_up_credit(
             last = reply;
         }
     }
-    Ok(report(submit_failed, &last, &id, &what))
+    Ok(report(unclear, &last, &id, &what))
+}
+
+/// What user-api's answer to a submit amounts to.
+#[derive(Debug)]
+enum Submitted {
+    /// 2xx with a session state: user-api has the signature.
+    Accepted(erpc_api::gasless::Reply),
+    /// A definite 4xx with user-api's own words (`code` or `message`): the
+    /// signature was refused and nothing was paid.
+    Refused(erpc_api::gasless::Reply),
+    /// Anything else -- no answer, a 5xx, a timeout, a body that cannot be
+    /// read, a 2xx without a state -- after which the signature is out of
+    /// this machine's hands and its fate is not known.
+    Unclear(String),
+}
+
+/// Sorts a submit's answer. `erpc_api::gasless` returns every HTTP status
+/// but 401 as `Ok`, with `Null` for an unreadable body, so an `Ok` is not
+/// an acceptance until it is read.
+fn classify_submit(result: Result<erpc_api::gasless::Reply, erpc_api::ApiError>) -> Submitted {
+    let reply = match result {
+        Ok(reply) => reply,
+        Err(e) => return Submitted::Unclear(e.to_string()),
+    };
+    let has_words = reply.body.get("code").is_some() || reply.body.get("message").is_some();
+    match reply.status {
+        200..=299 if !state_of(&reply.body).is_empty() => Submitted::Accepted(reply),
+        // 408 and 429 say nothing about what happened to the request itself.
+        400..=499 if reply.status != 408 && reply.status != 429 && has_words => {
+            Submitted::Refused(reply)
+        }
+        status => Submitted::Unclear(format!("HTTP {status} with no readable session state")),
+    }
+}
+
+/// Whether, after an unclear submit, the session is cancelled: only while
+/// it is still `ready`, the state before a signature arrived. In any later
+/// state user-api holds the authorisation and may have relayed it, and a
+/// cancel could leave the EURC moved with no credit granted.
+fn cancels_after_unclear_submit(state: &str) -> bool {
+    state == "ready"
+}
+
+/// The report of a submit user-api refused outright: its words, and that
+/// nothing was paid.
+fn refusal(reply: &erpc_api::gasless::Reply, id: &str, what: &str) -> Value {
+    let mut out = pick(&reply.body, &["state", "code", "message"]);
+    if out.get("state").is_none() {
+        out["state"] = json!("refused");
+    }
+    out["httpStatus"] = json!(reply.status);
+    out["done"] = json!(false);
+    out["paid"] = json!(false);
+    out["sessionId"] = json!(id);
+    out["what"] = json!(what);
+    out
 }
 
 /// What the person and the model are told once the session has been
-/// followed. A session that was submitted normally is reported as it
-/// stands, settled or not. One whose submit failed is reported only when it
-/// settled; anything else -- still `ready`, `submitted`, `relayed`, or a
-/// reply that could not be read -- is "unknown, do not buy again", because
-/// the signature is out of this machine's hands and a definite-sounding
-/// "not done" is what makes a person buy twice.
-fn report(submit_failed: bool, last: &erpc_api::gasless::Reply, id: &str, what: &str) -> Value {
+/// followed. A settled state is reported as it is, done when granted. An
+/// unsettled one is never left bare, since "done: false" reads as "nothing
+/// happened" and that is what makes a person buy twice: after an accepted
+/// submit it is reported with its state and a message that it is still
+/// being processed; after an unclear submit, or whenever the session's
+/// state cannot be read, it is "unknown".
+fn report(unclear: bool, last: &erpc_api::gasless::Reply, id: &str, what: &str) -> Value {
     let state = state_of(&last.body);
-    if submit_failed && !is_settled(state) {
+    if is_settled(state) {
+        let mut out = pick(&last.body, &["state", "code", "message", "transaction"]);
+        out["httpStatus"] = json!(last.status);
+        out["done"] = json!(state == "granted");
+        out["sessionId"] = json!(id);
+        out["what"] = json!(what);
+        return out;
+    }
+    if state.is_empty() {
+        return unknown(
+            id,
+            what,
+            &format!("no readable state (HTTP {})", last.status),
+        );
+    }
+    if unclear {
         return unknown(
             id,
             what,
             &format!("the session's last known state is {state:?}"),
         );
     }
-    let mut out = pick(&last.body, &["state", "code", "message", "transaction"]);
-    out["httpStatus"] = json!(last.status);
-    out["done"] = json!(state == "granted");
-    out["sessionId"] = json!(id);
-    out["what"] = json!(what);
-    out
+    json!({
+        "state": state,
+        "done": false,
+        "sessionId": id,
+        "what": what,
+        "httpStatus": last.status,
+        "message": format!(
+            "user-api has the signed transfer and the session is still {state}: the \
+             credit is not granted yet. Do not buy again; the balance or this session \
+             shows when it is."
+        ),
+    })
 }
 
 /// The report for an outcome this machine cannot know.
@@ -738,94 +825,145 @@ fn is_settled(state: &str) -> bool {
     matches!(state, "granted" | "stuck" | "expired" | "cancelled")
 }
 
-/// What to do when the submit failed after the signature left this machine:
-/// user-api may have taken it before the connection broke, so `asked` is
-/// the session as it answers now. Its answer, when it gave one, is followed
-/// like a submit's. When it gave none, the outcome is reported as unknown
-/// with the session id, never as "not sent": a second top-up on that word
-/// would be a second purchase.
-fn after_failed_submit(
-    asked: Result<erpc_api::gasless::Reply, erpc_api::ApiError>,
-    id: &str,
-    what: &str,
-    submit_error: &erpc_api::ApiError,
-) -> Result<erpc_api::gasless::Reply, Value> {
-    asked.map_err(|_| unknown(id, what, &format!("no answer came back: {submit_error}")))
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{after_failed_submit, euros, is_settled, outcome, report};
+    use super::{
+        cancels_after_unclear_submit, classify_submit, euros, is_settled, outcome, refusal, report,
+    };
     use erpc_api::hourly::Reply;
     use serde_json::json;
 
-    #[test]
-    fn a_failed_submit_is_never_reported_as_not_sent() {
-        let lost = erpc_api::ApiError::Status(502);
-        // The session answered: its answer is what gets followed, as a
-        // submit's would be.
-        let answered = erpc_api::gasless::Reply {
-            status: 200,
-            body: json!({ "state": "submitted", "sessionId": "s" }),
-        };
-        let followed = after_failed_submit(Ok(answered), "s", "buy 5 credits", &lost)
-            .expect("the session's answer is followed");
-        assert_eq!(followed.body["state"], "submitted");
-        // The session did not answer either: unknown, with the session id,
-        // and the words say not to buy again.
-        let unknown = after_failed_submit(
-            Err(erpc_api::ApiError::Status(504)),
-            "s",
-            "buy 5 credits",
-            &lost,
-        )
-        .expect_err("nothing definite can be said");
-        assert_eq!(unknown["state"], "unknown");
-        assert_eq!(unknown["done"], false);
-        assert_eq!(unknown["sessionId"], "s");
-        assert_eq!(unknown["what"], "buy 5 credits");
-        let message = unknown["message"].as_str().expect("a message");
-        assert!(message.contains("not known"), "{message}");
-        assert!(message.contains("Do not buy again"), "{message}");
-        assert!(!message.contains("not sent"), "{message}");
+    fn reply(status: u16, body: serde_json::Value) -> erpc_api::gasless::Reply {
+        erpc_api::gasless::Reply { status, body }
     }
 
     #[test]
-    fn a_failed_submit_that_did_not_settle_is_reported_as_unknown() {
-        let reply = |state: &str| erpc_api::gasless::Reply {
-            status: 200,
-            body: json!({ "state": state, "sessionId": "s" }),
-        };
-        // Submitted normally: reported as it stands, settled or not.
-        let normal = report(false, &reply("relayed"), "s", "buy 5 credits");
-        assert_eq!(normal["state"], "relayed");
-        assert_eq!(normal["done"], false);
-        assert_eq!(normal["sessionId"], "s");
-        // Submit failed, then settled: the settled state, and done when granted.
-        let granted = report(true, &reply("granted"), "s", "buy 5 credits");
-        assert_eq!(granted["state"], "granted");
-        assert_eq!(granted["done"], true);
-        let cancelled = report(true, &reply("cancelled"), "s", "buy 5 credits");
-        assert_eq!(cancelled["state"], "cancelled");
-        assert_eq!(cancelled["done"], false);
-        // Submit failed and the session did not settle, whatever it says,
-        // including a reply with no state at all: unknown, never "not done".
-        for last in [
-            reply("ready"),
-            reply("submitted"),
-            reply("relayed"),
-            erpc_api::gasless::Reply {
-                status: 502,
-                body: json!(null),
-            },
+    fn a_submit_is_accepted_refused_or_unclear_and_nothing_else() {
+        use super::Submitted;
+        // Accepted: 2xx with a state.
+        assert!(matches!(
+            classify_submit(Ok(reply(200, json!({ "state": "submitted" })))),
+            Submitted::Accepted(_)
+        ));
+        // Refused outright: a definite 4xx in user-api's own words.
+        assert!(matches!(
+            classify_submit(Ok(reply(
+                400,
+                json!({ "code": "bad_signature", "message": "no" })
+            ))),
+            Submitted::Refused(_)
+        ));
+        assert!(matches!(
+            classify_submit(Ok(reply(409, json!({ "message": "the session expired" })))),
+            Submitted::Refused(_)
+        ));
+        // Unclear: no answer, a 5xx, a timeout, a rate limit, a 2xx with no
+        // state, or a 4xx with no words. The signature may have been taken.
+        for unclear in [
+            classify_submit(Err(erpc_api::ApiError::Status(502))),
+            classify_submit(Ok(reply(502, json!(null)))),
+            classify_submit(Ok(reply(500, json!({ "message": "internal" })))),
+            classify_submit(Ok(reply(503, json!({ "state": "ready" })))),
+            classify_submit(Ok(reply(408, json!({ "message": "timeout" })))),
+            classify_submit(Ok(reply(429, json!({ "code": "slow_down" })))),
+            classify_submit(Ok(reply(200, json!({ "ok": true })))),
+            classify_submit(Ok(reply(404, json!(null)))),
         ] {
-            let out = report(true, &last, "s", "buy 5 credits");
-            assert_eq!(out["state"], "unknown", "{last:?}");
+            assert!(matches!(unclear, Submitted::Unclear(_)), "{unclear:?}");
+        }
+    }
+
+    #[test]
+    fn a_refusal_says_nothing_was_paid() {
+        let out = refusal(
+            &reply(400, json!({ "code": "bad_signature", "message": "no" })),
+            "s",
+            "buy 5 credits",
+        );
+        assert_eq!(out["state"], "refused");
+        assert_eq!(out["code"], "bad_signature");
+        assert_eq!(out["done"], false);
+        assert_eq!(out["paid"], false);
+        assert_eq!(out["httpStatus"], 400);
+        assert_eq!(out["sessionId"], "s");
+    }
+
+    #[test]
+    fn only_a_session_still_waiting_for_its_signature_is_cancelled() {
+        assert!(cancels_after_unclear_submit("ready"));
+        for state in [
+            "submitted",
+            "relayed",
+            "",
+            "granted",
+            "stuck",
+            "expired",
+            "cancelled",
+        ] {
+            assert!(!cancels_after_unclear_submit(state), "{state}");
+        }
+    }
+
+    #[test]
+    fn an_unsettled_session_is_never_reported_bare() {
+        let unsettled = |out: &serde_json::Value| {
             assert_eq!(out["done"], false);
             assert_eq!(out["sessionId"], "s");
             let message = out["message"].as_str().expect("a message");
             assert!(message.contains("Do not buy again"), "{message}");
             assert!(!message.contains("not sent"), "{message}");
+        };
+        // Settled, whichever way the submit went: the state, done when granted.
+        for unclear in [false, true] {
+            let granted = report(
+                unclear,
+                &reply(200, json!({ "state": "granted" })),
+                "s",
+                "buy 5 credits",
+            );
+            assert_eq!(granted["state"], "granted");
+            assert_eq!(granted["done"], true);
+            let cancelled = report(
+                unclear,
+                &reply(200, json!({ "state": "cancelled" })),
+                "s",
+                "buy 5 credits",
+            );
+            assert_eq!(cancelled["state"], "cancelled");
+            assert_eq!(cancelled["done"], false);
+        }
+        // Accepted submit, still in flight after the follow: its state, and
+        // the words that keep a person from buying again.
+        for state in ["submitted", "relayed"] {
+            let out = report(
+                false,
+                &reply(200, json!({ "state": state })),
+                "s",
+                "buy 5 credits",
+            );
+            assert_eq!(out["state"], state);
+            unsettled(&out);
+        }
+        // Accepted submit, then a poll that could not be read: unknown.
+        let out = report(false, &reply(503, json!(null)), "s", "buy 5 credits");
+        assert_eq!(out["state"], "unknown");
+        assert!(
+            out["message"]
+                .as_str()
+                .expect("a message")
+                .contains("HTTP 503")
+        );
+        unsettled(&out);
+        // Unclear submit and anything but a settled state: unknown.
+        for last in [
+            reply(200, json!({ "state": "ready" })),
+            reply(200, json!({ "state": "submitted" })),
+            reply(200, json!({ "state": "relayed" })),
+            reply(502, json!(null)),
+        ] {
+            let out = report(true, &last, "s", "buy 5 credits");
+            assert_eq!(out["state"], "unknown", "{last:?}");
+            unsettled(&out);
         }
     }
 
