@@ -42,7 +42,8 @@ node's identity and an Ethereum validator's keystores and unlock password stay o
 those hosts need backups (`erpc backup` skips files named like `*identity*.json` in a home
 directory, so it will not cover a Solana RPC identity, which holds no stake). An Ethereum backup's
 slashing history stops at its snapshot, and restoring a key that signed after it can get it slashed:
-move a signer with `erpc v --chain eth migrate`, never from a backup while the old host may still sign. Keys sent to a node go over SSH standard input, never on a command
+move a signer with `erpc v --chain eth migrate`, not from a backup, and for a lost signer see
+`docs/ethereum-validator.md`. Keys sent to a node go over SSH standard input, never on a command
 line; some hosts then store them.
 
 ## Logging in to the node
