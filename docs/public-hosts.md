@@ -138,8 +138,9 @@ code as authoritative if the two ever disagree.
     complement of the closed set rather than as a list of open shapes,
     because a list was written once and the next review found members of
     the class that were on neither side of it. Precisely:
-    - a quote ending a host, followed by any character not listed as closed
-      above. That includes `.`, which is a method call in Rust, TypeScript
+    - a quote ending a host, or a host, with or without a numeric port, and
+      the `,` `;` or `)` that ends it, followed by any character not listed
+      as closed above. That includes `.`, which is a method call in Rust, TypeScript
       and Python (`"https://erpc.global".to_string()`), and a letter, which
       includes a quote *inside* the host as the URL Standard permits —
       `https://api.github.com'evil.example.net/x` resolves to that host,

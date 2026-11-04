@@ -66,38 +66,55 @@ while IFS= read -r c; do crates+=("$c"); done < <(
 )
 [ "${#crates[@]}" -gt 0 ] || { echo "no publishable crate in the workspace" >&2; exit 2; }
 
-api() {
-  # One request per call, with a User-Agent as crates.io asks.
-  curl -sS -A 'erpc-cli reserve-crates (oss@elsoul.nl)' -w '\n%{http_code}' "https://crates.io/api/v1/crates/$1"
-}
-
-# Owners of a crate, one login per line. HTTP 404 means no such crate.
+# Owners of a crate, one login per line. Returns 0 with the owners, 1 when
+# there is no such crate (HTTP 404), and 2 when crates.io did not answer
+# or answered something else -- which the callers below treat as "stop",
+# never as "free". The function runs in a command substitution, so an
+# `exit` here would end only the subshell; the status is what carries.
 owners_of() {
   local out code body
-  out=$(api "$1/owners"); code="${out##*$'\n'}"; body="${out%$'\n'*}"
+  out=$(curl -sS --max-time 30 -A 'erpc-cli reserve-crates (oss@elsoul.nl)' \
+    -w '\n%{http_code}' "https://crates.io/api/v1/crates/$1/owners") \
+    || { echo "crates.io could not be reached for $1" >&2; return 2; }
+  code="${out##*$'\n'}"; body="${out%$'\n'*}"
   case "$code" in
-    200) printf '%s\n' "$body" | jq -r '.users[].login' | sort -u;;
+    200)
+      printf '%s\n' "$body" | jq -r '.users[].login' | sort -u \
+        || { echo "crates.io's answer for $1/owners could not be read" >&2; return 2; }
+      ;;
     404) return 1;;
-    *) echo "crates.io answered $code for $1/owners; not guessing" >&2; exit 1;;
+    *) echo "crates.io answered $code for $1/owners; not guessing" >&2; return 2;;
   esac
 }
 
 # The owners of `erpc` are the yardstick: every other existing crate must
 # share at least one of them.
-anchor=$(owners_of erpc) || { echo "erpc itself is not on crates.io; nothing to measure ownership by" >&2; exit 1; }
+set +e
+anchor=$(owners_of erpc); rc=$?
+set -e
+case "$rc" in
+  0) ;;
+  1) echo "erpc itself is not on crates.io; nothing to measure ownership by" >&2; exit 1;;
+  *) echo "the owners of erpc could not be read; stopping" >&2; exit 1;;
+esac
 sleep 1
 
 missing=()
 for c in "${crates[@]}"; do
-  if owners=$(owners_of "$c"); then
-    if [ -z "$(comm -12 <(printf '%s\n' "$anchor") <(printf '%s\n' "$owners"))" ]; then
-      echo "$c exists on crates.io and is owned by [$(printf '%s' "$owners" | tr '\n' ' ')], not by the owners of erpc [$(printf '%s' "$anchor" | tr '\n' ' ')]; stopping" >&2
-      exit 1
-    fi
-    echo "== $c exists on crates.io, owned as erpc is; left alone"
-  else
-    missing+=("$c")
-  fi
+  set +e
+  owners=$(owners_of "$c"); rc=$?
+  set -e
+  case "$rc" in
+    0)
+      if [ -z "$(comm -12 <(printf '%s\n' "$anchor") <(printf '%s\n' "$owners"))" ]; then
+        echo "$c exists on crates.io and is owned by [$(printf '%s' "$owners" | tr '\n' ' ')], not by the owners of erpc [$(printf '%s' "$anchor" | tr '\n' ' ')]; stopping" >&2
+        exit 1
+      fi
+      echo "== $c exists on crates.io, owned as erpc is; left alone"
+      ;;
+    1) missing+=("$c");;
+    *) echo "could not tell whether $c is taken; stopping rather than guessing" >&2; exit 1;;
+  esac
   sleep 1
 done
 if [ "${#missing[@]}" -eq 0 ]; then

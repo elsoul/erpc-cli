@@ -673,22 +673,57 @@ pub(crate) async fn top_up_credit(
         }
     };
     let mut last = follow(client, token, &id, submitted).await;
-    if submit_failed && !is_settled(state_of(&last.body)) {
-        // The signature may still be on its way. Close the session, so a
-        // late arrival is refused rather than paid after the person was
-        // told nothing happened, and read it once more: what is reported
-        // is then final either way.
+    if submit_failed && state_of(&last.body) == "ready" {
+        // `ready` is the state before user-api has a signature: the one
+        // this machine sent never arrived. Closing the session makes that
+        // final, so a late arrival is refused rather than paid after the
+        // person was told nothing happened. In any later state user-api
+        // holds the authorisation, and a cancel is not this client's to
+        // send: `report` says "unknown" for those instead.
         let _ = gasless::cancel(client, token, &id).await;
         if let Ok(reply) = erpc_api::gasless::status(client, token, &id).await {
             last = reply;
         }
     }
+    Ok(report(submit_failed, &last, &id, &what))
+}
+
+/// What the person and the model are told once the session has been
+/// followed. A session that was submitted normally is reported as it
+/// stands, settled or not. One whose submit failed is reported only when it
+/// settled; anything else -- still `ready`, `submitted`, `relayed`, or a
+/// reply that could not be read -- is "unknown, do not buy again", because
+/// the signature is out of this machine's hands and a definite-sounding
+/// "not done" is what makes a person buy twice.
+fn report(submit_failed: bool, last: &erpc_api::gasless::Reply, id: &str, what: &str) -> Value {
+    let state = state_of(&last.body);
+    if submit_failed && !is_settled(state) {
+        return unknown(
+            id,
+            what,
+            &format!("the session's last known state is {state:?}"),
+        );
+    }
     let mut out = pick(&last.body, &["state", "code", "message", "transaction"]);
     out["httpStatus"] = json!(last.status);
-    out["done"] = json!(last.body.get("state").and_then(Value::as_str) == Some("granted"));
+    out["done"] = json!(state == "granted");
     out["sessionId"] = json!(id);
     out["what"] = json!(what);
-    Ok(out)
+    out
+}
+
+/// The report for an outcome this machine cannot know.
+fn unknown(id: &str, what: &str, why: &str) -> Value {
+    json!({
+        "state": "unknown",
+        "done": false,
+        "sessionId": id,
+        "what": what,
+        "message": format!(
+            "the signed transfer was sent, and whether it was taken is not known ({why}). \
+             Do not buy again until the credit balance or this session shows what happened."
+        ),
+    })
 }
 
 /// The session's `state`, or `""`.
@@ -715,24 +750,12 @@ fn after_failed_submit(
     what: &str,
     submit_error: &erpc_api::ApiError,
 ) -> Result<erpc_api::gasless::Reply, Value> {
-    asked.map_err(|_| {
-        json!({
-            "state": "unknown",
-            "done": false,
-            "sessionId": id,
-            "what": what,
-            "message": format!(
-                "the signed transfer was sent but no answer came back ({submit_error}); \
-                 whether it was taken is not known. Do not buy again until the credit \
-                 balance or this session shows what happened."
-            ),
-        })
-    })
+    asked.map_err(|_| unknown(id, what, &format!("no answer came back: {submit_error}")))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{after_failed_submit, euros, is_settled, outcome};
+    use super::{after_failed_submit, euros, is_settled, outcome, report};
     use erpc_api::hourly::Reply;
     use serde_json::json;
 
@@ -765,6 +788,45 @@ mod tests {
         assert!(message.contains("not known"), "{message}");
         assert!(message.contains("Do not buy again"), "{message}");
         assert!(!message.contains("not sent"), "{message}");
+    }
+
+    #[test]
+    fn a_failed_submit_that_did_not_settle_is_reported_as_unknown() {
+        let reply = |state: &str| erpc_api::gasless::Reply {
+            status: 200,
+            body: json!({ "state": state, "sessionId": "s" }),
+        };
+        // Submitted normally: reported as it stands, settled or not.
+        let normal = report(false, &reply("relayed"), "s", "buy 5 credits");
+        assert_eq!(normal["state"], "relayed");
+        assert_eq!(normal["done"], false);
+        assert_eq!(normal["sessionId"], "s");
+        // Submit failed, then settled: the settled state, and done when granted.
+        let granted = report(true, &reply("granted"), "s", "buy 5 credits");
+        assert_eq!(granted["state"], "granted");
+        assert_eq!(granted["done"], true);
+        let cancelled = report(true, &reply("cancelled"), "s", "buy 5 credits");
+        assert_eq!(cancelled["state"], "cancelled");
+        assert_eq!(cancelled["done"], false);
+        // Submit failed and the session did not settle, whatever it says,
+        // including a reply with no state at all: unknown, never "not done".
+        for last in [
+            reply("ready"),
+            reply("submitted"),
+            reply("relayed"),
+            erpc_api::gasless::Reply {
+                status: 502,
+                body: json!(null),
+            },
+        ] {
+            let out = report(true, &last, "s", "buy 5 credits");
+            assert_eq!(out["state"], "unknown", "{last:?}");
+            assert_eq!(out["done"], false);
+            assert_eq!(out["sessionId"], "s");
+            let message = out["message"].as_str().expect("a message");
+            assert!(message.contains("Do not buy again"), "{message}");
+            assert!(!message.contains("not sent"), "{message}");
+        }
     }
 
     #[test]
