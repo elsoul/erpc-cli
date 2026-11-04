@@ -258,6 +258,11 @@ impl Supervisor {
                 Ok(())
             }
             Request::Lock {} => {
+                // A lock is a stop that also forgets. Without `want(false)`
+                // the next tick started an app that needs no key or secret
+                // straight back up, and so did the agent after a restart,
+                // since the wanted state is persisted.
+                self.want(false);
                 self.stop_app();
                 self.secrets.clear();
                 self.key = None;
