@@ -28,7 +28,7 @@ the network with `-n`, and the host with `--name`. A change to mainnet needs
 | Chain | Command | Clients | Networks |
 |---|---|---|---|
 | Solana | `erpc validator` | Agave, Jito, Firedancer | mainnet, testnet, devnet |
-| Solana | `erpc rpc --chain solana` | Agave, Jito, Firedancer | mainnet |
+| Solana | `erpc rpc --chain solana` | Agave, Jito | mainnet |
 | Ethereum | `erpc validator --chain eth` | Reth + Lighthouse BN/VC; see [validator guide](ethereum-validator.md) | Hoodi, mainnet (live acceptance deferred) |
 | Ethereum | `erpc rpc --chain eth` | Reth + Lighthouse; `--type full` or `archive` | mainnet |
 | Sui | `erpc rpc/node/validator --chain sui` | Full node with gRPC; validator custody and external registration; [operations guide](../crates/erpc-chain-sui/templates/README.md) | mainnet, testnet (live acceptance deferred) |
@@ -57,7 +57,8 @@ How erpc handles a server:
   first time.
 - The client runs as its own system user that cannot log in. Solana is the
   exception: its clients run as `solv`, a login user with an SSH key and
-  passwordless sudo, and erpc logs in as that user after the first run.
+  passwordless sudo (Firedancer's service starts as root and is configured to
+  run as `solv`), and erpc logs in as that user after the first run.
 - Client releases are pinned by version and checksum, and checked before they
   are installed. Solana is the exception: its clients are built from source at
   a pinned tag and commit, with no checksum. Its plays also download
@@ -78,6 +79,22 @@ How erpc handles a server:
   Startup requires matching live rules, and boot recovery loads only a confirmed
   policy;
   retry deployment after correcting the management ranges.
-- Keys and the node inventory are kept in 1Password. Secrets reach the
-  server over standard input, never on a command line.
+- The node inventory is kept in 1Password. Secrets reach the server over
+  standard input, never on a command line.
+
+## Where keys are kept
+
+Not every key is in 1Password, and a node may hold a key it needs to run. Back
+up what is on a host yourself: rebuilding that host without a backup loses it.
+
+| Node | In 1Password | On the host |
+|---|---|---|
+| Solana validator | Identity, vote account key and withdraw authority | What the running validator needs; never the withdraw authority |
+| Solana RPC | The inventory | The identity, made there; it never leaves |
+| Ethereum validator | The inventory | Keystores and their unlock password; keep your original backups |
+| Arc RPC | The consensus key | The consensus key, encrypted |
+| Avalanche | A backup of the staking and BLS keys | The same keys, made there on the first deploy |
+| Sui validator | The keys, made on your own machine | The network credential, encrypted to that host and not portable |
+| TRON witness | The encrypted keystore and its password | The same, as encrypted systemd credentials |
+| OP-family RPC | The inventory and provider values | Engine JWT and peer identities, encrypted; back up the owner record and the host's encryption secret |
 

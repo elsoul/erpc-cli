@@ -16,13 +16,13 @@ and an assistant that runs it for you when you ask.
 
 </div>
 
-## No keys on your servers
+## Your keys, out of your files
 
-A server that holds no secret has nothing to steal and nothing to lose.
-erpc keeps every key in **1Password** (or your operating system's keychain)
-and hands a server only what it needs, when it needs it.
+erpc keeps the keys it manages in **1Password** and hands a server only what it
+needs, when it needs it. Your session stays in 1Password or your operating
+system's keychain.
 
-- **Validators.** The staked identity, the vote account key and the withdraw
+- **Solana validators.** The staked identity, the vote account key and the withdraw
   authority are kept in 1Password. A new validator syncs under a throwaway
   identity, and the withdraw authority never goes to a server at all.
 - **Trading bots and Web3 apps.** An `erpc worker` app gets its wallet key on
@@ -35,8 +35,14 @@ and hands a server only what it needs, when it needs it.
   and everyone on the team manages the same nodes from their own machine,
   with 1Password deciding who can do what.
 
-Because nothing on the server is precious, you can rebuild any server and
-deploy again in minutes.
+- **Keys that stay on a server.** Some nodes need a key on the host, or make
+  one there. A Solana RPC node's identity never leaves it, and an Ethereum
+  validator's keystores and unlock password live on it. Those hosts need
+  backups of their own. [Running nodes](docs/nodes.md#where-keys-are-kept) lists
+  what each chain keeps where.
+
+A server whose keys are all in 1Password can be rebuilt and deployed again in
+minutes.
 
 ## Install
 

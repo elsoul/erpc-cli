@@ -24,8 +24,8 @@ unless you prefer otherwise.
 
 ## Supported versions
 
-Only the latest minor release line receives security fixes. No release has
-been published yet, so nothing is currently supported or unsupported.
+Only the latest release receives security fixes. Every release so far is a
+pre-release.
 
 ## Scope
 
@@ -44,9 +44,12 @@ SBOM and GitHub build provenance attestations. See `docs/verify-release.md`.
 
 ## Secret handling
 
-`erpc` keeps one kind of secret: the session for your ERPC account, an access
-token and a refresh token obtained through the OAuth device authorization
-grant. It does not read or store private keys. When it uses a 1Password
+On the operator's machine `erpc` keeps one kind of secret: the session for your
+ERPC account, an access token and a refresh token obtained through the OAuth
+device authorization grant. Private keys it manages, such as a Solana validator's
+or the `erpc wallet` key, are made or read in memory and stored in 1Password, not
+on the operator's disk. Some nodes hold keys on their own hosts; `docs/nodes.md`
+lists them. When it uses a 1Password
 service account, it reads `OP_SERVICE_ACCOUNT_TOKEN` from its environment and
 passes it to the `op` processes it starts, and to no other process: the
 browser `erpc login` opens is started without any variable whose name begins

@@ -10,9 +10,10 @@ The chain skills (`arc-rpc`, `solana-rpc-mainnet`, `solana-validator-testnet`,
 
 ## Which command
 
-- `erpc validator` (`erpc v`): Solana validators.
-- `erpc rpc` (`erpc r`): RPC nodes on Solana, Arc and Ethereum.
-- `erpc node` (`erpc n`): Avalanche and Sui; not implemented yet.
+- `erpc validator` (`erpc v`): validators on Solana, Ethereum, Avalanche, Sui and TRON.
+- `erpc rpc` (`erpc r`): RPC nodes on Solana, Ethereum, Base, Optimism, Soneium, Arbitrum,
+  Robinhood Chain, Avalanche, Bitcoin, Sui, TRON and Arc.
+- `erpc node` (`erpc n`): Avalanche and Sui.
 
 The chain comes from `--chain`, then `ERPC_CHAIN`, then `default_chain` in the config
 (`erpc config set default_chain solana`). `erpc r` serves several chains, so without any of
@@ -27,11 +28,13 @@ erpc r --chain arc -n testnet --name arc1 deploy --ssh-key ~/.ssh/id_ed25519.pub
 ## Where things are kept
 
 The inventory (each node: address, SSH user and port, pinned host key, release pins, allow
-lists, type) and the node keys live in 1Password, in one vault per network shared by every
+lists, type) lives in 1Password, in one vault per network shared by every
 chain: the first `init` on a network asks for it (`--vault`), and a different `--vault` later is
-refused. erpc keeps none of it on the operator's disk. 1Password is the desktop app, or on a
+refused. erpc keeps none of it on the operator's disk. Keys differ by chain: Solana validator
+keys and Arc's consensus key are in 1Password, but a Solana RPC node's identity and an Ethereum
+validator's keystores stay on the host, so those hosts need backups; `docs/nodes.md` has the table. 1Password is the desktop app, or on a
 machine without one a service account (`OP_SERVICE_ACCOUNT_TOKEN`), which reaches testnet only.
-Keys go to the node over SSH standard input, never in a command line or a file erpc writes.
+Keys sent to a node go over SSH standard input, never in a command line or a file erpc writes.
 
 ## Logging in to the node
 

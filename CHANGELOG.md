@@ -36,11 +36,12 @@ chains, and each chain's guide in `docs/chains/` says where it stands.
   `docs/nodes.md` lists the differences: Solana nodes run as a login user with
   passwordless sudo, Solana builds its clients at a pinned commit and fetches
   some tools without a checksum, and Solana validators, Ethereum validators and
-  Bitcoin nodes get no firewall from erpc. Node and validator records,
-  identities and keys live in 1Password; nothing is written to the operator's
-  disk. `docs/nodes.md` has the clients, networks and guides.
+  Bitcoin nodes get no firewall from erpc. Node and validator records
+  live in 1Password and no key or inventory is kept on the operator's disk.
+  Which keys are in 1Password and which stay on the host differs by chain.
+  `docs/nodes.md` has that table, the clients, networks and guides.
 - `erpc rpc --chain solana`: Solana mainnet RPC nodes, the port of `slv rpc`,
-  with agave, jito or Firedancer (Frankendancer) and SLV's four RPC types
+  with agave or jito and SLV's four RPC types
   (SendTx, Index with Old Faithful, Geyser gRPC, Index + gRPC). The client
   and plugin versions are pinned in its 1Password item;
   the node makes its own identity; an nftables table admits RPC from the
