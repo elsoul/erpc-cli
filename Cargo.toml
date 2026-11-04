@@ -7,7 +7,7 @@ members = ["crates/*"]
 default-members = ["crates/erpc"]
 
 [workspace.package]
-version = "0.1.0-rc.1"
+version = "0.1.0-rc.2"
 edition = "2024"
 rust-version = "1.98"
 license = "Apache-2.0"
@@ -17,31 +17,31 @@ authors = ["ELSOUL LABO B.V. <oss@elsoul.nl>"]
 
 [workspace.dependencies]
 # Internal crates (path for development; versions for crates.io publishing)
-erpc-core = { path = "crates/erpc-core", version = "0.1.0-rc.1" }
-erpc-auth = { path = "crates/erpc-auth", version = "0.1.0-rc.1" }
-erpc-api = { path = "crates/erpc-api", version = "0.1.0-rc.1" }
-erpc-secret = { path = "crates/erpc-secret", version = "0.1.0-rc.1" }
-erpc-ssh = { path = "crates/erpc-ssh", version = "0.1.0-rc.1" }
-erpc-ops = { path = "crates/erpc-ops", version = "0.1.0-rc.1" }
-erpc-chain = { path = "crates/erpc-chain", version = "0.1.0-rc.1" }
-erpc-chain-solana = { path = "crates/erpc-chain-solana", version = "0.1.0-rc.1" }
-erpc-chain-arc = { path = "crates/erpc-chain-arc", version = "0.1.0-rc.1" }
-erpc-chain-avax = { path = "crates/erpc-chain-avax", version = "0.1.0-rc.1" }
-erpc-chain-tron = { path = "crates/erpc-chain-tron", version = "0.1.0-rc.1" }
-erpc-chain-sui = { path = "crates/erpc-chain-sui", version = "0.1.0-rc.1" }
-erpc-chain-nitro = { path = "crates/erpc-chain-nitro", version = "0.1.0-rc.1" }
-erpc-chain-eth = { path = "crates/erpc-chain-eth", version = "0.1.0-rc.1" }
-erpc-chain-rollup = { path = "crates/erpc-chain-rollup", version = "0.1.0-rc.1" }
-erpc-chain-bitcoin = { path = "crates/erpc-chain-bitcoin", version = "0.1.0-rc.1" }
-erpc-chain-op = { path = "crates/erpc-chain-op", version = "0.1.0-rc.1" }
+erpc-core = { path = "crates/erpc-core", version = "0.1.0-rc.2" }
+erpc-auth = { path = "crates/erpc-auth", version = "0.1.0-rc.2" }
+erpc-api = { path = "crates/erpc-api", version = "0.1.0-rc.2" }
+erpc-secret = { path = "crates/erpc-secret", version = "0.1.0-rc.2" }
+erpc-ssh = { path = "crates/erpc-ssh", version = "0.1.0-rc.2" }
+erpc-ops = { path = "crates/erpc-ops", version = "0.1.0-rc.2" }
+erpc-chain = { path = "crates/erpc-chain", version = "0.1.0-rc.2" }
+erpc-chain-solana = { path = "crates/erpc-chain-solana", version = "0.1.0-rc.2" }
+erpc-chain-arc = { path = "crates/erpc-chain-arc", version = "0.1.0-rc.2" }
+erpc-chain-avax = { path = "crates/erpc-chain-avax", version = "0.1.0-rc.2" }
+erpc-chain-tron = { path = "crates/erpc-chain-tron", version = "0.1.0-rc.2" }
+erpc-chain-sui = { path = "crates/erpc-chain-sui", version = "0.1.0-rc.2" }
+erpc-chain-nitro = { path = "crates/erpc-chain-nitro", version = "0.1.0-rc.2" }
+erpc-chain-eth = { path = "crates/erpc-chain-eth", version = "0.1.0-rc.2" }
+erpc-chain-rollup = { path = "crates/erpc-chain-rollup", version = "0.1.0-rc.2" }
+erpc-chain-bitcoin = { path = "crates/erpc-chain-bitcoin", version = "0.1.0-rc.2" }
+erpc-chain-op = { path = "crates/erpc-chain-op", version = "0.1.0-rc.2" }
 # Without its templates by default: the agent on a server has no use for them.
-erpc-worker = { path = "crates/erpc-worker", version = "0.1.0-rc.1", default-features = false }
-erpc-ai = { path = "crates/erpc-ai", version = "0.1.0-rc.1" }
-erpc-wallet = { path = "crates/erpc-wallet", version = "0.1.0-rc.1" }
-erpc-x402 = { path = "crates/erpc-x402", version = "0.1.0-rc.1" }
-erpc-skills = { path = "crates/erpc-skills", version = "0.1.0-rc.1" }
-erpc-mcp-server = { path = "crates/erpc-mcp-server", version = "0.1.0-rc.1" }
-erpc-release = { path = "crates/erpc-release", version = "0.1.0-rc.1" }
+erpc-worker = { path = "crates/erpc-worker", version = "0.1.0-rc.2", default-features = false }
+erpc-ai = { path = "crates/erpc-ai", version = "0.1.0-rc.2" }
+erpc-wallet = { path = "crates/erpc-wallet", version = "0.1.0-rc.2" }
+erpc-x402 = { path = "crates/erpc-x402", version = "0.1.0-rc.2" }
+erpc-skills = { path = "crates/erpc-skills", version = "0.1.0-rc.2" }
+erpc-mcp-server = { path = "crates/erpc-mcp-server", version = "0.1.0-rc.2" }
+erpc-release = { path = "crates/erpc-release", version = "0.1.0-rc.2" }
 
 # Third-party. Rule: a new crate must be at least 14 days old before it enters Cargo.lock.
 clap = { version = "4.6", features = ["derive", "env", "wrap_help"] }

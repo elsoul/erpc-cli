@@ -303,7 +303,7 @@ The rules for these, and for writing a message, are in
 
 ## Status
 
-Pre-release (`v0.1.0-rc`). The commands above exist and pass their offline
+Pre-release (`v0.1.0-rc.2`). The commands above exist and pass their offline
 checks; acceptance on real hosts is still under way for most chains, and each
 chain's guide says where it stands. erpc is the Rust successor of
 [SLV](https://github.com/ValidatorsDAO/slv).
