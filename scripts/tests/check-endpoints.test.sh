@@ -1594,7 +1594,9 @@ check_tracked() {
     cp "$allowlist_src" crates/erpc-core/src/endpoints.rs
     printf '%s\n' "$content" > "$rel"
     git add -A
-    "$sh" "$gate" "$@" 2>&1
+    # Standard input closed, so a gate that reads it instead of the file ends
+    # rather than waiting on a terminal.
+    "$sh" "$gate" "$@" 2>&1 </dev/null
   )"; rc=$?
   rm -rf "$repo"
   if { [ "$expect" = block ] && [ "$rc" -eq 1 ]; } || { [ "$expect" = allow ] && [ "$rc" -eq 0 ]; }; then
@@ -1619,6 +1621,25 @@ check_tracked "tracked: a name starting with a dash is still read" block "-tmp-e
 check_tracked "tracked: a file named like the option is still read" block "--print-exceptions" \
   'See https://evil.example.com/x for details.'
 
+check_tracked "tracked: a file named - is read, not standard input" block "-" \
+  'See https://evil.example.com/x for details.'
+
+check_tracked "tracked: a name holding a backslash is still read" block 'docs/a\b.md' \
+  'See https://evil.example.com/x for details.'
+
+check_tracked "tracked: a name with a leading space is still read" block " lead.md" \
+  'See https://evil.example.com/x for details.'
+
+check_tracked "tracked: a name with a trailing space is still read" block "trail.md " \
+  'See https://evil.example.com/x for details.'
+
+# Every skip is on the --print-exceptions list, so a force-added path is scanned.
+check_tracked "tracked: a file under target is scanned" block "target/a.rs" \
+  'const U: &str = "https://evil.example.com/x";'
+
+check_tracked "tracked: a file under node_modules is scanned" block "x/node_modules/a.rs" \
+  'const U: &str = "https://evil.example.com/x";'
+
 # The pre-commit form, where the names come from whatever is staged.
 check_tracked "staged: a file named like the option is read after --" block "--print-exceptions" \
   'See https://evil.example.com/x for details.' -- --print-exceptions
@@ -1626,10 +1647,35 @@ check_tracked "staged: a file named like the option is read after --" block "--p
 check_tracked "staged: a name starting with a dash is read after --" block "-tmp-endpoints.md" \
   'See https://evil.example.com/x for details.' -- -tmp-endpoints.md
 
+check_tracked "staged: a file named - is read after --" block "-" \
+  'See https://evil.example.com/x for details.' -- -
+
 check_tracked "a lone -- scans every tracked file" block "docs/a.md" \
   'See https://evil.example.com/x for details.' --
 
-if grep -qF 'scripts/check-endpoints.sh -- {staged_files}' "$source_root/lefthook.yml"; then
+# A listing that fails must not read as a clean tree. A corrupt index fails
+# `git ls-files` while `git rev-parse --show-toplevel` still works.
+broken_repo="$(mktemp -d)"
+broken_out="$(
+  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+  cd "$broken_repo" || exit 3
+  git init -q . || exit 3
+  mkdir -p crates/erpc-core/src
+  cp "$allowlist_src" crates/erpc-core/src/endpoints.rs
+  git add -A
+  printf 'not an index' > .git/index
+  "$sh" "$gate" 2>&1 </dev/null
+)"; broken_rc=$?
+rm -rf "$broken_repo"
+case "$broken_rc:$broken_out" in
+  2:*"git ls-files failed"*)
+    pass=$((pass + 1)); printf 'ok   a failed listing refuses to report a clean result\n';;
+  *)
+    fail=$((fail + 1)); printf 'FAIL a failed listing refuses to report a clean result (exit %s)\n%s\n' "$broken_rc" "$broken_out";;
+esac
+
+# Anchored to the whole line, so that a comment holding the text cannot satisfy it.
+if grep -qE '^[[:space:]]*run: scripts/check-endpoints\.sh -- \{staged_files\}[[:space:]]*$' "$source_root/lefthook.yml"; then
   pass=$((pass + 1)); printf 'ok   the pre-commit hook ends the options before the staged names\n'
 else
   fail=$((fail + 1)); printf 'FAIL the pre-commit hook must pass -- before the staged names\n'
