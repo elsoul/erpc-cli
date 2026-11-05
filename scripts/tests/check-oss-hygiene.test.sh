@@ -196,5 +196,499 @@ check "ordinary rust file" allow "$sample_dir/o.rs" \
 check "snapshot mirror host" allow "$sample_dir/p.rs" \
   'const SNAP: &str = "https://solana-snapshot-ams.erpc.global";'
 
+# --- what the next commit holds, as the pre-commit hook runs it -----------------
+
+# check() names its file on the command line, which never exercises the listing or
+# the index. These run the gate in a throwaway repository holding the sample and
+# the one source file the gate reads.
+#
+# mktemp is guarded twice. If it failed unnoticed, `cd ""` would succeed and leave
+# git running in this checkout.
+allowlist_src="$repo_root/crates/erpc-core/src/endpoints.rs"
+in_scratch_repo() {
+  local repo
+  repo="$(mktemp -d)" || exit 3
+  scratch_out="$(
+    # A hook runs with these set, and they would point git back at this checkout.
+    unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+    [ -n "$repo" ] || exit 3
+    cd "$repo" || exit 3
+    git init -q . || exit 3
+    mkdir -p crates/erpc-core/src .git/info
+    cp "$allowlist_src" crates/erpc-core/src/endpoints.rs
+    "$@"
+  )"; scratch_rc=$?
+  rm -rf "$repo"
+}
+
+# Block means exit 1: exit 2 is the gate reporting itself broken.
+expect_outcome() {
+  local name="$1" expect="$2"
+  if { [ "$expect" = block ] && [ "$scratch_rc" -eq 1 ]; } || { [ "$expect" = allow ] && [ "$scratch_rc" -eq 0 ]; }; then
+    pass=$((pass + 1)); printf 'ok   %s\n' "$name"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s (expected %s, exit %s)\n%s\n' "$name" "$expect" "$scratch_rc" "$scratch_out"
+  fi
+}
+
+# Asserts the message as well as the exit, where a later check would also stop a
+# run that got past the one under test.
+expect_refusal() {
+  local name="$1" want="$2"
+  case "$scratch_rc:$scratch_out" in
+    2:*"$want"*)
+      pass=$((pass + 1)); printf 'ok   %s\n' "$name";;
+    *)
+      fail=$((fail + 1)); printf 'FAIL %s (exit %s, wanted exit 2 saying "%s")\n%s\n' "$name" "$scratch_rc" "$want" "$scratch_out";;
+  esac
+}
+
+# Writes $1 and stages it with content $2, then runs the gate with the rest.
+stage_and_run() {
+  local rel="$1" content="$2"
+  shift 2
+  mkdir -p "$(dirname -- "$rel")"
+  printf '%s\n' "$content" > "$rel"
+  git add -A -f
+  # Standard input closed, so a gate that reads it instead of the file ends rather
+  # than waiting on a terminal.
+  "$sh" "$gate" "$@" 2>&1 </dev/null
+}
+
+check_staged() {
+  local name="$1" expect="$2" rel="$3" content="$4"
+  shift 4
+  in_scratch_repo stage_and_run "$rel" "$content" --staged "$@"
+  expect_outcome "$name" "$expect"
+}
+
+gate_staged() {
+  "$sh" "$gate" --staged 2>&1 </dev/null
+}
+
+commit_staged() {
+  git add -A -f
+  git -c user.name=t -c user.email=t@example.invalid -c commit.gpgsign=false \
+    -c core.hooksPath=/dev/null commit -qm x --no-verify
+}
+
+bad_content='See elsoul/internal-ops for the runbook.'
+bad_host='const U: &str = "https://hidden-host.erpc.global/";'
+
+# Names that were read by every other form, and those that lefthook used to drop.
+for staged_name in " lead.md" "trail.md " "docs/日本語.md" 'docs/a"b.md' 'docs/a\b.md' -tmp-hygiene.md \
+  --staged -- - '0:a.md' '1:a.md' "$(printf 'tab\there.md')" "$(printf 'new\nline.md')"; do
+  check_staged "staged: the name [$staged_name] is read" block "$staged_name" "$bad_content"
+done
+
+# Every content check, reading the staged object.
+check_staged "staged: a non-public host" block a.rs "$bad_host"
+check_staged "staged: a cloud identifier" block a.toml 'account_id = "8a313f35be0eb4e99ad5bed9cb7aa99d"'
+check_staged "staged: a bare 1Password identifier" block a.md 'Rotate item exampleitemidbbbbbbbbbbbbb after use.'
+check_staged "staged: a bearer token" block a.sh 'curl -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9abcdef"'
+check_staged "staged: a credential assignment" block a.sh 'export OP_SERVICE_ACCOUNT_TOKEN=ops_abcdefghijklmnopqrstuvwxyz0123456789'
+check_staged "staged: a keypair array" block a.json "[$(python3 -c 'print(",".join(["7"]*64))')]"
+check_staged "staged: a private key" block a.rs 'let private_key = "0x4c0883a69102937d6231471b5dbb6204fe512961708279f2e3b4a0d4e5c6f7a8";'
+check_staged "staged: a PEM block" block a.pem '-----BEGIN EC PRIVATE KEY-----'
+
+check_staged "staged: an internal document is blocked by name" block docs/architecture.md 'Nothing to report.'
+check_staged "staged: a dotenv file is blocked by name" block .env 'Nothing to report.'
+
+check_staged "staged: a clean file passes" allow docs/a.md 'Nothing to report.'
+check_staged "staged: a published host passes" allow a.rs 'const AUTH: &str = "https://auth-api.erpc.global/oauth/token";'
+check_staged "staged: an empty file passes" allow a.md ''
+
+# The gate's own skips still apply.
+check_staged "staged: a skipped path is not read" allow target/a.rs "$bad_content"
+check_staged "staged: a skipped extension is not read" allow a.png "$bad_content"
+check_staged "staged: a file quoting the patterns is not read" allow scripts/check-oss-hygiene.sh "$bad_content"
+
+staged_with_file_names() {
+  printf 'clean\n' > a.md
+  git add -A -f
+  "$sh" "$gate" --staged a.md 2>&1 </dev/null
+}
+in_scratch_repo staged_with_file_names
+expect_refusal "staged: file names are refused rather than ignored" "takes no file names"
+
+mistyped_option() {
+  printf '%s\n' "$bad_content" > a.md
+  git add -A -f
+  "$sh" "$gate" --stagd 2>&1 </dev/null
+}
+in_scratch_repo mistyped_option
+expect_refusal "a mistyped option is refused rather than read as a file" "unknown option"
+
+# The file-name form, for a caller passing names it does not control.
+in_scratch_repo stage_and_run --staged "$bad_content" -- --staged
+expect_outcome "a file named like the option is read after --" block
+
+in_scratch_repo stage_and_run -tmp-hygiene.md "$bad_content" -- -tmp-hygiene.md
+expect_outcome "a name starting with a dash is read after --" block
+
+in_scratch_repo stage_and_run docs/a.md "$bad_content" --
+expect_outcome "a lone -- scans every tracked file" block
+
+# The index decides, whatever the worktree says.
+staged_then_cleaned() {
+  printf '%s\n' "$bad_content" > a.md
+  git add -A -f
+  printf 'clean\n' > a.md
+  gate_staged
+}
+in_scratch_repo staged_then_cleaned
+expect_outcome "staged: content cleaned from the worktree afterwards is still read" block
+
+staged_then_removed() {
+  mkdir -p "$(dirname -- "$1")"
+  printf '%s\n' "$2" > "$1"
+  git add -A -f
+  rm "$1"
+  gate_staged
+}
+in_scratch_repo staged_then_removed a.md "$bad_content"
+expect_outcome "staged: content removed from the worktree afterwards is still read" block
+
+# The checks on a name need no file: they fired only if one was in the worktree.
+in_scratch_repo staged_then_removed docs/architecture.md 'clean'
+expect_outcome "staged: an internal document removed from the worktree is still blocked" block
+
+in_scratch_repo staged_then_removed .env 'clean'
+expect_outcome "staged: a dotenv file removed from the worktree is still blocked" block
+
+clean_staged_dirty_worktree() {
+  printf 'clean\n' > a.md
+  git add -A -f
+  printf '%s\n' "$bad_content" > a.md
+  gate_staged
+}
+in_scratch_repo clean_staged_dirty_worktree
+expect_outcome "staged: content not staged is not part of the commit" allow
+
+# A host declared only in the worktree does not vouch for a staged URL.
+add_host_to_worktree_allowlist() {
+  { printf 'pub const WORKTREE_HOSTS: &[&str] = &["hidden-host.erpc.global"];\n'
+    cat "$1"
+  } > crates/erpc-core/src/endpoints.rs
+}
+host_only_in_worktree() {
+  printf '%s\n' "$bad_host" > a.rs
+  git add -A -f
+  add_host_to_worktree_allowlist "$allowlist_src"
+  gate_staged
+}
+in_scratch_repo host_only_in_worktree
+expect_outcome "staged: the allowlist is read from the index" block
+
+host_staged_then_reverted() {
+  add_host_to_worktree_allowlist "$allowlist_src"
+  printf '%s\n' "$bad_host" > a.rs
+  git add -A -f
+  cp "$allowlist_src" crates/erpc-core/src/endpoints.rs
+  gate_staged
+}
+in_scratch_repo host_staged_then_reverted
+expect_outcome "staged: a host staged in the allowlist is honoured" allow
+
+allowlist_deleted() {
+  printf 'clean\n' > a.md
+  git add -A -f
+  git rm -q --cached crates/erpc-core/src/endpoints.rs
+  gate_staged
+}
+in_scratch_repo allowlist_deleted
+expect_refusal "staged: an allowlist the commit deletes is refused" "could not read the host allowlist"
+
+# Under `set -u`, bash 3.2 reads an empty array as unbound.
+nothing_staged() {
+  commit_staged
+  gate_staged
+}
+in_scratch_repo nothing_staged
+expect_outcome "staged: nothing staged passes" allow
+
+deleted_path() {
+  mkdir docs
+  printf '%s\n' "$bad_content" > docs/architecture.md
+  commit_staged
+  git rm -q docs/architecture.md
+  gate_staged
+}
+in_scratch_repo deleted_path
+expect_outcome "staged: a deleted path has nothing to judge" allow
+
+deleted_alongside() {
+  printf '%s\n' "$bad_content" > a.md
+  commit_staged
+  git rm -q a.md
+  printf '%s\n' "$bad_content" > b.md
+  git add b.md
+  gate_staged
+}
+in_scratch_repo deleted_alongside
+expect_outcome "staged: a deletion does not end the scan" block
+
+untouched_path() {
+  printf '%s\n' "$bad_content" > a.md
+  commit_staged
+  printf 'clean\n' > b.md
+  git add b.md
+  gate_staged
+}
+in_scratch_repo untouched_path
+expect_outcome "staged: a file the commit does not change is not judged" allow
+
+# `git commit -a` and `git commit <path>` give the hook a temporary index.
+alternate_index() {
+  printf 'clean\n' > a.md
+  git add -A -f
+  cp .git/index .git/alt-index
+  printf '%s\n' "$bad_content" > a.md
+  GIT_INDEX_FILE="$PWD/.git/alt-index" git add a.md
+  printf 'clean\n' > a.md
+  GIT_INDEX_FILE="$PWD/.git/alt-index" "$sh" "$gate" --staged 2>&1 </dev/null
+}
+in_scratch_repo alternate_index
+expect_outcome "staged: the index git names in GIT_INDEX_FILE is the one read" block
+
+renamed_path() {
+  printf '%s\n' "$bad_content" > a.md
+  commit_staged
+  git mv a.md b.md
+  gate_staged
+}
+in_scratch_repo renamed_path
+expect_outcome "staged: a renamed file is read at its new name" block
+
+# A name holding a glob matches only itself. The clean file is what the glob would
+# match, and it sorts first, so the lookup would find it before the real one.
+glob_name() {
+  printf 'clean\n' > A.md
+  printf '%s\n' "$bad_content" > '[A].md'
+  git add -A -f
+  gate_staged
+}
+in_scratch_repo glob_name
+expect_outcome "staged: a name holding a glob is read as itself" block
+
+symlink_with_bad_text() {
+  ln -s 'elsoul/internal-ops' link.md
+  git add -A -f
+  gate_staged
+}
+in_scratch_repo symlink_with_bad_text
+expect_outcome "staged: a symlink's link text is read" block
+
+type_change() {
+  printf 'clean\n' > a.md
+  commit_staged
+  rm a.md
+  ln -s 'elsoul/internal-ops' a.md
+  git add a.md
+  gate_staged
+}
+in_scratch_repo type_change
+expect_outcome "staged: a file changed to a symlink is read" block
+
+symlink_clean() {
+  printf 'clean\n' > a.md
+  ln -s a.md link.md
+  git add -A -f
+  rm link.md
+  printf '%s\n' "$bad_content" > link.md
+  gate_staged
+}
+in_scratch_repo symlink_clean
+expect_outcome "staged: a symlink is judged by its object, not by the worktree" allow
+
+unresolved_conflict() {
+  local blob
+  blob="$(printf 'clean\n' | git hash-object -w --stdin)"
+  git add -A -f
+  git update-index --add --index-info <<EOF
+100644 $blob 1	$1
+100644 $blob 2	$1
+EOF
+  gate_staged
+}
+in_scratch_repo unresolved_conflict a.md
+expect_refusal "staged: an unresolved conflict is refused" "unresolved conflict"
+
+in_scratch_repo unresolved_conflict a.png
+expect_refusal "staged: an unresolved conflict on a skipped path is refused" "unresolved conflict"
+
+# A submodule entry holds a commit id, not text, so there is nothing to read. Its
+# name is still in the commit.
+submodule_entry() {
+  git add -A -f
+  git update-index --add --cacheinfo "160000,0123456789012345678901234567890123456789,$1"
+  mkdir "$1"
+  gate_staged
+}
+in_scratch_repo submodule_entry sub
+expect_outcome "staged: a submodule entry is passed over" allow
+
+in_scratch_repo submodule_entry .env
+expect_outcome "staged: a submodule entry's name is still judged" block
+
+# A git stub for one gate run, kept under .git so that no listing can see it. $1
+# is shell run first, for the call it means to fail, and git runs for the rest.
+real_git="$(command -v git)"
+stage_then_stubbed_run() {
+  local body="$1"
+  shift
+  printf 'clean\n' > a.md
+  git add -A -f
+  mkdir -p .git/stub
+  printf '#!/bin/sh\n%s\nexec "%s" "$@"\n' "$body" "$real_git" > .git/stub/git
+  chmod +x .git/stub/git
+  PATH="$PWD/.git/stub:$PATH" "$sh" "$gate" "$@" 2>&1 </dev/null
+}
+
+# The name that was cut joins nothing, so the marker is still seen.
+in_scratch_repo stage_then_stubbed_run 'case "$1" in diff) printf "a.m"; exit 1;; esac' --staged
+expect_refusal "staged: a listing cut partway through a name is refused" "git diff failed"
+
+in_scratch_repo stage_then_stubbed_run 'case "$1" in diff) exit 1;; esac' --staged
+expect_refusal "staged: a listing that prints nothing and fails is refused" "git diff failed"
+
+in_scratch_repo stage_then_stubbed_run 'case "$1" in --literal-pathspecs) exit 1;; esac' --staged
+expect_refusal "staged: a failed index lookup is refused" "not found in the index"
+
+in_scratch_repo stage_then_stubbed_run 'case "$1" in --literal-pathspecs) printf "100644 0123456789012345678901234567890123456789 0\\tother.md\\000"; exit 0;; esac' --staged
+expect_refusal "staged: a lookup answering for another path is refused" "not found in the index"
+
+# Only the scan's own read fails: the allowlist goes by :0:path and the file by
+# object id, and a stub failing both would stop at the allowlist check.
+in_scratch_repo stage_then_stubbed_run 'case "$1:$3" in cat-file::0:*) ;; cat-file:*) printf "partial\n"; exit 1;; esac' --staged
+expect_refusal "staged: a failed read of the index is refused" "could not read the staged content"
+
+in_scratch_repo stage_then_stubbed_run 'case "$1" in cat-file) exit 1;; esac' --staged
+expect_refusal "staged: an unreadable allowlist is refused" "could not read the host allowlist"
+
+# The gate's own scratch file holds staged content, so it must not outlive the run.
+# mktemp is stubbed, because it need not honour TMPDIR, and a listing of a directory
+# it did not use would be empty whatever the gate did.
+scratch_file_left() {
+  mkdir -p .git/stub
+  printf '#!/bin/sh\n: > "%s/.git/scratch-probe"\necho "%s/.git/scratch-probe"\n' "$PWD" "$PWD" > .git/stub/mktemp
+  chmod +x .git/stub/mktemp
+  printf '%s\n' "$bad_content" > a.md
+  git add -A -f
+  PATH="$PWD/.git/stub:$PATH" "$sh" "$gate" --staged >/dev/null 2>&1 </dev/null
+  [ "$?" -eq 1 ] && [ ! -e .git/scratch-probe ]
+}
+in_scratch_repo scratch_file_left
+if [ "$scratch_rc" -eq 0 ]; then
+  pass=$((pass + 1)); printf 'ok   staged: no scratch file is left behind\n'
+else
+  fail=$((fail + 1)); printf 'FAIL staged: a scratch file was left behind, or the gate did not block\n'
+fi
+
+failing_mktemp() {
+  mkdir -p .git/stub
+  printf '#!/bin/sh\nexit 1\n' > .git/stub/mktemp
+  chmod +x .git/stub/mktemp
+  printf 'clean\n' > a.md
+  git add -A -f
+  PATH="$PWD/.git/stub:$PATH" "$sh" "$gate" --staged 2>&1 </dev/null
+}
+in_scratch_repo failing_mktemp
+expect_refusal "staged: a failed mktemp is refused" "mktemp failed"
+
+# The real hook, where lefthook is installed. CI has none and pre-push does.
+lefthook_run() {
+  mkdir -p scripts
+  cp "$repo_root/lefthook.yml" lefthook.yml
+  cp "$gate" scripts/check-oss-hygiene.sh
+  # lefthook saves unstaged changes with git stash create, which needs a commit.
+  commit_staged
+  case "${2:-}" in
+    clean-file) printf 'clean\n' > "$1";;
+    *) printf '%s\n' "$bad_content" > "$1";;
+  esac
+  git add -A -f
+  case "${2:-}" in
+    clean-worktree) printf 'clean\n' > "$1";;
+  esac
+  unset LEFTHOOK LEFTHOOK_EXCLUDE LEFTHOOK_QUIET
+  lefthook run pre-commit --command oss-hygiene --no-auto-install --no-tty 2>&1 </dev/null
+}
+# The report is asserted, so that lefthook failing on its own account is not read
+# as the gate blocking, and the clean run shows the command ran.
+expect_lefthook() {
+  local name="$1" want_rc="$2" want="$3"
+  case "$scratch_rc:$scratch_out" in
+    "$want_rc":*"$want"*)
+      pass=$((pass + 1)); printf 'ok   %s\n' "$name";;
+    *)
+      fail=$((fail + 1)); printf 'FAIL %s (exit %s, wanted exit %s saying "%s")\n%s\n' "$name" "$scratch_rc" "$want_rc" "$want" "$scratch_out";;
+  esac
+}
+if command -v lefthook >/dev/null 2>&1; then
+  in_scratch_repo lefthook_run " lead.md"
+  expect_lefthook "lefthook: a leading space reaches the gate" 1 "internal reference"
+  in_scratch_repo lefthook_run "trail.md "
+  expect_lefthook "lefthook: a trailing space reaches the gate" 1 "internal reference"
+  in_scratch_repo lefthook_run "a.md" clean-worktree
+  expect_lefthook "lefthook: content cleaned from the worktree is still read" 1 "internal reference"
+  in_scratch_repo lefthook_run "a.md" clean-file
+  expect_lefthook "lefthook: a clean file passes" 0 "oss-hygiene"
+else
+  printf 'skip lefthook is not installed, so the real hook was not run\n'
+fi
+
+# --- the harness itself ---------------------------------------------------------
+
+# A hook runs this suite with these set. Left in place, they would point the
+# scratch repository back at this checkout; pointed nowhere, git init fails instead.
+probe_hook_env() {
+  (
+    export GIT_DIR=/nonexistent/git GIT_WORK_TREE=/nonexistent/tree GIT_INDEX_FILE=/nonexistent/index
+    in_scratch_repo stage_and_run a.md "$bad_content" --staged
+    exit "$scratch_rc"
+  )
+}
+# Exit 1 means the file was staged and read, which needs all three cleared.
+probe_hook_env
+if [ "$?" -eq 1 ]; then
+  pass=$((pass + 1)); printf 'ok   the harness clears the variables a hook sets\n'
+else
+  fail=$((fail + 1)); printf 'FAIL the harness must clear the variables a hook sets\n'
+fi
+
+# Run from a scratch directory, so that a guard disabled here runs its git there
+# instead of in this checkout.
+probe_scratch_guard() {
+  local stub sandbox
+  sandbox="$(mktemp -d)" || exit 3
+  stub="$1"
+  mkdir -p "$sandbox/stub"
+  printf '#!/bin/sh\nexit %s\n' "$stub" > "$sandbox/stub/mktemp"
+  chmod +x "$sandbox/stub/mktemp"
+  probe_out="$(
+    unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+    cd "$sandbox" || exit 9
+    PATH="$sandbox/stub:$PATH"
+    in_scratch_repo true
+    printf 'returned %s\n' "$scratch_rc"
+  )"; probe_rc=$?
+  rm -rf "$sandbox"
+}
+
+probe_scratch_guard 1
+if [ "$probe_rc" -eq 3 ] && [ -z "$probe_out" ]; then
+  pass=$((pass + 1)); printf 'ok   a failed mktemp stops the harness\n'
+else
+  fail=$((fail + 1)); printf 'FAIL a failed mktemp must stop the harness (exit %s)\n%s\n' "$probe_rc" "$probe_out"
+fi
+
+probe_scratch_guard 0
+if [ "$probe_out" = "returned 3" ]; then
+  pass=$((pass + 1)); printf 'ok   an empty mktemp result never reaches cd\n'
+else
+  fail=$((fail + 1)); printf 'FAIL an empty mktemp result must not reach cd (exit %s)\n%s\n' "$probe_rc" "$probe_out"
+fi
+
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
