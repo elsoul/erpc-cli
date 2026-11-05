@@ -71,16 +71,17 @@ case "${1:-}" in
 esac
 
 # NUL-separated: without -z, git quotes a non-ASCII name and the quoted form is not
-# a path. A path git cannot produce marks a failed listing, with a NUL on each side
-# because a git that dies partway through a name leaves that part unended.
+# a path. A path git cannot produce marks a listing that finished. The listing runs in a
+# process substitution, so no exit status reaches this shell, and a git that fails, or
+# a substitution that never ran, must not read as a tree with fewer files in it.
 list_files() {
-  local listing_failed=no f
+  local listing_complete=no f
   files=()
   while IFS= read -r -d '' f; do
-    if [ "$f" = "/__listing_failed__" ]; then listing_failed=yes; continue; fi
+    if [ "$f" = "/__listing_complete__" ]; then listing_complete=yes; continue; fi
     files+=("$f")
-  done < <(git "$@" -z || printf '\0/__listing_failed__\0')
-  if [ "$listing_failed" = yes ]; then
+  done < <(git "$@" -z && printf '/__listing_complete__\0')
+  if [ "$listing_complete" = no ]; then
     echo "git $1 failed; refusing to report a clean result" >&2
     exit 2
   fi
@@ -188,30 +189,23 @@ read_index_entry() {
   fi
 }
 
-# Each file is written here for the checks below, with every NUL turned into a space.
-# A NUL makes grep call the file binary and drop its lines, and bash's read cuts or
-# joins the line it is on, which is what a real separator could not do.
-#
-# These files hold staged content. bash runs the EXIT trap on HUP and TERM as well; on
-# QUIT, bash 3.2 leaves them behind.
-scan_tmp=""
-match_tmp=""
-trap 'rm -f "$scan_tmp" "$match_tmp"' EXIT
-scan_tmp="$(mktemp)" || { echo "mktemp failed; refusing to report a clean result" >&2; exit 2; }
-match_tmp="$(mktemp)" || { echo "mktemp failed; refusing to report a clean result" >&2; exit 2; }
-
 scan_failed() {
   echo "$f: a check could not run; refusing to report a clean result" >&2
   exit 2
 }
 
-# The lines grep finds in the scratch file go to match_tmp. grep exits 1 when it finds
-# nothing and above that when it could not look, which must not read the same way. A
-# redirection that fails also gives 1, without running grep, so rc starts above that.
+# The lines grep finds in the content go to match_lines. grep exits 1 when it finds
+# nothing and above that when it could not look, which must not read the same way. They
+# are held in memory and not in a file, because a loop reading a file it cannot open
+# ends as if the file were empty. Every line grep prints here holds a line number, so
+# splitting on newlines loses none. `set -f` so that a `*` in one is not expanded.
 matches() {
-  local rc=3
-  { grep "$@" "$scan_tmp"; rc=$?; } > "$match_tmp"
+  local found rc IFS=$'\n'
+  found=$(printf '%s\n' "$content" | grep "$@"); rc=$?
   [ "$rc" -le 1 ] || scan_failed
+  set -f
+  match_lines=($found)
+  set +f
 }
 
 # --staged has an empty list when a commit only deletes, and bash 3.2 reads an
@@ -236,13 +230,16 @@ for f in ${files[@]+"${files[@]}"}; do
 
   # The content the checks below read. A symlink's object is its link text. A name
   # starting with a dash would otherwise be an option to cat, and `-` standard input.
+  #
+  # Every NUL becomes a space. A NUL makes grep call the content binary and drop its
+  # lines, and bash would drop it from the variable, joining what was beside it.
   if [ "$read_from" = worktree ]; then
     case "$f" in -*) read_path="./$f";; *) read_path="$f";; esac
-    cat -- "$read_path" | tr '\000' ' ' > "$scan_tmp"; read_rc=$?
+    content=$(cat -- "$read_path" | tr '\000' ' '); read_rc=$?
   elif [ "$entry_mode" = 160000 ]; then
-    : > "$scan_tmp"; read_rc=$?
+    content=""; read_rc=0
   else
-    git cat-file blob "$entry_blob" | tr '\000' ' ' > "$scan_tmp"; read_rc=$?
+    content=$(git cat-file blob "$entry_blob" | tr '\000' ' '); read_rc=$?
   fi
   if [ "$read_rc" -ne 0 ]; then
     echo "$f: could not read the content; refusing to report a clean result" >&2
@@ -251,19 +248,21 @@ for f in ${files[@]+"${files[@]}"}; do
 
   # 1. erpc.global hosts outside the published allowlist.
   matches -noiE '[A-Za-z0-9._-]+\.erpc\.global'
-  while IFS=: read -r ln match; do
-    [ -z "$ln" ] && continue
+  for line in ${match_lines[@]+"${match_lines[@]}"}; do
+    ln="${line%%:*}"
+    match="${line#*:}"
     if ! erpc_host_allowed "$match"; then
       report "$f" "$ln" "non-public erpc.global host: $match"
     fi
-  done < "$match_tmp"
+  done
 
   # 2. Cloud account / zone / project identifiers.
   matches -noiE '(account|zone|project)[_ -]?id[^0-9a-z]{0,8}[0-9a-f]{32}'
-  while IFS=: read -r ln match; do
-    [ -z "$ln" ] && continue
+  for line in ${match_lines[@]+"${match_lines[@]}"}; do
+    ln="${line%%:*}"
+    match="${line#*:}"
     report "$f" "$ln" "infrastructure identifier: $match"
-  done < "$match_tmp"
+  done
 
   # 2b. Bare 1Password vault or item identifiers.
   #
@@ -274,11 +273,10 @@ for f in ${files[@]+"${files[@]}"}; do
   # the words vault or item, including the plural and the dashboard URL form
   # (.../vaults/<id>/items/<id>). The id itself must be lowercase: real ones
   # are, and matching case-insensitively flagged uppercase base32 in prose.
-  op_ln=0
-  # The test on op_line keeps a last line with no newline.
-  while IFS= read -r op_line || [ -n "$op_line" ]; do
-    op_ln=$((op_ln + 1))
-    case "$op_line" in *[Vv][Aa][Uu][Ll][Tt]*|*[Ii][Tt][Ee][Mm]*) ;; *) continue;; esac
+  matches -nEi 'vault|item'
+  for line in ${match_lines[@]+"${match_lines[@]}"}; do
+    op_ln="${line%%:*}"
+    op_line="${line#*:}"
     stripped=$(printf '%s' "$op_line" | sed 's|op://[A-Za-z0-9._/-]*||g') || scan_failed
     tokens=$(printf '%s' "$stripped" | grep -oiE '(vault|item)s?([^A-Za-z0-9]{1,8}(id|identifier))?[^A-Za-z0-9]{1,8}[A-Za-z0-9]{26}([^A-Za-z0-9]|$)')
     [ "$?" -le 1 ] || scan_failed
@@ -298,64 +296,66 @@ for f in ${files[@]+"${files[@]}"}; do
       report "$f" "$op_ln" "bare 1Password identifier: $id"
     done
     set +f
-  done < "$scan_tmp"
+  done
 
   # 3. Bearer token literals.
   matches -noE 'Bearer [A-Za-z0-9._~+/-]{32,}'
-  while IFS=: read -r ln match; do
-    [ -z "$ln" ] && continue
+  for line in ${match_lines[@]+"${match_lines[@]}"}; do
+    ln="${line%%:*}"
+    match="${line#*:}"
     report "$f" "$ln" "bearer token literal: ${match:0:24}..."
-  done < "$match_tmp"
+  done
 
   # 4. Credential assignments with a literal value.
   matches -noE '(OP_SERVICE_ACCOUNT_TOKEN|OP_CONNECT_TOKEN|CLOUDFLARE_API_TOKEN|CARGO_REGISTRY_TOKEN|MINISIGN_SECRET_KEY|AWS_SECRET_ACCESS_KEY|R2_SECRET_ACCESS_KEY)[[:space:]]*[:=][[:space:]]*["'"'"']?[A-Za-z0-9._~+/-]{16,}'
-  while IFS=: read -r ln match; do
-    [ -z "$ln" ] && continue
+  for line in ${match_lines[@]+"${match_lines[@]}"}; do
+    ln="${line%%:*}"
+    match="${line#*:}"
     report "$f" "$ln" "credential assignment: ${match:0:40}..."
-  done < "$match_tmp"
+  done
 
   # 5. Blockchain key material (second net behind gitleaks).
   matches -noE '\[([[:space:]]*[0-9]{1,3}[[:space:]]*,){63}[[:space:]]*[0-9]{1,3}[[:space:]]*\]'
-  while IFS=: read -r ln match; do
-    [ -z "$ln" ] && continue
+  for line in ${match_lines[@]+"${match_lines[@]}"}; do
+    ln="${line%%:*}"
+    match="${line#*:}"
     report "$f" "$ln" "looks like a Solana keypair array: ${match:0:32}..."
-  done < "$match_tmp"
+  done
 
   matches -noiE '(priv(ate)?[_-]?key|secret[_-]?key|signing[_-]?key|mnemonic|seed[_-]?phrase)["'"'"'[:space:]]{0,10}[:=][[:space:]]*["'"'"']?(0x)?[0-9a-fA-F]{64}'
-  while IFS=: read -r ln match; do
-    [ -z "$ln" ] && continue
+  for line in ${match_lines[@]+"${match_lines[@]}"}; do
+    ln="${line%%:*}"
+    match="${line#*:}"
     report "$f" "$ln" "looks like a private key: ${match:0:40}..."
-  done < "$match_tmp"
+  done
 
   matches -noE -- '-----BEGIN [A-Z ]*PRIVATE KEY-----'
-  while IFS=: read -r ln match; do
-    [ -z "$ln" ] && continue
+  for line in ${match_lines[@]+"${match_lines[@]}"}; do
+    ln="${line%%:*}"
+    match="${line#*:}"
     report "$f" "$ln" "PEM private key block"
-  done < "$match_tmp"
+  done
 
   # 6. References into the company's private repositories and documents.
   # Any sibling repository in the organisation, the internal documentation
   # convention, or a developer home path. Phrased so that this public file does
   # not itself name a private repository.
   matches -noE '(elsoul/[A-Za-z0-9_.-]+|\.claude/docs/|/Users/[A-Za-z0-9_.-]+/)'
-  while IFS=: read -r ln match; do
-    [ -z "$ln" ] && continue
+  for line in ${match_lines[@]+"${match_lines[@]}"}; do
+    ln="${line%%:*}"
+    match="${line#*:}"
     # This project's own org paths. Named exactly: a trailing wildcard would
     # admit any private sibling whose name starts with the same prefix.
     case "$match" in
       */erpc-cli|*/erpc-cli-maintainers) continue;;
     esac
     report "$f" "$ln" "internal reference: $match"
-  done < "$match_tmp"
+  done
 
   # 7. Committed .env files.
   case "$f" in
     .env|.env.*|*/.env|*/.env.*) report "$f" 1 ".env files must not be committed";;
   esac
-
-  # A loop reading a file that cannot be opened ends as if the file were empty, so the
-  # scratch files must still be there for what was read from them to count.
-  { [ -f "$scan_tmp" ] && [ -f "$match_tmp" ]; } || scan_failed
 done
 
 if [ "$status" -ne 0 ]; then
