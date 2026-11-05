@@ -1574,5 +1574,66 @@ check "validator TLS audience is not an ordinary ERPC destination" block "$sampl
 check "validator TLS audience rejects neighboring address" block "crates/erpc-chain-eth/templates/authority/eth_validator_${sample_dir}.py" \
   'URL="https://127.0.0.4:8552"'
 
+# --- every tracked file, as CI and pre-push run it ---------------------------
+
+# check() names its file on the command line, which never exercises how the gate
+# lists tracked files. This runs the gate in a throwaway repository holding the
+# sample and the one source file the gate reads, with no arguments unless the
+# case gives some. Block means exit 1: exit 2 is the gate reporting itself broken.
+check_tracked() {
+  local name="$1" expect="$2" rel="$3" content="$4"
+  shift 4
+  local repo out rc
+  repo="$(mktemp -d)"
+  out="$(
+    # A hook runs with these set, and they would point git back at this checkout.
+    unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+    cd "$repo" || exit 3
+    git init -q . || exit 3
+    mkdir -p crates/erpc-core/src "$(dirname -- "$rel")"
+    cp "$allowlist_src" crates/erpc-core/src/endpoints.rs
+    printf '%s\n' "$content" > "$rel"
+    git add -A
+    "$sh" "$gate" "$@" 2>&1
+  )"; rc=$?
+  rm -rf "$repo"
+  if { [ "$expect" = block ] && [ "$rc" -eq 1 ]; } || { [ "$expect" = allow ] && [ "$rc" -eq 0 ]; }; then
+    pass=$((pass + 1)); printf 'ok   %s\n' "$name"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s (expected %s, exit %s)\n%s\n' "$name" "$expect" "$rc" "$out"
+  fi
+}
+
+check_tracked "tracked: a clean non-ASCII file" allow "docs/日本語.md" \
+  'Nothing to report.'
+
+check_tracked "tracked: a non-ASCII name is still read" block "docs/日本語.md" \
+  'See https://evil.example.com/x for details.'
+
+check_tracked "tracked: a name with a double quote is still read" block 'docs/a"b.md' \
+  'See https://evil.example.com/x for details.'
+
+check_tracked "tracked: a name starting with a dash is still read" block "-tmp-endpoints.md" \
+  'See https://evil.example.com/x for details.'
+
+check_tracked "tracked: a file named like the option is still read" block "--print-exceptions" \
+  'See https://evil.example.com/x for details.'
+
+# The pre-commit form, where the names come from whatever is staged.
+check_tracked "staged: a file named like the option is read after --" block "--print-exceptions" \
+  'See https://evil.example.com/x for details.' -- --print-exceptions
+
+check_tracked "staged: a name starting with a dash is read after --" block "-tmp-endpoints.md" \
+  'See https://evil.example.com/x for details.' -- -tmp-endpoints.md
+
+check_tracked "a lone -- scans every tracked file" block "docs/a.md" \
+  'See https://evil.example.com/x for details.' --
+
+if grep -qF 'scripts/check-endpoints.sh -- {staged_files}' "$source_root/lefthook.yml"; then
+  pass=$((pass + 1)); printf 'ok   the pre-commit hook ends the options before the staged names\n'
+else
+  fail=$((fail + 1)); printf 'FAIL the pre-commit hook must pass -- before the staged names\n'
+fi
+
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

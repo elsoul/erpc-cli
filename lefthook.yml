@@ -15,7 +15,7 @@ pre-commit:
       run: scripts/check-oss-hygiene.sh {staged_files}
     endpoints:
       glob: "*"
-      run: scripts/check-endpoints.sh {staged_files}
+      run: scripts/check-endpoints.sh -- {staged_files}
     fmt:
       glob: "*.rs"
       run: cargo fmt --all -- --check
