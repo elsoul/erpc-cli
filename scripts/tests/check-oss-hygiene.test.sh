@@ -448,6 +448,16 @@ in_scratch_repo stubbed_tool_run grep "$real_grep" '*elsoul*' "$big_with_finding
 stub_exit=2
 expect_refusal "tracked: finding nothing after the writer died is refused" "could not run"
 
+# The bound is on CPU, so a loaded machine does not trip it. Reading this file with the
+# quadratic strip takes minutes, and without it a few seconds.
+large_without_final_newline() {
+  awk 'BEGIN { for (i = 0; i < 200000; i++) print "padding padding"; printf "See elsoul/internal-ops for it." }' > a.md
+  git add a.md crates
+  ( ulimit -St 40; "$sh" "$gate" --staged 2>&1 </dev/null )
+}
+in_scratch_repo large_without_final_newline
+expect_reported "staged: a large file with no final newline is read in time" "a.md:200001:"
+
 check_staged "staged: an internal document is blocked by name" block docs/architecture.md 'Nothing to report.'
 check_staged "staged: a dotenv file is blocked by name" block .env 'Nothing to report.'
 
