@@ -18,9 +18,17 @@
 # the erpc.global allowlist from the index too. The checks on a path's name need
 # only the listing, so they hold whatever the worktree has there. A path the commit
 # deletes has nothing to judge. A submodule entry holds a commit id and no text, so
-# only its name is judged. A failed listing, lookup or read exits 2, and so does an
-# unresolved conflict. This script is still the copy in the worktree; CI's
+# only its name is judged. This script is still the copy in the worktree; CI's
 # no-argument scan runs the committed one.
+#
+# Without --staged the content is the worktree's, so a no-argument scan judges the
+# commit only where the worktree matches it, as it does in CI. A path that is not a
+# regular file in the worktree is read from the index: a file deleted from the
+# worktree, a dangling symlink, a symlink to a directory. A symlink to a file is read
+# through the link. A named path that is in neither place exits 2.
+#
+# In every form a failed listing, lookup or read exits 2, and so does an unresolved
+# conflict on a path read from the index.
 #
 # Policy: docs/public-hosts.md. Response to an accidental commit:
 # docs/secret-exposure-response.md.
@@ -61,27 +69,27 @@ esac
 # NUL-separated: without -z, git quotes a non-ASCII name and the quoted form is not
 # a path. A path git cannot produce marks a failed listing, with a NUL on each side
 # because a git that dies partway through a name leaves that part unended.
-list_staged() {
+list_files() {
   local listing_failed=no f
   files=()
   while IFS= read -r -d '' f; do
     if [ "$f" = "/__listing_failed__" ]; then listing_failed=yes; continue; fi
     files+=("$f")
-  done < <(git diff --cached --name-only -z --diff-filter=d || printf '\0/__listing_failed__\0')
+  done < <(git "$@" -z || printf '\0/__listing_failed__\0')
   if [ "$listing_failed" = yes ]; then
-    echo "git diff failed; refusing to report a clean result" >&2
+    echo "git $1 failed; refusing to report a clean result" >&2
     exit 2
   fi
 }
 
 if [ "$staged" = yes ]; then
-  # Deleted paths are left out: the commit holds nothing there to judge.
-  list_staged
+  # Deleted paths are left out: the commit holds nothing there to judge. A user's
+  # diff.ignoreSubmodules would leave out a submodule entry, whose name is judged.
+  list_files diff --cached --name-only --diff-filter=d --ignore-submodules=none
 elif [ "$#" -gt 0 ]; then
   files=("$@")
 else
-  files=()
-  while IFS= read -r f; do files+=("$f"); done < <(git ls-files)
+  list_files ls-files
 fi
 
 # Binary-ish, vendored and license files are skipped.
@@ -148,6 +156,8 @@ EOF
 # this public file does not enumerate what those documents are called.
 internal_doc_re='(^|/)(architecture|design|[a-z0-9-]+-design|[a-z0-9-]+-assessment|[a-z0-9-]+-records|[a-z0-9-]+-acceptance|classification)\.md$'
 
+# Every content check below uses grep -a. Without it GNU grep says that a file holding
+# a NUL matches on standard error, which these discard, and reports nothing.
 status=0
 report() {
   printf '%s:%s: %s\n' "$1" "$2" "$3" >&2
@@ -163,7 +173,7 @@ read_index_entry() {
   local entry="" meta rest
   IFS= read -r -d '' entry < <(git --literal-pathspecs ls-files -s -z -- "$1" || true)
   if [ -z "$entry" ] || [ "${entry#*"$tab"}" != "$1" ]; then
-    echo "$1: not found in the index; refusing to report a clean result" >&2
+    echo "$1: nothing to read in the worktree or the index; refusing to report a clean result" >&2
     exit 2
   fi
   meta="${entry%%"$tab"*}"
@@ -176,23 +186,22 @@ read_index_entry() {
   fi
 }
 
-# Each staged object is written here for the checks below, which match against a
-# file. A failed write stops the run, where a grep reading a pipe would see a short
-# file and report nothing.
-if [ "$staged" = yes ]; then
-  scan_tmp="$(mktemp)" || { echo "mktemp failed; refusing to report a clean result" >&2; exit 2; }
-  trap 'rm -f "$scan_tmp"' EXIT
-fi
+# Each file is written here for the checks below, which match against a file and
+# discard grep's errors. A failed read stops the run, where a grep reading the source
+# directly would report nothing.
+scan_tmp="$(mktemp)" || { echo "mktemp failed; refusing to report a clean result" >&2; exit 2; }
+trap 'rm -f "$scan_tmp"' EXIT
 
 # --staged has an empty list when a commit only deletes, and bash 3.2 reads an
 # empty "${files[@]}" as unbound under `set -u`.
 for f in ${files[@]+"${files[@]}"}; do
-  # The lookup comes first, so that a conflict on a path no check reads still stops
-  # the run.
-  if [ "$staged" = yes ]; then
+  # Read the object rather than the file for --staged, whatever the worktree holds
+  # there, and for anything that is not a regular file. The lookup comes first, so
+  # that a conflict on a path no check reads still stops the run.
+  read_from=worktree
+  if [ "$staged" = yes ] || [ ! -f "$f" ]; then
     read_index_entry "$f"
-  else
-    [ -f "$f" ] || continue
+    read_from=index
   fi
   [[ "$f" =~ $skip_re ]] && continue
 
@@ -204,17 +213,18 @@ for f in ${files[@]+"${files[@]}"}; do
   [[ "$f" =~ $self_re ]] && continue
 
   # The content the checks below read. A symlink's object is its link text. A name
-  # starting with a dash would otherwise be an option to grep.
-  if [ "$staged" = no ]; then
-    case "$f" in -*) scan_path="./$f";; *) scan_path="$f";; esac
+  # starting with a dash would otherwise be an option to cat, and `-` standard input.
+  if [ "$read_from" = worktree ]; then
+    case "$f" in -*) read_path="./$f";; *) read_path="$f";; esac
+    cat -- "$read_path" > "$scan_tmp"; read_rc=$?
   elif [ "$entry_mode" = 160000 ]; then
-    scan_path=/dev/null
+    : > "$scan_tmp"; read_rc=$?
   else
-    if ! git cat-file blob "$entry_blob" > "$scan_tmp"; then
-      echo "$f: could not read the staged content; refusing to report a clean result" >&2
-      exit 2
-    fi
-    scan_path="$scan_tmp"
+    git cat-file blob "$entry_blob" > "$scan_tmp"; read_rc=$?
+  fi
+  if [ "$read_rc" -ne 0 ]; then
+    echo "$f: could not read the content; refusing to report a clean result" >&2
+    exit 2
   fi
 
   # 1. erpc.global hosts outside the published allowlist.
@@ -223,13 +233,13 @@ for f in ${files[@]+"${files[@]}"}; do
     if ! erpc_host_allowed "$match"; then
       report "$f" "$ln" "non-public erpc.global host: $match"
     fi
-  done < <(grep -noiE '[A-Za-z0-9._-]+\.erpc\.global' "$scan_path" 2>/dev/null)
+  done < <(grep -anoiE '[A-Za-z0-9._-]+\.erpc\.global' "$scan_tmp" 2>/dev/null)
 
   # 2. Cloud account / zone / project identifiers.
   while IFS=: read -r ln match; do
     [ -z "$ln" ] && continue
     report "$f" "$ln" "infrastructure identifier: $match"
-  done < <(grep -noiE '(account|zone|project)[_ -]?id[^0-9a-z]{0,8}[0-9a-f]{32}' "$scan_path" 2>/dev/null)
+  done < <(grep -anoiE '(account|zone|project)[_ -]?id[^0-9a-z]{0,8}[0-9a-f]{32}' "$scan_tmp" 2>/dev/null)
 
   # 2b. Bare 1Password vault or item identifiers.
   #
@@ -259,35 +269,35 @@ for f in ${files[@]+"${files[@]}"}; do
       report "$f" "$op_ln" "bare 1Password identifier: $id"
     done
     set +f
-  done < <(grep -a '' "$scan_path" 2>/dev/null)
+  done < <(grep -a '' "$scan_tmp" 2>/dev/null)
 
   # 3. Bearer token literals.
   while IFS=: read -r ln match; do
     [ -z "$ln" ] && continue
     report "$f" "$ln" "bearer token literal: ${match:0:24}..."
-  done < <(grep -noE 'Bearer [A-Za-z0-9._~+/-]{32,}' "$scan_path" 2>/dev/null)
+  done < <(grep -anoE 'Bearer [A-Za-z0-9._~+/-]{32,}' "$scan_tmp" 2>/dev/null)
 
   # 4. Credential assignments with a literal value.
   while IFS=: read -r ln match; do
     [ -z "$ln" ] && continue
     report "$f" "$ln" "credential assignment: ${match:0:40}..."
-  done < <(grep -noE '(OP_SERVICE_ACCOUNT_TOKEN|OP_CONNECT_TOKEN|CLOUDFLARE_API_TOKEN|CARGO_REGISTRY_TOKEN|MINISIGN_SECRET_KEY|AWS_SECRET_ACCESS_KEY|R2_SECRET_ACCESS_KEY)[[:space:]]*[:=][[:space:]]*["'"'"']?[A-Za-z0-9._~+/-]{16,}' "$scan_path" 2>/dev/null)
+  done < <(grep -anoE '(OP_SERVICE_ACCOUNT_TOKEN|OP_CONNECT_TOKEN|CLOUDFLARE_API_TOKEN|CARGO_REGISTRY_TOKEN|MINISIGN_SECRET_KEY|AWS_SECRET_ACCESS_KEY|R2_SECRET_ACCESS_KEY)[[:space:]]*[:=][[:space:]]*["'"'"']?[A-Za-z0-9._~+/-]{16,}' "$scan_tmp" 2>/dev/null)
 
   # 5. Blockchain key material (second net behind gitleaks).
   while IFS=: read -r ln match; do
     [ -z "$ln" ] && continue
     report "$f" "$ln" "looks like a Solana keypair array: ${match:0:32}..."
-  done < <(grep -noE '\[([[:space:]]*[0-9]{1,3}[[:space:]]*,){63}[[:space:]]*[0-9]{1,3}[[:space:]]*\]' "$scan_path" 2>/dev/null)
+  done < <(grep -anoE '\[([[:space:]]*[0-9]{1,3}[[:space:]]*,){63}[[:space:]]*[0-9]{1,3}[[:space:]]*\]' "$scan_tmp" 2>/dev/null)
 
   while IFS=: read -r ln match; do
     [ -z "$ln" ] && continue
     report "$f" "$ln" "looks like a private key: ${match:0:40}..."
-  done < <(grep -noiE '(priv(ate)?[_-]?key|secret[_-]?key|signing[_-]?key|mnemonic|seed[_-]?phrase)["'"'"'[:space:]]{0,10}[:=][[:space:]]*["'"'"']?(0x)?[0-9a-fA-F]{64}' "$scan_path" 2>/dev/null)
+  done < <(grep -anoiE '(priv(ate)?[_-]?key|secret[_-]?key|signing[_-]?key|mnemonic|seed[_-]?phrase)["'"'"'[:space:]]{0,10}[:=][[:space:]]*["'"'"']?(0x)?[0-9a-fA-F]{64}' "$scan_tmp" 2>/dev/null)
 
   while IFS=: read -r ln match; do
     [ -z "$ln" ] && continue
     report "$f" "$ln" "PEM private key block"
-  done < <(grep -noE -- '-----BEGIN [A-Z ]*PRIVATE KEY-----' "$scan_path" 2>/dev/null)
+  done < <(grep -anoE -- '-----BEGIN [A-Z ]*PRIVATE KEY-----' "$scan_tmp" 2>/dev/null)
 
   # 6. References into the company's private repositories and documents.
   # Any sibling repository in the organisation, the internal documentation
@@ -301,7 +311,7 @@ for f in ${files[@]+"${files[@]}"}; do
       */erpc-cli|*/erpc-cli-maintainers) continue;;
     esac
     report "$f" "$ln" "internal reference: $match"
-  done < <(grep -noE '(elsoul/[A-Za-z0-9_.-]+|\.claude/docs/|/Users/[A-Za-z0-9_.-]+/)' "$scan_path" 2>/dev/null)
+  done < <(grep -anoE '(elsoul/[A-Za-z0-9_.-]+|\.claude/docs/|/Users/[A-Za-z0-9_.-]+/)' "$scan_tmp" 2>/dev/null)
 
   # 7. Committed .env files.
   case "$f" in
