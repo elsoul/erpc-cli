@@ -32,7 +32,7 @@ Mainnet, Testnet and Devnet use different `genesis.blob` files from MystenLabs' 
 - **Registration/keys:** Submit `request_add_validator_candidate`, fund its pool, then `request_add_validator` when eligible. Key roles are `protocol.key` (BLS), `account.key` (staking assets), `network.key` (state sync), `worker.key` (consensus); the latter three are ed25519. The systemd guide places node keys under `/opt/sui/key-pairs`. Account operation capabilities can be delegated while keeping the account key offline. A production remote-protocol-signer integration is **not documented** in these guides. [S7], [S8]
 - **Slashing:** After reports from `2f + 1` other validators by voting power, staking rewards are reduced. The cited guide does not document this as destruction of principal; an independent principal-slashing schedule is **not documented** there. [S7]
 - **Processes/hardware:** Validator `sui-node` handles consensus; no separate mandatory MEV process is **documented**. Recommended minimum is 24 physical cores/48 vCPUs, 128 GB RAM, 4 TB NVMe, 1 Gbps. Open TCP 8080/8081 for validator traffic and UDP 8084 for state sync; keep metrics private. The official deployment and management guides cover onboarding. [S4], [S7]
-- **erpc today:** **Partial**: the [CLI][R21] and [skill][R20] expose a full-node lifecycle with a compatible node alias; validator lifecycle and external registration preparation/validation/status are implemented; real-host acceptance remains deferred. See the [implementation plan][R22] and [embedded operations guide][R23].
+- **erpc today:** **Partial**: the [CLI][R21] and [skill][R20] expose a full-node lifecycle with a compatible node alias; validator lifecycle and external registration preparation/validation/status are implemented; real-host acceptance remains deferred. See the [embedded operations guide][R23].
 
 ## Pitfalls
 
@@ -61,7 +61,5 @@ Mainnet, Testnet and Devnet use different `genesis.blob` files from MystenLabs' 
 [R20]: ../../crates/erpc-skills/skills/sui-node/SKILL.md "Existing repository skill"
 
 [R21]: ../../crates/erpc/src/main.rs "Existing repository CLI"
-
-[R22]: ../plans/2026-10-26-chain-implementation.md "Implementation and acceptance tracking"
 
 [R23]: ../../crates/erpc-chain-sui/templates/README.md "Sui full-node lifecycle and deferred live acceptance"

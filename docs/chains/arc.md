@@ -41,7 +41,7 @@ The breaking-change ledger documents validator mode: CL requires `--validator` a
 
 ## ERPC today
 
-**Implemented for RPC**, including mainnet/testnet full, archive and onboarded provider roles; validator deployment is not supplied by this RPC path. Existing playbooks, templates, release pins and operational plans are linked below. This research adds no deploy behavior. [R1], [R2], [R3], [R4]
+**Implemented for RPC**, including mainnet/testnet full, archive and onboarded provider roles; validator deployment is not supplied by this RPC path. Existing playbooks, templates and release pins are linked below. This research adds no deploy behavior. [R1], [R2]
 
 ## Sources
 
@@ -61,5 +61,3 @@ The breaking-change ledger documents validator mode: CL requires `--validator` a
 [S14]: https://docs.arc.io/arc/tutorials/monitor-a-node "Health checks and metrics paths; read 2026-10-26"
 [R1]: ../../crates/erpc-skills/skills/arc-rpc/SKILL.md "Existing ERPC Arc RPC behavior"
 [R2]: ../../crates/erpc-chain-arc/templates/ "Existing Arc playbooks and systemd templates"
-[R3]: ../plans/2026-10-23-arc-rpc.md "Existing Arc RPC implementation plan"
-[R4]: ../plans/2026-10-24-arc-a12-runbook.md "Existing Arc operational runbook"

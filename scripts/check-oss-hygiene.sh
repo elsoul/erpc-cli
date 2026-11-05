@@ -30,7 +30,9 @@ if [ "$#" -gt 0 ]; then
   files=("$@")
 else
   files=()
-  while IFS= read -r f; do files+=("$f"); done < <(git ls-files)
+  # NUL-separated: without -z, git quotes a non-ASCII name and the quoted form
+  # is not a path, so that file would be skipped without a word.
+  while IFS= read -r -d '' f; do files+=("$f"); done < <(git ls-files -z)
 fi
 
 # Binary-ish, vendored and license files are skipped.
@@ -86,6 +88,74 @@ EOF
 # this public file does not enumerate what those documents are called.
 internal_doc_re='(^|/)(architecture|design|[a-z0-9-]+-design|[a-z0-9-]+-assessment|[a-z0-9-]+-records|[a-z0-9-]+-acceptance|classification)\.md$'
 
+# Collapses `.`, `..` and empty path segments. A string rather than an array:
+# an empty array under `set -u` is an error on the bash 3.2 this gate runs on.
+normalize_path() {
+  local rest="$1/" out="" seg
+  while [ -n "$rest" ]; do
+    seg="${rest%%/*}"
+    rest="${rest#*/}"
+    case "$seg" in
+      ""|.) ;;
+      ..)
+        case "$out" in
+          ""|..|*/..) out="${out:+$out/}..";;
+          */*) out="${out%/*}";;
+          *) out="";;
+        esac;;
+      *) out="${out:+$out/}$seg";;
+    esac
+  done
+  printf '%s\n' "$out"
+}
+
+# Drops what surrounds a path in prose: emphasis at either end, and whatever ends
+# a sentence after the directory name.
+trim_token_edges() {
+  local path="$1" base
+  while :; do
+    case "$path" in
+      [_-]*) path="${path#?}";;
+      *) break;;
+    esac
+  done
+  base="$path"
+  while :; do
+    case "$base" in
+      *[._-]) base="${base%?}";;
+      *) break;;
+    esac
+  done
+  case "$base" in
+    *plans) printf '%s\n' "$base";;
+    *) printf '%s\n' "$path";;
+  esac
+}
+
+# True if $1 names docs/plans anywhere in it, or resolves there from directory $2.
+path_names_plans_dir() {
+  local path
+  path="$(trim_token_edges "$1")"
+  case "$path" in */*) ;; *) return 1;; esac
+  case "/$(normalize_path "$path")/" in */docs/plans/*) return 0;; esac
+  case "$path" in /*) return 1;; esac
+  case "/$(normalize_path "$2/$path")/" in /docs/plans/*) return 0;; esac
+  return 1
+}
+
+# True if URL $1 is this repository's and reaches docs/plans. Folded to lowercase
+# because the host treats the owner and repository names that way.
+url_names_plans_dir() {
+  local url
+  url="$(printf '%s' "${1#*://}" | tr '[:upper:]' '[:lower:]')"
+  # A colon ends a segment here too, as in `.../docs/plans:12`.
+  url="$(trim_token_edges "${url//://}")"
+  case "/$(normalize_path "$url")/" in
+    */elsoul/erpc-cli/docs/plans/*|*/elsoul/erpc-cli/*/docs/plans/*) return 0;;
+  esac
+  return 1
+}
+
 status=0
 report() {
   printf '%s:%s: %s\n' "$1" "$2" "$3" >&2
@@ -93,8 +163,18 @@ report() {
 }
 
 for f in "${files[@]}"; do
+  # On the path alone and first, so that no file type, symlink or skip rule
+  # gets past it.
+  case "$f" in
+    docs/plans|docs/plans/*|./docs/plans|./docs/plans/*)
+      report "$f" 1 "docs/plans is not part of this repository";;
+  esac
+
   [ -f "$f" ] || continue
   [[ "$f" =~ $skip_re ]] && continue
+
+  # A name starting with `-` would reach grep below as an option.
+  case "$f" in -*) f="./$f";; esac
 
   # 0. Internal documents, matched on the path alone.
   if [[ "$f" =~ $internal_doc_re ]]; then
@@ -188,6 +268,40 @@ for f in "${files[@]}"; do
     esac
     report "$f" "$ln" "internal reference: $match"
   done < <(grep -noE '(elsoul/[A-Za-z0-9_.-]+|\.claude/docs/|/Users/[A-Za-z0-9_.-]+/)' "$f" 2>/dev/null)
+
+  # 6b. Paths into docs/plans. This repository has no such directory, so a link
+  # there dangles. A net against accidents, not against someone working around
+  # it. A token is a run of letters, digits and `_ . : / % -` containing `plans`,
+  # which covers Markdown and HTML links and paths in prose or code. Its parts
+  # between colons are read as paths, after trimming `_` and `-` from the ends,
+  # and a host name with no scheme reads as a path too. A token holding `://` is
+  # read as one URL, which counts only if it is this repository's. Not read: a
+  # target that is the bare word `plans`, which cannot be told from prose;
+  # percent-encoding, backslashes and other capitalisations of a local path;
+  # symlink targets; any file grep treats as binary; and the contents of a file
+  # skip_re passes over, though a file under docs/plans is refused by name above.
+  while IFS=: read -r ln tok; do
+    [ -z "$ln" ] && continue
+    case "$tok" in *[Ff][Ii][Ll][Ee]://*) tok="${tok#*://}";; esac
+    case "$tok" in
+      *://*)
+        if url_names_plans_dir "$tok"; then
+          report "$f" "$ln" "path into docs/plans, which this repository does not contain: $tok"
+        fi
+        continue;;
+    esac
+    # Split on colons: `[R1]:../plans/x.md` and `docs/plans/x.md:42` both carry
+    # the path beside something else.
+    rest="$tok:"
+    while [ -n "$rest" ]; do
+      part="${rest%%:*}"
+      rest="${rest#*:}"
+      if path_names_plans_dir "$part" "$(dirname "$f")"; then
+        report "$f" "$ln" "path into docs/plans, which this repository does not contain: $tok"
+        break
+      fi
+    done
+  done < <(grep -noE '[A-Za-z0-9_.:/%-]*plans[A-Za-z0-9_.:/%-]*' "$f" 2>/dev/null)
 
   # 7. Committed .env files.
   case "$f" in

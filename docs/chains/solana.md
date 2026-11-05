@@ -64,7 +64,7 @@ Agave/Jito combine execution and validator duties in the validator process, unli
 
 ## ERPC today
 
-**Implemented:** mainnet RPC and mainnet/testnet validator flows, including client/version selection. Existing code also contains plugin/version compatibility checks, archive integration and operational safeguards. Remaining mapping limits include external archive backends and release-specific signer/feature policy; this page does not extend supported deployments. Existing plays and plans: [R1], [R2], [R3], [R4], [R5].
+**Implemented:** mainnet RPC and mainnet/testnet validator flows, including client/version selection. Existing code also contains plugin/version compatibility checks, archive integration and operational safeguards. Remaining mapping limits include external archive backends and release-specific signer/feature policy; this page does not extend supported deployments. Existing code and plays: [R1], [R2], [R3].
 
 ## Sources
 
@@ -97,6 +97,4 @@ Agave/Jito combine execution and validator duties in the validator process, unli
 [R1]: ../../crates/erpc-chain-solana/templates/jinja/mainnet-rpc/start-validator.sh.j2 "Existing RPC flags and optional Geyser plugin"
 [R2]: ../../crates/erpc-chain-solana/src/rpc.rs "Existing RPC modes and plugin compatibility selection"
 [R3]: ../../crates/erpc-chain-solana/templates/ansible/ "Existing RPC and validator playbooks"
-[R4]: ../plans/2026-10-23-solana-rpc.md "Existing RPC implementation plan"
-[R5]: ../plans/2026-10-24-validator-clients.md "Existing validator client implementation plan"
 [R6]: ../public-hosts.md "ERPC and explicitly identified third-party snapshot mirrors"
