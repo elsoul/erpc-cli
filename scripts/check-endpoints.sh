@@ -5,6 +5,7 @@
 # Egress allowlist gate.
 #
 #   scripts/check-endpoints.sh [--] [files...]  # default: all tracked files
+#   scripts/check-endpoints.sh --staged         # what the next commit changes
 #   scripts/check-endpoints.sh --print-exceptions
 #
 # ONE RULE: every http/https/ws/wss URL in a tracked file must name a host
@@ -24,6 +25,25 @@
 #
 # Scope and limits, stated exactly:
 #   - Files listed by --print-exceptions are not scanned at all.
+#   - --staged judges what the next commit changes, not the worktree. It lists
+#     the paths staged against HEAD itself, reads their content from the index,
+#     and takes the allowlist from the index too. A path the commit deletes has no
+#     content to judge. A file that differs only from HEAD's parent is not listed,
+#     so `git commit --amend` does not re-judge what HEAD already added. This
+#     script and its exception list are still the copies in the worktree; CI's
+#     no-argument scan runs the committed ones.
+#   - Without --staged the content is the worktree's, so a no-argument scan
+#     judges the commit only where the worktree matches it, as it does in CI.
+#   - Every path the scan is given is read or refuses. What is not a regular
+#     file in the worktree is read from the index: a file deleted from the
+#     worktree as its staged content, a dangling symlink or one to a directory
+#     as its link text. A symlink to a regular file is read through the link. A
+#     named path that is neither a file nor in the index exits 2.
+#   - A submodule entry is the one thing passed over, in every form, and it is
+#     not a file: it holds a commit id and no text. Its URL is in .gitmodules,
+#     which is scanned like any file, so only an http, https, ws or wss URL there
+#     is judged; an ssh one is not. What the other repository holds is not judged
+#     here.
 #   - Plaintext http:// and ws:// are refused outside loopback, per URL.
 #   - A host containing a shell or template expression (${, ${{, {{, $(,
 #     backtick) is reported, UNLESS the literal text on both sides of the
@@ -207,27 +227,48 @@ EOF
 # `--` ends the options, so a caller passing file names it does not control
 # says so. Without it a staged file named --print-exceptions, which sorts first,
 # turned the pre-commit run into this listing and exit 0, with nothing scanned.
+staged=no
 if [ "${1:-}" = "--" ]; then
   shift
 elif [ "${1:-}" = "--print-exceptions" ]; then
   print_exceptions
   exit 0
+elif [ "${1:-}" = "--staged" ]; then
+  staged=yes
+  shift
+  if [ "$#" -gt 0 ]; then
+    echo "--staged lists the staged paths itself and takes no file names" >&2
+    exit 2
+  fi
 fi
 
-[ -f "$allowlist_src" ] || { echo "missing $allowlist_src" >&2; exit 2; }
+# With --staged the allowlist is the one the commit will hold, so a host declared
+# only in the worktree does not vouch for a URL that is staged. An unreadable one
+# comes out empty, which the tripwire below reports.
+read_allowlist() {
+  if [ "$staged" = yes ]; then
+    git cat-file blob ":0:$allowlist_src"
+  else
+    cat -- "$allowlist_src"
+  fi
+}
+
+if [ "$staged" = no ]; then
+  [ -f "$allowlist_src" ] || { echo "missing $allowlist_src" >&2; exit 2; }
+fi
 
 # Read ONLY the `pub const ... = &[ ... ];` arrays, stopping at the test module
 # so test fixtures cannot widen the allowlist, and stripping `//` comments so a
 # host mentioned in a comment cannot widen it either.
 read_consts() {
-  awk -v want="$1" '
+  read_allowlist | awk -v want="$1" '
     /^#\[cfg\(test\)\]/ { exit }
     /^pub const [A-Z_]+: &\[/ {
       inside = (want == "ALL" || index($0, "pub const " want ":") == 1)
     }
     inside { line = $0; sub(/\/\/.*/, "", line); print line }
     inside && /\];/ { inside = 0 }
-  ' "$allowlist_src"
+  '
 }
 
 extract_hosts() { grep -v '("' | grep -oE '"[^"]+"' | tr -d '"' | sort -u; }
@@ -279,25 +320,34 @@ if [ "$doc_host_count" -lt 1 ]; then
   exit 2
 fi
 
-if [ "$#" -gt 0 ]; then
-  files=("$@")
-else
+# NUL-separated: without -z, git quotes a non-ASCII name and the quoted form is
+# not a path, so that file would be skipped without a word.
+#
+# A path git cannot produce marks a failed listing. The listing runs in a process
+# substitution, so its exit status reaches nothing else, and a failure would
+# otherwise read as a tree with fewer files in it. The marker has a NUL on each
+# side because a git that dies partway through a name leaves that part unended,
+# and a marker with nothing before it would join it and go unrecognised.
+list_files() {
+  local listing_failed=no f
   files=()
-  # NUL-separated: without -z, git quotes a non-ASCII name and the quoted form
-  # is not a path, so that file would be skipped without a word.
-  #
-  # A path git cannot produce marks a failed listing. The listing runs in a
-  # process substitution, so its exit status reaches nothing else, and a failure
-  # would otherwise read as a tree with fewer files in it.
-  listing_failed=no
   while IFS= read -r -d '' f; do
     if [ "$f" = "/__listing_failed__" ]; then listing_failed=yes; continue; fi
     files+=("$f")
-  done < <(git ls-files -z || printf '/__listing_failed__\0')
+  done < <(git "$@" -z || printf '\0/__listing_failed__\0')
   if [ "$listing_failed" = yes ]; then
-    echo "git ls-files failed; refusing to report a clean result" >&2
+    echo "git $1 failed; refusing to report a clean result" >&2
     exit 2
   fi
+}
+
+if [ "$staged" = yes ]; then
+  # Deleted paths are left out: the commit holds nothing there to judge.
+  list_files diff --cached --name-only --diff-filter=d
+elif [ "$#" -gt 0 ]; then
+  files=("$@")
+else
+  list_files ls-files
 fi
 
 prose_re='(\.(md|txt)$|^(NOTICE|CHANGELOG|AUTHORS)$)'
@@ -928,9 +978,50 @@ normalise() {
          -e "s#([),;${bt}])${scheme_re}://#\1 \2://#g"
 }
 
-for f in "${files[@]}"; do
-  [ -f "$f" ] || continue
+# The index entry for one path: entry_mode, and entry_blob by object id, because
+# the `:path` form reads a name such as 1:a.md as stage 1 of a.md. Literal
+# pathspecs, so a name holding a glob matches only itself, and the name is
+# compared, because a directory matches the entries under it.
+read_index_entry() {
+  local entry="" meta rest
+  IFS= read -r -d '' entry < <(git --literal-pathspecs ls-files -s -z -- "$1" || true)
+  if [ -z "$entry" ] || [ "${entry#*"$tab"}" != "$1" ]; then
+    echo "$1: nothing to read in the worktree or the index; refusing to report a clean result" >&2
+    exit 2
+  fi
+  meta="${entry%%"$tab"*}"
+  entry_mode="${meta%% *}"
+  rest="${meta#* }"
+  entry_blob="${rest%% *}"
+  if [ "${rest#* }" != 0 ]; then
+    echo "$1: the index holds an unresolved conflict; refusing to report a clean result" >&2
+    exit 2
+  fi
+}
+
+read_content() {
+  if [ -n "$blob" ]; then
+    git cat-file blob "$blob"
+  else
+    cat -- "$read_path"
+  fi
+}
+
+# --staged has an empty list when a commit only deletes, and bash 3.2 reads an
+# empty "${files[@]}" as unbound under `set -u`.
+for f in ${files[@]+"${files[@]}"}; do
   is_excepted "$f" && continue
+
+  # Read the object rather than the file for --staged, whatever the worktree holds
+  # there, and for anything that is not a regular file. A symlink's object is its
+  # link text. A failed read fails the scan pipeline below, like a failed cat.
+  blob=""
+  if [ "$staged" = yes ] || [ ! -f "$f" ]; then
+    read_index_entry "$f"
+    if [ "$entry_mode" = 160000 ]; then continue; fi
+    blob="$entry_blob"
+  fi
+
   if [[ "$f" =~ $prose_re ]]; then kind=prose
   elif [[ "$f" =~ $node_re ]]; then kind=node
   else kind=code; fi
@@ -971,7 +1062,7 @@ for f in "${files[@]}"; do
     if [ "$scheme" = "__scan_failed__" ]; then scan_failed=yes; continue; fi
     if [ "$scheme" = "__scan_complete__" ]; then scan_complete=yes; continue; fi
     check_occurrence "$scheme" "$rest" "$f" "$ln" "$kind" "$look"
-  done < <({ cat -- "$read_path" | normalise | awk '
+  done < <({ read_content | normalise | awk '
     # Where an authority ends. index() rather than a regex, so no character
     # here needs escaping in two languages at once.
     BEGIN {
