@@ -272,15 +272,51 @@ for staged_name in " lead.md" "trail.md " "docs/日本語.md" 'docs/a"b.md' 'doc
   check_staged "staged: the name [$staged_name] is read" block "$staged_name" "$bad_content"
 done
 
-# Every content check, reading the staged object.
-check_staged "staged: a non-public host" block a.rs "$bad_host"
-check_staged "staged: a cloud identifier" block a.toml 'account_id = "8a313f35be0eb4e99ad5bed9cb7aa99d"'
-check_staged "staged: a bare 1Password identifier" block a.md 'Rotate item exampleitemidbbbbbbbbbbbbb after use.'
-check_staged "staged: a bearer token" block a.sh 'curl -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9abcdef"'
-check_staged "staged: a credential assignment" block a.sh 'export OP_SERVICE_ACCOUNT_TOKEN=ops_abcdefghijklmnopqrstuvwxyz0123456789'
-check_staged "staged: a keypair array" block a.json "[$(python3 -c 'print(",".join(["7"]*64))')]"
-check_staged "staged: a private key" block a.rs 'let private_key = "0x4c0883a69102937d6231471b5dbb6204fe512961708279f2e3b4a0d4e5c6f7a8";'
-check_staged "staged: a PEM block" block a.pem '-----BEGIN EC PRIVATE KEY-----'
+# Every content check, with the file in the worktree and then gone from it, so that
+# one check reading the worktree instead of the object fails here.
+staged_then_removed() {
+  mkdir -p "$(dirname -- "$1")"
+  printf '%s\n' "$2" > "$1"
+  git add -A -f
+  rm "$1"
+  gate_staged
+}
+staged_with_nul() {
+  { printf 'x\000\n'; printf '%s\n' "$2"; } > "$1"
+  git add -A -f
+  gate_staged
+}
+expect_reported() {
+  local name="$1" want="$2"
+  case "$scratch_rc:$scratch_out" in
+    1:*"$want"*)
+      pass=$((pass + 1)); printf 'ok   %s\n' "$name";;
+    *)
+      fail=$((fail + 1)); printf 'FAIL %s (exit %s, wanted exit 1 saying "%s")\n%s\n' "$name" "$scratch_rc" "$want" "$scratch_out";;
+  esac
+}
+for sample in \
+  'a non-public host|a.rs|const U: &str = "https://hidden-host.erpc.global/";' \
+  'a cloud identifier|a.toml|account_id = "8a313f35be0eb4e99ad5bed9cb7aa99d"' \
+  'a bare 1Password identifier|a.md|Rotate item exampleitemidbbbbbbbbbbbbb after use.' \
+  'a bearer token|a.sh|curl -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9abcdef"' \
+  'a credential assignment|a.sh|export OP_SERVICE_ACCOUNT_TOKEN=ops_abcdefghijklmnopqrstuvwxyz0123456789' \
+  "a keypair array|a.json|[$(python3 -c 'print(",".join(["7"]*64))')]" \
+  'a private key|a.rs|let private_key = "0x4c0883a69102937d6231471b5dbb6204fe512961708279f2e3b4a0d4e5c6f7a8";' \
+  'a PEM block|a.pem|-----BEGIN EC PRIVATE KEY-----' \
+  'an internal reference|a.md|See elsoul/internal-ops for the runbook.'; do
+  sample_name="${sample%%|*}"
+  sample_rest="${sample#*|}"
+  sample_rel="${sample_rest%%|*}"
+  sample_text="${sample_rest#*|}"
+  check_staged "staged: $sample_name" block "$sample_rel" "$sample_text"
+  in_scratch_repo staged_then_removed "$sample_rel" "$sample_text"
+  expect_outcome "staged: $sample_name, gone from the worktree" block
+  # With a NUL on the line before it. Without grep -a, GNU grep reports nothing and
+  # BSD grep reports no line, so the line number is what is asserted.
+  in_scratch_repo staged_with_nul "$sample_rel" "$sample_text"
+  expect_reported "staged: $sample_name, in a file holding a NUL" "$sample_rel:2:"
+done
 
 check_staged "staged: an internal document is blocked by name" block docs/architecture.md 'Nothing to report.'
 check_staged "staged: a dotenv file is blocked by name" block .env 'Nothing to report.'
@@ -330,13 +366,6 @@ staged_then_cleaned() {
 in_scratch_repo staged_then_cleaned
 expect_outcome "staged: content cleaned from the worktree afterwards is still read" block
 
-staged_then_removed() {
-  mkdir -p "$(dirname -- "$1")"
-  printf '%s\n' "$2" > "$1"
-  git add -A -f
-  rm "$1"
-  gate_staged
-}
 in_scratch_repo staged_then_removed a.md "$bad_content"
 expect_outcome "staged: content removed from the worktree afterwards is still read" block
 
@@ -544,18 +573,212 @@ in_scratch_repo stage_then_stubbed_run 'case "$1" in diff) exit 1;; esac' --stag
 expect_refusal "staged: a listing that prints nothing and fails is refused" "git diff failed"
 
 in_scratch_repo stage_then_stubbed_run 'case "$1" in --literal-pathspecs) exit 1;; esac' --staged
-expect_refusal "staged: a failed index lookup is refused" "not found in the index"
+expect_refusal "staged: a failed index lookup is refused" "nothing to read"
 
 in_scratch_repo stage_then_stubbed_run 'case "$1" in --literal-pathspecs) printf "100644 0123456789012345678901234567890123456789 0\\tother.md\\000"; exit 0;; esac' --staged
-expect_refusal "staged: a lookup answering for another path is refused" "not found in the index"
+expect_refusal "staged: a lookup answering for another path is refused" "nothing to read"
 
 # Only the scan's own read fails: the allowlist goes by :0:path and the file by
 # object id, and a stub failing both would stop at the allowlist check.
 in_scratch_repo stage_then_stubbed_run 'case "$1:$3" in cat-file::0:*) ;; cat-file:*) printf "partial\n"; exit 1;; esac' --staged
-expect_refusal "staged: a failed read of the index is refused" "could not read the staged content"
+expect_refusal "staged: a failed read of the index is refused" "could not read the content"
 
 in_scratch_repo stage_then_stubbed_run 'case "$1" in cat-file) exit 1;; esac' --staged
 expect_refusal "staged: an unreadable allowlist is refused" "could not read the host allowlist"
+
+# Each file replaces the last in the scratch file, or a finding would be reported
+# again under every file after it. $1 adds a submodule entry or not, $2 is the option.
+one_file_each() {
+  printf '%s\n' "$bad_content" > a.md
+  printf 'clean\n' > b.md
+  git add -A -f
+  case "$1" in
+    submodule) git update-index --add --cacheinfo "160000,0123456789012345678901234567890123456789,b-sub"; mkdir b-sub;;
+  esac
+  "$sh" "$gate" ${2:+"$2"} 2>&1 </dev/null
+}
+expect_own_file() {
+  local name="$1" other="$2"
+  case "$scratch_rc:$scratch_out" in
+    1:*"$other":*)
+      fail=$((fail + 1)); printf 'FAIL %s (reported under %s)\n%s\n' "$name" "$other" "$scratch_out";;
+    1:*a.md:1:*)
+      pass=$((pass + 1)); printf 'ok   %s\n' "$name";;
+    *)
+      fail=$((fail + 1)); printf 'FAIL %s (exit %s, wanted exit 1 for a.md)\n%s\n' "$name" "$scratch_rc" "$scratch_out";;
+  esac
+}
+in_scratch_repo one_file_each plain --staged
+expect_own_file "staged: a finding stays with its own file" b.md
+
+in_scratch_repo one_file_each plain
+expect_own_file "tracked: a finding stays with its own file" b.md
+
+in_scratch_repo one_file_each submodule --staged
+expect_own_file "staged: a submodule entry does not inherit a finding" b-sub
+
+in_scratch_repo one_file_each submodule
+expect_own_file "tracked: a submodule entry does not inherit a finding" b-sub
+
+# The name of a submodule entry is in the commit, whatever the user's diff settings.
+submodule_ignored_by_config() {
+  git add -A -f
+  git config diff.ignoreSubmodules all
+  git update-index --add --cacheinfo "160000,0123456789012345678901234567890123456789,.env"
+  mkdir .env
+  gate_staged
+}
+in_scratch_repo submodule_ignored_by_config
+expect_outcome "staged: diff.ignoreSubmodules does not hide a submodule entry" block
+
+# --- every tracked file, as CI and pre-push run it ------------------------------
+
+gate_tracked() {
+  "$sh" "$gate" 2>&1 </dev/null
+}
+
+check_tracked() {
+  local name="$1" expect="$2" rel="$3" content="$4"
+  in_scratch_repo stage_and_run "$rel" "$content"
+  expect_outcome "$name" "$expect"
+}
+
+# Without -z, git quotes these names, and the quoted form is not a file.
+for tracked_name in "docs/日本語.md" 'docs/a"b.md' 'docs/a\b.md' " lead.md" "trail.md " -tmp-hygiene.md - --staged \
+  "$(printf 'tab\there.md')" "$(printf 'new\nline.md')"; do
+  check_tracked "tracked: the name [$tracked_name] is read" block "$tracked_name" "$bad_content"
+done
+
+check_tracked "tracked: a clean non-ASCII file passes" allow "docs/日本語.md" 'Nothing to report.'
+
+tracked_with_nul() {
+  { printf 'x\000\n'; printf '%s\n' "$bad_content"; } > a.md
+  git add -A -f
+  gate_tracked
+}
+in_scratch_repo tracked_with_nul
+expect_reported "tracked: a file holding a NUL is read" "a.md:2:"
+
+deleted_from_worktree() {
+  mkdir -p "$(dirname -- "$1")"
+  printf '%s\n' "$2" > "$1"
+  git add -A -f
+  rm "$1"
+  gate_tracked
+}
+in_scratch_repo deleted_from_worktree a.md "$bad_content"
+expect_outcome "tracked: a file deleted from the worktree is read from the index" block
+
+in_scratch_repo deleted_from_worktree a.md 'clean'
+expect_outcome "tracked: a clean file deleted from the worktree passes" allow
+
+in_scratch_repo deleted_from_worktree docs/design.md 'clean'
+expect_outcome "tracked: an internal document deleted from the worktree is blocked by name" block
+
+tracked_symlink() {
+  mkdir -p "$(dirname -- "$1")"
+  ln -s "$2" "$1"
+  git add -A -f
+  gate_tracked
+}
+in_scratch_repo tracked_symlink l.md 'elsoul/internal-ops'
+expect_outcome "tracked: a dangling symlink's link text is read" block
+
+in_scratch_repo tracked_symlink docs/design.md 'nowhere'
+expect_outcome "tracked: a dangling symlink is blocked by name" block
+
+symlink_to_directory() {
+  mkdir -p elsoul/internal-ops
+  ln -s elsoul/internal-ops link.md
+  git add link.md
+  gate_tracked
+}
+in_scratch_repo symlink_to_directory
+expect_outcome "tracked: a symlink to a directory is read as link text" block
+
+symlink_to_file() {
+  printf '%s\n' "$bad_content" > target.bin
+  ln -s target.bin link.md
+  git add link.md
+  gate_tracked
+}
+in_scratch_repo symlink_to_file
+expect_outcome "tracked: a symlink to a file is read through the link" block
+
+tracked_submodule() {
+  git add -A -f
+  git update-index --add --cacheinfo "160000,0123456789012345678901234567890123456789,$1"
+  mkdir "$1"
+  gate_tracked
+}
+in_scratch_repo tracked_submodule sub
+expect_outcome "tracked: a submodule entry is passed over" allow
+
+in_scratch_repo tracked_submodule .env
+expect_outcome "tracked: a submodule entry's name is still judged" block
+
+tracked_conflict() {
+  local blob
+  blob="$(printf 'clean\n' | git hash-object -w --stdin)"
+  git add -A -f
+  git update-index --add --index-info <<EOF
+100644 $blob 1	a.md
+100644 $blob 2	a.md
+EOF
+  gate_tracked
+}
+in_scratch_repo tracked_conflict
+expect_refusal "tracked: an unresolved conflict with no file is refused" "unresolved conflict"
+
+# A listing that fails must not read as a clean tree.
+corrupt_index_run() {
+  git add -A -f
+  printf 'not an index' > .git/index
+  gate_tracked
+}
+in_scratch_repo corrupt_index_run
+expect_refusal "tracked: a corrupt index is refused" "git ls-files failed"
+
+in_scratch_repo stage_then_stubbed_run 'case "$1" in ls-files) printf "a.m"; exit 1;; esac'
+expect_refusal "tracked: a listing cut partway through a name is refused" "git ls-files failed"
+
+in_scratch_repo stage_then_stubbed_run 'case "$1" in ls-files) exit 1;; esac'
+expect_refusal "tracked: a listing that prints nothing and fails is refused" "git ls-files failed"
+
+# Fails only for the sample, because the allowlist is read with cat too. A stub, and
+# not chmod 000, because root reads that.
+unreadable_file() {
+  printf 'clean\n' > a.md
+  git add -A -f
+  mkdir -p .git/stub
+  printf '#!/bin/sh\ncase "$*" in *a.md*) exit 1;; esac\nexec "%s" "$@"\n' "$(command -v cat)" > .git/stub/cat
+  chmod +x .git/stub/cat
+  PATH="$PWD/.git/stub:$PATH" "$sh" "$gate" 2>&1 </dev/null
+}
+in_scratch_repo unreadable_file
+expect_refusal "tracked: a file that cannot be read is refused" "could not read the content"
+
+# --- paths named on the command line --------------------------------------------
+
+named_and_missing() {
+  "$sh" "$gate" -- no-such-file.md 2>&1 </dev/null
+}
+in_scratch_repo named_and_missing
+expect_refusal "a named path that is nowhere is refused" "nothing to read"
+
+named_directory() {
+  mkdir docs
+  printf '%s\n' "$bad_content" > docs/a.md
+  git add -A -f
+  "$sh" "$gate" -- docs 2>&1 </dev/null
+}
+in_scratch_repo named_directory
+expect_refusal "a named directory is refused, not read as its first file" "nothing to read"
+
+in_scratch_repo stage_and_run - "$bad_content" -- -
+expect_outcome "a file named - is read after --, not standard input" block
+
+# --- the gate's own scratch file ------------------------------------------------
 
 # The gate's own scratch file holds staged content, so it must not outlive the run.
 # mktemp is stubbed, because it need not honour TMPDIR, and a listing of a directory
