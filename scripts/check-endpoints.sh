@@ -5,7 +5,7 @@
 # Egress allowlist gate.
 #
 #   scripts/check-endpoints.sh [--] [files...]  # default: all tracked files
-#   scripts/check-endpoints.sh --staged         # what the next commit holds
+#   scripts/check-endpoints.sh --staged         # what the next commit changes
 #   scripts/check-endpoints.sh --print-exceptions
 #
 # ONE RULE: every http/https/ws/wss URL in a tracked file must name a host
@@ -25,9 +25,11 @@
 #
 # Scope and limits, stated exactly:
 #   - Files listed by --print-exceptions are not scanned at all.
-#   - --staged judges the next commit, not the worktree. It lists the staged
-#     paths itself, reads their content from the index, and takes the allowlist
-#     from the index too. A path the commit deletes has no content to judge. This
+#   - --staged judges what the next commit changes, not the worktree. It lists
+#     the paths staged against HEAD itself, reads their content from the index,
+#     and takes the allowlist from the index too. A path the commit deletes has no
+#     content to judge. A file that differs only from HEAD's parent is not listed,
+#     so `git commit --amend` does not re-judge what HEAD already added. This
 #     script and its exception list are still the copies in the worktree; CI's
 #     no-argument scan runs the committed ones.
 #   - Without --staged the content is the worktree's, so a no-argument scan
@@ -39,7 +41,9 @@
 #     named path that is neither a file nor in the index exits 2.
 #   - A submodule entry is the one thing passed over, in every form, and it is
 #     not a file: it holds a commit id and no text. Its URL is in .gitmodules,
-#     which is scanned; what the other repository holds is not judged here.
+#     which is scanned like any file, so only an http, https, ws or wss URL there
+#     is judged; an ssh one is not. What the other repository holds is not judged
+#     here.
 #   - Plaintext http:// and ws:// are refused outside loopback, per URL.
 #   - A host containing a shell or template expression (${, ${{, {{, $(,
 #     backtick) is reported, UNLESS the literal text on both sides of the

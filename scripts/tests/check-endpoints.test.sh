@@ -1522,7 +1522,7 @@ check_tracked "tracked: a file under target is scanned" block "target/a.rs" \
 check_tracked "tracked: a file under node_modules is scanned" block "x/node_modules/a.rs" \
   'const U: &str = "https://evil.example.com/x";'
 
-# The pre-commit form, where the names come from whatever is staged.
+# The file-name form, for a caller passing names it does not control.
 check_tracked "staged: a file named like the option is read after --" block "--print-exceptions" \
   'See https://evil.example.com/x for details.' -- --print-exceptions
 
@@ -1718,6 +1718,30 @@ untouched_path() {
 in_scratch_repo untouched_path
 expect_outcome "staged: a file the commit does not change is not judged" allow
 
+# `git commit -a` and `git commit <path>` give the hook a temporary index.
+alternate_index() {
+  printf 'clean\n' > a.md
+  git add -A -f
+  cp .git/index .git/alt-index
+  printf '%s\n' "$evil_prose" > a.md
+  GIT_INDEX_FILE="$PWD/.git/alt-index" git add a.md
+  printf 'clean\n' > a.md
+  GIT_INDEX_FILE="$PWD/.git/alt-index" "$sh" "$gate" --staged 2>&1 </dev/null
+}
+in_scratch_repo alternate_index
+expect_outcome "staged: the index git names in GIT_INDEX_FILE is the one read" block
+
+type_change() {
+  printf 'clean\n' > a.md
+  commit_staged
+  rm a.md
+  ln -s 'https://evil.example.com/x' a.md
+  git add a.md
+  "$sh" "$gate" --staged 2>&1 </dev/null
+}
+in_scratch_repo type_change
+expect_outcome "staged: a file changed to a symlink is read" block
+
 renamed_path() {
   printf '%s\n' "$evil_prose" > a.md
   commit_staged
@@ -1838,21 +1862,39 @@ lefthook_run() {
   mkdir -p scripts
   cp "$repo_root/lefthook.yml" lefthook.yml
   cp "$gate" scripts/check-endpoints.sh
-  printf '%s\n' "$evil_prose" > "$1"
+  # lefthook saves unstaged changes with git stash create, which needs a commit.
+  commit_staged
+  case "${2:-}" in
+    clean-file) printf 'clean\n' > "$1";;
+    *) printf '%s\n' "$evil_prose" > "$1";;
+  esac
   git add -A -f
   case "${2:-}" in
-    clean) printf 'clean\n' > "$1";;
+    clean-worktree) printf 'clean\n' > "$1";;
   esac
   unset LEFTHOOK LEFTHOOK_EXCLUDE LEFTHOOK_QUIET
   lefthook run pre-commit --command endpoints --no-auto-install --no-tty 2>&1 </dev/null
 }
+# The report is asserted, so that lefthook failing on its own account is not read
+# as the gate blocking, and the clean run shows the command ran.
+expect_lefthook() {
+  local name="$1" want_rc="$2" want="$3"
+  case "$scratch_rc:$scratch_out" in
+    "$want_rc":*"$want"*)
+      pass=$((pass + 1)); printf 'ok   %s\n' "$name";;
+    *)
+      fail=$((fail + 1)); printf 'FAIL %s (exit %s, wanted exit %s saying "%s")\n%s\n' "$name" "$scratch_rc" "$want_rc" "$want" "$scratch_out";;
+  esac
+}
 if command -v lefthook >/dev/null 2>&1; then
   in_scratch_repo lefthook_run " lead.md"
-  expect_outcome "lefthook: a leading space reaches the gate" block
+  expect_lefthook "lefthook: a leading space reaches the gate" 1 "evil.example.com"
   in_scratch_repo lefthook_run "trail.md "
-  expect_outcome "lefthook: a trailing space reaches the gate" block
-  in_scratch_repo lefthook_run "a.md" clean
-  expect_outcome "lefthook: a URL cleaned from the worktree is still read" block
+  expect_lefthook "lefthook: a trailing space reaches the gate" 1 "evil.example.com"
+  in_scratch_repo lefthook_run "a.md" clean-worktree
+  expect_lefthook "lefthook: a URL cleaned from the worktree is still read" 1 "evil.example.com"
+  in_scratch_repo lefthook_run "a.md" clean-file
+  expect_lefthook "lefthook: a clean file passes" 0 "endpoints"
 else
   printf 'skip lefthook is not installed, so the real hook was not run\n'
 fi
@@ -1863,7 +1905,8 @@ fi
 # line is satisfied by a decoy command holding it, or by `skip: true` beside it.
 # So the real command must be the expected line and nothing else, and no key that
 # can switch off a command may sit above it. A new key here fails loudly; add it
-# to this list if it cannot stop the hook.
+# to this list if it cannot stop the hook. An untracked lefthook-local.yml is a
+# developer's own, and is not seen here; CI's no-argument scan does not use a hook.
 hook_wiring_ok() {
   awk '
     /^[[:space:]]*(#.*)?$/ { next }
@@ -1895,8 +1938,28 @@ hook_wiring_ok() {
 if hook_wiring_ok "$repo_root/lefthook.yml"; then
   pass=$((pass + 1)); printf 'ok   the pre-commit hook runs the gate on what is staged\n'
 else
-  fail=$((fail + 1)); printf 'FAIL the pre-commit hook must run scripts/check-endpoints.sh --staged, and nothing may switch it off\n'
+  fail=$((fail + 1)); printf 'FAIL the pre-commit hook must run scripts/check-endpoints.sh --staged, and nothing in lefthook.yml may switch it off\n'
 fi
+
+# lefthook-local.yml overrides lefthook.yml, so committing one with `skip: true`
+# would switch the command off for everyone. Reads a listing of tracked paths.
+only_wired_hook_config() {
+  ! grep -E '^(\.config/)?\.?lefthook(-local)?\.[a-z]+$' | grep -qvx 'lefthook\.yml'
+}
+
+if git -C "$repo_root" ls-files | only_wired_hook_config; then
+  pass=$((pass + 1)); printf 'ok   lefthook.yml is the only hook configuration tracked\n'
+else
+  fail=$((fail + 1)); printf 'FAIL lefthook.yml must be the only hook configuration tracked\n'
+fi
+
+for hook_config in lefthook-local.yml .lefthook-local.yml .lefthook.yml lefthook.toml .config/lefthook-local.yaml; do
+  if printf 'lefthook.yml\n%s\n' "$hook_config" | only_wired_hook_config; then
+    fail=$((fail + 1)); printf 'FAIL the hook configuration check accepted %s\n' "$hook_config"
+  else
+    pass=$((pass + 1)); printf 'ok   the hook configuration check refuses %s\n' "$hook_config"
+  fi
+done
 
 wiring_fixture="$(mktemp)"
 # Each fixture is a wiring that does not run the gate on what is staged.
@@ -1911,6 +1974,9 @@ expect_wiring_refused() {
 }
 good_run='      run: scripts/check-endpoints.sh --staged'
 
+expect_wiring_refused "the command with nothing to run" "pre-commit:
+  commands:
+    endpoints:"
 expect_wiring_refused "the names lefthook passes" "pre-commit:
   commands:
     endpoints:
@@ -1964,6 +2030,21 @@ $good_run"
 rm -f "$wiring_fixture"
 
 # --- the harness itself ---------------------------------------------------------
+
+# A hook runs this suite with these set. Left in place, they would point the
+# scratch repository back at this checkout; pointed nowhere, git init fails instead.
+probe_hook_env() {
+  (
+    export GIT_DIR=/nonexistent/git GIT_WORK_TREE=/nonexistent/tree GIT_INDEX_FILE=/nonexistent/index
+    in_scratch_repo stage_and_run a.md 'Nothing to report.'
+    exit "$scratch_rc"
+  )
+}
+if probe_hook_env; then
+  pass=$((pass + 1)); printf 'ok   the harness clears the variables a hook sets\n'
+else
+  fail=$((fail + 1)); printf 'FAIL the harness must clear the variables a hook sets\n'
+fi
 
 # Run from a scratch directory, so that a guard disabled here runs its git there
 # instead of in this checkout.
