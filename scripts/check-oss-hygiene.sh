@@ -223,13 +223,13 @@ read_content() {
   content="$captured"
 }
 
-# Runs a command on $1 and leaves what it prints in captured. The marker comes from
-# beside the command and not after the pipeline, so a pipe that could not be made is
-# not taken for a grep that found nothing, which also exits 1.
+# Runs a command on $1 and leaves what it prints in captured. The marker gives the
+# command's status and the substitution's own gives the writer's. A command fed by a
+# writer that died saw part of the text, so its finding nothing means nothing.
 run_on() {
   local text="$1"
   shift
-  captured=$(printf '%s\n' "$text" | { "$@"; printf '\n%s:finished' "$?"; })
+  captured=$(printf '%s\n' "$text" | { "$@"; printf '\n%s:finished' "$?"; }) || scan_failed
   finish_capture && [ "$capture_rc" -le 1 ] || scan_failed
 }
 

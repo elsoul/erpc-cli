@@ -437,6 +437,17 @@ in_scratch_repo stubbed_tool_run sed "$real_sed" '*op:*' 'Rotate item exampleite
 stub_exit=2
 expect_refusal "staged: a sed that exits 1 in the 1Password check is refused" "could not run"
 
+# A grep that stops reading ends the writer of anything over a pipe's buffer, and the
+# stub's exit 1 stands for finding nothing in the part it saw.
+big_with_finding="$(awk 'BEGIN { for (i = 0; i < 40000; i++) print "padding padding" }')
+See elsoul/internal-ops for it."
+stub_exit=1
+in_scratch_repo stubbed_tool_run grep "$real_grep" '*elsoul*' "$big_with_finding" --staged
+expect_refusal "staged: finding nothing after the writer died is refused" "could not run"
+in_scratch_repo stubbed_tool_run grep "$real_grep" '*elsoul*' "$big_with_finding"
+stub_exit=2
+expect_refusal "tracked: finding nothing after the writer died is refused" "could not run"
+
 check_staged "staged: an internal document is blocked by name" block docs/architecture.md 'Nothing to report.'
 check_staged "staged: a dotenv file is blocked by name" block .env 'Nothing to report.'
 
