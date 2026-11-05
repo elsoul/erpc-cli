@@ -337,7 +337,7 @@ for separated in 'item|exampleitemidbbbbbbbbbbbbb' 'vault|examplevaultidaaaaaaaa
 done
 
 # The filter and the match each ignore case, and the labels are not always lower case.
-check_staged "staged: an upper-case label is still read" block a.md 'Rotate ITEM exampleitemidbbbbbbbbbbbbb after use.'
+check_staged "staged: an upper-case label is still read" block a.md 'Rotate ITEM exampleplaceholderbbbbbbbb after use.'
 
 last_line_without_newline() {
   printf 'Rotate item exampleitemidbbbbbbbbbbbbb' > a.md
@@ -357,7 +357,7 @@ stubbed_tool_run() {
   git add -A -f
   mkdir -p .git/stub
   { printf '#!/bin/sh\n'
-    printf 'case "$*" in %s) exit 2;; esac\n' "$pattern"
+    printf 'case "$*" in %s) exit %s;; esac\n' "$pattern" "${stub_exit:-2}"
     printf 'exec "%s" "$@"\n' "$real"
   } > ".git/stub/$tool"
   chmod +x ".git/stub/$tool"
@@ -393,14 +393,20 @@ done
 no_pipe_from() {
   local at="$1"
   shift
-  awk -v at="$at" 'index($0, at) == 1 { print "ulimit -Sn 3" } { print }' "$gate" > .git/gate-copy
-  grep -q '^ulimit -Sn 3$' .git/gate-copy || { echo "no line starts with $at"; return 9; }
+  awk -v at="$at" -v limit="${no_pipe_limit:-3}" 'index($0, at) == 1 { print "ulimit -Sn " limit } { print }' "$gate" > .git/gate-copy
+  grep -q '^ulimit -Sn ' .git/gate-copy || { echo "no line starts with $at"; return 9; }
   printf 'Rotate item exampleitemidbbbbbbbbbbbbb after use. See elsoul/internal-ops\n' > zz.md
   git add -A -f
   "$sh" .git/gate-copy "$@" 2>&1 </dev/null
 }
 # Only the exit is asserted: with no file descriptor to spare, bash may not manage to
 # write the message either.
+# The control: with room to work the same copy reports the finding, so the refusals
+# below come from the limit and not from the copy.
+no_pipe_limit=256
+in_scratch_repo no_pipe_from '  # 1. erpc.global' --staged
+no_pipe_limit=3
+expect_reported "staged: a gate copy with room to work reports the finding" "zz.md:1:"
 for no_pipe_at in \
   '  if [ "$read_from" = worktree ]; then' \
   '  # 1. erpc.global' \
@@ -416,6 +422,11 @@ done
 
 in_scratch_repo stubbed_tool_run sed "$real_sed" '*op:*' 'Rotate item exampleitemidbbbbbbbbbbbbb after use.' --staged
 expect_refusal "staged: a failing sed in the 1Password check is refused" "could not run"
+# sed has no "nothing found" status, so its exit 1 is a failure too, unlike grep's.
+stub_exit=1
+in_scratch_repo stubbed_tool_run sed "$real_sed" '*op:*' 'Rotate item exampleitemidbbbbbbbbbbbbb after use.' --staged
+stub_exit=2
+expect_refusal "staged: a sed that exits 1 in the 1Password check is refused" "could not run"
 
 check_staged "staged: an internal document is blocked by name" block docs/architecture.md 'Nothing to report.'
 check_staged "staged: a dotenv file is blocked by name" block .env 'Nothing to report.'
