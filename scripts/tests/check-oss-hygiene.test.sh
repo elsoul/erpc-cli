@@ -316,7 +316,7 @@ staged_nul_separator() {
 }
 for sample in \
   'a non-public host|a.rs|const U: &str = "https://hidden-host.erpc.global/";' \
-  'a cloud identifier|a.toml|account_id = "8a313f35be0eb4e99ad5bed9cb7aa99d"' \
+  'a cloud identifier|a.toml|account_id = "abcdefabcdefabcdefabcdefabcdefab"' \
   'a bare 1Password identifier|a.md|Rotate item exampleitemidbbbbbbbbbbbbb after use.' \
   'a bearer token|a.sh|curl -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9abcdef"' \
   'a credential assignment|a.sh|export OP_SERVICE_ACCOUNT_TOKEN=ops_abcdefghijklmnopqrstuvwxyz0123456789' \
@@ -371,7 +371,7 @@ stubbed_tool_run() {
 }
 for failing in \
   'host|*._-]+*|const U: &str = "https://hidden-host.erpc.global/";' \
-  'identifier|*zone*|account_id = "8a313f35be0eb4e99ad5bed9cb7aa99d"' \
+  'identifier|*zone*|account_id = "abcdefabcdefabcdefabcdefabcdefab"' \
   'outer 1Password match|*vault?item*|Rotate item exampleitemidbbbbbbbbbbbbb after use.' \
   'inner 1Password match|*{26}\$\|*|Rotate item exampleitemidbbbbbbbbbbbbb after use.' \
   'bearer|*Bearer*|Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9abcdef' \
@@ -895,6 +895,47 @@ if [ "$scratch_rc" -eq 0 ]; then
   pass=$((pass + 1)); printf 'ok   staged: a signal leaves no scratch file behind\n'
 else
   fail=$((fail + 1)); printf 'FAIL staged: a signal left a scratch file behind, or did not end the gate\n'
+fi
+
+# The scratch files going away mid-scan. A redirection or a loop that cannot open one
+# reads like nothing found, and the only finding is in the last file and the last check.
+# $1 is the pattern of the grep that removes them. The real grep runs first, so its own
+# result is written.
+scratch_gone() {
+  mkdir -p .git/stub .git/scratch-probe
+  printf '#!/bin/sh\nexec "%s" "%s/.git/scratch-probe/f.XXXXXX"\n' "$real_mktemp" "$PWD" > .git/stub/mktemp
+  { printf '#!/bin/sh\n"%s" "$@"\nrc=$?\n' "$real_grep"
+    printf 'case "$*" in %s) rm -rf "%s/.git/scratch-probe";; esac\nexit $rc\n' "$1" "$PWD"
+  } > .git/stub/grep
+  chmod +x .git/stub/mktemp .git/stub/grep
+  printf '%s\n' "$bad_content" > zz.md
+  git add -A -f
+  PATH="$PWD/.git/stub:$PATH" "$sh" "$gate" --staged 2>&1 </dev/null
+}
+in_scratch_repo scratch_gone '*zone*'
+expect_refusal "staged: scratch files gone before the checks after them is refused" "could not run"
+
+in_scratch_repo scratch_gone '*elsoul*'
+expect_refusal "staged: scratch files gone before the last check is read is refused" "could not run"
+
+# The match file still there and no longer writable, which only the redirection can
+# see. Not as root, who writes to it regardless.
+match_file_unwritable() {
+  mkdir -p .git/stub .git/scratch-probe
+  printf '#!/bin/sh\nn=a; [ -e "%s/.git/first-call" ] && n=b\n: > "%s/.git/first-call"\nexec "%s" "%s/.git/scratch-probe/$n.XXXXXX"\n' "$PWD" "$PWD" "$real_mktemp" "$PWD" > .git/stub/mktemp
+  { printf '#!/bin/sh\n"%s" "$@"\nrc=$?\n' "$real_grep"
+    printf 'case "$*" in *zone*) chmod 000 "%s"/.git/scratch-probe/b.*;; esac\nexit $rc\n' "$PWD"
+  } > .git/stub/grep
+  chmod +x .git/stub/mktemp .git/stub/grep
+  printf '%s\n' "$bad_content" > zz.md
+  git add -A -f
+  PATH="$PWD/.git/stub:$PATH" "$sh" "$gate" --staged 2>&1 </dev/null
+}
+if [ "$(id -u)" -ne 0 ]; then
+  in_scratch_repo match_file_unwritable
+  expect_refusal "staged: a match file that cannot be written is refused" "could not run"
+else
+  printf 'skip running as root, so a file cannot be made unwritable\n'
 fi
 
 failing_mktemp() {
