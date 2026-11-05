@@ -194,17 +194,55 @@ scan_failed() {
   exit 2
 }
 
+# A command substitution whose pipe could not be made runs nothing, leaves its variable
+# empty, and need not change $?. That reads as nothing found. So what runs inside prints
+# its exit status and this marker last, and a capture without them did not run.
+#
+# finish_capture takes them off captured, along with the newline a command ended with,
+# and leaves the status in capture_rc.
+finish_capture() {
+  local last="${captured##*$'\n'}"
+  case "$last" in
+    *:finished) ;;
+    *) return 1;;
+  esac
+  capture_rc="${last%:finished}"
+  captured="${captured%$'\n'*}"
+  captured="${captured%$'\n'}"
+}
+
+# Reads the content a file holds into content. Every NUL becomes a space. A NUL makes
+# grep call the content binary and drop its lines, and bash would drop it from the
+# variable, joining what was beside it.
+read_content() {
+  captured=$("$@" | tr '\000' ' '; printf '\n%s:finished' "$?")
+  if ! finish_capture || [ "$capture_rc" -ne 0 ]; then
+    echo "$f: could not read the content; refusing to report a clean result" >&2
+    exit 2
+  fi
+  content="$captured"
+}
+
+# Runs a command on $1 and leaves what it prints in captured. The marker comes from
+# beside the command and not after the pipeline, so a pipe that could not be made is
+# not taken for a grep that found nothing, which also exits 1.
+run_on() {
+  local text="$1"
+  shift
+  captured=$(printf '%s\n' "$text" | { "$@"; printf '\n%s:finished' "$?"; })
+  finish_capture && [ "$capture_rc" -le 1 ] || scan_failed
+}
+
 # The lines grep finds in the content go to match_lines. grep exits 1 when it finds
 # nothing and above that when it could not look, which must not read the same way. They
 # are held in memory and not in a file, because a loop reading a file it cannot open
 # ends as if the file were empty. Every line grep prints here holds a line number, so
 # splitting on newlines loses none. `set -f` so that a `*` in one is not expanded.
 matches() {
-  local found rc IFS=$'\n'
-  found=$(printf '%s\n' "$content" | grep "$@"); rc=$?
-  [ "$rc" -le 1 ] || scan_failed
+  local IFS=$'\n'
+  run_on "$content" grep "$@"
   set -f
-  match_lines=($found)
+  match_lines=($captured)
   set +f
 }
 
@@ -230,20 +268,13 @@ for f in ${files[@]+"${files[@]}"}; do
 
   # The content the checks below read. A symlink's object is its link text. A name
   # starting with a dash would otherwise be an option to cat, and `-` standard input.
-  #
-  # Every NUL becomes a space. A NUL makes grep call the content binary and drop its
-  # lines, and bash would drop it from the variable, joining what was beside it.
   if [ "$read_from" = worktree ]; then
     case "$f" in -*) read_path="./$f";; *) read_path="$f";; esac
-    content=$(cat -- "$read_path" | tr '\000' ' '); read_rc=$?
+    read_content cat -- "$read_path"
   elif [ "$entry_mode" = 160000 ]; then
-    content=""; read_rc=0
+    content=""
   else
-    content=$(git cat-file blob "$entry_blob" | tr '\000' ' '); read_rc=$?
-  fi
-  if [ "$read_rc" -ne 0 ]; then
-    echo "$f: could not read the content; refusing to report a clean result" >&2
-    exit 2
+    read_content git cat-file blob "$entry_blob"
   fi
 
   # 1. erpc.global hosts outside the published allowlist.
@@ -277,17 +308,17 @@ for f in ${files[@]+"${files[@]}"}; do
   for line in ${match_lines[@]+"${match_lines[@]}"}; do
     op_ln="${line%%:*}"
     op_line="${line#*:}"
-    stripped=$(printf '%s' "$op_line" | sed 's|op://[A-Za-z0-9._/-]*||g') || scan_failed
-    tokens=$(printf '%s' "$stripped" | grep -oiE '(vault|item)s?([^A-Za-z0-9]{1,8}(id|identifier))?[^A-Za-z0-9]{1,8}[A-Za-z0-9]{26}([^A-Za-z0-9]|$)')
-    [ "$?" -le 1 ] || scan_failed
+    run_on "$op_line" sed 's|op://[A-Za-z0-9._/-]*||g'
+    [ "$capture_rc" -eq 0 ] || scan_failed
+    run_on "$captured" grep -oiE '(vault|item)s?([^A-Za-z0-9]{1,8}(id|identifier))?[^A-Za-z0-9]{1,8}[A-Za-z0-9]{26}([^A-Za-z0-9]|$)'
+    tokens="$captured"
     # `set -f` because the loop word-splits the match on purpose but must
     # not also glob it against the repository root: a `*` or `?` inside the
     # matched separator would otherwise expand to filenames.
     set -f
     for tok in $tokens; do
-      ids=$(printf '%s' "$tok" | grep -oE '[A-Za-z0-9]{26}$|[A-Za-z0-9]{26}')
-      [ "$?" -le 1 ] || scan_failed
-      id="${ids##*$'\n'}"
+      run_on "$tok" grep -oE '[A-Za-z0-9]{26}$|[A-Za-z0-9]{26}'
+      id="${captured##*$'\n'}"
       [ -n "$id" ] || continue
       # `[[:upper:]]` and not `[A-Z]`: under a non-C locale the range
       # follows collation order and matches lowercase too. LC_ALL=C above

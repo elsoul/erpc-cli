@@ -336,6 +336,9 @@ for separated in 'item|exampleitemidbbbbbbbbbbbbb' 'vault|examplevaultidaaaaaaaa
   expect_reported "staged: a NUL as the separator after ${separated%%|*}" "a.md:1:"
 done
 
+# The filter and the match each ignore case, and the labels are not always lower case.
+check_staged "staged: an upper-case label is still read" block a.md 'Rotate ITEM exampleitemidbbbbbbbbbbbbb after use.'
+
 last_line_without_newline() {
   printf 'Rotate item exampleitemidbbbbbbbbbbbbb' > a.md
   git add -A -f
@@ -381,6 +384,34 @@ for failing in \
   expect_refusal "staged: a failing grep in the $failing_name check is refused" "could not run"
   in_scratch_repo stubbed_tool_run grep "$real_grep" "$failing_pattern" "$failing_text"
   expect_refusal "tracked: a failing grep in the $failing_name check is refused" "could not run"
+done
+
+# The file limit makes the next pipe fail for real. With no pipe, a command substitution
+# runs nothing, and its empty result must not read as nothing found. $1 is the line of the
+# gate to stop before; the content holds what every check looks for. Run from a copy of
+# the gate, so this changes nothing but the limit.
+no_pipe_from() {
+  local at="$1"
+  shift
+  awk -v at="$at" 'index($0, at) == 1 { print "ulimit -Sn 3" } { print }' "$gate" > .git/gate-copy
+  grep -q '^ulimit -Sn 3$' .git/gate-copy || { echo "no line starts with $at"; return 9; }
+  printf 'Rotate item exampleitemidbbbbbbbbbbbbb after use. See elsoul/internal-ops\n' > zz.md
+  git add -A -f
+  "$sh" .git/gate-copy "$@" 2>&1 </dev/null
+}
+# Only the exit is asserted: with no file descriptor to spare, bash may not manage to
+# write the message either.
+for no_pipe_at in \
+  '  if [ "$read_from" = worktree ]; then' \
+  '  # 1. erpc.global' \
+  '    run_on "$op_line" sed' \
+  '    run_on "$captured" grep' \
+  '      run_on "$tok" grep' \
+  '  # 6. References'; do
+  in_scratch_repo no_pipe_from "$no_pipe_at" --staged
+  expect_refusal "staged: no pipe at [$no_pipe_at] is refused" ""
+  in_scratch_repo no_pipe_from "$no_pipe_at"
+  expect_refusal "tracked: no pipe at [$no_pipe_at] is refused" ""
 done
 
 in_scratch_repo stubbed_tool_run sed "$real_sed" '*op:*' 'Rotate item exampleitemidbbbbbbbbbbbbb after use.' --staged
@@ -636,7 +667,7 @@ stage_then_stubbed_run() {
   PATH="$PWD/.git/stub:$PATH" "$sh" "$gate" "$@" 2>&1 </dev/null
 }
 
-# The name that was cut joins nothing, so the marker is still seen.
+# A listing that is cut short never reaches its finished marker.
 in_scratch_repo stage_then_stubbed_run 'case "$1" in diff) printf "a.m"; exit 1;; esac' --staged
 expect_refusal "staged: a listing cut partway through a name is refused" "git diff failed"
 
