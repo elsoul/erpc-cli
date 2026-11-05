@@ -27,8 +27,9 @@
 # worktree, a dangling symlink, a symlink to a directory. A symlink to a file is read
 # through the link. A named path that is in neither place exits 2.
 #
-# A submodule entry is judged by name in every form. So are the paths in skip_re, which
-# are otherwise not read at all, and the paths in self_re, which quote these patterns.
+# A submodule entry is judged by name in every form. The paths in skip_re are not
+# judged at all in any form, by name or by content, so target/.env passes. The paths in
+# self_re are not read, because they quote these patterns.
 #
 # In every form a failed listing, lookup, read or match exits 2, and so does an
 # unresolved conflict on a path read from the index.
@@ -191,12 +192,10 @@ read_index_entry() {
 # A NUL makes grep call the file binary and drop its lines, and bash's read cuts or
 # joins the line it is on, which is what a real separator could not do.
 #
-# A signal ends the run through the EXIT trap, which it would otherwise skip, and these
-# files hold staged content.
+# These files hold staged content. bash runs the EXIT trap on a fatal signal as well.
 scan_tmp=""
 match_tmp=""
 trap 'rm -f "$scan_tmp" "$match_tmp"' EXIT
-trap 'exit 2' HUP INT TERM
 scan_tmp="$(mktemp)" || { echo "mktemp failed; refusing to report a clean result" >&2; exit 2; }
 match_tmp="$(mktemp)" || { echo "mktemp failed; refusing to report a clean result" >&2; exit 2; }
 
@@ -285,8 +284,9 @@ for f in ${files[@]+"${files[@]}"}; do
     # matched separator would otherwise expand to filenames.
     set -f
     for tok in $tokens; do
-      id=$(printf '%s' "$tok" | grep -oE '[A-Za-z0-9]{26}$|[A-Za-z0-9]{26}' | tail -1)
+      ids=$(printf '%s' "$tok" | grep -oE '[A-Za-z0-9]{26}$|[A-Za-z0-9]{26}')
       [ "$?" -le 1 ] || scan_failed
+      id="${ids##*$'\n'}"
       [ -n "$id" ] || continue
       # `[[:upper:]]` and not `[A-Z]`: under a non-C locale the range
       # follows collation order and matches lowercase too. LC_ALL=C above
