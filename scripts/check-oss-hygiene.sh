@@ -3,14 +3,24 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Repository hygiene gate for this public repository. Runs in pre-commit
-# (lefthook, staged files only) and in CI (every tracked file).
+# (lefthook, what the next commit changes) and in CI (every tracked file).
 #
 # It is the second net behind gitleaks. gitleaks looks for credential *values*;
 # this script looks for things that are not credentials but still must not be
 # published: non-public hosts, infrastructure identifiers, and internal
 # documents.
 #
-#   scripts/check-oss-hygiene.sh [files...]    # default: all tracked files
+#   scripts/check-oss-hygiene.sh [--] [files...]  # default: all tracked files
+#   scripts/check-oss-hygiene.sh --staged         # what the next commit changes
+#
+# --staged judges what the next commit changes, not the worktree. It lists the
+# paths staged against HEAD itself, reads their content from the index, and takes
+# the erpc.global allowlist from the index too. The checks on a path's name need
+# only the listing, so they hold whatever the worktree has there. A path the commit
+# deletes has nothing to judge. A submodule entry holds a commit id and no text, so
+# only its name is judged. A failed listing, lookup or read exits 2, and so does an
+# unresolved conflict. This script is still the copy in the worktree; CI's
+# no-argument scan runs the committed one.
 #
 # Policy: docs/public-hosts.md. Response to an accidental commit:
 # docs/secret-exposure-response.md.
@@ -26,7 +36,48 @@ export LC_ALL=C
 
 cd "$(git rev-parse --show-toplevel)"
 
-if [ "$#" -gt 0 ]; then
+# `--` ends the options, so a caller passing file names it does not control says
+# so. An unknown option is refused: read as a file name, a mistyped --staged would
+# not be a regular file, and the run would pass with nothing scanned.
+staged=no
+case "${1:-}" in
+  --)
+    shift
+    ;;
+  --staged)
+    staged=yes
+    shift
+    if [ "$#" -gt 0 ]; then
+      echo "--staged lists the staged paths itself and takes no file names" >&2
+      exit 2
+    fi
+    ;;
+  -*)
+    echo "unknown option $1; put -- before a file name that starts with a dash" >&2
+    exit 2
+    ;;
+esac
+
+# NUL-separated: without -z, git quotes a non-ASCII name and the quoted form is not
+# a path. A path git cannot produce marks a failed listing, with a NUL on each side
+# because a git that dies partway through a name leaves that part unended.
+list_staged() {
+  local listing_failed=no f
+  files=()
+  while IFS= read -r -d '' f; do
+    if [ "$f" = "/__listing_failed__" ]; then listing_failed=yes; continue; fi
+    files+=("$f")
+  done < <(git diff --cached --name-only -z --diff-filter=d || printf '\0/__listing_failed__\0')
+  if [ "$listing_failed" = yes ]; then
+    echo "git diff failed; refusing to report a clean result" >&2
+    exit 2
+  fi
+}
+
+if [ "$staged" = yes ]; then
+  # Deleted paths are left out: the commit holds nothing there to judge.
+  list_staged
+elif [ "$#" -gt 0 ]; then
   files=("$@")
 else
   files=()
@@ -45,19 +96,30 @@ self_re='^(scripts/check-oss-hygiene\.sh|scripts/tests/(check-oss-hygiene|check-
 # erpc.global hosts come from the one allowlist, so this gate and
 # check-endpoints.sh cannot drift apart. Only the const arrays are read; the
 # test module below them names rejected hosts on purpose.
+#
+# With --staged the allowlist is the one the commit will hold, so a host declared
+# only in the worktree does not vouch for a staged URL. An unreadable one comes out
+# empty, which the check below reports.
 allowlist_src='crates/erpc-core/src/endpoints.rs'
-allowed_erpc_hosts=$(awk '
+read_allowlist() {
+  if [ "$staged" = yes ]; then
+    git cat-file blob ":0:$allowlist_src"
+  else
+    cat -- "$allowlist_src"
+  fi
+}
+allowed_erpc_hosts=$(read_allowlist 2>/dev/null | awk '
   /^#\[cfg\(test\)\]/ { exit }
   /^pub const [A-Z_]+: &\[/ { inside = 1 }
   inside { print }
   inside && /\];/ { inside = 0 }
-' "$allowlist_src" 2>/dev/null | grep -oE '"[^"]+"' | tr -d '"' | grep 'erpc\.global$' | sort -u)
-allowed_erpc_prefixes=$(awk '
+' | grep -oE '"[^"]+"' | tr -d '"' | grep 'erpc\.global$' | sort -u)
+allowed_erpc_prefixes=$(read_allowlist 2>/dev/null | awk '
   /^#\[cfg\(test\)\]/ { exit }
   /^pub const [A-Z_]+: &\[/ { inside = 1 }
   inside { print }
   inside && /\];/ { inside = 0 }
-' "$allowlist_src" 2>/dev/null | grep -oE '\("[A-Za-z0-9.-]+"' | tr -d '("' | sort -u)
+' | grep -oE '\("[A-Za-z0-9.-]+"' | tr -d '("' | sort -u)
 [ -n "$allowed_erpc_hosts" ] || { echo "could not read the host allowlist from $allowlist_src" >&2; exit 2; }
 
 erpc_host_allowed() {
@@ -92,8 +154,46 @@ report() {
   status=1
 }
 
-for f in "${files[@]}"; do
-  [ -f "$f" ] || continue
+# The index entry for one path: entry_mode, and entry_blob by object id, because
+# the `:path` form reads a name such as 1:a.md as stage 1 of a.md. Literal
+# pathspecs, so a name holding a glob matches only itself, and the name is
+# compared, because a directory matches the entries under it.
+tab="$(printf '\t')"
+read_index_entry() {
+  local entry="" meta rest
+  IFS= read -r -d '' entry < <(git --literal-pathspecs ls-files -s -z -- "$1" || true)
+  if [ -z "$entry" ] || [ "${entry#*"$tab"}" != "$1" ]; then
+    echo "$1: not found in the index; refusing to report a clean result" >&2
+    exit 2
+  fi
+  meta="${entry%%"$tab"*}"
+  entry_mode="${meta%% *}"
+  rest="${meta#* }"
+  entry_blob="${rest%% *}"
+  if [ "${rest#* }" != 0 ]; then
+    echo "$1: the index holds an unresolved conflict; refusing to report a clean result" >&2
+    exit 2
+  fi
+}
+
+# Each staged object is written here for the checks below, which match against a
+# file. A failed write stops the run, where a grep reading a pipe would see a short
+# file and report nothing.
+if [ "$staged" = yes ]; then
+  scan_tmp="$(mktemp)" || { echo "mktemp failed; refusing to report a clean result" >&2; exit 2; }
+  trap 'rm -f "$scan_tmp"' EXIT
+fi
+
+# --staged has an empty list when a commit only deletes, and bash 3.2 reads an
+# empty "${files[@]}" as unbound under `set -u`.
+for f in ${files[@]+"${files[@]}"}; do
+  # The lookup comes first, so that a conflict on a path no check reads still stops
+  # the run.
+  if [ "$staged" = yes ]; then
+    read_index_entry "$f"
+  else
+    [ -f "$f" ] || continue
+  fi
   [[ "$f" =~ $skip_re ]] && continue
 
   # 0. Internal documents, matched on the path alone.
@@ -103,19 +203,33 @@ for f in "${files[@]}"; do
 
   [[ "$f" =~ $self_re ]] && continue
 
+  # The content the checks below read. A symlink's object is its link text. A name
+  # starting with a dash would otherwise be an option to grep.
+  if [ "$staged" = no ]; then
+    case "$f" in -*) scan_path="./$f";; *) scan_path="$f";; esac
+  elif [ "$entry_mode" = 160000 ]; then
+    scan_path=/dev/null
+  else
+    if ! git cat-file blob "$entry_blob" > "$scan_tmp"; then
+      echo "$f: could not read the staged content; refusing to report a clean result" >&2
+      exit 2
+    fi
+    scan_path="$scan_tmp"
+  fi
+
   # 1. erpc.global hosts outside the published allowlist.
   while IFS=: read -r ln match; do
     [ -z "$ln" ] && continue
     if ! erpc_host_allowed "$match"; then
       report "$f" "$ln" "non-public erpc.global host: $match"
     fi
-  done < <(grep -noiE '[A-Za-z0-9._-]+\.erpc\.global' "$f" 2>/dev/null)
+  done < <(grep -noiE '[A-Za-z0-9._-]+\.erpc\.global' "$scan_path" 2>/dev/null)
 
   # 2. Cloud account / zone / project identifiers.
   while IFS=: read -r ln match; do
     [ -z "$ln" ] && continue
     report "$f" "$ln" "infrastructure identifier: $match"
-  done < <(grep -noiE '(account|zone|project)[_ -]?id[^0-9a-z]{0,8}[0-9a-f]{32}' "$f" 2>/dev/null)
+  done < <(grep -noiE '(account|zone|project)[_ -]?id[^0-9a-z]{0,8}[0-9a-f]{32}' "$scan_path" 2>/dev/null)
 
   # 2b. Bare 1Password vault or item identifiers.
   #
@@ -145,35 +259,35 @@ for f in "${files[@]}"; do
       report "$f" "$op_ln" "bare 1Password identifier: $id"
     done
     set +f
-  done < <(grep -a '' "$f" 2>/dev/null)
+  done < <(grep -a '' "$scan_path" 2>/dev/null)
 
   # 3. Bearer token literals.
   while IFS=: read -r ln match; do
     [ -z "$ln" ] && continue
     report "$f" "$ln" "bearer token literal: ${match:0:24}..."
-  done < <(grep -noE 'Bearer [A-Za-z0-9._~+/-]{32,}' "$f" 2>/dev/null)
+  done < <(grep -noE 'Bearer [A-Za-z0-9._~+/-]{32,}' "$scan_path" 2>/dev/null)
 
   # 4. Credential assignments with a literal value.
   while IFS=: read -r ln match; do
     [ -z "$ln" ] && continue
     report "$f" "$ln" "credential assignment: ${match:0:40}..."
-  done < <(grep -noE '(OP_SERVICE_ACCOUNT_TOKEN|OP_CONNECT_TOKEN|CLOUDFLARE_API_TOKEN|CARGO_REGISTRY_TOKEN|MINISIGN_SECRET_KEY|AWS_SECRET_ACCESS_KEY|R2_SECRET_ACCESS_KEY)[[:space:]]*[:=][[:space:]]*["'"'"']?[A-Za-z0-9._~+/-]{16,}' "$f" 2>/dev/null)
+  done < <(grep -noE '(OP_SERVICE_ACCOUNT_TOKEN|OP_CONNECT_TOKEN|CLOUDFLARE_API_TOKEN|CARGO_REGISTRY_TOKEN|MINISIGN_SECRET_KEY|AWS_SECRET_ACCESS_KEY|R2_SECRET_ACCESS_KEY)[[:space:]]*[:=][[:space:]]*["'"'"']?[A-Za-z0-9._~+/-]{16,}' "$scan_path" 2>/dev/null)
 
   # 5. Blockchain key material (second net behind gitleaks).
   while IFS=: read -r ln match; do
     [ -z "$ln" ] && continue
     report "$f" "$ln" "looks like a Solana keypair array: ${match:0:32}..."
-  done < <(grep -noE '\[([[:space:]]*[0-9]{1,3}[[:space:]]*,){63}[[:space:]]*[0-9]{1,3}[[:space:]]*\]' "$f" 2>/dev/null)
+  done < <(grep -noE '\[([[:space:]]*[0-9]{1,3}[[:space:]]*,){63}[[:space:]]*[0-9]{1,3}[[:space:]]*\]' "$scan_path" 2>/dev/null)
 
   while IFS=: read -r ln match; do
     [ -z "$ln" ] && continue
     report "$f" "$ln" "looks like a private key: ${match:0:40}..."
-  done < <(grep -noiE '(priv(ate)?[_-]?key|secret[_-]?key|signing[_-]?key|mnemonic|seed[_-]?phrase)["'"'"'[:space:]]{0,10}[:=][[:space:]]*["'"'"']?(0x)?[0-9a-fA-F]{64}' "$f" 2>/dev/null)
+  done < <(grep -noiE '(priv(ate)?[_-]?key|secret[_-]?key|signing[_-]?key|mnemonic|seed[_-]?phrase)["'"'"'[:space:]]{0,10}[:=][[:space:]]*["'"'"']?(0x)?[0-9a-fA-F]{64}' "$scan_path" 2>/dev/null)
 
   while IFS=: read -r ln match; do
     [ -z "$ln" ] && continue
     report "$f" "$ln" "PEM private key block"
-  done < <(grep -noE -- '-----BEGIN [A-Z ]*PRIVATE KEY-----' "$f" 2>/dev/null)
+  done < <(grep -noE -- '-----BEGIN [A-Z ]*PRIVATE KEY-----' "$scan_path" 2>/dev/null)
 
   # 6. References into the company's private repositories and documents.
   # Any sibling repository in the organisation, the internal documentation
@@ -187,7 +301,7 @@ for f in "${files[@]}"; do
       */erpc-cli|*/erpc-cli-maintainers) continue;;
     esac
     report "$f" "$ln" "internal reference: $match"
-  done < <(grep -noE '(elsoul/[A-Za-z0-9_.-]+|\.claude/docs/|/Users/[A-Za-z0-9_.-]+/)' "$f" 2>/dev/null)
+  done < <(grep -noE '(elsoul/[A-Za-z0-9_.-]+|\.claude/docs/|/Users/[A-Za-z0-9_.-]+/)' "$scan_path" 2>/dev/null)
 
   # 7. Committed .env files.
   case "$f" in
