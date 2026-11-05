@@ -331,8 +331,8 @@ for sample in \
   check_staged "staged: $sample_name" block "$sample_rel" "$sample_text"
   in_scratch_repo staged_then_removed "$sample_rel" "$sample_text"
   expect_outcome "staged: $sample_name, gone from the worktree" block
-  # With a NUL on the line before it. Without grep -a, GNU grep reports nothing and
-  # BSD grep reports no line, so the line number is what is asserted.
+  # With a NUL on the line before it. Given a NUL, GNU grep reports nothing and BSD
+  # grep reports no line, so the line number is what is asserted.
   in_scratch_repo staged_with_nul "$sample_rel" "$sample_text"
   expect_reported "staged: $sample_name, in a file holding a NUL" "$sample_rel:2:"
   # And on the same line: bash's read cuts the line at a NUL, or joins what is beside it.
@@ -404,6 +404,9 @@ check_staged "staged: an empty file passes" allow a.md ''
 # The gate's own skips still apply.
 check_staged "staged: a skipped path is not read" allow target/a.rs "$bad_content"
 check_staged "staged: a skipped extension is not read" allow a.png "$bad_content"
+# A known limit, which the header states: a skipped path is not judged by name either.
+check_staged "staged: a skipped path is not judged by name" allow target/.env 'clean'
+check_staged "staged: a skipped directory is not judged by name" allow LICENSES/design.md 'clean'
 check_staged "staged: a file quoting the patterns is not read" allow scripts/check-oss-hygiene.sh "$bad_content"
 
 staged_with_file_names() {
@@ -861,8 +864,6 @@ expect_outcome "a file named - is read after --, not standard input" block
 # listing of a directory it did not use would be empty whatever the gate did.
 real_mktemp="$(command -v mktemp)"
 scratch_files_left() {
-  local expected_rc="$1"
-  shift
   mkdir -p .git/stub .git/scratch-probe
   printf '#!/bin/sh\nexec "%s" "%s/.git/scratch-probe/f.XXXXXX"\n' "$real_mktemp" "$PWD" > .git/stub/mktemp
   chmod +x .git/stub/mktemp
@@ -877,20 +878,23 @@ scratch_files_left() {
     touch .git/saw-scratch
   fi
   PATH="$PWD/.git/stub:$PATH" "$sh" "$gate" --staged >/dev/null 2>&1 </dev/null
-  [ "$?" -eq "$expected_rc" ] && [ -e .git/saw-scratch ] && [ -z "$(ls -A .git/scratch-probe)" ]
+  # Blocked, or killed by the signal: 128 and above.
+  local gate_rc=$?
+  if [ "${1:-}" = signal ]; then [ "$gate_rc" -gt 128 ] || return 1; else [ "$gate_rc" -eq 1 ] || return 1; fi
+  [ -e .git/saw-scratch ] && [ -z "$(ls -A .git/scratch-probe)" ]
 }
-in_scratch_repo scratch_files_left 1
+in_scratch_repo scratch_files_left
 if [ "$scratch_rc" -eq 0 ]; then
   pass=$((pass + 1)); printf 'ok   staged: no scratch file is left behind\n'
 else
   fail=$((fail + 1)); printf 'FAIL staged: a scratch file was left behind, or the gate did not block\n'
 fi
 
-in_scratch_repo scratch_files_left 2 signal
+in_scratch_repo scratch_files_left signal
 if [ "$scratch_rc" -eq 0 ]; then
   pass=$((pass + 1)); printf 'ok   staged: a signal leaves no scratch file behind\n'
 else
-  fail=$((fail + 1)); printf 'FAIL staged: a signal left a scratch file behind, or the gate did not exit 2\n'
+  fail=$((fail + 1)); printf 'FAIL staged: a signal left a scratch file behind, or did not end the gate\n'
 fi
 
 failing_mktemp() {
