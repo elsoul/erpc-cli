@@ -13,9 +13,10 @@ pre-commit:
     oss-hygiene:
       glob: "*"
       run: scripts/check-oss-hygiene.sh {staged_files}
+    # No {staged_files} and no glob: lefthook drops a name with a leading or
+    # trailing space before the command sees it. The gate lists the paths itself.
     endpoints:
-      glob: "*"
-      run: scripts/check-endpoints.sh -- {staged_files}
+      run: scripts/check-endpoints.sh --staged
     fmt:
       glob: "*.rs"
       run: cargo fmt --all -- --check
