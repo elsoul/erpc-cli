@@ -49,8 +49,8 @@ export LC_ALL=C
 cd "$(git rev-parse --show-toplevel)"
 
 # `--` ends the options, so a caller passing file names it does not control says
-# so. An unknown option is refused: read as a file name, a mistyped --staged would
-# not be a regular file, and the run would pass with nothing scanned.
+# so. An unknown option is refused by name, rather than looked up as a path, so that
+# a mistyped --staged says what is wrong.
 staged=no
 case "${1:-}" in
   --)
@@ -192,7 +192,8 @@ read_index_entry() {
 # A NUL makes grep call the file binary and drop its lines, and bash's read cuts or
 # joins the line it is on, which is what a real separator could not do.
 #
-# These files hold staged content. bash runs the EXIT trap on a fatal signal as well.
+# These files hold staged content. bash runs the EXIT trap on HUP and TERM as well; on
+# QUIT, bash 3.2 leaves them behind.
 scan_tmp=""
 match_tmp=""
 trap 'rm -f "$scan_tmp" "$match_tmp"' EXIT
@@ -205,10 +206,12 @@ scan_failed() {
 }
 
 # The lines grep finds in the scratch file go to match_tmp. grep exits 1 when it finds
-# nothing and above that when it could not look, which must not read the same way.
+# nothing and above that when it could not look, which must not read the same way. A
+# redirection that fails also gives 1, without running grep, so rc starts above that.
 matches() {
-  grep "$@" "$scan_tmp" > "$match_tmp"
-  [ "$?" -le 1 ] || scan_failed
+  local rc=3
+  { grep "$@" "$scan_tmp"; rc=$?; } > "$match_tmp"
+  [ "$rc" -le 1 ] || scan_failed
 }
 
 # --staged has an empty list when a commit only deletes, and bash 3.2 reads an
@@ -349,6 +352,10 @@ for f in ${files[@]+"${files[@]}"}; do
   case "$f" in
     .env|.env.*|*/.env|*/.env.*) report "$f" 1 ".env files must not be committed";;
   esac
+
+  # A loop reading a file that cannot be opened ends as if the file were empty, so the
+  # scratch files must still be there for what was read from them to count.
+  { [ -f "$scan_tmp" ] && [ -f "$match_tmp" ]; } || scan_failed
 done
 
 if [ "$status" -ne 0 ]; then
