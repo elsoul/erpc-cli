@@ -4,7 +4,7 @@
 #
 # Egress allowlist gate.
 #
-#   scripts/check-endpoints.sh [files...]       # default: all tracked files
+#   scripts/check-endpoints.sh [--] [files...]  # default: all tracked files
 #   scripts/check-endpoints.sh --print-exceptions
 #
 # ONE RULE: every http/https/ws/wss URL in a tracked file must name a host
@@ -204,7 +204,12 @@ LICENSES/*
 EOF
 }
 
-if [ "${1:-}" = "--print-exceptions" ]; then
+# `--` ends the options, so a caller passing file names it does not control
+# says so. Without it a staged file named --print-exceptions, which sorts first,
+# turned the pre-commit run into this listing and exit 0, with nothing scanned.
+if [ "${1:-}" = "--" ]; then
+  shift
+elif [ "${1:-}" = "--print-exceptions" ]; then
   print_exceptions
   exit 0
 fi
@@ -278,7 +283,9 @@ if [ "$#" -gt 0 ]; then
   files=("$@")
 else
   files=()
-  while IFS= read -r f; do files+=("$f"); done < <(git ls-files)
+  # NUL-separated: without -z, git quotes a non-ASCII name and the quoted form
+  # is not a path, so that file would be skipped without a word.
+  while IFS= read -r -d '' f; do files+=("$f"); done < <(git ls-files -z)
 fi
 
 prose_re='(\.(md|txt)$|^(NOTICE|CHANGELOG|AUTHORS)$)'
