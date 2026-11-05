@@ -372,7 +372,8 @@ stubbed_tool_run() {
 for failing in \
   'host|*._-]+*|const U: &str = "https://hidden-host.erpc.global/";' \
   'identifier|*zone*|account_id = "abcdefabcdefabcdefabcdefabcdefab"' \
-  'outer 1Password match|*vault?item*|Rotate item exampleitemidbbbbbbbbbbbbb after use.' \
+  'filter 1Password match|*vault?item*|Rotate item exampleitemidbbbbbbbbbbbbb after use.' \
+  'outer 1Password match|*\(vault?item\)s*|Rotate item exampleitemidbbbbbbbbbbbbb after use.' \
   'inner 1Password match|*{26}\$\|*|Rotate item exampleitemidbbbbbbbbbbbbb after use.' \
   'bearer|*Bearer*|Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9abcdef' \
   'credential|*OP_SERVICE*|export OP_SERVICE_ACCOUNT_TOKEN=ops_abcdefghijklmnopqrstuvwxyz0123456789' \
@@ -665,8 +666,8 @@ expect_refusal "staged: a failed read of the index is refused" "could not read t
 in_scratch_repo stage_then_stubbed_run 'case "$1" in cat-file) exit 1;; esac' --staged
 expect_refusal "staged: an unreadable allowlist is refused" "could not read the host allowlist"
 
-# Each file replaces the last in the scratch file, or a finding would be reported
-# again under every file after it. $1 adds a submodule entry or not, $2 is the option.
+# Each file replaces the last in the content, or a finding would be reported again
+# under every file after it. $1 adds a submodule entry or not, $2 is the option.
 one_file_each() {
   printf '%s\n' "$bad_content" > a.md
   printf 'clean\n' > b.md
@@ -698,6 +699,17 @@ expect_own_file "staged: a submodule entry does not inherit a finding" b-sub
 
 in_scratch_repo one_file_each submodule
 expect_own_file "tracked: a submodule entry does not inherit a finding" b-sub
+
+# A line of content is not a glob. Expanded against this file's name, it would become
+# a line holding an identifier, which the content does not.
+line_is_not_a_glob() {
+  printf 'item [e]xampleitemidbbbbbbbbbbbbb\n' > a.md
+  git add a.md crates
+  : > '1:item exampleitemidbbbbbbbbbbbbb'
+  gate_staged
+}
+in_scratch_repo line_is_not_a_glob
+expect_outcome "staged: a line of content is not expanded against file names" allow
 
 # The name of a submodule entry is in the commit, whatever the user's diff settings.
 submodule_ignored_by_config() {
@@ -737,6 +749,14 @@ tracked_with_nul() {
 }
 in_scratch_repo tracked_with_nul
 expect_reported "tracked: a file holding a NUL is read" "a.md:2:"
+
+tracked_nul_separator() {
+  printf 'item\000exampleitemidbbbbbbbbbbbbb\n' > a.md
+  git add -A -f
+  gate_tracked
+}
+in_scratch_repo tracked_nul_separator
+expect_reported "tracked: a NUL as the separator is read as one" "a.md:1:"
 
 deleted_from_worktree() {
   mkdir -p "$(dirname -- "$1")"
@@ -856,125 +876,6 @@ expect_refusal "a named directory is refused, not read as its first file" "nothi
 
 in_scratch_repo stage_and_run - "$bad_content" -- -
 expect_outcome "a file named - is read after --, not standard input" block
-
-# --- the gate's own scratch file ------------------------------------------------
-
-# The gate's own scratch files hold staged content, so they must not outlive the run.
-# mktemp is stubbed to use one directory, because it need not honour TMPDIR, and a
-# listing of a directory it did not use would be empty whatever the gate did.
-real_mktemp="$(command -v mktemp)"
-scratch_files_left() {
-  mkdir -p .git/stub .git/scratch-probe
-  printf '#!/bin/sh\nexec "%s" "%s/.git/scratch-probe/f.XXXXXX"\n' "$real_mktemp" "$PWD" > .git/stub/mktemp
-  chmod +x .git/stub/mktemp
-  printf '%s\n' "$bad_content" > a.md
-  git add -A -f
-  # Stops the gate in the middle of a scan. By then its files exist, and the stub
-  # asserts that they do, so a run that made none cannot pass.
-  if [ "${1:-}" = signal ]; then
-    printf '#!/bin/sh\ncase "$*" in *elsoul*) [ -n "$(ls -A "%s/.git/scratch-probe")" ] && touch "%s/.git/saw-scratch"; kill -TERM "$PPID"; exit 1;; esac\nexec "%s" "$@"\n' "$PWD" "$PWD" "$real_grep" > .git/stub/grep
-    chmod +x .git/stub/grep
-  else
-    touch .git/saw-scratch
-  fi
-  PATH="$PWD/.git/stub:$PATH" "$sh" "$gate" --staged >/dev/null 2>&1 </dev/null
-  # Blocked, or killed by the signal: 128 and above.
-  local gate_rc=$?
-  if [ "${1:-}" = signal ]; then [ "$gate_rc" -gt 128 ] || return 1; else [ "$gate_rc" -eq 1 ] || return 1; fi
-  [ -e .git/saw-scratch ] && [ -z "$(ls -A .git/scratch-probe)" ]
-}
-in_scratch_repo scratch_files_left
-if [ "$scratch_rc" -eq 0 ]; then
-  pass=$((pass + 1)); printf 'ok   staged: no scratch file is left behind\n'
-else
-  fail=$((fail + 1)); printf 'FAIL staged: a scratch file was left behind, or the gate did not block\n'
-fi
-
-in_scratch_repo scratch_files_left signal
-if [ "$scratch_rc" -eq 0 ]; then
-  pass=$((pass + 1)); printf 'ok   staged: a signal leaves no scratch file behind\n'
-else
-  fail=$((fail + 1)); printf 'FAIL staged: a signal left a scratch file behind, or did not end the gate\n'
-fi
-
-# The scratch files going away mid-scan. A redirection or a loop that cannot open one
-# reads like nothing found, and the only finding is in the last file and the last check.
-# $1 is the pattern of the grep that removes them. The real grep runs first, so its own
-# result is written.
-scratch_gone() {
-  mkdir -p .git/stub .git/scratch-probe
-  printf '#!/bin/sh\nexec "%s" "%s/.git/scratch-probe/f.XXXXXX"\n' "$real_mktemp" "$PWD" > .git/stub/mktemp
-  { printf '#!/bin/sh\n"%s" "$@"\nrc=$?\n' "$real_grep"
-    printf 'case "$*" in %s) rm -rf "%s/.git/scratch-probe";; esac\nexit $rc\n' "$1" "$PWD"
-  } > .git/stub/grep
-  chmod +x .git/stub/mktemp .git/stub/grep
-  printf '%s\n' "$bad_content" > zz.md
-  git add -A -f
-  PATH="$PWD/.git/stub:$PATH" "$sh" "$gate" --staged 2>&1 </dev/null
-}
-in_scratch_repo scratch_gone '*zone*'
-expect_refusal "staged: scratch files gone before the checks after them is refused" "could not run"
-
-in_scratch_repo scratch_gone '*elsoul*'
-expect_refusal "staged: scratch files gone before the last check is read is refused" "could not run"
-
-# The match file still there and no longer writable, which only the redirection can
-# see. Not as root, who writes to it regardless.
-match_file_unwritable() {
-  mkdir -p .git/stub .git/scratch-probe
-  printf '#!/bin/sh\nn=a; [ -e "%s/.git/first-call" ] && n=b\n: > "%s/.git/first-call"\nexec "%s" "%s/.git/scratch-probe/$n.XXXXXX"\n' "$PWD" "$PWD" "$real_mktemp" "$PWD" > .git/stub/mktemp
-  { printf '#!/bin/sh\n"%s" "$@"\nrc=$?\n' "$real_grep"
-    printf 'case "$*" in *zone*) chmod 000 "%s"/.git/scratch-probe/b.*;; esac\nexit $rc\n' "$PWD"
-  } > .git/stub/grep
-  chmod +x .git/stub/mktemp .git/stub/grep
-  printf '%s\n' "$bad_content" > zz.md
-  git add -A -f
-  PATH="$PWD/.git/stub:$PATH" "$sh" "$gate" --staged 2>&1 </dev/null
-}
-if [ "$(id -u)" -ne 0 ]; then
-  in_scratch_repo match_file_unwritable
-  expect_refusal "staged: a match file that cannot be written is refused" "could not run"
-else
-  printf 'skip running as root, so a file cannot be made unwritable\n'
-fi
-
-failing_mktemp() {
-  mkdir -p .git/stub
-  printf '#!/bin/sh\nexit 1\n' > .git/stub/mktemp
-  chmod +x .git/stub/mktemp
-  printf 'clean\n' > a.md
-  git add -A -f
-  PATH="$PWD/.git/stub:$PATH" "$sh" "$gate" --staged 2>&1 </dev/null
-}
-in_scratch_repo failing_mktemp
-expect_refusal "staged: a failed mktemp is refused" "mktemp failed"
-
-# Only the first call failing, so the second cannot be what stops the run.
-first_mktemp_fails() {
-  mkdir -p .git/stub
-  printf '#!/bin/sh\n[ -e "%s/.git/first-call" ] || { : > "%s/.git/first-call"; exit 1; }\nexec "%s" "$@"\n' "$PWD" "$PWD" "$real_mktemp" > .git/stub/mktemp
-  chmod +x .git/stub/mktemp
-  printf 'clean\n' > a.md
-  git add -A -f
-  PATH="$PWD/.git/stub:$PATH" "$sh" "$gate" --staged 2>&1 </dev/null
-}
-in_scratch_repo first_mktemp_fails
-expect_refusal "staged: a first failed mktemp is refused" "mktemp failed"
-
-# The second call failing, with the file from the first still to clean up.
-second_mktemp_fails() {
-  mkdir -p .git/stub .git/scratch-probe
-  printf '#!/bin/sh\n[ -e "%s/.git/first-call" ] && exit 1\n: > "%s/.git/first-call"\nexec "%s" "%s/.git/scratch-probe/f.XXXXXX"\n' "$PWD" "$PWD" "$real_mktemp" "$PWD" > .git/stub/mktemp
-  chmod +x .git/stub/mktemp
-  printf 'clean\n' > a.md
-  git add -A -f
-  PATH="$PWD/.git/stub:$PATH" "$sh" "$gate" --staged 2>&1 </dev/null
-  local gate_rc=$?
-  [ -z "$(ls -A .git/scratch-probe)" ] || { printf 'left a scratch file\n'; return 3; }
-  return "$gate_rc"
-}
-in_scratch_repo second_mktemp_fails
-expect_refusal "staged: a second failed mktemp is refused and cleans up" "mktemp failed"
 
 # The real hook, where lefthook is installed. CI has none and pre-push does.
 lefthook_run() {
