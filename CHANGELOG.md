@@ -12,7 +12,7 @@ whose version has no entry below.
 
 ## [Unreleased]
 
-## [0.1.0-rc.2] - 2026-11-04
+## [0.1.0-rc.2] - 2026-11-05
 
 Everything erpc does beyond signing in, developed since 0.1.0-rc.1 and
 brought into this repository as one change. The commands exist and pass
