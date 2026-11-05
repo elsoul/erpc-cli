@@ -1942,9 +1942,12 @@ else
 fi
 
 # lefthook-local.yml overrides lefthook.yml, so committing one with `skip: true`
-# would switch the command off for everyone. Reads a listing of tracked paths.
+# would switch the command off for everyone. This reads a listing of tracked paths
+# and goes by name only. Case is ignored, because a filesystem that ignores it
+# finds Lefthook-Local.yml all the same. A tracked path that is exactly .config is
+# a symlink or a file: lefthook follows the link, and no name under it is listed.
 only_wired_hook_config() {
-  ! grep -E '^(\.config/)?\.?lefthook(-local)?\.[a-z]+$' | grep -qvx 'lefthook\.yml'
+  ! grep -iE '^(\.config|(\.config/)?\.?lefthook(-local)?\.[a-z]+)$' | grep -qvx 'lefthook\.yml'
 }
 
 if git -C "$repo_root" ls-files | only_wired_hook_config; then
@@ -1953,7 +1956,8 @@ else
   fail=$((fail + 1)); printf 'FAIL lefthook.yml must be the only hook configuration tracked\n'
 fi
 
-for hook_config in lefthook-local.yml .lefthook-local.yml .lefthook.yml lefthook.toml .config/lefthook-local.yaml; do
+for hook_config in lefthook-local.yml .lefthook-local.yml .lefthook.yml lefthook.toml .config/lefthook-local.yaml \
+  Lefthook-Local.yml LEFTHOOK-LOCAL.YML lefthook-local.YML Lefthook.yml .LEFTHOOK.yml .CONFIG/lefthook.yml .config; do
   if printf 'lefthook.yml\n%s\n' "$hook_config" | only_wired_hook_config; then
     fail=$((fail + 1)); printf 'FAIL the hook configuration check accepted %s\n' "$hook_config"
   else
@@ -2036,11 +2040,14 @@ rm -f "$wiring_fixture"
 probe_hook_env() {
   (
     export GIT_DIR=/nonexistent/git GIT_WORK_TREE=/nonexistent/tree GIT_INDEX_FILE=/nonexistent/index
-    in_scratch_repo stage_and_run a.md 'Nothing to report.'
+    in_scratch_repo stage_and_run a.md "$evil_prose"
     exit "$scratch_rc"
   )
 }
-if probe_hook_env; then
+# Exit 1 means the file was staged and read, which needs all three cleared: under a
+# leftover GIT_INDEX_FILE the add fails, and the gate has nothing to report.
+probe_hook_env
+if [ "$?" -eq 1 ]; then
   pass=$((pass + 1)); printf 'ok   the harness clears the variables a hook sets\n'
 else
   fail=$((fail + 1)); printf 'FAIL the harness must clear the variables a hook sets\n'
