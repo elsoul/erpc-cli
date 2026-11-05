@@ -208,7 +208,8 @@ finish_capture() {
   esac
   capture_rc="${last%:finished}"
   captured="${captured%$'\n'*}"
-  captured="${captured%$'\n'}"
+  # Not ${captured%$'\n'}, which is quadratic on long text that does not end in a newline.
+  case "$captured" in *$'\n') captured="${captured%?}";; esac
 }
 
 # Reads the content a file holds into content. Every NUL becomes a space. A NUL makes
