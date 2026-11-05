@@ -304,6 +304,16 @@ expect_reported() {
       fail=$((fail + 1)); printf 'FAIL %s (exit %s, wanted exit 1 saying "%s")\n%s\n' "$name" "$scratch_rc" "$want" "$scratch_out";;
   esac
 }
+staged_nul_on_line() {
+  { printf 'x\000 '; printf '%s\n' "$2"; } > "$1"
+  git add -A -f
+  gate_staged
+}
+staged_nul_separator() {
+  { printf '%s\000%s\n' "$2" "$3"; } > "$1"
+  git add -A -f
+  gate_staged
+}
 for sample in \
   'a non-public host|a.rs|const U: &str = "https://hidden-host.erpc.global/";' \
   'a cloud identifier|a.toml|account_id = "8a313f35be0eb4e99ad5bed9cb7aa99d"' \
@@ -325,7 +335,64 @@ for sample in \
   # BSD grep reports no line, so the line number is what is asserted.
   in_scratch_repo staged_with_nul "$sample_rel" "$sample_text"
   expect_reported "staged: $sample_name, in a file holding a NUL" "$sample_rel:2:"
+  # And on the same line: bash's read cuts the line at a NUL, or joins what is beside it.
+  in_scratch_repo staged_nul_on_line "$sample_rel" "$sample_text"
+  expect_reported "staged: $sample_name, after a NUL on the line" "$sample_rel:1:"
 done
+
+for separated in 'item|exampleitemidbbbbbbbbbbbbb' 'vault|examplevaultidaaaaaaaaaaaa' 'Bearer|eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9abcdef'; do
+  in_scratch_repo staged_nul_separator a.md "${separated%%|*}" "${separated#*|}"
+  expect_reported "staged: a NUL as the separator after ${separated%%|*}" "a.md:1:"
+done
+
+last_line_without_newline() {
+  printf 'Rotate item exampleitemidbbbbbbbbbbbbb' > a.md
+  git add -A -f
+  gate_staged
+}
+in_scratch_repo last_line_without_newline
+expect_reported "staged: a last line with no newline is read" "a.md:1:"
+
+# Each check, with the tool it runs failing: exit 2, not nothing found. The file holds
+# what the check looks for, and the stub fails only on that check's own pattern.
+real_grep="$(command -v grep)"
+real_sed="$(command -v sed)"
+stubbed_tool_run() {
+  local tool="$1" real="$2" pattern="$3" content="$4"
+  printf '%s\n' "$content" > a.md
+  git add -A -f
+  mkdir -p .git/stub
+  { printf '#!/bin/sh\n'
+    printf 'case "$*" in %s) exit 2;; esac\n' "$pattern"
+    printf 'exec "%s" "$@"\n' "$real"
+  } > ".git/stub/$tool"
+  chmod +x ".git/stub/$tool"
+  PATH="$PWD/.git/stub:$PATH" "$sh" "$gate" "${@:5}" 2>&1 </dev/null
+}
+for failing in \
+  'host|*._-]+*|const U: &str = "https://hidden-host.erpc.global/";' \
+  'identifier|*zone*|account_id = "8a313f35be0eb4e99ad5bed9cb7aa99d"' \
+  'outer 1Password match|*vault?item*|Rotate item exampleitemidbbbbbbbbbbbbb after use.' \
+  'inner 1Password match|*{26}\$\|*|Rotate item exampleitemidbbbbbbbbbbbbb after use.' \
+  'bearer|*Bearer*|Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9abcdef' \
+  'credential|*OP_SERVICE*|export OP_SERVICE_ACCOUNT_TOKEN=ops_abcdefghijklmnopqrstuvwxyz0123456789' \
+  'keypair|*{63}*|clean' \
+  'private key|*seed*|clean' \
+  'PEM|*BEGIN*|-----BEGIN EC PRIVATE KEY-----' \
+  'internal reference|*elsoul*|See elsoul/internal-ops for the runbook.'; do
+  failing_name="${failing%%|*}"
+  failing_rest="${failing#*|}"
+  # The pattern holds a | only as an escaped one, which the case above reads literally.
+  failing_text="${failing_rest##*|}"
+  failing_pattern="${failing_rest%|*}"
+  in_scratch_repo stubbed_tool_run grep "$real_grep" "$failing_pattern" "$failing_text" --staged
+  expect_refusal "staged: a failing grep in the $failing_name check is refused" "could not run"
+  in_scratch_repo stubbed_tool_run grep "$real_grep" "$failing_pattern" "$failing_text"
+  expect_refusal "tracked: a failing grep in the $failing_name check is refused" "could not run"
+done
+
+in_scratch_repo stubbed_tool_run sed "$real_sed" '*op:*' 'Rotate item exampleitemidbbbbbbbbbbbbb after use.' --staged
+expect_refusal "staged: a failing sed in the 1Password check is refused" "could not run"
 
 check_staged "staged: an internal document is blocked by name" block docs/architecture.md 'Nothing to report.'
 check_staged "staged: a dotenv file is blocked by name" block .env 'Nothing to report.'
@@ -789,23 +856,41 @@ expect_outcome "a file named - is read after --, not standard input" block
 
 # --- the gate's own scratch file ------------------------------------------------
 
-# The gate's own scratch file holds staged content, so it must not outlive the run.
-# mktemp is stubbed, because it need not honour TMPDIR, and a listing of a directory
-# it did not use would be empty whatever the gate did.
-scratch_file_left() {
-  mkdir -p .git/stub
-  printf '#!/bin/sh\n: > "%s/.git/scratch-probe"\necho "%s/.git/scratch-probe"\n' "$PWD" "$PWD" > .git/stub/mktemp
+# The gate's own scratch files hold staged content, so they must not outlive the run.
+# mktemp is stubbed to use one directory, because it need not honour TMPDIR, and a
+# listing of a directory it did not use would be empty whatever the gate did.
+real_mktemp="$(command -v mktemp)"
+scratch_files_left() {
+  local expected_rc="$1"
+  shift
+  mkdir -p .git/stub .git/scratch-probe
+  printf '#!/bin/sh\nexec "%s" "%s/.git/scratch-probe/f.XXXXXX"\n' "$real_mktemp" "$PWD" > .git/stub/mktemp
   chmod +x .git/stub/mktemp
   printf '%s\n' "$bad_content" > a.md
   git add -A -f
+  # Stops the gate in the middle of a scan. By then its files exist, and the stub
+  # asserts that they do, so a run that made none cannot pass.
+  if [ "${1:-}" = signal ]; then
+    printf '#!/bin/sh\ncase "$*" in *elsoul*) [ -n "$(ls -A "%s/.git/scratch-probe")" ] && touch "%s/.git/saw-scratch"; kill -TERM "$PPID"; exit 1;; esac\nexec "%s" "$@"\n' "$PWD" "$PWD" "$real_grep" > .git/stub/grep
+    chmod +x .git/stub/grep
+  else
+    touch .git/saw-scratch
+  fi
   PATH="$PWD/.git/stub:$PATH" "$sh" "$gate" --staged >/dev/null 2>&1 </dev/null
-  [ "$?" -eq 1 ] && [ ! -e .git/scratch-probe ]
+  [ "$?" -eq "$expected_rc" ] && [ -e .git/saw-scratch ] && [ -z "$(ls -A .git/scratch-probe)" ]
 }
-in_scratch_repo scratch_file_left
+in_scratch_repo scratch_files_left 1
 if [ "$scratch_rc" -eq 0 ]; then
   pass=$((pass + 1)); printf 'ok   staged: no scratch file is left behind\n'
 else
   fail=$((fail + 1)); printf 'FAIL staged: a scratch file was left behind, or the gate did not block\n'
+fi
+
+in_scratch_repo scratch_files_left 2 signal
+if [ "$scratch_rc" -eq 0 ]; then
+  pass=$((pass + 1)); printf 'ok   staged: a signal leaves no scratch file behind\n'
+else
+  fail=$((fail + 1)); printf 'FAIL staged: a signal left a scratch file behind, or the gate did not exit 2\n'
 fi
 
 failing_mktemp() {
@@ -818,6 +903,33 @@ failing_mktemp() {
 }
 in_scratch_repo failing_mktemp
 expect_refusal "staged: a failed mktemp is refused" "mktemp failed"
+
+# Only the first call failing, so the second cannot be what stops the run.
+first_mktemp_fails() {
+  mkdir -p .git/stub
+  printf '#!/bin/sh\n[ -e "%s/.git/first-call" ] || { : > "%s/.git/first-call"; exit 1; }\nexec "%s" "$@"\n' "$PWD" "$PWD" "$real_mktemp" > .git/stub/mktemp
+  chmod +x .git/stub/mktemp
+  printf 'clean\n' > a.md
+  git add -A -f
+  PATH="$PWD/.git/stub:$PATH" "$sh" "$gate" --staged 2>&1 </dev/null
+}
+in_scratch_repo first_mktemp_fails
+expect_refusal "staged: a first failed mktemp is refused" "mktemp failed"
+
+# The second call failing, with the file from the first still to clean up.
+second_mktemp_fails() {
+  mkdir -p .git/stub .git/scratch-probe
+  printf '#!/bin/sh\n[ -e "%s/.git/first-call" ] && exit 1\n: > "%s/.git/first-call"\nexec "%s" "%s/.git/scratch-probe/f.XXXXXX"\n' "$PWD" "$PWD" "$real_mktemp" "$PWD" > .git/stub/mktemp
+  chmod +x .git/stub/mktemp
+  printf 'clean\n' > a.md
+  git add -A -f
+  PATH="$PWD/.git/stub:$PATH" "$sh" "$gate" --staged 2>&1 </dev/null
+  local gate_rc=$?
+  [ -z "$(ls -A .git/scratch-probe)" ] || { printf 'left a scratch file\n'; return 3; }
+  return "$gate_rc"
+}
+in_scratch_repo second_mktemp_fails
+expect_refusal "staged: a second failed mktemp is refused and cleans up" "mktemp failed"
 
 # The real hook, where lefthook is installed. CI has none and pre-push does.
 lefthook_run() {

@@ -27,8 +27,11 @@
 # worktree, a dangling symlink, a symlink to a directory. A symlink to a file is read
 # through the link. A named path that is in neither place exits 2.
 #
-# In every form a failed listing, lookup or read exits 2, and so does an unresolved
-# conflict on a path read from the index.
+# A submodule entry is judged by name in every form. So are the paths in skip_re, which
+# are otherwise not read at all, and the paths in self_re, which quote these patterns.
+#
+# In every form a failed listing, lookup, read or match exits 2, and so does an
+# unresolved conflict on a path read from the index.
 #
 # Policy: docs/public-hosts.md. Response to an accidental commit:
 # docs/secret-exposure-response.md.
@@ -156,8 +159,6 @@ EOF
 # this public file does not enumerate what those documents are called.
 internal_doc_re='(^|/)(architecture|design|[a-z0-9-]+-design|[a-z0-9-]+-assessment|[a-z0-9-]+-records|[a-z0-9-]+-acceptance|classification)\.md$'
 
-# Every content check below uses grep -a. Without it GNU grep says that a file holding
-# a NUL matches on standard error, which these discard, and reports nothing.
 status=0
 report() {
   printf '%s:%s: %s\n' "$1" "$2" "$3" >&2
@@ -186,11 +187,30 @@ read_index_entry() {
   fi
 }
 
-# Each file is written here for the checks below, which match against a file and
-# discard grep's errors. A failed read stops the run, where a grep reading the source
-# directly would report nothing.
+# Each file is written here for the checks below, with every NUL turned into a space.
+# A NUL makes grep call the file binary and drop its lines, and bash's read cuts or
+# joins the line it is on, which is what a real separator could not do.
+#
+# A signal ends the run through the EXIT trap, which it would otherwise skip, and these
+# files hold staged content.
+scan_tmp=""
+match_tmp=""
+trap 'rm -f "$scan_tmp" "$match_tmp"' EXIT
+trap 'exit 2' HUP INT TERM
 scan_tmp="$(mktemp)" || { echo "mktemp failed; refusing to report a clean result" >&2; exit 2; }
-trap 'rm -f "$scan_tmp"' EXIT
+match_tmp="$(mktemp)" || { echo "mktemp failed; refusing to report a clean result" >&2; exit 2; }
+
+scan_failed() {
+  echo "$f: a check could not run; refusing to report a clean result" >&2
+  exit 2
+}
+
+# The lines grep finds in the scratch file go to match_tmp. grep exits 1 when it finds
+# nothing and above that when it could not look, which must not read the same way.
+matches() {
+  grep "$@" "$scan_tmp" > "$match_tmp"
+  [ "$?" -le 1 ] || scan_failed
+}
 
 # --staged has an empty list when a commit only deletes, and bash 3.2 reads an
 # empty "${files[@]}" as unbound under `set -u`.
@@ -216,11 +236,11 @@ for f in ${files[@]+"${files[@]}"}; do
   # starting with a dash would otherwise be an option to cat, and `-` standard input.
   if [ "$read_from" = worktree ]; then
     case "$f" in -*) read_path="./$f";; *) read_path="$f";; esac
-    cat -- "$read_path" > "$scan_tmp"; read_rc=$?
+    cat -- "$read_path" | tr '\000' ' ' > "$scan_tmp"; read_rc=$?
   elif [ "$entry_mode" = 160000 ]; then
     : > "$scan_tmp"; read_rc=$?
   else
-    git cat-file blob "$entry_blob" > "$scan_tmp"; read_rc=$?
+    git cat-file blob "$entry_blob" | tr '\000' ' ' > "$scan_tmp"; read_rc=$?
   fi
   if [ "$read_rc" -ne 0 ]; then
     echo "$f: could not read the content; refusing to report a clean result" >&2
@@ -228,18 +248,20 @@ for f in ${files[@]+"${files[@]}"}; do
   fi
 
   # 1. erpc.global hosts outside the published allowlist.
+  matches -noiE '[A-Za-z0-9._-]+\.erpc\.global'
   while IFS=: read -r ln match; do
     [ -z "$ln" ] && continue
     if ! erpc_host_allowed "$match"; then
       report "$f" "$ln" "non-public erpc.global host: $match"
     fi
-  done < <(grep -anoiE '[A-Za-z0-9._-]+\.erpc\.global' "$scan_tmp" 2>/dev/null)
+  done < "$match_tmp"
 
   # 2. Cloud account / zone / project identifiers.
+  matches -noiE '(account|zone|project)[_ -]?id[^0-9a-z]{0,8}[0-9a-f]{32}'
   while IFS=: read -r ln match; do
     [ -z "$ln" ] && continue
     report "$f" "$ln" "infrastructure identifier: $match"
-  done < <(grep -anoiE '(account|zone|project)[_ -]?id[^0-9a-z]{0,8}[0-9a-f]{32}' "$scan_tmp" 2>/dev/null)
+  done < "$match_tmp"
 
   # 2b. Bare 1Password vault or item identifiers.
   #
@@ -251,16 +273,20 @@ for f in ${files[@]+"${files[@]}"}; do
   # (.../vaults/<id>/items/<id>). The id itself must be lowercase: real ones
   # are, and matching case-insensitively flagged uppercase base32 in prose.
   op_ln=0
-  while IFS= read -r op_line; do
+  # The test on op_line keeps a last line with no newline.
+  while IFS= read -r op_line || [ -n "$op_line" ]; do
     op_ln=$((op_ln + 1))
     case "$op_line" in *[Vv][Aa][Uu][Ll][Tt]*|*[Ii][Tt][Ee][Mm]*) ;; *) continue;; esac
-    stripped=$(printf '%s' "$op_line" | sed 's|op://[A-Za-z0-9._/-]*||g')
+    stripped=$(printf '%s' "$op_line" | sed 's|op://[A-Za-z0-9._/-]*||g') || scan_failed
+    tokens=$(printf '%s' "$stripped" | grep -oiE '(vault|item)s?([^A-Za-z0-9]{1,8}(id|identifier))?[^A-Za-z0-9]{1,8}[A-Za-z0-9]{26}([^A-Za-z0-9]|$)')
+    [ "$?" -le 1 ] || scan_failed
     # `set -f` because the loop word-splits the match on purpose but must
     # not also glob it against the repository root: a `*` or `?` inside the
     # matched separator would otherwise expand to filenames.
     set -f
-    for tok in $(printf '%s' "$stripped" | grep -oiE '(vault|item)s?([^A-Za-z0-9]{1,8}(id|identifier))?[^A-Za-z0-9]{1,8}[A-Za-z0-9]{26}([^A-Za-z0-9]|$)' 2>/dev/null); do
+    for tok in $tokens; do
       id=$(printf '%s' "$tok" | grep -oE '[A-Za-z0-9]{26}$|[A-Za-z0-9]{26}' | tail -1)
+      [ "$?" -le 1 ] || scan_failed
       [ -n "$id" ] || continue
       # `[[:upper:]]` and not `[A-Z]`: under a non-C locale the range
       # follows collation order and matches lowercase too. LC_ALL=C above
@@ -269,40 +295,46 @@ for f in ${files[@]+"${files[@]}"}; do
       report "$f" "$op_ln" "bare 1Password identifier: $id"
     done
     set +f
-  done < <(grep -a '' "$scan_tmp" 2>/dev/null)
+  done < "$scan_tmp"
 
   # 3. Bearer token literals.
+  matches -noE 'Bearer [A-Za-z0-9._~+/-]{32,}'
   while IFS=: read -r ln match; do
     [ -z "$ln" ] && continue
     report "$f" "$ln" "bearer token literal: ${match:0:24}..."
-  done < <(grep -anoE 'Bearer [A-Za-z0-9._~+/-]{32,}' "$scan_tmp" 2>/dev/null)
+  done < "$match_tmp"
 
   # 4. Credential assignments with a literal value.
+  matches -noE '(OP_SERVICE_ACCOUNT_TOKEN|OP_CONNECT_TOKEN|CLOUDFLARE_API_TOKEN|CARGO_REGISTRY_TOKEN|MINISIGN_SECRET_KEY|AWS_SECRET_ACCESS_KEY|R2_SECRET_ACCESS_KEY)[[:space:]]*[:=][[:space:]]*["'"'"']?[A-Za-z0-9._~+/-]{16,}'
   while IFS=: read -r ln match; do
     [ -z "$ln" ] && continue
     report "$f" "$ln" "credential assignment: ${match:0:40}..."
-  done < <(grep -anoE '(OP_SERVICE_ACCOUNT_TOKEN|OP_CONNECT_TOKEN|CLOUDFLARE_API_TOKEN|CARGO_REGISTRY_TOKEN|MINISIGN_SECRET_KEY|AWS_SECRET_ACCESS_KEY|R2_SECRET_ACCESS_KEY)[[:space:]]*[:=][[:space:]]*["'"'"']?[A-Za-z0-9._~+/-]{16,}' "$scan_tmp" 2>/dev/null)
+  done < "$match_tmp"
 
   # 5. Blockchain key material (second net behind gitleaks).
+  matches -noE '\[([[:space:]]*[0-9]{1,3}[[:space:]]*,){63}[[:space:]]*[0-9]{1,3}[[:space:]]*\]'
   while IFS=: read -r ln match; do
     [ -z "$ln" ] && continue
     report "$f" "$ln" "looks like a Solana keypair array: ${match:0:32}..."
-  done < <(grep -anoE '\[([[:space:]]*[0-9]{1,3}[[:space:]]*,){63}[[:space:]]*[0-9]{1,3}[[:space:]]*\]' "$scan_tmp" 2>/dev/null)
+  done < "$match_tmp"
 
+  matches -noiE '(priv(ate)?[_-]?key|secret[_-]?key|signing[_-]?key|mnemonic|seed[_-]?phrase)["'"'"'[:space:]]{0,10}[:=][[:space:]]*["'"'"']?(0x)?[0-9a-fA-F]{64}'
   while IFS=: read -r ln match; do
     [ -z "$ln" ] && continue
     report "$f" "$ln" "looks like a private key: ${match:0:40}..."
-  done < <(grep -anoiE '(priv(ate)?[_-]?key|secret[_-]?key|signing[_-]?key|mnemonic|seed[_-]?phrase)["'"'"'[:space:]]{0,10}[:=][[:space:]]*["'"'"']?(0x)?[0-9a-fA-F]{64}' "$scan_tmp" 2>/dev/null)
+  done < "$match_tmp"
 
+  matches -noE -- '-----BEGIN [A-Z ]*PRIVATE KEY-----'
   while IFS=: read -r ln match; do
     [ -z "$ln" ] && continue
     report "$f" "$ln" "PEM private key block"
-  done < <(grep -anoE -- '-----BEGIN [A-Z ]*PRIVATE KEY-----' "$scan_tmp" 2>/dev/null)
+  done < "$match_tmp"
 
   # 6. References into the company's private repositories and documents.
   # Any sibling repository in the organisation, the internal documentation
   # convention, or a developer home path. Phrased so that this public file does
   # not itself name a private repository.
+  matches -noE '(elsoul/[A-Za-z0-9_.-]+|\.claude/docs/|/Users/[A-Za-z0-9_.-]+/)'
   while IFS=: read -r ln match; do
     [ -z "$ln" ] && continue
     # This project's own org paths. Named exactly: a trailing wildcard would
@@ -311,7 +343,7 @@ for f in ${files[@]+"${files[@]}"}; do
       */erpc-cli|*/erpc-cli-maintainers) continue;;
     esac
     report "$f" "$ln" "internal reference: $match"
-  done < <(grep -anoE '(elsoul/[A-Za-z0-9_.-]+|\.claude/docs/|/Users/[A-Za-z0-9_.-]+/)' "$scan_tmp" 2>/dev/null)
+  done < "$match_tmp"
 
   # 7. Committed .env files.
   case "$f" in
