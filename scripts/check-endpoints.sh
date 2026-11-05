@@ -285,7 +285,19 @@ else
   files=()
   # NUL-separated: without -z, git quotes a non-ASCII name and the quoted form
   # is not a path, so that file would be skipped without a word.
-  while IFS= read -r -d '' f; do files+=("$f"); done < <(git ls-files -z)
+  #
+  # A path git cannot produce marks a failed listing. The listing runs in a
+  # process substitution, so its exit status reaches nothing else, and a failure
+  # would otherwise read as a tree with fewer files in it.
+  listing_failed=no
+  while IFS= read -r -d '' f; do
+    if [ "$f" = "/__listing_failed__" ]; then listing_failed=yes; continue; fi
+    files+=("$f")
+  done < <(git ls-files -z || printf '/__listing_failed__\0')
+  if [ "$listing_failed" = yes ]; then
+    echo "git ls-files failed; refusing to report a clean result" >&2
+    exit 2
+  fi
 fi
 
 prose_re='(\.(md|txt)$|^(NOTICE|CHANGELOG|AUTHORS)$)'
@@ -306,7 +318,6 @@ is_excepted() {
   done <<EOF
 $(print_exceptions)
 EOF
-  case "$f" in */node_modules/*|target/*) return 0;; esac
   return 1
 }
 
@@ -924,6 +935,9 @@ for f in "${files[@]}"; do
   elif [[ "$f" =~ $node_re ]]; then kind=node
   else kind=code; fi
 
+  # A file named `-` is standard input to cat, even after `--`.
+  case "$f" in -*) read_path="./$f";; *) read_path="$f";; esac
+
   # The file is read with cat, which passes every byte and fails only when
   # the file cannot be read. It used to be `grep -a ''`, which exits 1 on a
   # zero-byte file because it selected nothing; under pipefail that read as
@@ -957,7 +971,7 @@ for f in "${files[@]}"; do
     if [ "$scheme" = "__scan_failed__" ]; then scan_failed=yes; continue; fi
     if [ "$scheme" = "__scan_complete__" ]; then scan_complete=yes; continue; fi
     check_occurrence "$scheme" "$rest" "$f" "$ln" "$kind" "$look"
-  done < <({ cat -- "$f" | normalise | awk '
+  done < <({ cat -- "$read_path" | normalise | awk '
     # Where an authority ends. index() rather than a regex, so no character
     # here needs escaping in two languages at once.
     BEGIN {
