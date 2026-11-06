@@ -10,9 +10,11 @@
 //! - **Liquidity pulled:** a PumpSwap `withdraw` from a pool by the wallet
 //!   that created it, or by anyone from a pool this bot saw created.
 //!
-//! `banned_creators` in the config bans creators from the start.
+//! `banned_creators` in the config bans creators from the start, and
+//! `POST /api/bans/trace` bans the wallets banned creators were funded from
+//! (see `trace`).
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
 use solana_sdk::pubkey::Pubkey;
@@ -42,6 +44,8 @@ pub struct CreatorWatch {
     banned: HashMap<Pubkey, String>,
     /// The creator of each pool seen created, to blame a withdraw on.
     pool_creator: HashMap<Pubkey, Pubkey>,
+    /// Banned creators whose funding was traced already.
+    traced: HashSet<Pubkey>,
 }
 
 /// What a new pool means.
@@ -67,7 +71,8 @@ impl CreatorWatch {
 
     /// Notes `pool` created by `creator` at `now`, and says whether it may be
     /// bought: not when the creator is banned, or has now opened more than
-    /// `max_pools` within `window`.
+    /// `max_pools` within `window`. A pool seen before (in the Shreds stream,
+    /// then in Geyser) counts once.
     pub fn on_create(
         &mut self,
         pool: Pubkey,
@@ -76,9 +81,12 @@ impl CreatorWatch {
         window: Duration,
         max_pools: usize,
     ) -> Verdict {
-        self.pool_creator.insert(pool, creator);
+        let seen_before = self.pool_creator.insert(pool, creator).is_some();
         if let Some(reason) = self.banned.get(&creator) {
             return Verdict::Banned(reason.clone());
+        }
+        if seen_before {
+            return Verdict::Fine;
         }
         let times = self.created.entry(creator).or_default();
         times.push_back(now);
@@ -109,7 +117,19 @@ impl CreatorWatch {
         self.ban(creator, &reason).then_some(creator)
     }
 
+    /// Banned creators whose funding has not been traced, in address order.
+    pub fn untraced(&self) -> Vec<Pubkey> {
+        let mut out: Vec<Pubkey> = self.banned.keys().filter(|c| !self.traced.contains(c)).copied().collect();
+        out.sort();
+        out
+    }
+
+    pub fn mark_traced(&mut self, creator: Pubkey) {
+        self.traced.insert(creator);
+    }
+
     /// Whether `creator` is banned.
+    #[cfg(test)]
     pub fn is_banned(&self, creator: &Pubkey) -> bool {
         self.banned.contains_key(creator)
     }
@@ -205,6 +225,27 @@ mod tests {
             w.on_create(key(4), key(9), t0 + Duration::from_secs(3600), window, 2),
             Verdict::Banned(_)
         ));
+    }
+
+    #[test]
+    fn a_pool_seen_in_shreds_then_geyser_counts_once() {
+        let mut w = CreatorWatch::default();
+        let t0 = Instant::now();
+        let window = Duration::from_secs(600);
+        for _ in 0..3 {
+            assert_eq!(w.on_create(key(1), key(9), t0, window, 1), Verdict::Fine);
+        }
+        assert!(matches!(w.on_create(key(2), key(9), t0, window, 1), Verdict::NewlyBanned(_)));
+    }
+
+    #[test]
+    fn a_traced_creator_is_not_traced_again() {
+        let mut w = CreatorWatch::default();
+        w.ban(key(2), "x");
+        w.ban(key(1), "x");
+        assert_eq!(w.untraced(), vec![key(1), key(2)]);
+        w.mark_traced(key(1));
+        assert_eq!(w.untraced(), vec![key(2)]);
     }
 
     #[test]

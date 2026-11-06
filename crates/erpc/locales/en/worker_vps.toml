@@ -63,6 +63,7 @@ lets_in_later = "line {id} lets in {ip} once its server is set up"
 suspended = "{kind} line {id} is suspended"
 suspended_hint = "the dashboard says why"
 waiting = "line {id} is {status} ({minutes} min so far)"
+waiting_for = "waiting for {kind} line {id} to become active"
 ending = "Ending hourly {kind} line {id}"
 end_failed = "user-api did not end {kind} line {id}: {answer}"
 

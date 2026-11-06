@@ -62,6 +62,7 @@ lets_in_later = "线路 {id} 将在其服务器设置完成后允许 {ip} 接入
 suspended = "{kind} 线路 {id} 已被暂停"
 suspended_hint = "可在控制面板中查看原因"
 waiting = "线路 {id} 状态为 {status}（已过 {minutes} 分钟）"
+waiting_for = "正在等待 {kind} 线路 {id} 变为有效"
 ending = "正在终止按小时计费的 {kind} 线路 {id}"
 end_failed = "user-api 未能终止 {kind} 线路 {id}：{answer}"
 

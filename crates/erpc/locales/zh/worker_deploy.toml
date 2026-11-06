@@ -3,6 +3,8 @@
 
 missing = "缺少 {settings}，{name} 无法启动"
 missing_hint = "用 `erpc worker secret put {first}{dir_scope}` 保存，或在 [vars] 中设置"
+missing_line_hint = "{first} 由线路提供：`erpc worker deploy{scope} --{flag}` 为服务器启动一条按小时计费的线路；或在 [vars] 中设置"
+not_ready = "本机缺少部署所需的东西：{what}"
 plan = "将 {name} 版本 {release} 作为 {worker} 部署到 {to}"
 nothing_deployed = "未部署任何内容"
 services = "正在确认服务器上 {names} 已运行（首次会从 Ubuntu 软件包安装）"

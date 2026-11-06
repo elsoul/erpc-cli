@@ -45,6 +45,7 @@ left = "为此创建的密钥未能全部删除（{reasons}）；{by_hand}"
 
 [on]
 ask = "每天 {at}（服务器时间）将 worker {id} 备份到 ERPC Global Storage，由 restic 加密，主机名为 {host}。\n其服务器会获得一个仅可追加的访问密钥，以及一个用于访问账户唯一备份仓库的专属密钥。它无法删除快照，但接管该服务器的人可以读取账户中所有机器的快照，即使执行 `off` 之后仍持有仓库密钥，能以其他机器的名义添加快照，还能占满账户的存储空间，导致所有机器的备份停止。只有吊销其访问密钥（`off`）才能切断它的访问。"
+services_excluded = "服务器上 {names} 保存的数据不在此备份中：备份只包含应用状态目录下自己的文件。"
 install_failed = "无法在服务器上安装 restic：{error}"
 old_left = "之前的 `on` 创建的密钥未能全部吊销（{reasons}）；未创建任何新内容"
 old_partly_revoked = "{by_hand}；其部分旧密钥已吊销，因此在 `on` 成功之前 worker 可能不会被备份"

@@ -802,8 +802,22 @@ async fn run(
     }
     let missing = m.missing_besides(&provided);
     if !missing.is_empty() {
-        let (scope, first, settings) = (app.dir.scope(), &missing[0], missing.join(", "));
-        let hint = t!("worker_deploy.missing_hint", first, dir_scope = scope);
+        let (scope, first) = (app.dir.scope(), missing[0].first());
+        let settings = missing
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        // A line's setting comes from the line's flag, not from a secret.
+        let hint = match LineKind::ALL.into_iter().find(|k| k.setting() == first) {
+            Some(kind) => t!(
+                "worker_deploy.missing_line_hint",
+                first,
+                flag = kind.flag(),
+                scope = app.scope()
+            ),
+            None => t!("worker_deploy.missing_hint", first, dir_scope = scope),
+        };
         return Err(failed(t!("worker_deploy.missing", name = m.name, settings)).hint(hint));
     }
     Launch::for_app(&m, &Env::default()).map_err(failed)?;
@@ -811,6 +825,35 @@ async fn run(
         crate::worker_secrets::may_read_key().map_err(failed)?;
     }
     let id = UnitId::new(&m.unit_id(&app.env)).map_err(failed)?;
+    // What the build and the login need, before anything is bought: a
+    // build that fails after a VPS was bought leaves it charged.
+    {
+        let root = path
+            .parent()
+            .map_or_else(|| PathBuf::from("."), Path::to_owned);
+        let mut lacking = crate::worker_build::missing_tools(
+            m.build.target.triple(),
+            &root,
+            crate::worker_build::Probe::Toolchain,
+        );
+        if let Err(no_key) = crate::vps_access::login_key() {
+            lacking.push((no_key, String::new()));
+        }
+        if !lacking.is_empty() {
+            let what: Vec<&str> = lacking.iter().map(|(what, _)| what.as_str()).collect();
+            let hints: Vec<&str> = lacking
+                .iter()
+                .map(|(_, hint)| hint.as_str())
+                .filter(|h| !h.is_empty())
+                .collect();
+            let e = failed(t!("worker_deploy.not_ready", what = what.join("; ")));
+            return Err(if hints.is_empty() {
+                e
+            } else {
+                e.hint(hints.join("; "))
+            });
+        }
+    }
     // Lines to forget are checked now, before anything is built or bought.
     take_lines(
         &mut m.env.get(&app.env).cloned().unwrap_or_default(),
@@ -1006,7 +1049,8 @@ async fn run(
     ctl_ok(&session, &id, Verb::Unlock, Some(&request))?;
     drop(request);
 
-    // 9. Activation.
+    // 9. Activation, which restarts an app already running there.
+    crate::worker_remote::positions_warning(&m, app, say);
     say.line(&t!("worker_deploy.starting"));
     let answer = ctl(&session, &id, Verb::Activate(release.clone()), None)?;
 

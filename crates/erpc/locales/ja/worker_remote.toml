@@ -24,7 +24,7 @@ refused = "サーバーのエージェントが拒否しました"
 unknown = "不明"
 release = "リリース {release}"
 pid = "pid {pid}"
-up = "稼働 {seconds} 秒"
+up = "稼働 {time}"
 last_exit = "前回の終了：{exit}"
 
 [describe.restarts]
@@ -78,6 +78,7 @@ then_server = "。その後、時間課金のサーバーを終了します"
 then_lines_and_server = "。その後、データ回線と時間課金のサーバーを終了します"
 then_lines = "。その後、データ回線を終了します（記録に時間課金のサーバーはありません）"
 no_server_to_end = "（終了する時間課金のサーバーは記録にありません）"
+keeps_charging = "。時間課金の {items} は動き続け、課金も続きます（`--release-server` で終了できます）"
 
 [unreached]
 message = "サーバー {host}{vps} に接続できませんでした。終了済みか、停止している可能性があります"
@@ -119,3 +120,18 @@ backup = "。バックアップキーは `erpc storage keys revoke <n>` でも�
 server = "。サーバーはダッシュボードからも終了できます"
 lines = "。erpc の外で終了した回線は `--forget-line <id>` で記録から外せます。まだ動いている回線はダッシュボードで終了してください"
 forget = "。サーバーにもう接続できず、ワーカーもそこで動いていない場合は、`--forget` でサーバーに接続せずに記録から外せます"
+
+[hourly]
+server = "{kind} {id}"
+line = "{kind} 回線 {id}"
+still_charged = "{items}：終了するまで時間課金が続きます。`erpc worker delete --release-server{scope}` で終了できます。1 時間あたりの料金は `erpc ai`（クレジット残高）かダッシュボードで確認できます"
+
+[api]
+bad_method = "{method} はここで使えるメソッドではありません。GET、POST、PUT、DELETE のいずれかです"
+bad_path = "{path} はパスではありません。/ で始まり、空白・引用符・制御文字を含まないものを指定してください"
+no_port = "erpc.toml に run.port がないため、アプリの API に届く先がありません"
+no_token = "[secrets] に API_TOKEN がありません。すべての要求に必要です：`erpc worker secret put API_TOKEN{dir_scope}`"
+failed = "要求が通りませんでした：{why}\n{body}"
+
+[positions]
+warning = "このアプリは鍵で取引しています。止まっている間は保有しているものは売られず、ポジションは待ったままです。README のとおり先に手仕舞いしてください。pumpfun ボットなら `erpc worker api{scope} /api/trade/start?mode=sell_only -X POST` のあと、`erpc worker api{scope} /api/trade/status` で active_positions が 0 になるまで待ちます"

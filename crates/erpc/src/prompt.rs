@@ -127,4 +127,15 @@ impl Spinner {
         self.0.clear();
         let _ = cliclack::log::error(message);
     }
+
+    /// What the step is doing now, in place of the message it started with.
+    pub fn set_message(&self, message: &str) {
+        self.0.set_message(message);
+    }
+
+    /// Takes the spinner down without a line: the caller says what the step
+    /// did, through its own channel.
+    pub fn done(self) {
+        self.0.clear();
+    }
 }

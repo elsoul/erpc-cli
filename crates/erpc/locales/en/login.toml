@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+where = "Where should erpc keep your session?"
+on_this_machine = "{store} (on this machine)"
+op_signin = "1Password (through your `op signin` session)"
+op_desktop = "1Password (the desktop app asks to unlock)"
+file = "a file on this machine (leaves the session on disk)"
+which_vault = "Which 1Password vault? (anyone who can read it can use the session)"
+no_vault = "the 1Password account has no vault erpc can use"

@@ -177,6 +177,13 @@ pub(crate) fn sync(
         None => t!("worker_firewall.dropping_closed"),
     });
     apply_worker(target, id, opening.clone())?;
+    // What a person needs to know once it is in force: an open port reaches
+    // an app that may still listen on loopback, and the SSH list outlives
+    // the address it was made from.
+    if let Some(o) = &opening {
+        say.line(&t!("worker_firewall.app_loopback", port = o.port));
+    }
+    say.line(&t!("worker_firewall.lockout_note"));
     Ok(Synced { ssh_allow, opening })
 }
 

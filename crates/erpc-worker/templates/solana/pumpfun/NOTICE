@@ -42,6 +42,31 @@ Changes made for erpc worker:
   be sold; sell_only mode buys nothing; restored positions are sold only
   once trading starts; PUT /api/config refuses settings that would trade
   badly. The default minimum pool liquidity is 1 SOL.
+- Graduations are traded as well as pools made by hand: a create_pool that
+  pump.fun's program calls is seen among the inner instructions, accounts
+  loaded from address lookup tables are resolved, pools with the token as
+  the base and WSOL as the quote are bought, sold and restored with the
+  token's own program on its side, and a graduation is bought from its
+  create_pool instruction, without reads first or a simulation. The pool
+  account is read with coin_creator before is_mayhem_mode, as on mainnet,
+  and a pool's creator is read from create_pool's third account (the
+  second is PumpSwap's global config); a graduation's creator is its coin
+  creator. graduated_only leaves pools made by hand out.
+- With SHREDS_ENDPOINT, pump.fun migrations are read from the Shreds stream
+  before they run, their lookup tables resolved, and timed against Geyser at
+  processed and their slot confirmed (a slot subscription in config.jsonc);
+  GET /api/timing reports those times and how many slots after its pool each
+  buy landed. buy_on_shreds buys a graduation from the Shreds stream; a pool
+  seen twice is counted once against its creator. A buy can pay a priority
+  fee (priority_fee_micro_lamports, compute_unit_limit), counted in its cost.
+- POST /api/bans/trace bans the wallet that first funded each banned
+  creator and the other wallets it funded lately, leaving out wallets with
+  long histories, funders paying many wallets, and the bot's own wallet;
+  traced creators are kept in Redis.
+- The latency monitor (getBlockTime per slot) and the map of transactions it
+  read are gone: it was switched off for exhausting the RPC, and GET
+  /api/timing measures from the streams instead. Dependencies nothing used
+  are gone with it.
 - The package and binary are named after the app; the git dependency is
   pinned to a commit; reqwest uses rustls instead of the system's OpenSSL,
   so the app cross-builds for Linux and needs no libssl on the server.

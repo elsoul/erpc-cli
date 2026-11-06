@@ -59,3 +59,7 @@ Nodes, whatever the chain:
   user runs one.
 - A change on mainnet requires `--chain` on the command line itself; `ERPC_CHAIN` and
   `default_chain` are refused for mainnet changes.
+
+Apps of the user's own on a server (a trading bot, anything made from a template): `erpc worker`
+(`erpc w`), in the skill `erpc-worker`, which also says which of its steps you run and which
+the user types at their terminal.

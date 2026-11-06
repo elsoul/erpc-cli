@@ -557,6 +557,77 @@ const READABLE_FILES: &[&str] = &[
     "/proc/version",
 ];
 
+/// The `erpc worker` verbs that only look: the app's state, its log (not
+/// followed), what it keeps and what it lacks. With them may come the
+/// global flags, `--dir`/`--env` and their values, `-n`/`--lines` for the
+/// log, and the app's name. Not `list --prune`, which drops entries from
+/// the app index.
+fn erpc_looks(args: &[&str]) -> bool {
+    const VERBS: &[&[&str]] = &[
+        &["worker", "check"],
+        &["worker", "list"],
+        &["worker", "status"],
+        &["worker", "logs"],
+        &["worker", "releases"],
+        &["worker", "key", "show"],
+        &["worker", "key", "balance"],
+        &["worker", "secret", "list"],
+        &["worker", "firewall", "list"],
+        &["worker", "backup", "status"],
+    ];
+    const WITH_VALUE: &[&str] = &["--dir", "--env", "-e", "-n", "--lines", "--lang"];
+    const ALONE: &[&str] = &["--json"];
+    // Global flags before the verb are fine; `--help` is a look too.
+    let mut words = args.iter().copied().filter(|a| *a != "--json");
+    let mut verb = Vec::new();
+    let mut tail = Vec::new();
+    while let Some(word) = words.next() {
+        if word == "--lang" {
+            words.next();
+            continue;
+        }
+        if word.starts_with("--lang=") {
+            continue;
+        }
+        if verb.len() < 3
+            && VERBS
+                .iter()
+                .any(|v| v.starts_with(&verb) && v.get(verb.len()) == Some(&word))
+        {
+            verb.push(word);
+            if VERBS.contains(&verb.as_slice()) {
+                tail.extend(words.by_ref());
+                break;
+            }
+            continue;
+        }
+        return matches!(word, "--help" | "-h") && (verb.is_empty() || verb[0] == "worker");
+    }
+    if !VERBS.contains(&verb.as_slice()) {
+        return false;
+    }
+    let mut rest = tail.iter().copied();
+    let mut named = false;
+    while let Some(word) = rest.next() {
+        if WITH_VALUE.contains(&word) {
+            if rest.next().is_none_or(|v| v.starts_with('-')) {
+                return false;
+            }
+        } else if let Some((flag, _)) = word.split_once('=') {
+            if !WITH_VALUE.contains(&flag) {
+                return false;
+            }
+        } else if ALONE.contains(&word) || matches!(word, "--help" | "-h") {
+        } else if word.starts_with('-') || named {
+            // -f/--follow keeps running; a second positional is not an app.
+            return false;
+        } else {
+            named = true;
+        }
+    }
+    true
+}
+
 /// Whether `command` only looks, and so runs without asking.
 #[must_use]
 pub fn only_looks(command: &[String]) -> bool {
@@ -569,6 +640,7 @@ pub fn only_looks(command: &[String]) -> bool {
         return true;
     }
     match program.as_str() {
+        "erpc" => erpc_looks(args),
         "df" | "free" | "id" | "ls" | "lsb_release" | "nproc" | "pwd" | "sw_vers" | "uname"
         | "uptime" | "vm_stat" | "which" | "whoami" => true,
         "du" => du(args),
@@ -1555,5 +1627,62 @@ mod tests {
         }
         assert_eq!(sure.0.get(), 2);
         assert_eq!(shell.ran.borrow().len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod erpc_looks_tests {
+    use super::only_looks;
+
+    fn looks(command: &str) -> bool {
+        let argv: Vec<String> = command.split_whitespace().map(str::to_owned).collect();
+        only_looks(&argv)
+    }
+
+    #[test]
+    fn the_worker_verbs_that_only_look_run_without_asking() {
+        for command in [
+            "erpc worker check",
+            "erpc worker check bot --json --lang ja",
+            "erpc --json worker list",
+            "erpc worker status --dir /apps/bot -e prod",
+            "erpc worker logs -n 50 bot",
+            "erpc worker logs --lines=200 --env prod",
+            "erpc worker releases bot",
+            "erpc worker key show",
+            "erpc worker key balance bot",
+            "erpc worker secret list --dir bot",
+            "erpc worker firewall list bot",
+            "erpc worker backup status",
+            "erpc worker --help",
+            "erpc worker logs -h",
+        ] {
+            assert!(looks(command), "{command}");
+        }
+    }
+
+    #[test]
+    fn the_worker_verbs_that_change_buy_or_keep_running_ask() {
+        for command in [
+            "erpc worker logs -f bot",
+            "erpc worker logs --follow",
+            // Drops entries from the app index.
+            "erpc worker list --prune",
+            "erpc --json worker list --prune",
+            "erpc worker deploy --new-vps",
+            "erpc worker run bot",
+            "erpc worker secret put API_TOKEN",
+            "erpc worker key new",
+            "erpc worker key import wallet.json",
+            "erpc worker firewall allow 203.0.113.9",
+            "erpc worker backup now",
+            "erpc worker delete bot --release-server",
+            "erpc worker status bot other",
+            "erpc worker status --dir",
+            "erpc login",
+            "erpc ai -m hello",
+        ] {
+            assert!(!looks(command), "{command}");
+        }
     }
 }

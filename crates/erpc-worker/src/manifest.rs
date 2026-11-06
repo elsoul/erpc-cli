@@ -210,6 +210,45 @@ fn default_command() -> Vec<String> {
         .to_vec()
 }
 
+/// One entry of `run.requires`: a setting, or a set of settings of which
+/// one is enough. The first of a set is the one erpc suggests setting.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Requirement {
+    /// A setting that has to be set.
+    One(String),
+    /// Settings of which one has to be set; the first is the one to suggest.
+    AnyOf(Vec<String>),
+}
+
+impl Requirement {
+    /// The names, one or more.
+    #[must_use]
+    pub fn names(&self) -> &[String] {
+        match self {
+            Self::One(name) => core::slice::from_ref(name),
+            Self::AnyOf(names) => names,
+        }
+    }
+
+    /// The name to suggest: the only one, or the first of the set.
+    #[must_use]
+    pub fn first(&self) -> &str {
+        self.names().first().map_or("", String::as_str)
+    }
+
+    /// Whether `is_set` holds for any of the names.
+    pub fn met(&self, mut is_set: impl FnMut(&str) -> bool) -> bool {
+        self.names().iter().any(|n| is_set(n))
+    }
+}
+
+impl fmt::Display for Requirement {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.names().join(" or "))
+    }
+}
+
 /// `[run]`: how the app is started, wherever it runs.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -221,10 +260,12 @@ pub struct Run {
     /// found beside the binary.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<String>,
-    /// Settings the app cannot start without. `check` says which are not
-    /// set; `run` and `deploy` refuse until they are.
+    /// Settings the app cannot start without: a name, or a set of names of
+    /// which one is enough (`["ERPC_API_KEY", "SOLANA_RPC_ENDPOINT"]`).
+    /// `check` says which are not set; `run` and `deploy` refuse until they
+    /// are.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub requires: Vec<String>,
+    pub requires: Vec<Requirement>,
     /// The TCP port the app listens on, which `firewall.app_allow` opens on
     /// its server. Without it the app is reached from nowhere outside.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -374,6 +415,17 @@ impl LineKind {
             Self::Grpc => "gRPC",
             Self::Shreds => "Shreds",
             Self::Unlimited => "Unlimited RPC",
+        }
+    }
+
+    /// The flag that starts a line of this kind on `deploy` (and on `run`,
+    /// for gRPC and Shreds), without its dashes.
+    #[must_use]
+    pub const fn flag(self) -> &'static str {
+        match self {
+            Self::Grpc => "grpc",
+            Self::Shreds => "shreds",
+            Self::Unlimited => "unlimited",
         }
     }
 
@@ -717,32 +769,31 @@ impl Manifest {
         format!("{}-{env}", self.name)
     }
 
-    /// The settings in `run.requires` that neither `[vars]` nor `[secrets]`
-    /// sets.
+    /// The requirements in `run.requires` that neither `[vars]` nor
+    /// `[secrets]` meets.
     #[must_use]
-    pub fn missing(&self) -> Vec<&str> {
+    pub fn missing(&self) -> Vec<&Requirement> {
         self.missing_besides(&[])
     }
 
-    /// The settings in `run.requires` that neither `[vars]`, `[secrets]`
-    /// nor `provided` sets: `provided` are the ones a data line sets on
-    /// the server ([`Env::line_vars`]).
+    /// The requirements in `run.requires` that neither `[vars]`,
+    /// `[secrets]` nor `provided` meets: `provided` are the settings a data
+    /// line sets on the server ([`Env::line_vars`]). A set is met when any
+    /// of its names is set.
     #[must_use]
-    pub fn missing_besides(&self, provided: &[&str]) -> Vec<&str> {
+    pub fn missing_besides(&self, provided: &[&str]) -> Vec<&Requirement> {
+        let services = self.services.vars();
         self.run
             .requires
             .iter()
-            .filter(|n| {
-                !self.vars.contains_key(*n)
-                    && !self.secrets.contains_key(*n)
-                    && !provided.contains(&n.as_str())
-                    && !self
-                        .services
-                        .vars()
-                        .iter()
-                        .any(|(name, _)| *name == n.as_str())
+            .filter(|req| {
+                !req.met(|n| {
+                    self.vars.contains_key(n)
+                        || self.secrets.contains_key(n)
+                        || provided.contains(&n)
+                        || services.iter().any(|(name, _)| *name == n)
+                })
             })
-            .map(String::as_str)
             .collect()
     }
 
@@ -775,11 +826,28 @@ impl Manifest {
             })
             .map(LineKind::setting)
             .collect();
-        for name in self.missing_besides(&everywhere) {
-            out.push(format!(
-                "{name} is required (run.requires) and not set; add it to [vars], or to \
-                 [secrets] as a reference"
-            ));
+        for req in self.missing_besides(&everywhere) {
+            // A line's setting comes from the line: say so, rather than
+            // send the reader to [vars] for an endpoint erpc provides.
+            let line = LineKind::ALL
+                .into_iter()
+                .find(|k| k.setting() == req.first());
+            out.push(match line {
+                Some(kind) if kind == LineKind::Unlimited => format!(
+                    "{req} is required (run.requires) and not set; `--{}` on deploy starts a \
+                     line that provides it, or add it to [vars]",
+                    kind.flag()
+                ),
+                Some(kind) => format!(
+                    "{req} is required (run.requires) and not set; `--{flag}` on deploy, or on \
+                     run with `--ip <IPV4>`, starts a line that provides it; or add it to [vars]",
+                    flag = kind.flag()
+                ),
+                None => format!(
+                    "{req} is required (run.requires) and not set; add it to [vars], or to \
+                     [secrets] as a reference"
+                ),
+            });
         }
         if self.wallet.as_ref().is_some_and(|w| w.pubkey.is_none()) {
             out.push(
@@ -935,9 +1003,14 @@ impl Manifest {
         if self.run.args.len() > 64 || self.run.args.iter().any(|a| a.contains('\0')) {
             out.push("run.args: at most 64 arguments, none with a NUL byte".to_owned());
         }
-        for name in &self.run.requires {
-            if let Err(problem) = check_env_name(name) {
-                out.push(format!("run.requires: {name}: {problem}"));
+        for req in &self.run.requires {
+            if matches!(req, Requirement::AnyOf(names) if names.len() < 2) {
+                out.push("run.requires: a set of settings needs two or more names".to_owned());
+            }
+            for name in req.names() {
+                if let Err(problem) = check_env_name(name) {
+                    out.push(format!("run.requires: {name}: {problem}"));
+                }
             }
         }
         if self.run.files.len() > 64 {
@@ -1240,6 +1313,64 @@ mod tests {
     use super::{Chain, FILE_NAME, LineKind, Manifest, ManifestError, SecretRef, Target, locate};
 
     #[test]
+    fn one_setting_of_a_set_is_enough() {
+        let text = "name = \"bot\"\nchain = \"solana\"\n[run]\nrequires = [\"API_TOKEN\", [\"ERPC_API_KEY\", \"SOLANA_RPC_ENDPOINT\"]]\n";
+        let m = Manifest::parse(text).expect("parsed");
+        let missing: Vec<String> = m.missing().iter().map(ToString::to_string).collect();
+        assert_eq!(
+            missing,
+            ["API_TOKEN", "ERPC_API_KEY or SOLANA_RPC_ENDPOINT"]
+        );
+        // The first of the set is the one to suggest.
+        assert_eq!(m.missing()[1].first(), "ERPC_API_KEY");
+        let with_rpc = format!("{text}[vars]\nSOLANA_RPC_ENDPOINT = \"set\"\n");
+        let m = Manifest::parse(&with_rpc).expect("parsed");
+        assert_eq!(m.missing().len(), 1, "{:?}", m.missing());
+        assert!(
+            m.warnings()
+                .iter()
+                .any(|w| w.starts_with("API_TOKEN is required")),
+            "{:?}",
+            m.warnings()
+        );
+        // A set of one is a mistake, and a bad name in a set is found.
+        let one = "name = \"bot\"\nchain = \"solana\"\n[run]\nrequires = [[\"ONLY\"]]\n";
+        assert!(
+            problems(one)
+                .iter()
+                .any(|p| p.contains("two or more names"))
+        );
+        let bad =
+            "name = \"bot\"\nchain = \"solana\"\n[run]\nrequires = [[\"A\", \"not a name\"]]\n";
+        assert!(
+            problems(bad)
+                .iter()
+                .any(|p| p.contains("run.requires: not a name"))
+        );
+    }
+
+    #[test]
+    fn a_missing_line_setting_names_the_flag_that_provides_it() {
+        let m = Manifest::parse(
+            "name = \"bot\"\nchain = \"solana\"\n[run]\nrequires = [\"GRPC_ENDPOINT\", \"SOLANA_SEND_RPC_ENDPOINT\"]\n",
+        )
+        .expect("parsed");
+        let warnings = m.warnings();
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("`--grpc` on deploy") && w.contains("`--ip <IPV4>`")),
+            "{warnings:?}"
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("`--unlimited` on deploy") && !w.contains("--ip")),
+            "{warnings:?}"
+        );
+    }
+
+    #[test]
     fn services_give_the_app_their_urls_and_count_as_set() {
         let m = Manifest::parse(
             "name = \"bot\"\nchain = \"solana\"\n[run]\nrequires = [\"REDIS_URL\", \"DATABASE_URL\"]\n[services]\nredis = true\npostgres = true\n",
@@ -1452,7 +1583,13 @@ ssh_allow = ["198.51.100.7", "198.51.100.7/32"]
              [env.default]\nhost = \"203.0.113.10\"\n{line}"
         );
         let m = Manifest::parse(&text).expect("valid");
-        assert_eq!(m.missing(), ["GRPC_ENDPOINT"]);
+        assert_eq!(
+            m.missing()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            ["GRPC_ENDPOINT"]
+        );
         assert!(m.missing_besides(&["GRPC_ENDPOINT"]).is_empty());
         // Every environment has the line, so nothing is said to be missing.
         assert!(

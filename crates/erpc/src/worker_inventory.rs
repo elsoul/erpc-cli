@@ -57,20 +57,19 @@ impl OpItem {
 
 fn op(args: &[&str], stdin: Option<&str>, doing: &str) -> Result<String, String> {
     let runner = crate::node_common::op_runner()?;
-    let out = runner.run(args, stdin).map_err(|e| e.to_string())?;
+    // A spinner while op waits on the 1Password app, which answers only
+    // once the person allows the request there.
+    let spinner = crate::node_common::op_waiting(doing);
+    let out = runner.run(args, stdin).map_err(|e| e.to_string());
+    if let Some(spinner) = spinner {
+        spinner.done();
+    }
+    let out = out?;
     if out.success {
         Ok(out.stdout)
     } else {
-        let why = out
-            .stderr
-            .lines()
-            .map(str::trim)
-            .find(|l| !l.is_empty())
-            .map_or_else(|| t!("worker_inventory.no_reason"), str::to_owned)
-            .chars()
-            .filter(|c| !c.is_control())
-            .take(300)
-            .collect::<String>();
+        let no_reason = t!("worker_inventory.no_reason");
+        let why = crate::node_common::op_why(&out.stderr, &no_reason);
         Err(t!("worker_inventory.op_failed", doing, why))
     }
 }

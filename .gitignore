@@ -47,3 +47,6 @@ minisign.key
 
 # cargo-dist build output
 /target/distrib/
+
+# The template rendered by the CI job, or by hand the same way
+/template-ci/

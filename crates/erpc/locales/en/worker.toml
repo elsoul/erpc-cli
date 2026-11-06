@@ -25,6 +25,7 @@ fix = "fix {file} and run `erpc worker check{dir_scope}`"
 
 [check]
 ready = "{name} is ready"
+deploy_needs = "before a deploy from this machine: {what}"
 no_pubkey = "(public key not set)"
 no_server = "(no server yet)"
 in_1password = "server kept in 1Password"
@@ -83,4 +84,4 @@ invalid = "(erpc.toml has problems; `erpc worker check{dir_scope}`)"
 invalid_drawn = "{name}: erpc.toml has problems"
 in_vault = "{name}  ·  env {env} in 1Password, no app here (clone the app to take it up)"
 in_vault_heading = "In 1Password, with no app here (clone the app to take them up):"
-vault_unread = "(the worker items in vault {vault} were not listed: {error})"
+vault_unread = "(vault {vault}: {error})"

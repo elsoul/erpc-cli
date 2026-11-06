@@ -234,7 +234,7 @@ pub(crate) enum Action {
     Check {
         #[command(flatten)]
         dir: Dir,
-        /// Also require this environment to be there.
+        /// Also require this environment to be there: an `[env.<NAME>]` table in erpc.toml, one server the app is deployed to (`deploy --env <NAME>` makes it).
         #[arg(long, short = 'e', value_name = "NAME")]
         env: Option<String>,
     },
@@ -255,6 +255,30 @@ pub(crate) enum Action {
         /// Start it, wait until it is healthy, stop it, and say how it went.
         #[arg(long)]
         check: bool,
+        /// Give the app a gRPC line that lets in this machine (--ip) as
+        /// `GRPC_ENDPOINT`: one of the account's that lets it in already,
+        /// else a new hourly one (its price is shown first).
+        #[arg(long, requires = "ip")]
+        grpc: bool,
+        /// The hourly plan of a new gRPC line, by product id (default: the cheapest).
+        #[arg(long, value_name = "PRODUCT_ID", requires = "grpc")]
+        grpc_plan: Option<String>,
+        /// Give the app a Shreds line that lets in this machine (--ip) as
+        /// `SHREDS_ENDPOINT`: one of the account's that lets it in already,
+        /// else a new hourly one (its price is shown first).
+        #[arg(long, requires = "ip")]
+        shreds: bool,
+        /// The hourly plan of a new Shreds line, by product id (default: the cheapest).
+        #[arg(long, value_name = "PRODUCT_ID", requires = "shreds")]
+        shreds_plan: Option<String>,
+        /// This machine's public IPv4 address, the one the lines let in
+        /// (`curl -4 https://api.ipify.org` shows it).
+        #[arg(long, value_name = "IPV4")]
+        ip: Option<std::net::Ipv4Addr>,
+        /// Keep the lines when the run ends, still charged by the hour; the
+        /// next run with the same --ip takes them up (default: they are ended).
+        #[arg(long)]
+        keep_lines: bool,
     },
     /// Build the app for the servers it deploys to, without deploying.
     Build {
@@ -265,7 +289,7 @@ pub(crate) enum Action {
     Deploy {
         #[command(flatten)]
         app: App,
-        /// A server of your own, by address (when erpc.toml has no server for the environment).
+        /// A server of your own, by address, when erpc.toml has no server for the environment: Ubuntu or Debian with systemd and nftables, reached as root or a user with passwordless sudo; the worker's firewall then drops every inbound connection to it but SSH and the app's port.
         #[arg(long, value_name = "ADDRESS")]
         host: Option<String>,
         /// The account to log in to on --host.
@@ -367,6 +391,28 @@ pub(crate) enum Action {
         /// How many recent lines to show.
         #[arg(long, short = 'n', default_value_t = 100)]
         lines: u32,
+    },
+    /// One request to the app's API on its server, over SSH, with the app's
+    /// `API_TOKEN` read here and never shown; prints the answer.
+    Api {
+        /// The path, such as /api/trade/status.
+        path: String,
+        #[command(flatten)]
+        app: AppFlag,
+        /// GET, POST, PUT or DELETE.
+        #[arg(long, short = 'X', default_value = "GET", value_name = "METHOD")]
+        method: String,
+        /// A JSON body to send.
+        #[arg(long, short = 'd', value_name = "JSON")]
+        data: Option<String>,
+    },
+    /// The app's trades on its server: the history, or the profit per trade.
+    Trades {
+        #[command(flatten)]
+        app: App,
+        /// The profit per buy→sell pair instead of the history.
+        #[arg(long)]
+        profit: bool,
     },
     /// Start the app on an environment's server, sending its key if needed.
     Start {
@@ -484,6 +530,24 @@ pub(crate) enum KeyAction {
         #[arg(long, value_name = "URL")]
         rpc: Option<String>,
     },
+    /// Send SOL out of the trading wallet to one address, after your yes;
+    /// the key is read here and the transfer signed in memory.
+    Send {
+        #[command(flatten)]
+        dir: Dir,
+        /// The address to send to.
+        #[arg(long, value_name = "PUBKEY")]
+        to: String,
+        /// How much, in SOL.
+        #[arg(long, value_name = "AMOUNT", conflicts_with = "all")]
+        sol: Option<f64>,
+        /// Everything but the fee.
+        #[arg(long)]
+        all: bool,
+        /// Send through this RPC instead of the app's.
+        #[arg(long, value_name = "URL")]
+        rpc: Option<String>,
+    },
 }
 
 /// Where a new key or secret is kept.
@@ -587,7 +651,7 @@ pub(crate) enum FirewallAction {
         /// Which port it may reach.
         #[arg(long, value_enum, default_value = "ssh")]
         to: Port,
-        /// The addresses or networks, such as 198.51.100.7 or 198.51.100.0/24.
+        /// The addresses, such as 198.51.100.7; a network such as 198.51.100.0/24 only with --to app, since SSH is allowed from single addresses.
         #[arg(required = true)]
         addresses: Vec<String>,
         /// Go ahead without asking.
@@ -669,6 +733,13 @@ pub(crate) async fn run(json: bool, action: Action) -> Outcome {
             KeyAction::Balance { dir, rpc } => {
                 worker_keys::balance(json, &dir, rpc.as_deref()).await
             }
+            KeyAction::Send {
+                dir,
+                to,
+                sol,
+                all,
+                rpc,
+            } => worker_keys::send(json, &dir, &to, sol, all, rpc.as_deref()).await,
         },
         Action::Secret { action } => match action {
             SecretAction::Put {
@@ -687,7 +758,30 @@ pub(crate) async fn run(json: bool, action: Action) -> Outcome {
             SecretAction::List { dir } => worker_keys::list(json, &dir),
             SecretAction::Rm { dir, name } => worker_keys::remove(json, &dir.into(), &name),
         },
-        Action::Run { dir, check } => worker_run::run(json, &dir, check),
+        Action::Run {
+            dir,
+            check,
+            grpc,
+            grpc_plan,
+            shreds,
+            shreds_plan,
+            ip,
+            keep_lines,
+        } => {
+            let kinds = [
+                (LineKind::Grpc, grpc, grpc_plan),
+                (LineKind::Shreds, shreds, shreds_plan),
+            ]
+            .into_iter()
+            .filter_map(|(kind, asked, plan)| asked.then_some((kind, plan)))
+            .collect();
+            let lines = worker_run::Lines {
+                kinds,
+                ip,
+                keep: keep_lines,
+            };
+            worker_run::run(json, &dir, check, &lines).await
+        }
         Action::Build { dir } => worker_build::build(json, &dir),
         Action::Deploy {
             app,
@@ -753,6 +847,22 @@ pub(crate) async fn run(json: bool, action: Action) -> Outcome {
         }
         Action::Status { app } => worker_remote::status(json, &app),
         Action::Logs { app, follow, lines } => worker_remote::logs(&app, lines, follow),
+        Action::Api {
+            path,
+            app,
+            method,
+            data,
+        } => worker_remote::api(&app.into(), &method, &path, data.as_deref()),
+        Action::Trades { app, profit } => worker_remote::api(
+            &app,
+            "GET",
+            if profit {
+                "/api/trades/profit"
+            } else {
+                "/api/trades/history"
+            },
+            None,
+        ),
         Action::Start { app, yes } => worker_remote::start(json, &app, yes, false),
         Action::Stop { app, lock, yes } => worker_remote::stop(json, &app, lock, yes),
         Action::Restart { app, yes } => worker_remote::start(json, &app, yes, true),
@@ -995,7 +1105,25 @@ fn check(json: bool, dir: &Dir, env: Option<&str>) -> Outcome {
     {
         return problems_found(json, &path, &[message]);
     }
-    let warnings = manifest.warnings();
+    let mut warnings = manifest.warnings();
+    // What a deploy from this machine would lack, said now rather than
+    // after a server is bought.
+    let root = path
+        .parent()
+        .map_or_else(|| PathBuf::from("."), Path::to_owned);
+    // Looked for, not run: `check` runs nothing in the app's directory.
+    let probe = crate::worker_build::Probe::Look;
+    for (what, hint) in
+        crate::worker_build::missing_tools(manifest.build.target.triple(), &root, probe)
+    {
+        warnings.push(t!(
+            "worker.check.deploy_needs",
+            what = format!("{what}; {hint}")
+        ));
+    }
+    if let Err(no_key) = crate::vps_access::login_key() {
+        warnings.push(t!("worker.check.deploy_needs", what = no_key));
+    }
     if json {
         crate::print_json(&json!({
             "path": path,
@@ -1038,6 +1166,25 @@ fn problems_found(json: bool, path: &Path, problems: &[String]) -> Outcome {
     Outcome::Problems(drawn.or_plain(report))
 }
 
+/// The services a deploy puts on the server, with what each gives the app;
+/// none when `[services]` names none.
+fn services_named(m: &Manifest) -> Option<String> {
+    let names: Vec<String> = m
+        .services
+        .vars()
+        .iter()
+        .map(|(var, _)| {
+            let service = if *var == "REDIS_URL" {
+                "redis"
+            } else {
+                "postgres"
+            };
+            format!("{service} ({var})")
+        })
+        .collect();
+    (!names.is_empty()).then(|| names.join(", "))
+}
+
 /// What `check` shows at a terminal: the app, then its settings aligned.
 fn describe_drawn(
     path: &Path,
@@ -1063,6 +1210,9 @@ fn describe_drawn(
                 .collect::<Vec<_>>()
                 .join(", "),
         ));
+    }
+    if let Some(services) = services_named(m) {
+        fields.push(("services".into(), services));
     }
     for (name, reference) in &m.secrets {
         fields.push(("secret".into(), format!("{name} ← {reference}")));
@@ -1130,6 +1280,9 @@ fn describe(path: &Path, m: &Manifest, warnings: &[String]) -> String {
     if !m.vars.is_empty() {
         let names: Vec<&str> = m.vars.keys().map(String::as_str).collect();
         lines.push(format!("  vars      {}", names.join(", ")));
+    }
+    if let Some(services) = services_named(m) {
+        lines.push(format!("  services  {services}"));
     }
     for (name, reference) in &m.secrets {
         lines.push(format!("  secret    {name} ← {reference}"));
@@ -1273,12 +1426,7 @@ fn init(json: bool, req: &InitRequest<'_>) -> Outcome {
     } else {
         dir_scope_of(&dest)
     };
-    let next = [
-        format!("cd {}", shell_word(&near(&dest).to_string_lossy())),
-        format!("erpc worker check{dir_scope}"),
-        format!("erpc worker key new{dir_scope}"),
-        format!("erpc worker run{dir_scope}"),
-    ];
+    let next = next_steps(&dest, &dir_scope);
     if json {
         crate::print_json(&json!({
             "name": name,
@@ -1333,6 +1481,41 @@ fn near(dir: &Path) -> PathBuf {
         .and_then(|cwd| dir.strip_prefix(&cwd).ok().map(Path::to_path_buf))
         .filter(|rel| !rel.as_os_str().is_empty())
         .unwrap_or_else(|| dir.to_path_buf())
+}
+
+/// What to do next, from what the new app's erpc.toml says it lacks: the
+/// key, a `secret put` for each setting nothing provides, the check, then a
+/// run with the flag of each line whose setting it needs. The same order as
+/// `docs/worker.md` and the erpc-worker skill give.
+fn next_steps(dest: &Path, dir_scope: &str) -> Vec<String> {
+    let manifest = std::fs::read_to_string(dest.join(manifest::FILE_NAME))
+        .ok()
+        .and_then(|text| Manifest::parse(&text).ok());
+    let mut next = vec![format!("cd {}", shell_word(&near(dest).to_string_lossy()))];
+    if manifest.as_ref().is_none_or(|m| m.wallet.is_none()) {
+        next.push(format!("erpc worker key new{dir_scope}"));
+    }
+    let mut run_flags = String::new();
+    for req in manifest.iter().flat_map(Manifest::missing) {
+        match LineKind::ALL
+            .into_iter()
+            .find(|k| k.setting() == req.first())
+        {
+            Some(LineKind::Unlimited) => {}
+            Some(kind) => {
+                run_flags.push_str(" --");
+                run_flags.push_str(kind.flag());
+            }
+            None => next.push(format!("erpc worker secret put {}{dir_scope}", req.first())),
+        }
+    }
+    next.push(format!("erpc worker check{dir_scope}"));
+    if run_flags.is_empty() {
+        next.push(format!("erpc worker run{dir_scope}"));
+    } else {
+        next.push(format!("erpc worker run{dir_scope}{run_flags} --ip <IPV4>"));
+    }
+    next
 }
 
 /// The rest of `init`'s exchange at a terminal, once the spinner stopped:
@@ -1993,9 +2176,9 @@ mod tests {
 
     /// The `erpc worker` verbs that act on one environment, the ones that
     /// act on an app as a whole, and the ones about no one app.
-    const ENV_VERBS: [&str; 12] = [
+    const ENV_VERBS: [&str; 14] = [
         "deploy", "delete", "logs", "rollback", "firewall", "status", "start", "stop", "restart",
-        "releases", "bench", "backup",
+        "releases", "bench", "backup", "api", "trades",
     ];
     const DIR_VERBS: [&str; 5] = ["check", "key", "secret", "run", "build"];
     const NO_APP_VERBS: [&str; 2] = ["init", "list"];

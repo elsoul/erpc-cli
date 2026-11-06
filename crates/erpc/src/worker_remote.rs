@@ -219,6 +219,22 @@ pub(crate) fn done(json: bool, answer: &Value, text: String) -> Outcome {
     }
 }
 
+/// Seconds as a person reads a duration: `3d 4h`, `2h 05m`, `12m 05s`, `45s`.
+fn humane(secs: u64) -> String {
+    let (d, h, m, s) = (
+        secs / 86_400,
+        secs % 86_400 / 3_600,
+        secs % 3_600 / 60,
+        secs % 60,
+    );
+    match (d, h, m) {
+        (d, h, _) if d > 0 => format!("{d}d {h}h"),
+        (_, h, m) if h > 0 => format!("{h}h {m:02}m"),
+        (_, _, m) if m > 0 => format!("{m}m {s:02}s"),
+        _ => format!("{s}s"),
+    }
+}
+
 /// A one-line summary of the agent's status.
 fn describe(agent: &Value) -> String {
     let state = agent["state"]
@@ -232,7 +248,7 @@ fn describe(agent: &Value) -> String {
         parts.push(t!("worker_remote.describe.pid", pid));
     }
     if let Some(up) = agent["up_secs"].as_u64() {
-        parts.push(t!("worker_remote.describe.up", seconds = up));
+        parts.push(t!("worker_remote.describe.up", time = humane(up)));
     }
     if let Some(n) = agent["restarts"].as_u64().filter(|n| *n > 0) {
         parts.push(tn!("worker_remote.describe.restarts", n));
@@ -246,18 +262,71 @@ fn describe(agent: &Value) -> String {
     parts.join(", ")
 }
 
+/// What the environment pays for by the hour, each in words: its server,
+/// then its lines. Empty when nothing on record is hourly.
+fn hourly_items(env: &Env) -> Vec<String> {
+    let mut items = Vec::new();
+    if let Some(r) = env
+        .resource
+        .as_ref()
+        .filter(|r| r.hourly && !r.id.is_empty())
+    {
+        items.push(t!(
+            "worker_remote.hourly.server",
+            kind = r.kind.as_str(),
+            id = r.id
+        ));
+    }
+    for line in env.lines.iter().filter(|l| l.hourly) {
+        items.push(t!(
+            "worker_remote.hourly.line",
+            kind = line.kind.label(),
+            id = line.id
+        ));
+    }
+    items
+}
+
+/// What keeps being charged after a command that does not end it, and how
+/// to end it; none when nothing on record is hourly.
+fn still_charged_line(env: &Env, scope: &str) -> Option<String> {
+    let items = hourly_items(env);
+    (!items.is_empty()).then(|| {
+        t!(
+            "worker_remote.hourly.still_charged",
+            items = items.join(", "),
+            scope
+        )
+    })
+}
+
+/// Before the app is stopped, restarted, rolled back, redeployed or
+/// removed: an app that trades with a key may hold positions, which wait
+/// while it is down.
+pub(crate) fn positions_warning(m: &Manifest, app: &App, say: &Say) {
+    if m.wallet.is_some() {
+        say.line(&t!("worker_remote.positions.warning", scope = app.scope()));
+    }
+}
+
 /// `erpc worker status`.
 pub(crate) fn status(json: bool, app: &App) -> Outcome {
     let run = || -> Result<Outcome, CliError> {
         let (m, id, session) = reach(app)?;
-        let answer = ctl(&session, &id, Verb::Status, None)?;
-        let host = m
-            .env
-            .get(&app.env)
-            .and_then(|e| e.host.clone())
-            .unwrap_or_default();
+        let mut answer = ctl(&session, &id, Verb::Status, None)?;
+        let env = m.env.get(&app.env);
+        let host = env.and_then(|e| e.host.clone()).unwrap_or_default();
+        // What the environment pays for by the hour, beside what the agent
+        // says: the server and the lines on record.
+        if let Some(env) = env {
+            answer["hourly"] = json!({
+                "server": env.resource.as_ref().filter(|r| r.hourly),
+                "lines": env.lines.iter().filter(|l| l.hourly).collect::<Vec<_>>(),
+            });
+        }
+        let charged = env.and_then(|e| still_charged_line(e, &app.scope()));
         let none = || t!("worker_remote.status.none");
-        let text = format!(
+        let mut text = format!(
             "{}\n  {}",
             t!(
                 "worker_remote.status.title",
@@ -278,7 +347,110 @@ pub(crate) fn status(json: bool, app: &App) -> Outcome {
                 previous = answer["previous"].as_str().map_or_else(none, str::to_owned)
             ),
         );
+        if let Some(charged) = charged {
+            text.push_str("\n  ");
+            text.push_str(&charged);
+        }
         Ok(done(json, &answer, text))
+    };
+    run()
+        .map_err(|e| unreached(app, e))
+        .unwrap_or_else(Into::into)
+}
+
+/// A string as curl's configuration file quotes it: between double quotes,
+/// with the quote, the backslash and line breaks escaped.
+fn curl_quoted(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// What the app answered, from curl's output: the body, then the HTTP
+/// status on a last line of its own. A status that is not a success is a
+/// failure that keeps the body, which is where an API says why.
+fn api_answer(out: &str) -> Result<String, (String, String)> {
+    let (body, status) = out.rsplit_once('\n').unwrap_or(("", out));
+    let body = body.trim_end().to_owned();
+    match status.trim().parse::<u16>() {
+        Ok(status) if (200..300).contains(&status) => Ok(body),
+        Ok(status) => Err((format!("HTTP {status}"), body)),
+        Err(_) => Err(("no HTTP status".to_owned(), out.trim_end().to_owned())),
+    }
+}
+
+/// `erpc worker api`: one request to the app's API on its server, over the
+/// SSH session. The API token is read on this machine from `[secrets]` and
+/// reaches curl on its standard input, as part of its configuration, so it
+/// is on no command line, in no shell history and in no journal.
+pub(crate) fn api(app: &App, method: &str, path: &str, data: Option<&str>) -> Outcome {
+    let run = || -> Result<Outcome, CliError> {
+        let method = method.to_ascii_uppercase();
+        if !["GET", "POST", "PUT", "DELETE"].contains(&method.as_str()) {
+            return Err(CliError::new(
+                Code::Usage,
+                t!("worker_remote.api.bad_method", method),
+            ));
+        }
+        // A path as a URL has it: no spaces, quotes or control characters,
+        // which would also break curl's configuration lines.
+        if !path.starts_with('/')
+            || !path
+                .bytes()
+                .all(|b| b.is_ascii_graphic() && b != b'"' && b != b'\\')
+        {
+            return Err(CliError::new(
+                Code::Usage,
+                t!("worker_remote.api.bad_path", path),
+            ));
+        }
+        let (m, _, session) = reach(app)?;
+        let port = m
+            .run
+            .port
+            .ok_or_else(|| failed(t!("worker_remote.api.no_port")))?;
+        let token = m.secrets.get("API_TOKEN").ok_or_else(|| {
+            failed(t!(
+                "worker_remote.api.no_token",
+                dir_scope = app.dir.scope()
+            ))
+        })?;
+        let token = worker_secrets::read(token).map_err(failed)?;
+        // The URL is put together on its own, the host and port first: the
+        // endpoint gate reads a host only where a port or a path ends it.
+        let mut url = format!("http://127.0.0.1:{port}");
+        url.push_str(path);
+        let mut config = Zeroizing::new(format!(
+            "request = \"{method}\"\nurl = \"{url}\"\nheader = \"Authorization: Bearer {}\"\n",
+            curl_quoted(&token)
+        ));
+        if let Some(data) = data {
+            use core::fmt::Write as _;
+            config.push_str("header = \"Content-Type: application/json\"\n");
+            let _ = writeln!(config, "data = \"{}\"", curl_quoted(data));
+        }
+        let out = session
+            .run(
+                &RemoteCommand::Worker(Worker::Api { port }),
+                Some(config.as_bytes()),
+            )
+            .map_err(|e| failed(e.to_string()))?;
+        // No answer at all is curl's failure, and the session's error above.
+        // An answer is judged by its status, not by whether anything was
+        // written to standard error, where ssh speaks too.
+        match api_answer(&String::from_utf8_lossy(&out.stdout)) {
+            Ok(body) => Ok(Outcome::Done(body)),
+            Err((why, body)) => Err(failed(t!("worker_remote.api.failed", why, body))),
+        }
     };
     run()
         .map_err(|e| unreached(app, e))
@@ -333,6 +505,9 @@ pub(crate) fn start(json: bool, app: &App, yes: bool, again: bool) -> Outcome {
         } else {
             t!("worker_remote.start.start_prompt", id = id.as_str())
         });
+        if again {
+            positions_warning(&m, app, &say);
+        }
         go_ahead(yes, &t!("worker_remote.start.refused"))?;
         unlock_if_locked(&m, &id, &session, &say)?;
         let verb = if again { Verb::Restart } else { Verb::Start };
@@ -348,7 +523,8 @@ pub(crate) fn start(json: bool, app: &App, yes: bool, again: bool) -> Outcome {
 /// `erpc worker stop`.
 pub(crate) fn stop(json: bool, app: &App, lock: bool, yes: bool) -> Outcome {
     let run = || -> Result<Outcome, CliError> {
-        let (_, id, session) = reach(app)?;
+        let (m, id, session) = reach(app)?;
+        positions_warning(&m, app, &Say { quiet: json });
         go_ahead(yes, &t!("worker_remote.stop.refused"))?;
         let answer = ctl_ok(
             &session,
@@ -356,11 +532,20 @@ pub(crate) fn stop(json: bool, app: &App, lock: bool, yes: bool) -> Outcome {
             if lock { Verb::Lock } else { Verb::Stop },
             None,
         )?;
-        let text = if lock {
+        let mut text = if lock {
             t!("worker_remote.stop.locked", id = id.as_str())
         } else {
             t!("worker_remote.stop.stopped", id = id.as_str())
         };
+        // Stopping the app ends none of what is charged by the hour.
+        if let Some(charged) = m
+            .env
+            .get(&app.env)
+            .and_then(|e| still_charged_line(e, &app.scope()))
+        {
+            text.push('\n');
+            text.push_str(&charged);
+        }
         Ok(done(json, &answer, text))
     };
     run()
@@ -377,6 +562,7 @@ pub(crate) fn rollback(json: bool, app: &App, to: Option<&str>, yes: bool) -> Ou
             .transpose()
             .map_err(|e| CliError::new(Code::Usage, e))?;
         let (m, id, session) = reach(app)?;
+        positions_warning(&m, app, &say);
         go_ahead(yes, &t!("worker_remote.rollback.refused"))?;
         unlock_if_locked(&m, &id, &session, &say)?;
         let answer = ctl_ok(&session, &id, Verb::Rollback(to), None)?;
@@ -493,6 +679,7 @@ pub(crate) async fn delete(json: bool, app: &App, ask: &DeleteAsk) -> Outcome {
     if let Some(e) = refuse_delete(&env, release_server, &scope) {
         return e.into();
     }
+    positions_warning(&m, app, &say);
     say.line(&delete_prompt(
         &env,
         &id,
@@ -794,7 +981,19 @@ fn delete_prompt(
             (true, false, true) => t!("worker_remote.delete_prompt.then_lines_and_server"),
             (true, false, false) => t!("worker_remote.delete_prompt.then_lines"),
             (true, true, false) => t!("worker_remote.delete_prompt.no_server_to_end"),
-            (false, ..) => String::new(),
+            // A plain delete leaves the hourly server and lines running:
+            // said before the yes, not only after.
+            (false, ..) => {
+                let items = hourly_items(env);
+                if items.is_empty() {
+                    String::new()
+                } else {
+                    t!(
+                        "worker_remote.delete_prompt.keeps_charging",
+                        items = items.join(", ")
+                    )
+                }
+            }
         }
     )
 }
@@ -1196,8 +1395,8 @@ mod tests {
 
     use super::{
         Again, LineEnd, Released, Removal, delete_prompt, ends_server, failure_details,
-        forget_prompt, left_over, line_end, must_keep, refuse_delete, retry_hint,
-        say_still_charged, server_left_running, unreached_hint,
+        forget_prompt, hourly_items, left_over, line_end, must_keep, refuse_delete, retry_hint,
+        say_still_charged, server_left_running, still_charged_line, unreached_hint,
     };
 
     fn again(scope: &str) -> Again<'_> {
@@ -1408,6 +1607,49 @@ mod tests {
     }
 
     #[test]
+    fn an_uptime_reads_as_a_person_says_it() {
+        assert_eq!(super::humane(45), "45s");
+        assert_eq!(super::humane(725), "12m 05s");
+        assert_eq!(super::humane(7_500), "2h 05m");
+        assert_eq!(super::humane(273_600), "3d 4h");
+    }
+
+    #[test]
+    fn a_token_and_a_body_are_quoted_for_curls_configuration() {
+        assert_eq!(super::curl_quoted("plain-token"), "plain-token");
+        assert_eq!(
+            super::curl_quoted("say \"hi\"\\\n"),
+            "say \\\"hi\\\"\\\\\\n"
+        );
+    }
+
+    #[test]
+    fn what_keeps_being_charged_is_said_with_the_way_to_end_it() {
+        // An hourly server and hourly lines: named, with --release-server.
+        let said = still_charged_line(&env(), " bot --env prod").expect("hourly things");
+        assert!(said.contains("--release-server bot --env prod"), "{said}");
+        for item in hourly_items(&env()) {
+            assert!(said.contains(&item), "{said} lacks {item}");
+        }
+        // The prompt of a plain delete says so before the yes.
+        let id = UnitId::new("bot-prod").expect("unit id");
+        let prompt = delete_prompt(&env(), &id, "prod", false, false);
+        assert!(prompt.contains("--release-server"), "{prompt}");
+        // Nothing hourly on record: nothing to say.
+        let own = Env {
+            resource: None,
+            lines: env()
+                .lines
+                .into_iter()
+                .map(|l| Line { hourly: false, ..l })
+                .collect(),
+            ..env()
+        };
+        assert!(still_charged_line(&own, "").is_none());
+        assert!(!delete_prompt(&own, &id, "prod", false, false).contains("--release-server"));
+    }
+
+    #[test]
     fn the_way_out_of_an_unreachable_server_never_forgets_what_is_charged() {
         // An hourly server, or an hourly line: --release-server with it.
         assert!(unreached_hint(&env(), &[], "").contains("--release-server --forget"));
@@ -1464,6 +1706,39 @@ mod tests {
         assert!(
             hint.contains("`erpc worker delete --release-server --env staging --dir app`"),
             "{hint}"
+        );
+    }
+
+    /// An answer is a success by its HTTP status alone; a refusal keeps
+    /// the body, where the app says why.
+    #[test]
+    fn an_api_answer_is_judged_by_its_status_and_keeps_its_body() {
+        assert_eq!(
+            super::api_answer("{\"running\":true}\n200"),
+            Ok("{\"running\":true}".to_owned())
+        );
+        assert_eq!(super::api_answer("\n204"), Ok(String::new()));
+        assert_eq!(
+            super::api_answer("line one\nline two\n201"),
+            Ok("line one\nline two".to_owned())
+        );
+        assert_eq!(
+            super::api_answer("{\"error\":\"unauthorized\"}\n401"),
+            Err((
+                "HTTP 401".to_owned(),
+                "{\"error\":\"unauthorized\"}".to_owned()
+            ))
+        );
+        assert_eq!(
+            super::api_answer("\n000"),
+            Err(("HTTP 0".to_owned(), String::new()))
+        );
+        assert_eq!(
+            super::api_answer("not what curl prints"),
+            Err((
+                "no HTTP status".to_owned(),
+                "not what curl prints".to_owned()
+            ))
         );
     }
 

@@ -125,6 +125,64 @@ pub async fn ctrl_c() {
     notified.await;
 }
 
+/// Ctrl-C taken for a whole stretch of work, and kept: from [`Hold::new`]
+/// on it goes to the hold, which remembers it, whether or not anything was
+/// waiting for it when it came.
+///
+/// For work that must be followed by its own undoing, as hourly lines
+/// bought for a run are ended when the run ends. A wait on [`ctrl_c`] made
+/// only around the slow steps leaves the requests between them to the
+/// default, and erpc then ends in the middle with the lines still charged.
+///
+/// It keeps one Ctrl-C. A second one, once the first has come, ends erpc
+/// as it would without a hold.
+pub struct Hold {
+    wait: std::pin::Pin<Box<dyn Future<Output = ()> + Send>>,
+    came: bool,
+}
+
+impl Hold {
+    /// Takes Ctrl-C from here on.
+    pub fn new() -> Self {
+        Self::of(ctrl_c())
+    }
+
+    /// A hold on whatever `wait` resolves on, in place of Ctrl-C.
+    pub fn of(wait: impl Future<Output = ()> + Send + 'static) -> Self {
+        let mut hold = Self {
+            wait: Box::pin(wait),
+            came: false,
+        };
+        // Polled once now: that is what counts the claim, so that Ctrl-C
+        // goes to this hold before anything waits on it.
+        let _ = hold.came();
+        hold
+    }
+
+    /// Whether Ctrl-C has come since the hold began. Does not wait.
+    pub fn came(&mut self) -> bool {
+        if !self.came {
+            let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+            self.came = self.wait.as_mut().poll(&mut context).is_ready();
+        }
+        self.came
+    }
+
+    /// Resolves once Ctrl-C has come: at once when it already has.
+    pub async fn wait(&mut self) {
+        if !self.came {
+            self.wait.as_mut().await;
+            self.came = true;
+        }
+    }
+}
+
+impl Default for Hold {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// One wait on [`ctrl_c`], counted in [`CLAIMS`] for as long as it lives.
 struct Claim;
 
@@ -491,6 +549,16 @@ mod tests {
                     tokio::time::sleep(Duration::from_millis(100)).await;
                     println!("ready");
                 }
+                "hold" => {
+                    // A run that has bought a line and is in the middle of
+                    // a request, with nothing waiting on Ctrl-C.
+                    let mut hold = super::Hold::new();
+                    println!("ready");
+                    tokio::time::sleep(Duration::from_millis(600)).await;
+                    println!("request done, ctrl-c came: {}", hold.came());
+                    hold.wait().await;
+                    println!("lines ended");
+                }
                 other => panic!("no case {other}"),
             }
             tokio::time::sleep(Duration::from_secs(30)).await;
@@ -821,6 +889,23 @@ mod tests {
         assert_eq!(signer_dirs(dir.path()), 1);
         assert_eq!(erpc_chain_solana::cli::sweep(dir.path()).len(), 1);
         assert_eq!(signer_dirs(dir.path()), 0);
+    }
+
+    /// What left an hourly line charged: Ctrl-C while a request was under
+    /// way and nothing waited on it. Under a hold it does not end erpc, and
+    /// it is still known once the request is done.
+    #[test]
+    fn ctrl_c_under_a_hold_is_kept_while_nothing_waits_for_it() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let mut child = Child::spawn(&Setup::new("hold", dir.path()));
+        child.expect("ready");
+        child.signal("INT");
+        child.expect("request done, ctrl-c came: true");
+        child.expect("lines ended");
+        assert!(child.running_after(Duration::from_millis(300)));
+        // The hold keeps one: the next ends erpc, by the signal.
+        child.signal("INT");
+        assert_eq!(child.ended().signal(), Some(SIGINT));
     }
 
     #[test]

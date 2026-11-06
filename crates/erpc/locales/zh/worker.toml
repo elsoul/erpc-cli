@@ -25,6 +25,7 @@ fix = "请修正 {file}，然后运行 `erpc worker check{dir_scope}`"
 
 [check]
 ready = "{name} 已就绪"
+deploy_needs = "从本机部署之前：{what}"
 no_pubkey = "（未设置公钥）"
 no_server = "（尚无服务器）"
 in_1password = "服务器信息保存在 1Password"
@@ -80,4 +81,4 @@ invalid = "（erpc.toml 有问题；`erpc worker check{dir_scope}`）"
 invalid_drawn = "{name}：erpc.toml 有问题"
 in_vault = "{name}  ·  环境 {env} 在 1Password 中，本机没有该应用（克隆该应用即可接手）"
 in_vault_heading = "在 1Password 中但本机没有对应应用（克隆该应用即可接手）："
-vault_unread = "（未能列出保险库 {vault} 中的 worker 项目：{error}）"
+vault_unread = "（保险库 {vault}：{error}）"

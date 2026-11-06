@@ -93,6 +93,16 @@ impl Keypair {
         &self.bytes
     }
 
+    /// Signs `message` with the key: the 64-byte Ed25519 signature a Solana
+    /// transaction carries for it.
+    #[must_use]
+    pub fn sign(&self, message: &[u8]) -> [u8; 64] {
+        use ed25519_dalek::Signer as _;
+        let mut seed = Zeroizing::new([0_u8; 32]);
+        seed.copy_from_slice(&self.bytes[..32]);
+        SigningKey::from_bytes(&seed).sign(message).to_bytes()
+    }
+
     /// The keypair as `solana-keygen` writes it: a JSON array of 64 numbers.
     #[must_use]
     pub fn to_json(&self) -> Zeroizing<String> {
@@ -373,6 +383,34 @@ pub fn find_key<R: OpRunner>(
         pubkey,
         reference: format!("op://{vault}/{id}/keypair"),
     }))
+}
+
+/// The 32 bytes of a base58 public key, or `None` when `text` is not one.
+/// Only the canonical spelling is one: extra leading `1`s decode to the
+/// same bytes, and are refused, as Solana's own tools refuse them.
+#[must_use]
+pub fn pubkey_bytes(text: &str) -> Option<[u8; 32]> {
+    let bytes = pubkey_bytes_loose(text)?;
+    (base58(&bytes) == text).then_some(bytes)
+}
+
+fn pubkey_bytes_loose(text: &str) -> Option<[u8; 32]> {
+    const ALPHABET: &[u8; 58] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    bs58_len(text)?;
+    let mut out = [0_u8; 32];
+    for c in text.bytes() {
+        let mut carry = u32::try_from(ALPHABET.iter().position(|&a| a == c)?).ok()?;
+        // out = out * 58 + carry, big-endian.
+        for byte in out.iter_mut().rev() {
+            let v = u32::from(*byte) * 58 + carry;
+            *byte = (v & 0xff) as u8;
+            carry = v >> 8;
+        }
+        if carry != 0 {
+            return None;
+        }
+    }
+    Some(out)
 }
 
 /// `Some` when `text` is 32 to 44 base58 characters, the shape of a public
@@ -733,5 +771,35 @@ mod tests {
             "remove the test identity {id} by hand: {}",
             removed.stderr
         );
+    }
+}
+
+#[cfg(test)]
+mod signing_tests {
+    use super::{Keypair, pubkey_bytes};
+
+    #[test]
+    fn a_public_key_reads_back_from_its_base58_and_a_signature_verifies() {
+        use ed25519_dalek::Verifier as _;
+        let key = Keypair::generate().expect("randomness");
+        let decoded = pubkey_bytes(&key.pubkey()).expect("a public key");
+        assert_eq!(&decoded, &key.bytes()[32..]);
+        assert!(pubkey_bytes("not a key").is_none());
+        assert!(
+            pubkey_bytes("1111111111111111111111111111111").is_none(),
+            "too short"
+        );
+        assert_eq!(
+            pubkey_bytes("11111111111111111111111111111111"),
+            Some([0_u8; 32])
+        );
+        let message = b"erpc";
+        let signature = ed25519_dalek::Signature::from_bytes(&key.sign(message));
+        let verifying = ed25519_dalek::VerifyingKey::from_bytes(&decoded).expect("a key");
+        assert!(verifying.verify(message, &signature).is_ok());
+        // One more leading `1` decodes to the same 32 zero bytes, and is
+        // not a spelling of that key.
+        assert!(super::pubkey_bytes_loose(&"1".repeat(33)).is_some());
+        assert!(pubkey_bytes(&"1".repeat(33)).is_none(), "not canonical");
     }
 }

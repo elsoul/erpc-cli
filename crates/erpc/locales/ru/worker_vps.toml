@@ -63,6 +63,7 @@ lets_in_later = "линия {id} будет пропускать {ip}, когд�
 suspended = "линия {kind} {id} приостановлена"
 suspended_hint = "причина указана в панели управления"
 waiting = "линия {id}: {status} (прошло {minutes} мин)"
+waiting_for = "ожидание, пока линия {kind} {id} станет активной"
 ending = "Завершение почасовой линии {kind} {id}"
 end_failed = "user-api не завершил линию {kind} {id}: {answer}"
 

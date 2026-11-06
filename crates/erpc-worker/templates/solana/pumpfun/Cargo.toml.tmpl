@@ -20,11 +20,8 @@ axum = "0.8"
 backoff = { version = "0.4.0", features = ["tokio"] }
 bs58 = "0.5.1"
 chrono = { version = "0.4.38", features = ["serde"] }
-dashmap = "5"
 env_logger = "0.11.6"
 futures = "0.3.31"
-hex = "0.4.3"
-home = "=0.5.11"
 log = "0.4"
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }
@@ -38,10 +35,7 @@ solana-sdk = "3.0"
 solana-instruction = "3.0"
 solana-commitment-config = "3.0"
 solana-transaction-status = "3.0"
-solana-pubkey = "3.0"
 solana-signature = "3.0"
-solana-hash = "3.0"
-thiserror = "1"
 tokio = { version = "1.48.0", features = ["rt-multi-thread", "macros"] }
 tonic = { version = "0.14.2" }
 # Pinned to a commit: a branch would build whatever it points at on the day.
@@ -56,6 +50,7 @@ scalar_api_reference = { version = "0.2", features = ["axum"] }
 utoipa = { version = "5", features = ["axum_extras"] }
 zeroize = "1"
 # Pin transitive deps to versions compatible with rust-toolchain 1.86.
+home = "=0.5.11"
 time = "=0.3.44"
 serde_with = "=3.16.1"
 darling = "=0.21.3"

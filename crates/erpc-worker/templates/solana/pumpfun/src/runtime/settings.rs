@@ -11,6 +11,8 @@ pub struct Settings {
     pub config_path: String,
     pub grpc_endpoint: String,
     pub x_token: Option<String>,
+    /// The Shreds stream (optional): `erpc worker deploy --shreds` sets it.
+    pub shreds_endpoint: Option<String>,
     pub rpc_endpoint: String,
     /// Separate RPC endpoint for sending transactions (optional).
     /// Falls back to `rpc_endpoint` when not set.
@@ -38,6 +40,7 @@ impl Settings {
             env::var("CONFIG_PATH").unwrap_or_else(|_| DEFAULT_CONFIG_PATH.to_string());
         let grpc_endpoint = env::var("GRPC_ENDPOINT").context("GRPC_ENDPOINT is missing")?;
         let x_token = env::var("X_TOKEN").ok();
+        let shreds_endpoint = env::var("SHREDS_ENDPOINT").ok().filter(|e| !e.is_empty());
 
         // Build RPC endpoint: prefer explicit SOLANA_RPC_ENDPOINT, then ERPC_API_KEY.
         // There is no public fallback: a rate-limited RPC loses trades.
@@ -90,6 +93,7 @@ impl Settings {
             config_path,
             grpc_endpoint,
             x_token,
+            shreds_endpoint,
             rpc_endpoint,
             send_rpc_endpoint,
             api_port,

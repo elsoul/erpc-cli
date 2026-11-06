@@ -24,7 +24,7 @@ refused = "服务器上的 agent 拒绝了请求"
 unknown = "未知"
 release = "版本 {release}"
 pid = "pid {pid}"
-up = "已运行 {seconds} 秒"
+up = "已运行 {time}"
 last_exit = "上次退出：{exit}"
 
 [describe.restarts]
@@ -78,6 +78,7 @@ then_server = "，然后终止按小时计费的服务器"
 then_lines_and_server = "，然后终止其数据线路和按小时计费的服务器"
 then_lines = "，然后终止其数据线路（记录中没有按小时计费的服务器）"
 no_server_to_end = "（记录中没有需要终止的按小时计费服务器）"
+keeps_charging = "；其按小时计费的 {items} 会继续运行并继续计费（`--release-server` 可将其终止）"
 
 [unreached]
 message = "无法连接服务器 {host}{vps}；它可能已被终止或已停机"
@@ -119,3 +120,18 @@ backup = "；备份密钥也可以用 `erpc storage keys revoke <n>` 吊销；"
 server = "；服务器也可以在控制面板中终止"
 lines = "；在 erpc 之外终止的线路可用 `--forget-line <id>` 从记录中移除，仍在运行的线路请在控制面板中终止"
 forget = "；如果服务器已无法连接且 worker 不在那里运行，`--forget` 会在不连接服务器的情况下将其移除"
+
+[hourly]
+server = "{kind} {id}"
+line = "{kind} 线路 {id}"
+still_charged = "{items}：在终止前按小时计费。`erpc worker delete --release-server{scope}` 可将其终止；每小时价格见 `erpc ai`（信用余额）或控制面板"
+
+[api]
+bad_method = "{method} 不是可用的方法：GET、POST、PUT 或 DELETE"
+bad_path = "{path} 不是路径：以 / 开头，且不含空格、引号或控制字符"
+no_port = "erpc.toml 中没有 run.port，无法到达应用的 API"
+no_token = "[secrets] 中没有 API_TOKEN，而每个请求都需要它：`erpc worker secret put API_TOKEN{dir_scope}`"
+failed = "请求未成功：{why}\n{body}"
+
+[positions]
+warning = "此应用用密钥交易：停止期间它持有的东西不会卖出，持仓只能等待。请先按其 README 收尾；pumpfun 机器人：`erpc worker api{scope} /api/trade/start?mode=sell_only -X POST`，然后用 `erpc worker api{scope} /api/trade/status` 等到 active_positions 为 0"

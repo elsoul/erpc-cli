@@ -110,6 +110,45 @@ jobs:
           # erpc here embeds them, as the release build does.
           cargo check -p erpc --locked
 
+  # The templates are not members of the workspace: nothing above compiles
+  # them. This renders one as `erpc worker init` does and runs its own
+  # checks, so that its tests (what the bot will not buy, how it reads a
+  # migration, how it plans a sell) cannot stop running unnoticed.
+  template:
+    name: pumpfun template (render, clippy, test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: 1.98.0
+          components: clippy
+      # The template's build output is kept beside the rendered directory,
+      # not in it: a restored cache must not make that directory, which
+      # `erpc worker init` refuses to write into when it exists. The
+      # directory does not exist either when the cache is restored, so its
+      # lock is not in the cache's own key: it is named here, and a change
+      # to the template's dependencies starts afresh.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: ${{ hashFiles('crates/erpc-worker/templates/solana/pumpfun/Cargo.lock.tmpl', 'crates/erpc-worker/templates/solana/pumpfun/Cargo.toml.tmpl') }}
+          workspaces: |
+            .
+            template-ci/pumpfun-ci -> ../pumpfun-target
+      - name: render the template
+        run: |
+          mkdir -p template-ci
+          cargo run --locked -- worker init --template pumpfun --name pumpfun-ci --into template-ci --no-git --yes
+      - name: clippy and tests
+        working-directory: template-ci/pumpfun-ci
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/template-ci/pumpfun-target
+        run: |
+          cargo clippy --all-targets --locked -- -D warnings
+          cargo test --locked
+
   deny:
     name: cargo-deny
     runs-on: ubuntu-latest

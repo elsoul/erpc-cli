@@ -534,6 +534,23 @@ pub fn trading_stopped(positions: usize) -> String {
     }
 }
 
+/// Trading is on again after a restart, as it was when the last process
+/// ended.
+pub fn trading_resumed(sell_only: bool) -> String {
+    match (lang(), sell_only) {
+        (Lang::En, false) => "▶️ Trading resumed after a restart, as it was before".to_string(),
+        (Lang::En, true) => "▶️ Resumed after a restart in sell-only mode, as it was before".to_string(),
+        (Lang::Ja, false) => "▶️ 再起動後、以前のとおり取引を再開しました".to_string(),
+        (Lang::Ja, true) => "▶️ 再起動後、以前のとおり売りのみモードで再開しました".to_string(),
+        (Lang::Zh, false) => "▶️ 重启后已按原状态恢复交易".to_string(),
+        (Lang::Zh, true) => "▶️ 重启后已按原状态以仅卖出模式恢复".to_string(),
+        (Lang::Ru, false) => "▶️ Торговля возобновлена после перезапуска, как и была".to_string(),
+        (Lang::Ru, true) => "▶️ После перезапуска возобновлён режим только продажи, как и был".to_string(),
+        (Lang::Vi, false) => "▶️ Đã tiếp tục giao dịch sau khi khởi động lại, như trước".to_string(),
+        (Lang::Vi, true) => "▶️ Đã tiếp tục ở chế độ chỉ bán sau khi khởi động lại, như trước".to_string(),
+    }
+}
+
 pub fn auto_loop_disabled_stopped() -> String {
     match lang() {
         Lang::En => "🏁 Single-shot cycle complete — trading stopped (set AUTO_LOOP=true to keep running)".to_string(),

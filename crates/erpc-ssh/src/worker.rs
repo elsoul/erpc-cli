@@ -229,6 +229,16 @@ pub enum Command {
         /// Keep printing new lines.
         follow: bool,
     },
+    /// One request to the app's API on its loopback port, with `curl`
+    /// reading its whole configuration (method, URL, headers, body) from
+    /// standard input, so that the API token is on no command line and in
+    /// no log. The body comes back on standard output, then the HTTP
+    /// status on a last line of its own; the command fails only when the
+    /// app gave no answer.
+    Api {
+        /// The app's `run.port`.
+        port: u16,
+    },
 }
 
 impl Command {
@@ -312,6 +322,14 @@ impl Command {
                 id.as_str(),
                 if *follow { " -f" } else { "" }
             ),
+            // The port is in the command only so that the line reads for
+            // what it is; the URL curl uses comes from its configuration.
+            // curl fails only when the app gave no answer; an answer comes
+            // back whole, with its HTTP status on a last line of its own,
+            // for the caller to judge.
+            Self::Api { port } => {
+                format!("curl -sS --max-time 30 -w '\\n%{{http_code}}' -K - # 127.0.0.1:{port}")
+            }
         }
     }
 }
