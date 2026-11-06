@@ -177,7 +177,12 @@ async fn main() -> Result<(), anyhow::Error> {
         })
     };
 
-    tokio::try_join!(processor_handle, geyser_handle, shreds_handle, api_handle)?;
-
-    Ok(())
+    // The Geyser runner returns only on an error that reconnecting cannot fix;
+    // exit with it (status 1) instead of idling without a stream.
+    tokio::select! {
+        result = geyser_handle => result?,
+        result = processor_handle => result.map_err(anyhow::Error::from),
+        result = shreds_handle => result.map_err(anyhow::Error::from),
+        result = api_handle => result.map_err(anyhow::Error::from),
+    }
 }
