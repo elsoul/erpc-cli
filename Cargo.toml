@@ -108,7 +108,7 @@ rustix = { version = "1.1", default-features = false }
 keyring = { version = "3.6", default-features = false }
 fs2 = "0.4"
 tempfile = "3.14"
-toml = "0.8"
+toml = "1.1"
 # Already in the lock through `toml`; edits erpc.toml keeping its comments.
 toml_edit = "0.22"
 
