@@ -856,7 +856,7 @@ dependencies = [
  "secrecy",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "signal-hook",
  "tempfile",
  "tokio",
@@ -914,7 +914,7 @@ dependencies = [
  "secrecy",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -961,7 +961,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "thiserror 2.0.21",
  "tokio",
 ]
@@ -989,7 +989,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "thiserror 2.0.21",
  "tokio",
 ]
@@ -1001,7 +1001,7 @@ dependencies = [
  "erpc-core",
  "include_dir",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -1014,7 +1014,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "thiserror 2.0.21",
 ]
 
@@ -1045,7 +1045,7 @@ dependencies = [
  "secrecy",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -1076,7 +1076,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -1100,7 +1100,7 @@ dependencies = [
  "flate2",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "tar",
  "thiserror 2.0.21",
 ]
@@ -1118,7 +1118,7 @@ name = "erpc-skills"
 version = "0.1.0-rc.2"
 dependencies = [
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "tempfile",
 ]
 
@@ -1126,7 +1126,7 @@ dependencies = [
 name = "erpc-ssh"
 version = "0.1.0-rc.2"
 dependencies = [
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "tempfile",
  "thiserror 2.0.21",
  "zeroize",
@@ -1153,7 +1153,7 @@ dependencies = [
  "include_dir",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "toml",
  "toml_edit",
  "zeroize",
@@ -1168,7 +1168,7 @@ dependencies = [
  "reqwest",
  "rustix",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "signal-hook",
  "tempfile",
  "zeroize",
