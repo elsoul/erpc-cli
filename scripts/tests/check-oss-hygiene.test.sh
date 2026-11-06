@@ -167,6 +167,159 @@ check "a commit hash beside the word vault is not an identifier" allow "$sample_
 check "committed dotenv" block "$sample_dir/.env" \
   'TOKEN=abc'
 
+check "reference definition resolving into docs/plans" block "docs/chains/tmp-hygiene-a.md" \
+  '[R1]: ../plans/2026-01-01-example.md "Example plan"'
+
+check "reference definition with no space after the colon" block "docs/chains/tmp-hygiene-a2.md" \
+  '[R1]:../plans/2026-01-01-example.md'
+
+check "inline link with a fragment resolving into docs/plans" block "docs/chains/tmp-hygiene-b.md" \
+  'See the [plan](../plans/example.md#steps).'
+
+check "inline link written beside docs/plans" block "docs/tmp-hygiene-c.md" \
+  'See the [plan](plans/example.md).'
+
+check "link from the repository root" block "tmp-hygiene-d.md" \
+  'See the [plan](./docs/plans/example.md).'
+
+check "link from a nested directory" block "$sample_dir/nested/e.md" \
+  'See the [plan](../../docs/plans/example.md).'
+
+check "link to the directory itself" block "docs/chains/tmp-hygiene-f.md" \
+  'See [the plans](../plans).'
+
+check "link with a detour through another directory" block "docs/chains/tmp-hygiene-g.md" \
+  'See the [plan](../chains/../plans/example.md).'
+
+check "root-relative link" block "$sample_dir/h4.md" \
+  'See the [plan](/docs/plans/example.md).'
+
+check "html link" block "docs/chains/tmp-hygiene-i.md" \
+  '<a href="../plans/example.md">plan</a>'
+
+check "this repository's URL" block "$sample_dir/h5.md" \
+  'https://github.com/elsoul/erpc-cli/blob/main/docs/plans/example.md'
+
+check "a docs/plans path in prose" block "$sample_dir/h6.md" \
+  'Recorded in `docs/plans/example.md`.'
+
+check "a docs/plans path in a code comment" block "$sample_dir/h7.rs" \
+  '// See docs/plans/example.md for the steps.'
+
+check "a docs/plans path with a line number" block "$sample_dir/h8.rs" \
+  '// See docs/plans/example.md:42 for the steps.'
+
+check "a relative path with a line number" block "docs/chains/tmp-hygiene-j.md" \
+  'See ../plans/example.md:42 for the steps.'
+
+check "the directory at the end of a sentence" block "$sample_dir/h9.md" \
+  'It is recorded in docs/plans.'
+
+check "a relative path at the end of a sentence" block "docs/chains/tmp-hygiene-k.md" \
+  'It is recorded in ../plans.'
+
+check "this repository's URL with another capitalisation" block "$sample_dir/h10.md" \
+  'https://github.com/ELSOUL/erpc-cli/blob/main/docs/plans/example.md'
+
+check "this repository's URL with a doubled slash" block "$sample_dir/h11.md" \
+  'https://github.com/elsoul/erpc-cli/blob/main/docs//plans/example.md'
+
+check "this repository's URL at the end of a sentence" block "$sample_dir/h12.md" \
+  'See https://github.com/elsoul/erpc-cli/tree/main/docs/plans.'
+
+check "a file URL" block "$sample_dir/h13.md" \
+  'See file:///docs/plans/example.md for the steps.'
+
+check "a file added under docs/plans" block "docs/plans/tmp-hygiene.md" \
+  '# note'
+
+check "a file named by a leading ./ under docs/plans" block "./docs/plans/tmp-hygiene.md" \
+  '# note'
+
+check "a file type the content rules skip" block "docs/plans/tmp-hygiene.png" \
+  'not an image'
+
+check "a path with a current-directory segment" block "$sample_dir/h14.md" \
+  'See docs/./plans/example.md for the steps.'
+
+check "a path ending in several dots" block "$sample_dir/h15.md" \
+  'It is recorded in docs/plans...'
+
+check "a relative path ending in several dots" block "docs/chains/tmp-hygiene-l.md" \
+  'It is recorded in ../plans...'
+
+check "this repository's URL followed by a colon" block "$sample_dir/h16.md" \
+  'https://github.com/elsoul/erpc-cli/tree/main/docs/plans: it has the steps'
+
+check "this repository's URL with a line number" block "$sample_dir/h17.md" \
+  'https://github.com/elsoul/erpc-cli/blob/main/docs/plans:12'
+
+check "this repository's URL ending in several dots" block "$sample_dir/h18.md" \
+  'See https://github.com/elsoul/erpc-cli/blob/main/docs/plans...'
+
+check "a file URL in capitals" block "$sample_dir/h19.md" \
+  'See FILE:///docs/plans/example.md for the steps.'
+
+check "a path in Markdown emphasis" block "$sample_dir/h20.md" \
+  'See _docs/plans/example.md_ for the steps.'
+
+check "a relative path in Markdown emphasis" block "docs/chains/tmp-hygiene-o.md" \
+  'See __../plans/example.md__ for the steps.'
+
+check "a path written beside docs/plans in emphasis" block "docs/tmp-hygiene-p.md" \
+  'See _plans/example.md_ for the steps.'
+
+check "the directory followed by an underscore" block "$sample_dir/h21.md" \
+  'See docs/plans_ for the steps.'
+
+check "a path after a leading hyphen" block "$sample_dir/h22.md" \
+  '-docs/plans/example.md'
+
+check "this repository's URL followed by an underscore" block "$sample_dir/h23.md" \
+  'https://github.com/elsoul/erpc-cli/blob/main/docs/plans_'
+
+check "this repository's URL with no ref" block "$sample_dir/h24.md" \
+  'https://github.com/elsoul/erpc-cli/docs/plans/example.md'
+
+check "a regular file named by a leading ./" block "./docs/plans" \
+  '# note'
+
+check "a file whose name starts with a dash is still read" block "-tmp-hygiene.md" \
+  'See docs/plans/example.md for the steps.'
+
+check "a host name with no scheme reads as a path" block "$sample_dir/h25.md" \
+  'See example.com/docs/plans/pricing for the steps.'
+
+check "a path that climbs back out of the directory" allow "$sample_dir/v.md" \
+  'See docs/plans/.. for the steps.'
+
+check "a relative path climbing out from directly under docs" allow "docs/tmp-hygiene-q.md" \
+  'See the [note](../plans/example.md).'
+
+check "a link whose whole target is the bare word" allow "docs/tmp-hygiene-m.md" \
+  'See [the list](plans) for the steps.'
+
+check "a root-relative path that is not docs/plans" allow "docs/tmp-hygiene-n.md" \
+  'See /plans/example.md on the server.'
+
+check "a file under a directory sharing the prefix" allow "docs/plans-public/tmp-hygiene.md" \
+  '# note'
+
+check "another host's docs/plans URL is not ours" allow "$sample_dir/q.md" \
+  'Pricing: https://example.com/docs/plans/pricing'
+
+check "the same relative path from outside docs does not reach docs/plans" allow "$sample_dir/r.md" \
+  'See the [note](../plans/example.md).'
+
+check "a file named plans.md is not the directory" allow "docs/chains/tmp-hygiene-s.md" \
+  'See [plans](../plans.md).'
+
+check "a sibling sharing the directory's prefix" allow "docs/chains/tmp-hygiene-t.md" \
+  'See [notes](../plans-public/example.md).'
+
+check "the word plans in prose" allow "$sample_dir/u.md" \
+  'Storage plans and pricing/plans are described elsewhere.'
+
 # --- must allow -------------------------------------------------------------
 
 check "published host" allow "$sample_dir/k.rs" \
@@ -186,6 +339,64 @@ check "ordinary rust file" allow "$sample_dir/o.rs" \
 
 check "snapshot mirror host" allow "$sample_dir/p.rs" \
   'const SNAP: &str = "https://solana-snapshot-ams.erpc.global";'
+
+# --- every tracked file, as CI and pre-push run it ---------------------------
+
+# check() names its file on the command line, which never exercises how the gate
+# lists tracked files. This runs the gate with no arguments in a throwaway
+# repository holding the sample and the one source file the gate reads.
+check_tracked() {
+  local name="$1" expect="$2" rel="$3" content="$4" link="${5:-}"
+  local repo out rc
+  repo="$(mktemp -d "$tmp/repo.XXXXXX")"
+  out="$(
+    # A hook runs with these set, and they would point git back at this checkout.
+    unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+    cd "$repo" || exit 3
+    git init -q . || exit 3
+    mkdir -p crates/erpc-core/src "$(dirname "$rel")"
+    cp "$repo_root/crates/erpc-core/src/endpoints.rs" crates/erpc-core/src/endpoints.rs
+    if [ -n "$link" ]; then
+      ln -s "$link" "$rel"
+    else
+      printf '%s\n' "$content" > "$rel"
+    fi
+    git add -A
+    "$sh" "$gate" 2>&1
+  )"; rc=$?
+  if { [ "$expect" = block ] && [ "$rc" -eq 1 ]; } || { [ "$expect" = allow ] && [ "$rc" -eq 0 ]; }; then
+    pass=$((pass + 1))
+    printf 'ok   %s\n' "$name"
+  else
+    fail=$((fail + 1))
+    printf 'FAIL %s (expected %s, exit %s)\n%s\n' "$name" "$expect" "$rc" "$out"
+  fi
+}
+
+check_tracked "tracked: a clean non-ASCII document" allow "docs/日本語.md" \
+  'Nothing to report.'
+
+check_tracked "tracked: a non-ASCII name is still read" block "docs/日本語.md" \
+  'See the [plan](plans/example.md).'
+
+check_tracked "tracked: a name with a double quote is still read" block 'docs/a"b.md' \
+  'See the [plan](plans/example.md).'
+
+check_tracked "tracked: a non-ASCII file under docs/plans" block "docs/plans/日本語.md" \
+  '# note'
+
+check_tracked "tracked: a double-quoted name under docs/plans" block 'docs/plans/a"b.md' \
+  '# note'
+
+check_tracked "tracked: a skipped file type under docs/plans" block "docs/plans/a.png" \
+  'not an image'
+
+check_tracked "tracked: a regular file named docs/plans" block "docs/plans" \
+  '# note'
+
+check_tracked "tracked: a symlink named docs/plans" block "docs/plans" "" "chains"
+
+check_tracked "tracked: a dangling symlink under docs/plans" block "docs/plans/d.md" "" "missing.md"
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

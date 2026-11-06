@@ -67,7 +67,7 @@ The command registry and dispatch are the implementation evidence. [R1], [R2], [
 | Bitcoin | Implemented backend: Core with immutable full/pruned retention | N/A: proof-of-work | Independent review and deferred live acceptance |
 | Arbitrum | Implemented: Nitro One/Nova/Sepolia follower | Not activated by follower deployment; BoLD signer/bond lifecycle is separate | Independent review and deferred live acceptance |
 | Robinhood | Implemented: Nitro mainnet/testnet follower with separate genesis pins | Permissioned admission and signing remain separate | Independent review and deferred live acceptance |
-| Other 10 researched families | **Not implemented** | **Not implemented**, or N/A for the mapped network role | Follow the ordered roadmap |
+| Other 10 researched families | **Not implemented** | **Not implemented**, or N/A for the mapped network role | Research pages only |
 
 ## Reading and maintaining the map
 

@@ -40,9 +40,9 @@ supports `erpc r --chain avax`, the compatible `erpc n` alias, and explicit
 verbs operate, with verified release installation, restricted API exposure,
 identity backup/same-host recovery and P-Chain health/admission observations.
 Registration is prepared/validated for external signing and submission; no
-transaction is signed or sent by deploy. See the [operator guide](../avalanche.md)
-and [implementation roadmap][R25]. Offline tests do not certify a running
-production node, Fuji activation or Mainnet acceptance. [R20], [R21], [R23], [R24]
+transaction is signed or sent by deploy. See the [operator guide](../avalanche.md).
+Offline tests do not certify a running production node, Fuji activation or
+Mainnet acceptance. [R20], [R21], [R23], [R24]
 
 ## Pitfalls
 
@@ -76,8 +76,5 @@ production node, Fuji activation or Mainnet acceptance. [R20], [R21], [R23], [R2
 
 [R21]: ../../crates/erpc/src/main.rs "Existing repository CLI dispatch"
 
-[R22]: ../plans/2026-10-24-eth-rpc.md "Existing repository node-command plan"
-
 [R23]: ../../crates/erpc-core/src/chain.rs "Avalanche exposes a Node role only"
 [R24]: ../../crates/erpc/src/tree.rs "Unimplemented node command fallback"
-[R25]: ../plans/2026-10-26-chain-implementation.md "Avalanche node AVN1-AVN4 and validator AVV1-AVV4 plan"
