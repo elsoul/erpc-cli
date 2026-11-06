@@ -90,6 +90,13 @@ whose version has no entry below.
 - CI renders the `solana/pumpfun` template as `erpc worker init` does and
   runs its clippy and tests. The templates are not workspace members, and
   nothing compiled them before.
+- The `solana/pumpfun` template is on `solana-stream-sdk` 4.0.0
+  (Yellowstone gRPC client 17, Agave 4.4.1 crates), vendored again from
+  solana-stream's `trade-app` at `32dabe7c`, and an app made from it needs
+  Rust 1.98.1 or newer. When the gRPC server ends the subscription with
+  `RESOURCE_EXHAUSTED` (a request over Yellowstone 17's
+  `max_decoding_message_size`), the app exits with the server's message in
+  its log instead of sending the same request again without end.
 
 
 ## [0.1.0-rc.2] - 2026-11-05
