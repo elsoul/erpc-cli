@@ -3,7 +3,9 @@
 
 missing = "缺少 {settings}，{name} 无法启动"
 missing_hint = "用 `erpc worker secret put {first}{dir_scope}` 保存机密设置；普通设置写在 [vars] 中"
+missing_line_hint = "{first} 由线路提供：`erpc worker run{dir_scope} --{flag} --ip <IPV4>` 启动一条允许本机接入的按小时计费线路；或在 [vars] 中设置"
 watch_only = "没有 [wallet]：应用以仅观察模式启动（`erpc worker key new{dir_scope}` 可生成密钥）"
+positions_kept = "应用持有的东西留在钱包中，下次运行会接手（`erpc worker key send{dir_scope} --to <PUBKEY> --all` 可把 SOL 转出）"
 could_not_start = "无法启动 {bin}：{error}"
 no_stdin = "应用没有可接收密钥的标准输入"
 key_not_handed = "无法传递密钥：{error}"
@@ -26,3 +28,13 @@ ended = "应用自行退出：{status}"
 timeout = "{secs} 秒内未进入健康状态"
 healthy = "{name} 状态健康（启动后 {secs} 秒）；已停止"
 failed = "{name} 未通过检查：{why}"
+interrupted = "已用 Ctrl-C 停止"
+
+[line]
+taking_up = "使用已允许 {ip} 接入的 {kind} 线路 {id}"
+active = "{kind} 线路 {id} 已启用：{setting} = {endpoint}"
+made_anyway = "user-api 仍然创建了该线路；本次运行结束时会将其结束"
+not_hourly = "{kind} 线路 {id} 不按小时计费，保持原样"
+kept = "已保留 {kind} 线路 {id}，继续按小时计费：`erpc worker run{dir_scope} --{flag} --ip {ip}` 可再次使用，也可在控制台结束"
+ended = "{kind} 线路 {id} 已结束"
+not_ended = "{kind} 线路 {id} 未结束（{message}），在结束之前会继续按小时计费：`erpc worker run{dir_scope} --{flag} --ip {ip}` 可再次使用，也可在控制台结束"

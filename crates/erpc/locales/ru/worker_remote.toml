@@ -27,7 +27,7 @@ refused = "агент на сервере отказал"
 unknown = "неизвестно"
 release = "релиз {release}"
 pid = "pid {pid}"
-up = "работает {seconds} с"
+up = "работает {time}"
 last_exit = "последнее завершение: {exit}"
 
 [describe.restarts]
@@ -87,6 +87,7 @@ then_server = ", затем завершить аренду почасового
 then_lines_and_server = ", затем завершить его линии данных и аренду почасового сервера"
 then_lines = ", затем завершить его линии данных (почасового сервера в записях нет)"
 no_server_to_end = " (почасового сервера, аренду которого нужно завершить, в записях нет)"
+keeps_charging = "; его почасовые {items} продолжают работать и оплачиваться (`--release-server` их завершает)"
 
 [unreached]
 message = "не удалось подключиться к серверу {host}{vps}; возможно, он удалён или не работает"
@@ -128,3 +129,18 @@ backup = "; ключ резервного копирования можно та
 server = "; сервер можно также завершить в панели управления"
 lines = "; линию, завершённую вне erpc, уберёт из записей `--forget-line <id>`, а ещё работающую завершите в панели управления"
 forget = "; если к серверу больше нельзя подключиться и воркер там не работает, `--forget` уберёт его из записей без подключения"
+
+[hourly]
+server = "{kind} {id}"
+line = "линия {kind} {id}"
+still_charged = "{items}: оплачиваются почасово до завершения. `erpc worker delete --release-server{scope}` их завершает; цену за час показывает `erpc ai` (баланс кредита) или панель управления"
+
+[api]
+bad_method = "{method} здесь не метод: GET, POST, PUT или DELETE"
+bad_path = "{path} не путь: он начинается с / и не содержит пробелов, кавычек и управляющих символов"
+no_port = "в erpc.toml не задан run.port, так что API приложения некуда достучаться"
+no_token = "в [secrets] нет API_TOKEN, который нужен каждому запросу: `erpc worker secret put API_TOKEN{dir_scope}`"
+failed = "запрос не прошёл: {why}\n{body}"
+
+[positions]
+warning = "приложение торгует ключом: пока оно остановлено, ничего из его активов не продаётся, позиции ждут. Сначала сверните его, как сказано в его README; для бота pumpfun: `erpc worker api{scope} /api/trade/start?mode=sell_only -X POST`, затем `erpc worker api{scope} /api/trade/status`, пока active_positions не станет 0"

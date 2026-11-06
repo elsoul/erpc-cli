@@ -26,12 +26,38 @@ the OS keychain. No `wallet.json`, no `.env`, no copy on the server.
 - **On the server:** the erpc worker agent holds the key in memory only. It
   makes itself undumpable and locks its memory. It hands the key to the app on
   a file descriptor, and the app wipes it after reading.
+- **Getting the SOL out:** `erpc worker key send --to <ADDRESS> --sol <N>`
+  (or `--all`, everything but the fee) signs one transfer in memory, after
+  your yes at a terminal, and sends it through the app's own RPC. It is
+  followed by its own signature until it lands or its blockhash is past;
+  when erpc ends without knowing, look that signature up before sending
+  again, since a second send is a second transfer.
 - **After a reboot,** the worker comes back **locked**: the app does not run
   until `erpc worker start` sends the key again. There is no encrypted copy on
   disk to fall back to.
 - **Secrets** (API tokens, RPC keys) are kept the same way but reach the app as
   environment variables, not on a pipe. `erpc worker secret put <NAME>` keeps the value in 1Password or the
   keychain, and `[secrets]` holds only `op://…` or `keychain:…` references.
+
+## Without 1Password
+
+1Password is optional. `erpc login` offers the stores this machine has; with
+no 1Password desktop app it keeps the session in the OS keychain, and
+`erpc worker key new` and `secret put` then use the keychain too (`--store
+keychain` says so outright, `--store 1password --vault <id>` the other way).
+What that means, before the first command:
+
+- The key exists on this one machine only, in its keychain. There is no copy
+  and no sync, and another machine cannot read a `keychain:` reference. A
+  lost or wiped machine means the wallet is gone: keep little in it, or use
+  1Password, which every machine signed in to the vault can read.
+- Linux needs a desktop keyring (a Secret Service: GNOME Keyring, KWallet) in
+  a logged-in session. A headless server, WSL or an SSH login has none, and
+  erpc refuses to keep a key there, since the kernel keyring forgets it at a
+  reboot; the way out is 1Password through `op`, not a file.
+- With 1Password, every read may show an approval prompt in the app. erpc
+  shows a spinner while it waits; "did not allow it in time" means nobody
+  allowed it, "not signed in" means the app's CLI integration is off.
 
 ## From nothing to a running app
 
@@ -48,15 +74,33 @@ the OS keychain. No `wallet.json`, no `.env`, no copy on the server.
   and `--name` names the app.
 
 ```bash
+erpc login                             # once per machine: the session in 1Password or the keychain
 erpc worker init                       # pick with the arrow keys; makes ./<name> with erpc.toml
 cd <name>
-erpc worker key new                    # the trading key, kept in 1Password or the keychain
-erpc worker secret put API_TOKEN       # asked for without being shown
+erpc worker key new                    # the trading key, kept where the session is; prints the public key to fund
+erpc worker secret put API_TOKEN       # the bot's own API token: any 16+ random characters (openssl rand -hex 24)
+erpc worker secret put ERPC_API_KEY    # the account's RPC key from the dashboard (or SOLANA_RPC_ENDPOINT in [vars])
 erpc worker check                      # what erpc.toml describes, and what is missing
-erpc worker run                        # build and run here, the key on a pipe
-erpc worker run --check                # start, wait until healthy, stop
+erpc worker run --grpc --ip <IPV4>     # build and run here, with an hourly gRPC line letting this machine in
+erpc worker run --check --grpc --ip <IPV4>   # the same, stopped once healthy
 erpc worker deploy --new-vps --grpc    # a new hourly VPS and gRPC line, prices asked first
 ```
+
+Before the first `deploy` from this machine: the Rust target for the server
+(`rustup target add x86_64-unknown-linux-gnu`), `zig` (`brew install zig` on
+macOS) and `cargo-zigbuild` (`cargo install cargo-zigbuild --locked`) for the
+cross-build, and an SSH key (`ssh-keygen -t ed25519`, or `erpc config set
+ssh_key <path>.pub`). `erpc worker check` lists what is missing, and `deploy`
+refuses before it buys anything when something is.
+
+`init` prints this order for the app it made, with a `secret put` for each
+setting the template needs and the line flags for the settings a line
+provides. A setting a line provides (`GRPC_ENDPOINT`, `SHREDS_ENDPOINT`,
+`SOLANA_SEND_RPC_ENDPOINT`) is never a secret: `--grpc`, `--shreds` and
+`--unlimited` set it. `run.requires` may hold a set of settings of which one
+is enough, as the pumpfun template does for its RPC: `["ERPC_API_KEY",
+"SOLANA_RPC_ENDPOINT"]`; `check` names the set when neither is set, and the
+first of the set is the one `init` suggests.
 
 `deploy` finds the server in this order:
 
@@ -64,7 +108,11 @@ erpc worker deploy --new-vps --grpc    # a new hourly VPS and gRPC line, prices 
 2. `--vps <id>`, an ERPC VPS of the account;
 3. `--new-vps`, the cheapest hourly VPS in the region nearest this machine (by
    its time zone; `--region` and `--plan` choose otherwise);
-4. `--host <address>`, a server of your own;
+4. `--host <address>`, a server of your own: Ubuntu or Debian with systemd
+   and nftables, reached as root or a user with passwordless sudo; the
+   worker's firewall then drops every inbound connection to that server but
+   SSH and the app's port, so a server that serves anything else is not the
+   one to use;
 5. otherwise, at a terminal, a list of the account's running VPSs, with "start
    a new one" at the end.
 
@@ -73,6 +121,10 @@ long the credit lasts, and starts only after a yes. `-y` skips the other
 questions but never that one.
 
 ## What a deploy does
+
+`erpc worker build` runs the cross-build alone, without deploying, and
+leaves the release in `target/`: the way to see a build fail before a server
+is bought.
 
 1. Checks `erpc.toml`, every setting the app needs, and that this machine may
    read the key.
@@ -89,7 +141,12 @@ questions but never that one.
      `firewall.app_allow`.
 
    Each change runs under a 120-second rollback timer and is kept only once
-   a fresh connection gets in, so a mistake cannot lock you out.
+   a fresh connection gets in, so a mistaken change cannot lock you out. The
+   list itself outlives the address it was made from: a home address that
+   changes does, and the way back in is then ERPC support for an ERPC
+   server, or its provider's console for a server of your own (`--host`).
+   So keep a second address you can reach the server from in
+   `firewall.ssh_allow` (an office, a VPN exit) before trusting a home one.
 6. Starts the data lines asked for (`--grpc`, `--shreds`, `--unlimited`), or
    takes up the ones already on record.
 7. Uploads the release, checks its digests, and installs it beside the
@@ -155,6 +212,36 @@ starts them for the server and gives the app their endpoints:
   - Its endpoint is plain HTTP (no TLS) and admits only the whitelisted
     address.
 
+### Lines for a run on this machine
+
+`erpc worker run` takes `--grpc` and `--shreds` too, for trying the app here
+against real data before it goes to a server:
+
+```bash
+erpc worker run --grpc --shreds --ip "$(curl -4 -s https://api.ipify.org)"
+```
+
+- **The address:** the lines admit this machine's public IPv4 address,
+  given with `--ip`. erpc does not look it up itself. A home address that
+  changes needs the run started again, and lets in nothing new until then.
+- **Taken up or bought:** an active line of the account's that admits
+  that address already is taken up. Otherwise a new hourly one is started,
+  after its price is shown and asked about; `-y` never answers that, and
+  `--grpc-plan` / `--shreds-plan` choose the plan.
+- **What the app gets:** `GRPC_ENDPOINT` and `SHREDS_ENDPOINT` in its
+  environment, for this run only. Nothing goes into erpc.toml.
+- **Ending:** when the run ends (the app stops, `--check` is done, or
+  Ctrl-C) each hourly line is ended, after asking. Ctrl-C while a line is
+  being bought waits for the purchase to be on record, then ends that line
+  with the rest. `--keep-lines` keeps them, still charged; the next run
+  with the same `--ip` takes them up. A line not billed by the hour is left
+  as it is. Ended any other way (the terminal closed, a second Ctrl-C), the
+  lines stay and are charged: the next run takes them up, the dashboard
+  ends them.
+- **The numbers:** what an app measures here includes the distance from
+  this machine to the line, so it is slower than the same app on a server
+  near it.
+
 ## How fast is each RPC from the server: `erpc worker bench`
 
 ```bash
@@ -181,6 +268,12 @@ erpc worker bench --url other=op://<vault-id>/<item-id>/url   # another provider
   The shared RPC took about 27 ms (p99 about 100 ms).
 
 ## Running it
+
+Reading the app's API from this machine, with the API still on the server's
+loopback: `erpc worker api <PATH>` (`-X POST`, `-d '{...}'` for a change) and
+`erpc worker trades [--profit]`. The `API_TOKEN` is read here from `[secrets]`
+and reaches `curl` on the server on its standard input, as part of its
+configuration: it is on no command line and in no journal.
 
 | Command | What it does |
 |---|---|
@@ -367,6 +460,11 @@ inventory = { vault = "<vault-id>" }
 ```
 
 ### `[services]`: Redis and PostgreSQL on the server
+
+The pumpfun template reads Redis only, for its trade history and its banned
+creators; `postgres = true` would give it a `DATABASE_URL` it never opens.
+Their data is not in `erpc worker backup` (`backup on` says so), and a local
+`erpc worker run` has no Redis unless `[vars]` sets `REDIS_URL`.
 
 An app that needs a local Redis or PostgreSQL says so in `[services]`, and
 every deploy makes sure they are installed (from Ubuntu's own packages, the

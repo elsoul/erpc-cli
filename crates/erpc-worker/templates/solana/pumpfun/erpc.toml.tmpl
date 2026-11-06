@@ -9,10 +9,12 @@ template = "{{template}}"
 [run]
 files    = ["config.jsonc"]
 # The app refuses to start without these; set each in [vars] or [secrets].
-# It also needs an RPC: SOLANA_RPC_ENDPOINT, or ERPC_API_KEY (see README.md).
-# `erpc worker deploy --grpc` starts an hourly ERPC gRPC line for the
-# server and sets GRPC_ENDPOINT to it, so it need not be set here.
-requires = ["GRPC_ENDPOINT", "API_TOKEN"]
+# `erpc worker deploy --grpc` (or `run --grpc --ip <IPV4>` here) starts an
+# hourly ERPC gRPC line and sets GRPC_ENDPOINT to it, so it need not be set
+# here. API_TOKEN is any 16+ random characters (`openssl rand -hex 24`). The
+# RPC for reads is one of the two in the set: ERPC_API_KEY (the account's RPC
+# key, a secret) or SOLANA_RPC_ENDPOINT (a URL, in [vars]).
+requires = ["GRPC_ENDPOINT", "API_TOKEN", ["ERPC_API_KEY", "SOLANA_RPC_ENDPOINT"]]
 # Keep the port in step with API_PORT below.
 health   = { http = "http://127.0.0.1:3000/healthz", timeout_secs = 30 }
 # The API's port, which [env.<name>.firewall] app_allow opens on the server.
@@ -28,6 +30,8 @@ redis = true
 [vars]
 # GRPC_ENDPOINT = "<a Geyser gRPC endpoint; deploy --grpc sets it on the server>"
 API_PORT       = "3000"
+# "false": one buy/sell cycle, then trading stops until POST /api/trade/start,
+# for a first look; set "true" before leaving the bot alone on a server.
 AUTO_LOOP      = "false"
 TRADE_APP_LANG = "en"
 # EXPLORER_URL = "<https:// base of a block explorer, for links in notifications>"
@@ -42,6 +46,8 @@ RUST_LOG       = "info"
 # X_TOKEN      = "op://<vault-id>/<item-id>/x-token"  (a gRPC that takes a token)
 # API_TOKEN    = "op://<vault-id>/<item-id>/api-token"
 # ERPC_API_KEY = "op://<vault-id>/<item-id>/erpc-api-key"
+# WEBHOOK_URL  = "op://<vault-id>/<item-id>/webhook"  (a Discord webhook: the
+#                only word a bot left alone on a server sends)
 
 # The trading key. `erpc worker key new` makes one, keeps it only in
 # 1Password or the keychain, and fills this in. The app gets it on a pipe

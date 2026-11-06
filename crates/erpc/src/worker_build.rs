@@ -244,22 +244,49 @@ fn cargo_build_args(m: &Manifest) -> Result<Vec<String>, CliError> {
 
 /// Says what to install when a tool the cross-build needs is not here.
 fn check_tools(triple: &str, root: &Path) -> Result<(), CliError> {
-    let found = |program: &str, args: &[&str]| {
-        Command::new(program)
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success())
-    };
-    if !found("zig", &["version"]) {
-        return Err(failed(t!("worker_build.no_zig")).hint(t!("worker_build.no_zig_hint")));
+    match missing_tools(triple, root, Probe::Toolchain)
+        .into_iter()
+        .next()
+    {
+        Some((what, hint)) => Err(failed(what).hint(hint)),
+        None => Ok(()),
     }
-    if !found("cargo", &["zigbuild", "--help"]) {
-        return Err(
-            failed(t!("worker_build.no_zigbuild")).hint(t!("worker_build.no_zigbuild_hint"))
-        );
+}
+
+/// How far [`missing_tools`] may go to find out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Probe {
+    /// Look only: nothing is run. For `check`, which `erpc ai` runs
+    /// without asking, in a directory that may be anyone's: `cargo` and
+    /// `rustup` read the directory they run in (`.cargo/config.toml`,
+    /// `rust-toolchain.toml`), and an alias there runs whatever it names.
+    Look,
+    /// Also ask `rustup`, in the app's directory, whether the target's
+    /// standard library is installed. For a build, which runs cargo there
+    /// anyway.
+    Toolchain,
+}
+
+/// Every tool the cross-build for `triple` needs and this machine lacks,
+/// each with what installs it: all of them at once, so that a deploy can
+/// say so before anything is bought, and `check` before a deploy.
+///
+/// `zig` and `cargo-zigbuild` are looked for on `PATH` (and in cargo's own
+/// `bin`), not run.
+pub(crate) fn missing_tools(triple: &str, root: &Path, probe: Probe) -> Vec<(String, String)> {
+    let search = search_path();
+    let mut lacking = Vec::new();
+    if !on_path("zig", &search) {
+        lacking.push((t!("worker_build.no_zig"), t!("worker_build.no_zig_hint")));
+    }
+    if !on_path("cargo-zigbuild", &search) {
+        lacking.push((
+            t!("worker_build.no_zigbuild"),
+            t!("worker_build.no_zigbuild_hint"),
+        ));
+    }
+    if probe == Probe::Look {
+        return lacking;
     }
     // Without rustup the toolchain is the operator's own; cargo says what
     // is missing then.
@@ -271,11 +298,55 @@ fn check_tools(triple: &str, root: &Path) -> Result<(), CliError> {
     {
         let installed = String::from_utf8_lossy(&out.stdout);
         if out.status.success() && !installed.lines().any(|l| l.trim() == triple) {
-            let hint = t!("worker_build.no_std_hint", triple);
-            return Err(failed(t!("worker_build.no_std", triple)).hint(hint));
+            lacking.push((
+                t!("worker_build.no_std", triple),
+                t!("worker_build.no_std_hint", triple),
+            ));
         }
     }
-    Ok(())
+    lacking
+}
+
+/// The directories a program is looked for in: `PATH`, then cargo's
+/// `bin` (`$CARGO_HOME/bin`, else `~/.cargo/bin`), where cargo finds its
+/// subcommands too.
+fn search_path() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).collect())
+        .unwrap_or_default();
+    let cargo_home = std::env::var_os("CARGO_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cargo")));
+    dirs.extend(cargo_home.map(|c| c.join("bin")));
+    dirs
+}
+
+/// Whether `program` is an executable file in one of `dirs`. Nothing is
+/// run to find out.
+fn on_path(program: &str, dirs: &[PathBuf]) -> bool {
+    let names: &[String] = &if cfg!(windows) {
+        vec![
+            format!("{program}.exe"),
+            format!("{program}.cmd"),
+            program.to_owned(),
+        ]
+    } else {
+        vec![program.to_owned()]
+    };
+    dirs.iter()
+        .flat_map(|d| names.iter().map(move |n| d.join(n)))
+        .any(|candidate| is_executable(&candidate))
+}
+
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn is_executable(path: &Path) -> bool {
+    path.is_file()
 }
 
 /// Where cargo's output from the last build is kept, in the target
@@ -379,6 +450,115 @@ fn source(root: &Path) -> Option<Source> {
 
 #[cfg(test)]
 mod tests {
+
+    /// `check` is run by `erpc ai` without asking, in a directory that may
+    /// be anyone's. Finding the tools must run none of them: a `zig` or a
+    /// `cargo-zigbuild` that does something when run is found, and has
+    /// done nothing.
+    #[cfg(unix)]
+    #[test]
+    fn the_tools_are_found_without_running_any_of_them() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let marker = dir.path().join("ran");
+        for tool in ["zig", "cargo-zigbuild"] {
+            let file = dir.path().join(tool);
+            std::fs::write(
+                &file,
+                format!("#!/bin/sh\necho {tool} >> '{}'\n", marker.display()),
+            )
+            .expect("a tool");
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).expect("mode");
+        }
+        let dirs = vec![dir.path().to_path_buf()];
+        assert!(super::on_path("zig", &dirs));
+        assert!(super::on_path("cargo-zigbuild", &dirs));
+        assert!(!marker.exists(), "a tool was run to find it");
+        // A file that cannot be run is not the tool, nor is a directory.
+        std::fs::write(dir.path().join("plain"), "").expect("a file");
+        std::fs::create_dir(dir.path().join("folder")).expect("a directory");
+        assert!(!super::on_path("plain", &dirs));
+        assert!(!super::on_path("folder", &dirs));
+        assert!(!super::on_path("absent", &dirs));
+    }
+
+    /// The child's side of the probe tests: runs [`super::missing_tools`]
+    /// in the directory it was started in. Without `ERPC_TEST_PROBE` it
+    /// does nothing, which is how it runs among the other tests.
+    #[test]
+    fn probe_child() {
+        let Ok(probe) = std::env::var("ERPC_TEST_PROBE") else {
+            return;
+        };
+        let probe = match probe.as_str() {
+            "look" => super::Probe::Look,
+            _ => super::Probe::Toolchain,
+        };
+        let root = std::env::current_dir().expect("a directory");
+        let _ = super::missing_tools("x86_64-unknown-linux-gnu", &root, probe);
+    }
+
+    /// Runs the probe in a child process, as `erpc ai` would run `check`:
+    /// from an app's directory whose cargo configuration runs its own code
+    /// for `cargo zigbuild`, with a `PATH` that holds only a `cargo`, a
+    /// `rustup`, a `zig` and a `cargo-zigbuild` that each write their name
+    /// when run. Returns the names written: what the probe ran.
+    #[cfg(unix)]
+    fn ran_by(probe: &str) -> String {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let (bin, app) = (dir.path().join("bin"), dir.path().join("app"));
+        let marker = dir.path().join("ran");
+        std::fs::create_dir_all(app.join(".cargo")).expect("the app");
+        std::fs::create_dir(&bin).expect("bin");
+        for tool in ["cargo", "rustup", "zig", "cargo-zigbuild"] {
+            let file = bin.join(tool);
+            let script = format!("#!/bin/sh\necho {tool} >> '{}'\nexit 0\n", marker.display());
+            std::fs::write(&file, script).expect("a tool");
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).expect("mode");
+        }
+        // What made the look dangerous: cargo run from here runs the app.
+        std::fs::write(
+            app.join(".cargo/config.toml"),
+            "[alias]\nzigbuild = [\"run\", \"--\"]\n",
+        )
+        .expect("the app's cargo config");
+        std::fs::write(
+            app.join("rust-toolchain.toml"),
+            "[toolchain]\nchannel = \"1.98.0\"\n",
+        )
+        .expect("the app's toolchain");
+        let status = std::process::Command::new(std::env::current_exe().expect("this test binary"))
+            .args(["--exact", "worker_build::tests::probe_child", "--nocapture"])
+            .env("ERPC_TEST_PROBE", probe)
+            .env("PATH", &bin)
+            .env("HOME", dir.path())
+            .env("CARGO_HOME", dir.path().join("cargo-home"))
+            .current_dir(&app)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("the child");
+        assert!(status.success(), "the child failed: {status}");
+        std::fs::read_to_string(&marker).unwrap_or_default()
+    }
+
+    /// `check`'s look starts no program at all, so nothing in the app's
+    /// directory gets to run: not cargo with the app's aliases, not
+    /// rustup with its toolchain file, not the tools themselves.
+    #[cfg(unix)]
+    #[test]
+    fn a_look_runs_nothing_from_the_apps_directory() {
+        assert_eq!(ran_by("look"), "", "the look ran a program");
+    }
+
+    /// The harness catches a program that is run: a build's probe does ask
+    /// rustup, and only rustup.
+    #[cfg(unix)]
+    #[test]
+    fn a_builds_probe_asks_rustup_and_runs_no_tool() {
+        assert_eq!(ran_by("toolchain"), "rustup\n");
+    }
     use super::cargo_build_args;
     use erpc_worker::manifest::Manifest;
 

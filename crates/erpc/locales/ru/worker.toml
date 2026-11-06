@@ -25,6 +25,7 @@ fix = "исправьте {file} и запустите `erpc worker check{dir_sc
 
 [check]
 ready = "Приложение {name} готово"
+deploy_needs = "перед развёртыванием с этой машины: {what}"
 no_pubkey = "(публичный ключ не задан)"
 no_server = "(сервера пока нет)"
 in_1password = "сведения о сервере хранятся в 1Password"
@@ -86,4 +87,4 @@ invalid = "(в erpc.toml есть проблемы; `erpc worker check{dir_scope
 invalid_drawn = "{name}: в erpc.toml есть проблемы"
 in_vault = "{name}  ·  окружение {env} в 1Password, приложения на этой машине нет (клонируйте приложение, чтобы продолжить с ним работу)"
 in_vault_heading = "В 1Password, но без приложения на этой машине (клонируйте приложение, чтобы продолжить с ним работу):"
-vault_unread = "(не удалось получить список элементов воркеров в хранилище {vault}: {error})"
+vault_unread = "(хранилище {vault}: {error})"

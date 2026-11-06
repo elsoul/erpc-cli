@@ -62,6 +62,7 @@ lets_in_later = "回線 {id} は、サーバーのセットアップが終わり
 suspended = "{kind} 回線 {id} は利用停止中です"
 suspended_hint = "理由はダッシュボードで確認できます"
 waiting = "回線 {id} は {status} です（経過 {minutes} 分）"
+waiting_for = "{kind} 回線 {id} が有効になるのを待っています"
 ending = "時間課金の {kind} 回線 {id} を終了しています"
 end_failed = "user-api が {kind} 回線 {id} を終了しませんでした：{answer}"
 

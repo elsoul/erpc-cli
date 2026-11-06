@@ -25,6 +25,7 @@ fix = "{file} を修正して `erpc worker check{dir_scope}` を実行してく�
 
 [check]
 ready = "{name} の準備ができました"
+deploy_needs = "このマシンからデプロイする前に：{what}"
 no_pubkey = "（公開鍵が未設定）"
 no_server = "（サーバーはまだありません）"
 in_1password = "サーバー情報は 1Password に保管"
@@ -80,4 +81,4 @@ invalid = "（erpc.toml に問題があります。`erpc worker check{dir_scope}
 invalid_drawn = "{name}：erpc.toml に問題があります"
 in_vault = "{name}  ·  環境 {env} は 1Password にあり、このマシンにアプリはありません（引き継ぐにはアプリを clone してください）"
 in_vault_heading = "1Password にあり、このマシンにアプリがないもの（引き継ぐにはアプリを clone してください）："
-vault_unread = "（保管庫 {vault} のワーカーのアイテムを一覧表示できませんでした：{error}）"
+vault_unread = "（保管庫 {vault}：{error}）"

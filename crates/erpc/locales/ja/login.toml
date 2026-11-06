@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+where = "セッションをどこに保管しますか？"
+on_this_machine = "{store}（このマシン上）"
+op_signin = "1Password（`op signin` のセッションを通して）"
+op_desktop = "1Password（デスクトップアプリがロック解除を求めます）"
+file = "このマシン上のファイル（セッションがディスクに残ります）"
+which_vault = "どの 1Password 保管庫にしますか？（読める人は誰でもこのセッションを使えます）"
+no_vault = "この 1Password アカウントには erpc が使える保管庫がありません"

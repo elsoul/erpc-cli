@@ -358,7 +358,7 @@ pub(crate) fn show(json: bool, dir: &Dir) -> Outcome {
 
 /// `erpc worker key balance`: the key's SOL, from the app's own RPC
 /// setting, or `--rpc`.
-pub(crate) async fn balance(json: bool, dir: &Dir, rpc: Option<&str>) -> Outcome {
+pub(crate) async fn balance(json: bool, dir: &Dir, rpc_flag: Option<&str>) -> Outcome {
     let (_, m) = match load(dir) {
         Ok(found) => found,
         Err(e) => return e.into(),
@@ -366,32 +366,17 @@ pub(crate) async fn balance(json: bool, dir: &Dir, rpc: Option<&str>) -> Outcome
     let Some(pubkey) = m.wallet.as_ref().and_then(|w| w.pubkey.clone()) else {
         return failed(t!("worker_keys.balance.no_pubkey", app = m.name)).into();
     };
-    let url = match rpc_url(&m, rpc) {
+    let url = match rpc_url(&m, rpc_flag) {
         Ok(url) => url,
         Err(e) => return e.into(),
     };
-    let body = json!({ "jsonrpc": "2.0", "id": 1, "method": "getBalance", "params": [pubkey] });
-    let answer = async {
-        let response = reqwest::Client::new()
-            .post(url.as_str())
-            .json(&body)
-            .timeout(std::time::Duration::from_secs(15))
-            .send()
-            .await
-            .map_err(|e| e.without_url().to_string())?;
-        let status = response.status();
-        let value: serde_json::Value = response.json().await.map_err(|e| {
-            t!(
-                "worker_keys.balance.not_json_rpc",
-                status,
-                error = e.without_url()
-            )
-        })?;
-        value["result"]["value"]
-            .as_u64()
-            .ok_or_else(|| t!("worker_keys.balance.no_balance", status))
-    }
-    .await;
+    let answer = rpc(&url, "getBalance", json!([pubkey]))
+        .await
+        .and_then(|v| {
+            v["result"]["value"]
+                .as_u64()
+                .ok_or_else(|| t!("worker_keys.balance.no_balance", status = 200))
+        });
     let lamports = match answer {
         Ok(lamports) => lamports,
         Err(e) => {
@@ -413,6 +398,401 @@ pub(crate) async fn balance(json: bool, dir: &Dir, rpc: Option<&str>) -> Outcome
             .marked("💰", format!("{pubkey}  {sol:.9} SOL"))
             .text(),
     )
+}
+
+/// Why a JSON-RPC call gave no result. The two are told apart because
+/// they say different things about a request that changes something: a
+/// node that refused it did not do it, and anything else may have.
+#[derive(Debug)]
+enum RpcFailure {
+    /// The RPC node refused the request itself ([`PREFLIGHT_REFUSALS`]).
+    Refused(String),
+    /// No answer that settles it: a timeout, a connection that dropped, a
+    /// body that is not JSON, or a JSON-RPC error that is not a node's
+    /// refusal (a gateway's, a proxy's).
+    NoAnswer(String),
+}
+
+impl RpcFailure {
+    fn into_message(self) -> String {
+        match self {
+            Self::Refused(m) | Self::NoAnswer(m) => m,
+        }
+    }
+}
+
+/// One JSON-RPC call to `url`, the whole answer back.
+async fn rpc_call(
+    url: &str,
+    method: &str,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, RpcFailure> {
+    let body = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
+    let response = reqwest::Client::new()
+        .post(url)
+        .json(&body)
+        .timeout(std::time::Duration::from_secs(20))
+        .send()
+        .await
+        .map_err(|e| RpcFailure::NoAnswer(e.without_url().to_string()))?;
+    let status = response.status();
+    let value: serde_json::Value = response.json().await.map_err(|e| {
+        RpcFailure::NoAnswer(t!(
+            "worker_keys.balance.not_json_rpc",
+            status,
+            error = e.without_url()
+        ))
+    })?;
+    if let Some(error) = value.get("error").filter(|e| !e.is_null()) {
+        let message = error["message"].as_str().unwrap_or("").to_owned();
+        let message = if message.is_empty() {
+            error.to_string()
+        } else {
+            message
+        };
+        return Err(match error["code"].as_i64() {
+            Some(code) if PREFLIGHT_REFUSALS.contains(&code) => RpcFailure::Refused(message),
+            // Any other error may come from something between here and the
+            // validator, after the transaction went on: a gateway's
+            // timeout, a proxy's. It says nothing about the transaction.
+            _ => RpcFailure::NoAnswer(message),
+        });
+    }
+    Ok(value)
+}
+
+/// The JSON-RPC errors an RPC node answers with when its own check of the
+/// transaction refused it before sending it on. -32002: the preflight
+/// simulation failed (a blockhash it does not know, too little SOL, a
+/// signature that does not verify). -32003 is the code agave defines for a
+/// signature that does not verify; its current `sendTransaction` reports
+/// that as -32002 instead, and the code is kept for nodes that use it.
+/// Only these say nothing was sent.
+const PREFLIGHT_REFUSALS: [i64; 2] = [-32_002, -32_003];
+
+/// As [`rpc_call`], for a read: why it failed is only something to show.
+async fn rpc(
+    url: &str,
+    method: &str,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    rpc_call(url, method, params)
+        .await
+        .map_err(RpcFailure::into_message)
+}
+
+/// The lamports of one SOL.
+const LAMPORTS_PER_SOL: f64 = 1e9;
+
+/// Lamports as SOL, for a person to read.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "an amount shown, not computed with"
+)]
+fn in_sol(lamports: u64) -> String {
+    format!("{:.9}", lamports as f64 / LAMPORTS_PER_SOL)
+}
+
+/// How a sent transfer is waited for: how often the RPC is asked, and for
+/// how long before the signature is handed over to be checked by hand. A
+/// blockhash lasts 150 blocks, about a minute, so the wait outlasts it and
+/// most transfers end as landed or as expired, not as unknown.
+#[derive(Debug, Clone, Copy)]
+struct Pace {
+    every: std::time::Duration,
+    at_most: std::time::Duration,
+}
+
+const PACE: Pace = Pace {
+    every: std::time::Duration::from_millis(1500),
+    at_most: std::time::Duration::from_secs(120),
+};
+
+/// Where a signed transfer handed to the RPC ended.
+#[derive(Debug, PartialEq, Eq)]
+enum Delivery {
+    /// On the chain, confirmed.
+    Confirmed,
+    /// On the chain, and failed there, with the chain's reason.
+    Failed(String),
+    /// The RPC node refused the send before sending it on: nothing went.
+    Refused(String),
+    /// Its blockhash is past and the chain has no trace of it: it did not
+    /// land and no longer can.
+    Expired,
+    /// Not seen landing, and not known to be unable to.
+    Unknown,
+}
+
+/// What the chain says of `signature`, when it says anything.
+async fn landed(url: &str, signature: &str) -> Option<Delivery> {
+    let status = rpc(url, "getSignatureStatuses", json!([[signature]]))
+        .await
+        .ok()?;
+    let row = &status["result"]["value"][0];
+    if row.is_null() {
+        return None;
+    }
+    if !row["err"].is_null() {
+        return Some(Delivery::Failed(row["err"].to_string()));
+    }
+    matches!(
+        row["confirmationStatus"].as_str(),
+        Some("confirmed" | "finalized")
+    )
+    .then_some(Delivery::Confirmed)
+}
+
+/// Sends the signed transfer `tx` and follows it to its end.
+///
+/// `signature` is the transfer's own, taken from `tx` and not from the
+/// RPC's answer, so there is something to follow whatever the RPC answers.
+/// Only an RPC node's own refusal ([`PREFLIGHT_REFUSALS`]) means nothing was
+/// sent. A send that
+/// got no answer may have gone out, and saying it had not would have the
+/// person send again, under a new blockhash and so as a second transfer:
+/// that send is followed like any other, until it lands or until
+/// `last_valid_block_height` is past and it no longer can.
+async fn deliver(
+    url: &str,
+    tx: &[u8],
+    signature: &str,
+    last_valid_block_height: Option<u64>,
+    pace: Pace,
+) -> Delivery {
+    use base64::Engine as _;
+    let sent = rpc_call(
+        url,
+        "sendTransaction",
+        json!([
+            base64::engine::general_purpose::STANDARD.encode(tx),
+            { "encoding": "base64", "preflightCommitment": "confirmed" }
+        ]),
+    )
+    .await;
+    match sent {
+        Err(RpcFailure::Refused(error)) => return Delivery::Refused(error),
+        Err(RpcFailure::NoAnswer(error)) => {
+            crate::interrupt::say(&t!("worker_keys.send.may_have_gone", signature, error));
+        }
+        Ok(_) => {}
+    }
+    let started = std::time::Instant::now();
+    while started.elapsed() < pace.at_most {
+        tokio::time::sleep(pace.every).await;
+        if let Some(end) = landed(url, signature).await {
+            return end;
+        }
+        let Some(last_valid) = last_valid_block_height else {
+            continue;
+        };
+        let height = rpc(
+            url,
+            "getBlockHeight",
+            json!([{ "commitment": "confirmed" }]),
+        )
+        .await
+        .ok()
+        .and_then(|v| v["result"].as_u64());
+        if height.is_some_and(|height| height > last_valid) {
+            // The last block it could be in is confirmed: one more look,
+            // for a transfer that landed between the two questions.
+            return landed(url, signature).await.unwrap_or(Delivery::Expired);
+        }
+    }
+    Delivery::Unknown
+}
+
+/// A Solana legacy transaction message that moves `lamports` from `from` to
+/// `to` through the System program: one signer, the destination writable,
+/// the program read-only.
+fn transfer_message(
+    from: &[u8; 32],
+    to: &[u8; 32],
+    blockhash: &[u8; 32],
+    lamports: u64,
+) -> Vec<u8> {
+    let mut m = Vec::with_capacity(3 + 1 + 96 + 32 + 1 + 1 + 1 + 2 + 1 + 12);
+    // Header: one required signature, no read-only signed, one read-only unsigned.
+    m.extend_from_slice(&[1, 0, 1]);
+    m.push(3);
+    m.extend_from_slice(from);
+    m.extend_from_slice(to);
+    m.extend_from_slice(&[0_u8; 32]);
+    m.extend_from_slice(blockhash);
+    m.push(1);
+    m.push(2);
+    m.extend_from_slice(&[2, 0, 1]);
+    m.push(12);
+    m.extend_from_slice(&2_u32.to_le_bytes());
+    m.extend_from_slice(&lamports.to_le_bytes());
+    m
+}
+
+/// `erpc worker key send`: SOL out of the trading wallet, to one address,
+/// after the person's yes. The key is read here behind the same gate as a
+/// run (erpc ai may not), the transfer is signed in memory and sent through
+/// the app's own RPC, and the signature is shown.
+#[allow(clippy::too_many_lines, reason = "one transfer, read top to bottom")]
+pub(crate) async fn send(
+    json: bool,
+    dir: &Dir,
+    to: &str,
+    sol: Option<f64>,
+    all: bool,
+    rpc_flag: Option<&str>,
+) -> Outcome {
+    use base64::Engine as _;
+    let run = async || -> Result<Outcome, CliError> {
+        let (_, m) = load(dir)?;
+        let Some(wallet) = m.wallet.as_ref() else {
+            return Err(failed(t!("worker_keys.balance.no_pubkey", app = m.name)));
+        };
+        let Some(to_bytes) = erpc_chain_solana::identity::pubkey_bytes(to) else {
+            return Err(CliError::new(
+                Code::Usage,
+                t!("worker_keys.send.bad_pubkey", to),
+            ));
+        };
+        if sol.is_none() != all {
+            return Err(CliError::new(
+                Code::Usage,
+                t!("worker_keys.send.amount_needed"),
+            ));
+        }
+        let url = rpc_url(&m, rpc_flag)?;
+        // The key, behind the gate, before anything is read from the chain.
+        let keypair =
+            worker_secrets::read_key(&wallet.source, wallet.pubkey.as_deref()).map_err(failed)?;
+        let from = keypair.pubkey();
+        if from == to {
+            return Err(CliError::new(Code::Usage, t!("worker_keys.send.same_key")));
+        }
+        let from_bytes = erpc_chain_solana::identity::pubkey_bytes(&from)
+            .ok_or_else(|| failed(t!("worker_keys.send.bad_pubkey", to = from.as_str())))?;
+        let network =
+            |e: String| CliError::new(Code::Network, t!("worker_keys.send.rpc_failed", error = e));
+        let balance = rpc(&url, "getBalance", json!([from]))
+            .await
+            .map_err(network)?["result"]["value"]
+            .as_u64()
+            .ok_or_else(|| network(t!("worker_keys.balance.no_balance", status = 200)))?;
+        let latest = rpc(
+            &url,
+            "getLatestBlockhash",
+            json!([{ "commitment": "confirmed" }]),
+        )
+        .await
+        .map_err(network)?;
+        let blockhash = latest["result"]["value"]["blockhash"]
+            .as_str()
+            .and_then(erpc_chain_solana::identity::pubkey_bytes)
+            .ok_or_else(|| network(t!("worker_keys.send.no_blockhash")))?;
+        // The last block the transfer can land in: past it, a transfer the
+        // chain has no trace of is known not to have been made.
+        let last_valid_block_height = latest["result"]["value"]["lastValidBlockHeight"].as_u64();
+        // The fee for this message shape, asked of the RPC; 5000 lamports
+        // when it does not say.
+        let probe = transfer_message(&from_bytes, &to_bytes, &blockhash, 1);
+        let fee = rpc(
+            &url,
+            "getFeeForMessage",
+            json!([base64::engine::general_purpose::STANDARD.encode(&probe), { "commitment": "confirmed" }]),
+        )
+        .await
+        .ok()
+        .and_then(|v| v["result"]["value"].as_u64())
+        .unwrap_or(5_000);
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "an amount typed by the person"
+        )]
+        let lamports = match sol {
+            Some(sol) if sol > 0.0 => (sol * LAMPORTS_PER_SOL).round() as u64,
+            Some(_) => {
+                return Err(CliError::new(
+                    Code::Usage,
+                    t!("worker_keys.send.amount_needed"),
+                ));
+            }
+            None => balance.saturating_sub(fee),
+        };
+        if lamports == 0 || lamports.saturating_add(fee) > balance {
+            return Err(failed(t!(
+                "worker_keys.send.too_much",
+                balance = in_sol(balance),
+                amount = in_sol(lamports),
+                fee = in_sol(fee)
+            )));
+        }
+        let left = balance - lamports - fee;
+        // The address the SOL goes to, as decoded, not as typed.
+        let to = erpc_chain_solana::identity::base58(&to_bytes);
+        crate::interrupt::say(&t!(
+            "worker_keys.send.ask",
+            amount = in_sol(lamports),
+            from,
+            to,
+            fee = in_sol(fee),
+            left = in_sol(left)
+        ));
+        // Always asked: a transfer has no -y, so with nobody at a terminal
+        // it is refused in its own words, without the hint to pass one.
+        if !crate::session::has_terminal() {
+            return Err(CliError::new(
+                Code::NeedsTerminal,
+                t!("worker_keys.send.needs_terminal"),
+            ));
+        }
+        crate::node_common::go_ahead(false, &t!("worker_keys.send.refused"))?;
+        let message = transfer_message(&from_bytes, &to_bytes, &blockhash, lamports);
+        let signature = keypair.sign(&message);
+        let mut tx = Vec::with_capacity(1 + 64 + message.len());
+        tx.push(1);
+        tx.extend_from_slice(&signature);
+        tx.extend_from_slice(&message);
+        // The transfer's name is its own signature, known before it is sent.
+        let sig = erpc_chain_solana::identity::base58(&signature);
+        let confirmed = match deliver(&url, &tx, &sig, last_valid_block_height, PACE).await {
+            Delivery::Confirmed => true,
+            Delivery::Unknown => false,
+            Delivery::Refused(error) => {
+                return Err(failed(t!(
+                    "worker_keys.send.failed",
+                    signature = sig,
+                    error
+                )));
+            }
+            Delivery::Failed(error) => {
+                return Err(failed(t!(
+                    "worker_keys.send.failed_on_chain",
+                    signature = sig,
+                    error
+                )));
+            }
+            Delivery::Expired => {
+                return Err(failed(t!("worker_keys.send.expired", signature = sig)));
+            }
+        };
+        if json {
+            crate::print_json(
+                &json!({ "from": from, "to": to, "lamports": lamports, "fee": fee, "signature": sig, "confirmed": confirmed }),
+            );
+            return Ok(Outcome::Done(String::new()));
+        }
+        let text = if confirmed {
+            t!("worker_keys.send.confirmed", signature = sig)
+        } else {
+            t!(
+                "worker_keys.send.not_confirmed",
+                signature = sig,
+                secs = PACE.at_most.as_secs()
+            )
+        };
+        Ok(Outcome::Done(Report::new().marked("💸", text).text()))
+    };
+    run().await.unwrap_or_else(Into::into)
 }
 
 /// The app's read RPC: `--rpc`, `SOLANA_RPC_ENDPOINT`, or the ERPC edge RPC
@@ -559,11 +939,12 @@ pub(crate) fn list(json: bool, dir: &Dir) -> Outcome {
         Ok(found) => found,
         Err(e) => return e.into(),
     };
-    let missing = m.missing();
     if json {
-        crate::print_json(&json!({ "secrets": m.secrets, "missing": missing }));
+        crate::print_json(&json!({ "secrets": m.secrets, "missing": m.missing() }));
         return Outcome::Done(String::new());
     }
+    // A set of settings reads "A or B".
+    let missing: Vec<String> = m.missing().iter().map(ToString::to_string).collect();
     let scope = dir.scope();
     let mut lines: Vec<String> = m
         .secrets
@@ -812,5 +1193,214 @@ mod tests {
             assert!(!said.contains('{'), "{said}");
             assert!(said.contains("bot") && said.contains("PK"), "{said}");
         }
+    }
+}
+
+#[cfg(test)]
+mod send_tests {
+    use super::{Delivery, Pace, deliver, transfer_message};
+    use std::io::{BufRead as _, BufReader, Read as _, Write as _};
+    use std::sync::{Arc, Mutex};
+
+    const QUICK: Pace = Pace {
+        every: std::time::Duration::from_millis(5),
+        at_most: std::time::Duration::from_millis(400),
+    };
+
+    /// A JSON-RPC server on loopback for one test. `answer` gets each
+    /// request's method and gives the `result` to answer with as JSON text,
+    /// `Err` text for a JSON-RPC error, or `None` to drop the connection
+    /// with no answer, as a timeout or a broken connection leaves it.
+    /// Returns its URL and the methods asked, in order.
+    fn rpc_server(
+        answer: impl Fn(&str, usize) -> Option<Result<String, String>> + Send + 'static,
+    ) -> (String, Arc<Mutex<Vec<String>>>) {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let seen = asked.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut length = 0;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                        break;
+                    }
+                    if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = v.trim().parse().unwrap();
+                    }
+                }
+                let mut body = vec![0; length];
+                if reader.read_exact(&mut body).is_err() {
+                    continue;
+                }
+                let request: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                let method = request["method"].as_str().unwrap().to_owned();
+                let nth = {
+                    let mut seen = seen.lock().unwrap();
+                    seen.push(method.clone());
+                    seen.iter().filter(|m| **m == method).count()
+                };
+                let body = match answer(&method, nth) {
+                    None => continue,
+                    Some(Ok(result)) => format!(r#"{{"jsonrpc":"2.0","id":1,"result":{result}}}"#),
+                    // A message that starts with `gateway:` comes with the
+                    // code a proxy uses; any other with a node's refusal.
+                    Some(Err(message)) => format!(
+                        r#"{{"jsonrpc":"2.0","id":1,"error":{{"code":{},"message":"{message}"}}}}"#,
+                        if message.starts_with("gateway:") {
+                            -32_603
+                        } else {
+                            -32_002
+                        }
+                    ),
+                };
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        (format!("http://127.0.0.1:{port}"), asked)
+    }
+
+    const CONFIRMED: &str = r#"{"value":[{"err":null,"confirmationStatus":"confirmed"}]}"#;
+    const NO_TRACE: &str = r#"{"value":[null]}"#;
+
+    /// The case that sent SOL twice: the RPC forwards the transfer and the
+    /// answer never arrives. It is not called unsent; it is followed by its
+    /// own signature and found on the chain.
+    #[tokio::test]
+    async fn a_send_that_got_no_answer_is_followed_and_found_landed() {
+        let (url, asked) = rpc_server(|method, nth| match method {
+            "sendTransaction" => None,
+            "getSignatureStatuses" if nth < 3 => Some(Ok(NO_TRACE.to_owned())),
+            "getSignatureStatuses" => Some(Ok(CONFIRMED.to_owned())),
+            _ => Some(Ok("10".to_owned())),
+        });
+        let end = deliver(&url, &[1, 2, 3], "SiG", Some(100), QUICK).await;
+        assert_eq!(end, Delivery::Confirmed);
+        let asked = asked.lock().unwrap();
+        // Sent once: nothing here signs or sends a second time.
+        assert_eq!(asked.iter().filter(|m| *m == "sendTransaction").count(), 1);
+    }
+
+    /// The same silence, and the chain never shows the transfer: only once
+    /// its blockhash is past is it said not to have been made.
+    #[tokio::test]
+    async fn a_send_that_got_no_answer_is_unsent_only_once_its_blockhash_is_past() {
+        let (url, asked) = rpc_server(|method, nth| match method {
+            "getSignatureStatuses" => Some(Ok(NO_TRACE.to_owned())),
+            // Two looks inside the blockhash's life, then past it.
+            "getBlockHeight" => Some(Ok(if nth < 3 { "100" } else { "101" }.to_owned())),
+            // The send gets no answer.
+            _ => None,
+        });
+        let end = deliver(&url, &[1, 2, 3], "SiG", Some(100), QUICK).await;
+        assert_eq!(end, Delivery::Expired);
+        let asked = asked.lock().unwrap();
+        assert_eq!(asked.iter().filter(|m| *m == "getBlockHeight").count(), 3);
+        // The last word is the chain's: asked once more after the height.
+        assert_eq!(
+            asked.last().map(String::as_str),
+            Some("getSignatureStatuses")
+        );
+    }
+
+    /// Past the blockhash, a transfer that landed in its last block is
+    /// still found, by the look taken after the height.
+    #[tokio::test]
+    async fn a_transfer_that_landed_in_its_last_block_is_not_called_expired() {
+        let (url, _) = rpc_server(|method, nth| match method {
+            "getSignatureStatuses" if nth < 2 => Some(Ok(NO_TRACE.to_owned())),
+            "getSignatureStatuses" => Some(Ok(CONFIRMED.to_owned())),
+            "getBlockHeight" => Some(Ok("101".to_owned())),
+            // The send gets no answer.
+            _ => None,
+        });
+        let end = deliver(&url, &[1, 2, 3], "SiG", Some(100), QUICK).await;
+        assert_eq!(end, Delivery::Confirmed);
+    }
+
+    /// With an RPC that says nothing at all, nothing is known: neither
+    /// landed nor unsent.
+    #[tokio::test]
+    async fn an_rpc_that_stays_silent_leaves_the_transfer_unknown() {
+        let (url, _) = rpc_server(|_, _| None);
+        let end = deliver(&url, &[1, 2, 3], "SiG", Some(100), QUICK).await;
+        assert_eq!(end, Delivery::Unknown);
+    }
+
+    /// An error from something between here and the node, a gateway that
+    /// gave up waiting, says nothing of the transfer: it is followed by its
+    /// signature like a send that got no answer, and found landed.
+    #[tokio::test]
+    async fn a_send_answered_with_a_gateways_error_is_followed_and_found_landed() {
+        let (url, asked) = rpc_server(|method, nth| match method {
+            "sendTransaction" => Some(Err("gateway: upstream timed out".to_owned())),
+            "getSignatureStatuses" if nth < 2 => Some(Ok(NO_TRACE.to_owned())),
+            "getSignatureStatuses" => Some(Ok(CONFIRMED.to_owned())),
+            _ => Some(Ok("10".to_owned())),
+        });
+        let end = deliver(&url, &[1, 2, 3], "SiG", Some(100), QUICK).await;
+        assert_eq!(end, Delivery::Confirmed);
+        let asked = asked.lock().unwrap();
+        assert_eq!(asked.iter().filter(|m| *m == "sendTransaction").count(), 1);
+    }
+
+    /// The node's own refusal of the transaction is the one case where
+    /// nothing went out, and it is not waited on.
+    #[tokio::test]
+    async fn a_send_the_rpc_refused_sent_nothing() {
+        let (url, asked) = rpc_server(|method, _| match method {
+            "sendTransaction" => Some(Err("Blockhash not found".to_owned())),
+            _ => Some(Ok(CONFIRMED.to_owned())),
+        });
+        let end = deliver(&url, &[1, 2, 3], "SiG", Some(100), QUICK).await;
+        assert_eq!(end, Delivery::Refused("Blockhash not found".to_owned()));
+        assert_eq!(*asked.lock().unwrap(), ["sendTransaction"]);
+    }
+
+    /// A transfer that landed and failed is the chain's refusal, with its
+    /// reason, whatever the RPC answered to the send.
+    #[tokio::test]
+    async fn a_transfer_that_failed_on_the_chain_says_why() {
+        let (url, _) = rpc_server(|method, _| {
+            match method {
+            "sendTransaction" => Some(Ok(r#""an-answer-that-is-not-read""#.to_owned())),
+            "getSignatureStatuses" => Some(Ok(
+                r#"{"value":[{"err":{"InstructionError":[0,"Custom"]},"confirmationStatus":"processed"}]}"#.to_owned(),
+            )),
+            _ => None,
+        }
+        });
+        let end = deliver(&url, &[1, 2, 3], "SiG", Some(100), QUICK).await;
+        assert_eq!(
+            end,
+            Delivery::Failed(r#"{"InstructionError":[0,"Custom"]}"#.to_owned())
+        );
+    }
+
+    #[test]
+    fn a_transfer_message_is_laid_out_as_the_system_program_reads_it() {
+        let from = [1_u8; 32];
+        let to = [2_u8; 32];
+        let blockhash = [3_u8; 32];
+        let m = transfer_message(&from, &to, &blockhash, 1_500_000_000);
+        assert_eq!(m.len(), 150);
+        // One signer, one read-only unsigned account (the program); three keys.
+        assert_eq!(&m[..4], &[1, 0, 1, 3]);
+        assert_eq!(&m[4..36], &from);
+        assert_eq!(&m[36..68], &to);
+        assert_eq!(&m[68..100], &[0_u8; 32]);
+        assert_eq!(&m[100..132], &blockhash);
+        // One instruction: program index 2, accounts 0 and 1, 12 bytes of data.
+        assert_eq!(&m[132..138], &[1, 2, 2, 0, 1, 12]);
+        assert_eq!(&m[138..142], &2_u32.to_le_bytes());
+        assert_eq!(&m[142..150], &1_500_000_000_u64.to_le_bytes());
     }
 }

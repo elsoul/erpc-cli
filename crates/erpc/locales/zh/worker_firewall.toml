@@ -21,6 +21,8 @@ nothing_changed = "未做任何更改"
 in_force = "{worker} 的服务器防火墙已生效：SSH 允许来自 {ssh}；{app}；其余全部丢弃。"
 app_closed = "应用端口关闭"
 app_open = "端口 {port} 对 {addresses} 开放"
+app_loopback = "服务器防火墙已开放端口 {port}，但只有应用自己的设置把它绑定到 loopback 之外时才会在那里应答（pumpfun 模板：[vars] 中 API_BIND = \"0.0.0.0\"）"
+lockout_note = "SSH 允许列表比创建它时的地址存活得更久：家里的 IP 一变就会被锁在外面，ERPC 的服务器只能找 ERPC 支持恢复，自己的服务器（--host）只能通过其服务商的控制台恢复，所以请在 firewall.ssh_allow 中再放一个能到达服务器的地址（办公室或 VPN 出口）"
 
 [describe]
 nobody = "无"

@@ -821,6 +821,7 @@ name = "erpc"
 version = "0.1.0-rc.2"
 dependencies = [
  "aws-lc-rs",
+ "base64 0.22.1",
  "clap",
  "cliclack",
  "console",

@@ -21,6 +21,8 @@ nothing_changed = "何も変更していません"
 in_force = "{worker} のサーバーファイアウォールが有効になりました：SSH は {ssh} から、{app}、その他はすべて破棄します。"
 app_closed = "アプリのポートは閉じたまま"
 app_open = "ポート {port} は {addresses} から"
+app_loopback = "サーバーのファイアウォールでポート {port} は開いていますが、アプリ自身の設定が loopback 以外にも bind していなければそこでは応答しません（pumpfun テンプレートなら [vars] に API_BIND = \"0.0.0.0\"）"
+lockout_note = "SSH の許可リストは作ったときのアドレスより長く残ります。自宅の IP が変わると締め出され、戻る手段は ERPC のサーバーなら ERPC サポート、自前のサーバー（--host）ならその事業者のコンソールになるので、firewall.ssh_allow に届ける先をもう 1 つ（職場や VPN の出口）入れておいてください"
 
 [describe]
 nobody = "なし"

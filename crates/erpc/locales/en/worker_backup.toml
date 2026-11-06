@@ -47,6 +47,7 @@ left = "the keys made for it are not all removed ({reasons}); {by_hand}"
 
 [on]
 ask = "Back up worker {id} every day at {at} (server time) to ERPC Global Storage, encrypted by restic, as {host}.\nIts server gets an append-only key and its own key to the account's one backup repository. It cannot delete snapshots, but whoever takes the server over can read every machine's snapshots in the account, keeps the repository's key even after `off`, can add snapshots under another machine's name, and can fill the account's storage, which stops every machine's backups. Revoking its access key (`off`) is what cuts it off."
+services_excluded = "The data {names} keep on the server is not in this backup: only the app's own files under its state directory are."
 install_failed = "could not install restic on the server: {error}"
 old_left = "the keys an earlier `on` made are not all revoked ({reasons}); nothing new was made"
 old_partly_revoked = "{by_hand}; some of its earlier keys are revoked, so the worker may not be backed up until `on` goes through"

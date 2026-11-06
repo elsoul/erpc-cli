@@ -1,10 +1,8 @@
-use crate::state::{
-    persist_trade_log_to_redis, AppState, PendingSell, Position, PositionStatus, TradeAction, TradeLog,
-};
+use crate::state::{AppState, PendingSell, Position, PositionStatus, TradeLog};
 #[cfg(test)]
 use crate::state::MAX_SELL_FAILURES;
 use crate::i18n;
-use crate::webhook::notify_discord;
+use crate::webhook::notify;
 use chrono::Utc;
 use log::{error, info, warn};
 use rand::Rng;
@@ -13,17 +11,15 @@ use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_rpc_client_api::config::RpcSendTransactionConfig;
 use solana_signature::Signature;
 use solana_transaction_status::UiTransactionEncoding;
-use solana_instruction::{AccountMeta, Instruction};
+use solana_instruction::Instruction;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signer::Signer;
 use solana_sdk::transaction::Transaction;
 use std::{sync::Arc, time::Duration};
 use tokio::{sync::RwLock, time::sleep};
+use crate::amm::{self, Market, NewPool, Side};
+use crate::timing::Sighting;
 use ultima_swap_pumpfun::{self as pumpswap, Pool};
-
-/// Anchor discriminator for Pool: sha256("account:Pool")[..8]
-const POOL_DISCRIMINATOR: [u8; 8] = [241, 154, 109, 4, 17, 177, 109, 188];
-use uuid::Uuid;
 
 const FEE_RECIPIENT_COUNT: usize = 8;
 const TX_FEE_RESERVE: u64 = 10_000_000; // 0.01 SOL
@@ -136,6 +132,17 @@ fn send_config() -> RpcSendTransactionConfig {
     }
 }
 
+/// A buy of a graduation goes out without a simulation: the send RPC may
+/// not have the pool yet, a simulation there would refuse it, and the slot
+/// it would land in is the one that counts. One that lands and fails pays
+/// its fee.
+fn buy_now_config() -> RpcSendTransactionConfig {
+    RpcSendTransactionConfig {
+        skip_preflight: true,
+        ..Default::default()
+    }
+}
+
 /// Confirm a transaction on-chain. Returns:
 /// - Ok(true) if confirmed and successful
 /// - Ok(false) if confirmed but failed (on-chain error)
@@ -192,33 +199,100 @@ async fn fetch_actual_sol_change(rpc_client: &RpcClient, sig: &Signature) -> Opt
 /// its buy is over: buys under way count against max_positions, and no pool
 /// is bought twice.
 pub async fn handle_new_pool(
-    pool_address: Pubkey,
-    base_mint: Pubkey,
+    new_pool: NewPool,
+    sighting: Sighting,
     state: Arc<RwLock<AppState>>,
     rpc_client: Arc<RpcClient>,
     send_rpc_client: Arc<RpcClient>,
 ) {
+    let Some((token_mint, _)) = new_pool.token() else {
+        return;
+    };
+    let pool_address = new_pool.pool;
     {
         let mut s = state.write().await;
         if !s.running || s.sell_only {
             return;
         }
-        if let Err(why) = s.reserve_buy(pool_address, base_mint) {
+        if s.config.graduated_only && !new_pool.graduated {
+            info!("Pool {} skipped: made by hand, and graduated_only is set", pool_address);
+            return;
+        }
+        if let Err(why) = s.reserve_buy(pool_address, token_mint) {
             info!("Pool {} skipped: {}", pool_address, why);
             return;
         }
     }
-    buy_new_pool(pool_address, base_mint, state.clone(), rpc_client, send_rpc_client).await;
+    buy_new_pool(new_pool, sighting, token_mint, state.clone(), rpc_client, send_rpc_client).await;
     state.write().await.release_buy(&pool_address);
 }
 
+/// The pool to buy into and its reserves now, (SOL, token).
+///
+/// A graduation is taken as its `create_pool` made it: pump.fun's program
+/// made the pool and minted the token, with no freeze authority and
+/// metadata only, so nothing has to be read first. `graduated` is set in
+/// two places only, each of which has that from pump.fun's program and not
+/// from a transaction's word: `parse_create_pool` for a `create_pool` the
+/// program called in a transaction that ran, and `Migration::new_pool` for
+/// one not run yet, whose curve the program holds at the mint's address.
+/// A pool made by hand is read from the chain, its token checked for what
+/// could stop a sell.
+async fn market_of(
+    new_pool: &NewPool,
+    rpc_client: &RpcClient,
+) -> Result<(Market, u64, u64), String> {
+    let Some(side) = new_pool.side() else {
+        return Err("not a WSOL/token pool".to_owned());
+    };
+    if new_pool.graduated {
+        let (_, token_program) = new_pool.token().expect("a WSOL/token pool");
+        let (sol, tokens) = new_pool.sol_and_token().expect("a WSOL/token pool");
+        let market = Market { pool: new_pool.pool, data: new_pool.data.clone(), side, token_program };
+        return Ok((market, sol, tokens));
+    }
+    let pool_account = fetch_pool_account_with_retry(rpc_client, new_pool.pool)
+        .await
+        .map_err(|e| format!(
+            "Fetch pool failed after {} retries ({} ms delay): {:?}",
+            POOL_FETCH_RETRIES, POOL_FETCH_RETRY_DELAY_MS, e,
+        ))?;
+    let data = deserialize_pool_lenient(&pool_account.data).map_err(|e| format!("Deserialize pool failed: {:?}", e))?;
+    if Side::of(&data) != Some(side) {
+        return Err("the pool is not as its create_pool said".to_owned());
+    }
+    if let Some(why) = amm::not_tradable(&data, Some(&pool_account.data)) {
+        return Err(format!("skipped: {why}"));
+    }
+    let (sol_vault, token_vault) = side.vaults(&data);
+    let sol = fetch_token_balance_with_retry(rpc_client, &sol_vault)
+        .await
+        .map_err(|e| format!("Fetch SOL vault failed after retries: {:?}", e))?;
+    let tokens = fetch_token_balance_with_retry(rpc_client, &token_vault)
+        .await
+        .map_err(|e| format!("Fetch token vault failed after retries: {:?}", e))?;
+    let token_mint = side.token_mint(&data);
+    let mint_account = rpc_client
+        .get_account(&token_mint)
+        .await
+        .map_err(|e| format!("Failed to fetch mint account for token program detection: {:?}", e))?;
+    // A token whose holders can be stopped from selling buys fine and then
+    // fails every sell: it is not bought.
+    if let Some(why) = mint_blocks_selling(&mint_account.data, &mint_account.owner) {
+        return Err(format!("skipped: token {}: {}", token_mint, why));
+    }
+    Ok((Market { pool: new_pool.pool, data, side, token_program: mint_account.owner }, sol, tokens))
+}
+
 async fn buy_new_pool(
-    pool_address: Pubkey,
+    new_pool: NewPool,
+    sighting: Sighting,
     base_mint: Pubkey,
     state: Arc<RwLock<AppState>>,
     rpc_client: Arc<RpcClient>,
     send_rpc_client: Arc<RpcClient>,
 ) {
+    let pool_address = new_pool.pool;
     // Read config first (needed for min_pool_sol check before notification).
     let (
         buy_amount_lamports,
@@ -227,6 +301,8 @@ async fn buy_new_pool(
         min_pool_sol,
         webhook_url,
         wallet,
+        (cu_price, cu_limit, priority_fee),
+        timing,
     ) = {
         let s = state.read().await;
         let wallet = s.wallet.clone();
@@ -237,6 +313,8 @@ async fn buy_new_pool(
             s.config.min_pool_sol_lamports,
             s.webhook_url.clone(),
             wallet,
+            (s.config.priority_fee_micro_lamports, s.config.compute_unit_limit, s.config.priority_fee_lamports()),
+            s.timing.clone(),
         )
     };
 
@@ -248,7 +326,13 @@ async fn buy_new_pool(
         }
     };
 
-    let balance = match rpc_client.get_balance(&keypair.pubkey()).await {
+    // The balance and a blockhash in one round trip, before anything else.
+    let wallet_pubkey = keypair.pubkey();
+    let (balance, blockhash) = tokio::join!(
+        rpc_client.get_balance(&wallet_pubkey),
+        rpc_client.get_latest_blockhash_with_commitment(CommitmentConfig::confirmed()),
+    );
+    let balance = match balance {
         Ok(b) => b,
         Err(e) => {
             error!("Failed to fetch balance: {:?}", e);
@@ -256,297 +340,30 @@ async fn buy_new_pool(
         }
     };
 
-    if balance < buy_amount_lamports + TX_FEE_RESERVE {
-        let needed = buy_amount_lamports + TX_FEE_RESERVE;
-        let wallet_pubkey = keypair.pubkey();
+    if balance < buy_amount_lamports + priority_fee + TX_FEE_RESERVE {
+        let needed = buy_amount_lamports + priority_fee + TX_FEE_RESERVE;
         let error_msg = format!(
             "Insufficient balance: {} lamports (need {})",
             balance, needed
         );
         error!("{}", error_msg);
-        {
-            let mut s = state.write().await;
-            s.push_log(TradeLog {
-                id: Uuid::new_v4().to_string(),
-                timestamp: Utc::now(),
-                action: TradeAction::Error,
-                pool: pool_address,
-                base_mint,
-                amount_sol: buy_amount_lamports as f64 / 1e9,
-                amount_tokens: 0,
-                tx_signature: None,
-                error: Some(error_msg.clone()),
-                message: None,
-            });
-        }
-        if let Some(url) = webhook_url.clone() {
-            let discord_msg = i18n::insufficient_balance(
+        state.write().await.push_log(TradeLog::error(
+            pool_address, base_mint, buy_amount_lamports as f64 / 1e9, 0, None, error_msg,
+        ));
+        notify(
+            webhook_url,
+            i18n::insufficient_balance(
                 &pool_address.to_string(),
                 &base_mint.to_string(),
                 &wallet_pubkey.to_string(),
                 balance as f64 / 1e9,
                 needed as f64 / 1e9,
-            );
-            tokio::spawn(async move { notify_discord(&url, &discord_msg).await });
-        }
-        return;
-    }
-
-    // Fetch pool account data with retries at confirmed commitment.
-    // Geyser delivers create_pool before finalized confirmation, so we use confirmed.
-    let pool_account = match fetch_pool_account_with_retry(&rpc_client, pool_address).await {
-        Ok(a) => a,
-        Err(e) => {
-            push_error_log(
-                &state,
-                pool_address,
-                base_mint,
-                buy_amount_lamports,
-                format!(
-                    "Fetch pool failed after {} retries ({} ms delay): {:?}",
-                    POOL_FETCH_RETRIES, POOL_FETCH_RETRY_DELAY_MS, e,
-                ),
-            )
-            .await;
-            return;
-        }
-    };
-
-    let pool_data = match deserialize_pool_lenient(&pool_account.data) {
-        Ok(p) => p,
-        Err(e) => {
-            push_error_log_with_webhook(
-                &state,
-                &webhook_url,
-                pool_address,
-                base_mint,
-                buy_amount_lamports,
-                format!("Deserialize pool failed: {:?}", e),
-            )
-            .await;
-            return;
-        }
-    };
-
-    // Only pools of WSOL (base) and the new token (quote) are traded: the
-    // swaps here are built for that side. On any other pool, WSOL quoted or
-    // no WSOL at all, a buy could only fail.
-    if pool_data.base_mint != pumpswap::WSOL_MINT || pool_data.quote_mint != base_mint {
-        info!(
-            "Pool {} skipped: not WSOL/{} (base {}, quote {})",
-            pool_address, base_mint, pool_data.base_mint, pool_data.quote_mint
+            ),
         );
         return;
     }
 
-    // Fetch WSOL (base) vault first — needed for min_pool_sol check
-    let base_vault_balance = match fetch_token_balance_with_retry(
-        &rpc_client, &pool_data.pool_base_token_account,
-    ).await {
-        Ok(b) => b,
-        Err(e) => {
-            push_error_log_with_webhook(
-                &state, &webhook_url, pool_address, base_mint, buy_amount_lamports,
-                format!("Fetch base vault (WSOL) failed after retries: {:?}", e),
-            ).await;
-            return;
-        }
-    };
-
-    // Check minimum pool SOL liquidity (base vault = WSOL)
-    if base_vault_balance < min_pool_sol {
-        info!(
-            "Pool {} skipped: WSOL reserves {} < min_pool_sol {}",
-            pool_address, base_vault_balance, min_pool_sol
-        );
-        return;
-    }
-
-    let quote_vault_balance = match fetch_token_balance_with_retry(
-        &rpc_client, &pool_data.pool_quote_token_account,
-    ).await {
-        Ok(b) => b,
-        Err(e) => {
-            push_error_log_with_webhook(
-                &state, &webhook_url, pool_address, base_mint, buy_amount_lamports,
-                format!("Fetch quote vault (graduated) failed after retries: {:?}", e),
-            ).await;
-            return;
-        }
-    };
-
-    // Notify via webhook + record in logs
-    {
-        let mut s = state.write().await;
-        let pool_str = pool_address.to_string();
-        let mint_str = base_mint.to_string();
-        let sol = base_vault_balance as f64 / 1e9;
-        let ts = Utc::now().to_rfc3339();
-        let msg = i18n::pool_qualified_log(&pool_str, &mint_str, sol, &ts);
-        s.push_notification(pool_address, base_mint, msg);
-        if let Some(url) = &webhook_url {
-            let discord_msg = i18n::pool_qualified_webhook(&pool_str, &mint_str, sol, &ts);
-            let url = url.clone();
-            tokio::spawn(async move {
-                notify_discord(&url, &discord_msg).await;
-            });
-        }
-    }
-
-    // PumpSwap: base=WSOL, quote=graduated. We spend WSOL (base_in) to get graduated (quote_out).
-    let base_amount_out = match pumpswap::quote_out_for_exact_base_in(
-        base_vault_balance,    // WSOL reserves (base)
-        quote_vault_balance,   // graduated reserves (quote)
-        buy_amount_lamports,   // WSOL to spend (base_in)
-        pumpswap::DEFAULT_FEE_BPS,
-    ) {
-        Ok(a) => a,
-        Err(e) => {
-            push_error_log(
-                &state,
-                pool_address,
-                base_mint,
-                buy_amount_lamports,
-                format!("AMM math error: {:?}", e),
-            )
-            .await;
-            return;
-        }
-    };
-
-    let max_quote_in = match pumpswap::with_slippage_max(buy_amount_lamports, slippage_bps) {
-        Ok(v) => v,
-        Err(e) => {
-            push_error_log(
-                &state,
-                pool_address,
-                base_mint,
-                buy_amount_lamports,
-                format!("Slippage error: {:?}", e),
-            )
-            .await;
-            return;
-        }
-    };
-
-    let fee_idx = rand::thread_rng().gen_range(0..FEE_RECIPIENT_COUNT);
-
-    // Determine graduated token's token program (SPL Token or Token-2022).
-    // PumpSwap calls graduated token "quote_mint"; we call it "base_mint" in engine.
-    let mint_account = match rpc_client.get_account(&base_mint).await {
-        Ok(acct) => acct,
-        Err(e) => {
-            push_error_log(
-                &state, pool_address, base_mint, buy_amount_lamports,
-                format!("Failed to fetch mint account for token program detection: {:?}", e),
-            ).await;
-            return;
-        }
-    };
-    let quote_token_program = mint_account.owner;
-    // A token whose holders can be stopped from selling buys fine and then
-    // fails every sell: it is not bought.
-    if let Some(why) = mint_blocks_selling(&mint_account.data, &quote_token_program) {
-        info!("Pool {} skipped: token {}: {}", pool_address, base_mint, why);
-        return;
-    }
-    info!(
-        "Graduated token {} uses token program {}",
-        base_mint, quote_token_program
-    );
-
-    info!(
-        "Buying {} base atoms for max {} lamports on pool {}",
-        base_amount_out, max_quote_in, pool_address
-    );
-
-    // 1) Create graduated token ATA (PumpSwap's quote_mint)
-    let mut instructions = vec![pumpswap::create_ata_if_needed(
-        &keypair.pubkey(),
-        &base_mint,
-        &quote_token_program,
-    )];
-
-    // 2) Create WSOL ATA + wrap SOL for the buy
-    let wsol_mint = pumpswap::WSOL_MINT;
-    let wsol_ata = Pubkey::find_program_address(
-        &[
-            keypair.pubkey().as_ref(),
-            pumpswap::TOKEN_PROGRAM.as_ref(),
-            wsol_mint.as_ref(),
-        ],
-        &pumpswap::ASSOCIATED_TOKEN_PROGRAM,
-    ).0;
-    // CreateIdempotent for WSOL ATA
-    instructions.push(pumpswap::create_ata_if_needed(
-        &keypair.pubkey(),
-        &wsol_mint,
-        &pumpswap::TOKEN_PROGRAM,
-    ));
-    // Transfer SOL to WSOL ATA (SystemProgram.Transfer = instruction index 2, 12-byte data)
-    {
-        let transfer_data = {
-            let mut d = vec![2, 0, 0, 0]; // instruction index 2 = Transfer (little-endian u32)
-            d.extend_from_slice(&max_quote_in.to_le_bytes());
-            d
-        };
-        instructions.push(Instruction {
-            program_id: pumpswap::SYSTEM_PROGRAM,
-            accounts: vec![
-                AccountMeta::new(keypair.pubkey(), true),  // from
-                AccountMeta::new(wsol_ata, false),         // to
-            ],
-            data: transfer_data,
-        });
-    }
-    // SyncNative to update WSOL balance
-    instructions.push(Instruction {
-        program_id: pumpswap::TOKEN_PROGRAM,
-        accounts: vec![AccountMeta::new(wsol_ata, false)],
-        data: vec![17], // SyncNative instruction discriminator
-    });
-
-    // PumpSwap naming: "sell" = spend base(WSOL), receive quote(graduated)
-    // This is what we want when "buying" the graduated token.
-    let sell_ix = match pumpswap::build_sell(pumpswap::SellParams {
-        pool: pool_address,
-        pool_data,
-        user: keypair.pubkey(),
-        base_amount_in: buy_amount_lamports,
-        min_quote_amount_out: pumpswap::with_slippage_min(base_amount_out, slippage_bps).unwrap_or(0), // min graduated tokens (with slippage)
-        fee_recipient_index: fee_idx,
-        quote_token_program,
-    }) {
-        Ok(ix) => ix,
-        Err(e) => {
-            push_error_log(
-                &state,
-                pool_address,
-                base_mint,
-                buy_amount_lamports,
-                format!("Build sell(buy graduated) ix failed: {:?}", e),
-            )
-            .await;
-            return;
-        }
-    };
-    instructions.push(sell_ix);
-
-    // Close WSOL ATA after buy to reclaim rent + leftover SOL
-    instructions.push(Instruction {
-        program_id: pumpswap::TOKEN_PROGRAM,
-        accounts: vec![
-            AccountMeta::new(wsol_ata, false),                          // account to close
-            AccountMeta::new(keypair.pubkey(), false),                  // destination
-            AccountMeta::new_readonly(keypair.pubkey(), true),          // authority
-        ],
-        data: vec![9], // CloseAccount instruction discriminator
-    });
-
-    let (recent_blockhash, last_valid_block_height) = match rpc_client
-        .get_latest_blockhash_with_commitment(CommitmentConfig::confirmed())
-        .await
-    {
+    let (recent_blockhash, last_valid_block_height) = match blockhash {
         Ok(v) => v,
         Err(e) => {
             push_error_log(
@@ -561,17 +378,102 @@ async fn buy_new_pool(
         }
     };
 
-    let tx = Transaction::new_signed_with_payer(
-        &instructions,
-        Some(&keypair.pubkey()),
-        &[keypair.as_ref()],
-        recent_blockhash,
+    let (market, sol_reserves, token_reserves) = match market_of(&new_pool, &rpc_client).await {
+        Ok(m) => m,
+        Err(why) if why.starts_with("skipped") => {
+            info!("Pool {} {}", pool_address, why);
+            return;
+        }
+        Err(why) => {
+            push_error_log_with_webhook(&state, &webhook_url, pool_address, base_mint, buy_amount_lamports, why).await;
+            return;
+        }
+    };
+    let quote_token_program = market.token_program;
+
+    // Check minimum pool SOL liquidity
+    if sol_reserves < min_pool_sol {
+        info!(
+            "Pool {} skipped: SOL reserves {} < min_pool_sol {}",
+            pool_address, sol_reserves, min_pool_sol
+        );
+        return;
+    }
+
+    // Notify via webhook + record in logs
+    {
+        let mut s = state.write().await;
+        let pool_str = pool_address.to_string();
+        let mint_str = base_mint.to_string();
+        let sol = sol_reserves as f64 / 1e9;
+        let ts = Utc::now().to_rfc3339();
+        let msg = i18n::pool_qualified_log(&pool_str, &mint_str, sol, &ts);
+        s.push_notification(pool_address, base_mint, msg);
+        notify(webhook_url.clone(), i18n::pool_qualified_webhook(&pool_str, &mint_str, sol, &ts));
+    }
+
+    // At most buy_amount_lamports is spent, for at least the tokens it buys
+    // now less the slippage allowance.
+    let base_amount_out = match market
+        .side
+        .tokens_for_sol(sol_reserves, token_reserves, buy_amount_lamports)
+        .and_then(|expected| pumpswap::with_slippage_min(expected, slippage_bps))
+    {
+        Ok(a) => a,
+        Err(e) => {
+            push_error_log(
+                &state,
+                pool_address,
+                base_mint,
+                buy_amount_lamports,
+                format!("AMM math error: {:?}", e),
+            )
+            .await;
+            return;
+        }
+    };
+
+    let fee_idx = rand::thread_rng().gen_range(0..FEE_RECIPIENT_COUNT);
+
+    info!(
+        "Buying at least {} token atoms for at most {} lamports on pool {} ({:?})",
+        base_amount_out, buy_amount_lamports, pool_address, market.side
     );
+
+    // A priority fee, when one is set; the token's account; the SOL to
+    // spend, wrapped; the buy; the WSOL account closed, its rent and what is
+    // left coming back.
+    let user = keypair.pubkey();
+    let mut instructions = compute_budget(cu_price, cu_limit);
+    instructions.push(pumpswap::create_ata_if_needed(&user, &base_mint, &quote_token_program));
+    instructions.extend(amm::wrap_sol(&user, buy_amount_lamports));
+    let buy_ix = match market.buy_ix(user, buy_amount_lamports, base_amount_out, fee_idx) {
+        Ok(ix) => ix,
+        Err(e) => {
+            push_error_log(
+                &state,
+                pool_address,
+                base_mint,
+                buy_amount_lamports,
+                format!("Build buy ix failed: {:?}", e),
+            )
+            .await;
+            return;
+        }
+    };
+    instructions.push(buy_ix);
+    instructions.push(amm::unwrap_sol(&user));
+
+    let tx = Transaction::new_signed_with_payer(&instructions, Some(&user), &[keypair.as_ref()], recent_blockhash);
 
     // The signature is the transaction's own, known before it is sent.
     let sig = tx.signatures[0];
     let sig_str = sig.to_string();
-    let landed = match send_rpc_client.send_transaction_with_config(&tx, send_config()).await {
+    // A graduation is bought without a simulation: the pool may not be on
+    // the send RPC yet, and a simulation there would refuse the buy.
+    let config = if new_pool.graduated { buy_now_config() } else { send_config() };
+    let sending = std::time::Instant::now();
+    let landed = match send_rpc_client.send_transaction_with_config(&tx, config).await {
         // Refused by its simulation: it never went out, at no cost.
         Err(e) if refused_by_preflight(&e) => {
             push_error_log_with_webhook(
@@ -583,11 +485,16 @@ async fn buy_new_pool(
         // Sent, or an error that can follow a transaction that went out:
         // watched until it lands, fails, or its blockhash is past.
         sent => {
+            timing.lock().expect("timing lock").on_buy_sent(pool_address.to_string(), &sighting, sending);
             match &sent {
                 Ok(_) => info!("Buy tx sent: sig={} tokens={}", sig_str, base_amount_out),
                 Err(e) => warn!("Buy tx send returned an error, and it may have gone out: {:?}", e),
             }
-            match settle_buy(&rpc_client, &sig, last_valid_block_height).await {
+            let settled = settle_buy(&rpc_client, &sig, last_valid_block_height).await;
+            if matches!(settled, Pending::Landed | Pending::FailedOnChain) {
+                record_landing(rpc_client.clone(), timing.clone(), pool_address, sig);
+            }
+            match settled {
                 Pending::Landed => true,
                 Pending::FailedOnChain => {
                     // Buy failed on-chain (slippage, etc). Only tx fee lost (~0.000005 SOL).
@@ -639,60 +546,67 @@ async fn buy_new_pool(
         info!("Buy actual tokens: {} (estimated: {})", final_amount, base_amount_out);
     }
 
-    let position_id = Uuid::new_v4().to_string();
+    // What the buy cost, the priority fee in it: a take-profit covers both.
     let position = Position {
-        id: position_id.clone(),
-        pool: pool_address,
-        base_mint,
-        buy_price_lamports: buy_amount_lamports,
-        base_amount: final_amount,
-        bought_at: Utc::now(),
-        status: PositionStatus::Active,
-        total_sell_lamports: 0,
-        quote_token_program,
-        sell_failures: 0,
-        sell_attempts: 0,
-        next_sell_at: None,
-        draining: false,
-        pending_sell: None,
-        close_sent: false,
         amount_known,
-        closing: false,
-        restored: false,
-    };
-    let log = TradeLog {
-        id: Uuid::new_v4().to_string(),
-        timestamp: Utc::now(),
-        action: TradeAction::Buy,
-        pool: pool_address,
-        base_mint,
-        amount_sol: buy_amount_lamports as f64 / 1e9,
-        amount_tokens: final_amount,
-        tx_signature: Some(sig_str.clone()),
-        error: None,
-        message: None,
+        ..Position::opened(
+            pool_address, base_mint, buy_amount_lamports + priority_fee, final_amount, quote_token_program, market.side,
+        )
     };
     {
         let mut s = state.write().await;
-        s.positions.insert(position_id, position);
-        s.push_log(log.clone());
-        if let Some(ref client) = s.redis_client {
-            persist_trade_log_to_redis(client, &log);
-        }
+        s.positions.insert(position.id.clone(), position);
+        s.record(TradeLog::buy(pool_address, base_mint, buy_amount_lamports as f64 / 1e9, final_amount, sig_str.clone()));
     }
-    // Discord: Buy Confirmed
-    if let Some(url) = &webhook_url {
-        let discord_msg = i18n::buy_confirmed(
+    notify(
+        webhook_url,
+        i18n::buy_confirmed(
             &pool_address.to_string(),
             &base_mint.to_string(),
             buy_amount_lamports as f64 / 1e9,
             final_amount,
             &sig_str,
-        );
-        let url = url.clone();
-        tokio::spawn(async move { notify_discord(&url, &discord_msg).await });
-    }
+        ),
+    );
     spawn_sell_monitor(state, rpc_client, send_rpc_client, pool_address, sell_multiplier);
+}
+
+/// ComputeBudget's instructions setting a buy's compute unit limit and
+/// price, or none when no price is set.
+fn compute_budget(micro_lamports: u64, limit: u32) -> Vec<Instruction> {
+    if micro_lamports == 0 {
+        return Vec::new();
+    }
+    let mut set_limit = vec![2];
+    set_limit.extend_from_slice(&limit.to_le_bytes());
+    let mut set_price = vec![3];
+    set_price.extend_from_slice(&micro_lamports.to_le_bytes());
+    [set_limit, set_price]
+        .into_iter()
+        .map(|data| Instruction { program_id: COMPUTE_BUDGET_PROGRAM, accounts: Vec::new(), data })
+        .collect()
+}
+
+const COMPUTE_BUDGET_PROGRAM: Pubkey = Pubkey::from_str_const("ComputeBudget111111111111111111111111111111");
+
+/// Notes, off the buy's path, the slot a buy landed in (it may have failed
+/// there): how many slots after its pool's is what `GET /api/timing` shows.
+fn record_landing(
+    rpc_client: Arc<RpcClient>,
+    timing: Arc<std::sync::Mutex<crate::timing::Timing>>,
+    pool: Pubkey,
+    sig: Signature,
+) {
+    tokio::spawn(async move {
+        match rpc_client.get_signature_statuses_with_history(&[sig]).await {
+            Ok(resp) => {
+                if let Some(Some(status)) = resp.value.first() {
+                    timing.lock().expect("timing lock").on_buy_landed(&pool.to_string(), status.slot);
+                }
+            }
+            Err(e) => warn!("Could not read the slot buy {} landed in: {:?}", sig, e),
+        }
+    });
 }
 
 /// Watches the pool of a position and sells when its time comes: take
@@ -712,7 +626,7 @@ fn spawn_sell_monitor(
         loop {
             sleep(Duration::from_millis(500)).await;
             poll_count += 1;
-            if poll_count <= 3 || poll_count % 60 == 0 {
+            if poll_count <= 3 || poll_count.is_multiple_of(60) {
                 info!("Sell monitor poll #{} for pool {}", poll_count, pool_address);
             }
             if !state.read().await.pool_has_open_position(&pool_address) {
@@ -735,17 +649,18 @@ fn spawn_sell_monitor(
                 Err(e) => { warn!("Sell monitor: pool deserialize failed for {}: {:?}", pool_address, e); continue; },
             };
 
-            let quote_reserves = match fetch_token_balance_with_retry(
-                &rpc_client, &pool_data.pool_quote_token_account,
-            ).await {
-                Ok(b) => b,
-                Err(e) => { warn!("Sell monitor: quote reserves fetch failed: {:?}", e); continue; },
+            let Some(side) = Side::of(&pool_data) else {
+                warn!("Sell monitor: pool {} is not a WSOL/token pool", pool_address);
+                continue;
             };
-            let base_reserves = match fetch_token_balance_with_retry(
-                &rpc_client, &pool_data.pool_base_token_account,
-            ).await {
+            let (sol_vault, token_vault) = side.vaults(&pool_data);
+            let token_reserves = match fetch_token_balance_with_retry(&rpc_client, &token_vault).await {
                 Ok(b) => b,
-                Err(e) => { warn!("Sell monitor: base reserves fetch failed: {:?}", e); continue; },
+                Err(e) => { warn!("Sell monitor: token reserves fetch failed: {:?}", e); continue; },
+            };
+            let sol_reserves = match fetch_token_balance_with_retry(&rpc_client, &sol_vault).await {
+                Ok(b) => b,
+                Err(e) => { warn!("Sell monitor: SOL reserves fetch failed: {:?}", e); continue; },
             };
 
             check_and_sell_positions(
@@ -753,8 +668,8 @@ fn spawn_sell_monitor(
                 rpc_client.clone(),
                 send_rpc_client.clone(),
                 pool_address,
-                quote_reserves,
-                base_reserves,
+                token_reserves,
+                sol_reserves,
             ).await;
         }
     });
@@ -772,8 +687,8 @@ pub async fn check_and_sell_positions(
     rpc_client: Arc<RpcClient>,
     send_rpc_client: Arc<RpcClient>,
     pool_address: Pubkey,
-    current_quote_reserves: u64,
-    current_base_reserves: u64,
+    current_token_reserves: u64,
+    current_sol_reserves: u64,
 ) {
     let (sell_multiplier, slippage_bps, sell_timeout_secs, exit_pool_sol_lamports, wallet) = {
         let s = state.read().await;
@@ -812,26 +727,22 @@ pub async fn check_and_sell_positions(
                 let elapsed_secs = (Utc::now() - p.bought_at).num_seconds().max(0) as u64;
                 // Forced retreat modes
                 if let Some(why) =
-                    forced_exit_reason(elapsed_secs, sell_timeout_secs, current_base_reserves, exit_pool_sol_lamports)
+                    forced_exit_reason(elapsed_secs, sell_timeout_secs, current_sol_reserves, exit_pool_sol_lamports)
                 {
                     info!("Forced exit: pos={} {} amount={}", p.id, why, p.base_amount);
                     return true;
                 }
-                // PumpSwap: base=WSOL, quote=graduated. We sell graduated (quote_in) for WSOL (base_out).
-                let current_value = pumpswap::base_out_for_exact_quote_in(
-                    current_base_reserves,   // WSOL reserves
-                    current_quote_reserves,  // graduated token reserves
-                    p.base_amount,           // our graduated tokens (quote_in)
-                    pumpswap::DEFAULT_FEE_BPS,
-                )
-                .unwrap_or(0);
+                let current_value = p
+                    .side
+                    .sol_for_tokens(current_sol_reserves, current_token_reserves, p.base_amount)
+                    .unwrap_or(0);
                 let should_sell = take_profit_reached(
                     current_value, slippage_bps, p.buy_price_lamports, sell_multiplier, p.sell_failures,
                 );
                 if !should_sell {
                     info!("Sell check: pos={} val={} target={} base_r={} quote_r={} amount={}",
                         p.id, current_value, take_profit_target(p.buy_price_lamports, sell_multiplier, p.sell_failures),
-                        current_base_reserves, current_quote_reserves, p.base_amount);
+                        current_sol_reserves, current_token_reserves, p.base_amount);
                 }
                 should_sell
             })
@@ -896,12 +807,12 @@ pub async fn check_and_sell_positions(
 
         let elapsed_secs = (Utc::now() - position.bought_at).num_seconds().max(0) as u64;
         let forced_reason =
-            forced_exit_reason(elapsed_secs, sell_timeout_secs, current_base_reserves, exit_pool_sol_lamports);
+            forced_exit_reason(elapsed_secs, sell_timeout_secs, current_sol_reserves, exit_pool_sol_lamports);
 
         // 3. What to do, decided in one place (plan_sell).
         let plan = plan_sell(
             &position, holding, forced_reason.clone(),
-            current_base_reserves, current_quote_reserves, slippage_bps, sell_multiplier,
+            current_sol_reserves, current_token_reserves, slippage_bps, sell_multiplier,
         );
         match &plan {
             Plan::Hold => {
@@ -958,9 +869,10 @@ pub async fn check_and_sell_positions(
             // confirmed just now rather than on what the stream passed in,
             // still says so.
             Plan::Burn { .. } => {
+                let (sol_vault, token_vault) = position.side.vaults(&pool_data);
                 let fresh = match (
-                    fetch_token_balance_with_retry(&rpc_client, &pool_data.pool_base_token_account).await,
-                    fetch_token_balance_with_retry(&rpc_client, &pool_data.pool_quote_token_account).await,
+                    fetch_token_balance_with_retry(&rpc_client, &sol_vault).await,
+                    fetch_token_balance_with_retry(&rpc_client, &token_vault).await,
                 ) {
                     // The low-liquidity exit is judged on the fresh SOL
                     // reserve too, not on the stream's.
@@ -1000,17 +912,13 @@ pub async fn check_and_sell_positions(
             Plan::Hold | Plan::Retry(_) | Plan::CloseSoldOut => continue,
         };
 
-        // PumpSwap "Buy" = buy base(WSOL) by spending quote(graduated tokens)
-        // This is what we want: sell graduated tokens → receive SOL.
-        let sell_ix = match pumpswap::build_buy(pumpswap::BuyParams {
+        let market = Market {
             pool: pool_address,
-            pool_data,
-            user: keypair.pubkey(),
-            base_amount_out: min_quote_out,            // min WSOL (lamports) to receive
-            max_quote_amount_in: position.base_amount, // graduated tokens to spend
-            fee_recipient_index: fee_idx,
-            quote_token_program: position.quote_token_program,
-        }) {
+            data: pool_data,
+            side: position.side,
+            token_program: position.quote_token_program,
+        };
+        let sell_ix = match market.sell_ix(keypair.pubkey(), position.base_amount, min_quote_out, fee_idx) {
             Ok(ix) => ix,
             Err(e) => {
                 error!("Build sell ix failed: {:?}", e);
@@ -1031,43 +939,16 @@ pub async fn check_and_sell_positions(
             }
         };
 
-        // Build WSOL ATA CreateIdempotent instruction (needed to receive SOL from swap)
-        let wsol_mint = Pubkey::from_str_const("So11111111111111111111111111111111111111112");
-        let token_program = Pubkey::from_str_const("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
-        let ata_program = Pubkey::from_str_const("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
-        let system_program = Pubkey::from_str_const("11111111111111111111111111111111");
-        let (wsol_ata, _) = Pubkey::find_program_address(
-            &[keypair.pubkey().as_ref(), token_program.as_ref(), wsol_mint.as_ref()],
-            &ata_program,
-        );
-        // CreateIdempotent (discriminator = 1)
-        let create_wsol_ata_ix = Instruction {
-            program_id: ata_program,
-            accounts: vec![
-                AccountMeta::new(keypair.pubkey(), true),   // funding
-                AccountMeta::new(wsol_ata, false),          // ata
-                AccountMeta::new_readonly(keypair.pubkey(), false), // wallet
-                AccountMeta::new_readonly(wsol_mint, false),       // mint
-                AccountMeta::new_readonly(system_program, false),
-                AccountMeta::new_readonly(token_program, false),
-            ],
-            data: vec![1], // CreateIdempotent
-        };
-
-        // Close WSOL ATA after swap to recover SOL
-        let close_wsol_ix = Instruction {
-            program_id: token_program,
-            accounts: vec![
-                AccountMeta::new(wsol_ata, false),
-                AccountMeta::new(keypair.pubkey(), false),
-                AccountMeta::new_readonly(keypair.pubkey(), true),
-            ],
-            data: vec![9], // CloseAccount
-        };
-
+        // The WSOL account the sell pays into, made when there is none, and
+        // closed after it so that the SOL and the rent come back.
+        let user = keypair.pubkey();
         let tx = Transaction::new_signed_with_payer(
-            &[create_wsol_ata_ix, sell_ix, close_wsol_ix],
-            Some(&keypair.pubkey()),
+            &[
+                pumpswap::create_ata_if_needed(&user, &pumpswap::WSOL_MINT, &pumpswap::TOKEN_PROGRAM),
+                sell_ix,
+                amm::unwrap_sol(&user),
+            ],
+            Some(&user),
             &[keypair.as_ref()],
             bh,
         );
@@ -1119,38 +1000,22 @@ pub async fn check_and_sell_positions(
                         set_pending_sell(&state, &id, None).await;
                         // Landed and failed: this one paid its fee.
                         record_sell_failure(&state, &id, &position, true).await;
-                        let webhook_url_sell = {
-                            let mut s = state.write().await;
-                            let log = TradeLog {
-                                id: Uuid::new_v4().to_string(),
-                                timestamp: Utc::now(),
-                                action: TradeAction::Error,
-                                pool: position.pool,
-                                base_mint: position.base_mint,
-                                amount_sol: 0.0,
-                                amount_tokens: position.base_amount,
-                                tx_signature: Some(sig_str.clone()),
-                                error: Some(format!("Sell tx failed on-chain: {}", sig_str)),
-                                message: None,
-                            };
-                            s.push_log(log);
-                            s.webhook_url.clone()
-                        };
-                        if let Some(url) = webhook_url_sell {
-                            let discord_msg = i18n::sell_failed_onchain(&position.pool.to_string(), &sig_str);
-                            tokio::spawn(async move { notify_discord(&url, &discord_msg).await });
-                        }
+                        report_sell_error(
+                            &state,
+                            &position,
+                            Some(sig_str.clone()),
+                            format!("Sell tx failed on-chain: {}", sig_str),
+                            i18n::sell_failed_onchain(&position.pool.to_string(), &sig_str),
+                        )
+                        .await;
                     }
                     Err(timeout_msg) => {
                         // Still pending: the next check settles it before
                         // signing anything new, and counts it then.
                         warn!("{}", timeout_msg);
-                        state.write().await.wait_for_pending(&id, Utc::now());
-                        let webhook_url_sell = state.read().await.webhook_url.clone();
-                        if let Some(url) = webhook_url_sell {
-                            let discord_msg = i18n::sell_tx_unknown(&position.pool.to_string(), &sig_str);
-                            tokio::spawn(async move { notify_discord(&url, &discord_msg).await });
-                        }
+                        let mut s = state.write().await;
+                        s.wait_for_pending(&id, Utc::now());
+                        notify(s.webhook_url.clone(), i18n::sell_tx_unknown(&position.pool.to_string(), &sig_str));
                     }
                 }
             }
@@ -1167,27 +1032,8 @@ pub async fn check_and_sell_positions(
                 } else {
                     state.write().await.wait_for_pending(&id, Utc::now());
                 }
-                let webhook_url_sell = {
-                    let mut s = state.write().await;
-                    let log = TradeLog {
-                        id: Uuid::new_v4().to_string(),
-                        timestamp: Utc::now(),
-                        action: TradeAction::Error,
-                        pool: position.pool,
-                        base_mint: position.base_mint,
-                        amount_sol: 0.0,
-                        amount_tokens: position.base_amount,
-                        tx_signature: None,
-                        error: Some(err_msg.clone()),
-                        message: None,
-                    };
-                    s.push_log(log);
-                    s.webhook_url.clone()
-                };
-                if let Some(url) = webhook_url_sell {
-                    let discord_msg = i18n::sell_send_failed(&position.pool.to_string(), &err_msg);
-                    tokio::spawn(async move { notify_discord(&url, &discord_msg).await });
-                }
+                let discord = i18n::sell_send_failed(&position.pool.to_string(), &err_msg);
+                report_sell_error(&state, &position, None, err_msg, discord).await;
             }
         }
     }
@@ -1304,18 +1150,6 @@ async fn record_sell_proceeds(
         Some(delta) if delta > 0 => delta as u64,
         _ => pending.min_out,
     };
-    let log = TradeLog {
-        id: Uuid::new_v4().to_string(),
-        timestamp: Utc::now(),
-        action: TradeAction::Sell,
-        pool: position.pool,
-        base_mint: position.base_mint,
-        amount_sol: actual_lamports as f64 / 1e9,
-        amount_tokens: position.base_amount,
-        tx_signature: Some(pending.signature.to_string()),
-        error: None,
-        message: None,
-    };
     let mut s = state.write().await;
     if let Some(p) = s.positions.get_mut(id) {
         p.total_sell_lamports += actual_lamports;
@@ -1323,10 +1157,27 @@ async fn record_sell_proceeds(
         p.draining = true;
     }
     s.sell_succeeded(id);
-    s.push_log(log.clone());
-    if let Some(ref client) = s.redis_client {
-        persist_trade_log_to_redis(client, &log);
-    }
+    s.record(TradeLog::sell(
+        position.pool,
+        position.base_mint,
+        actual_lamports as f64 / 1e9,
+        position.base_amount,
+        pending.signature.to_string(),
+    ));
+}
+
+/// Records a sell that went wrong against its position, and tells Discord
+/// when a webhook is set.
+async fn report_sell_error(
+    state: &Arc<RwLock<AppState>>,
+    position: &Position,
+    signature: Option<String>,
+    error: String,
+    discord: String,
+) {
+    let mut s = state.write().await;
+    s.push_log(TradeLog::error(position.pool, position.base_mint, 0.0, position.base_amount, signature, error));
+    notify(s.webhook_url.clone(), discord);
 }
 
 /// How a position ends.
@@ -1378,6 +1229,7 @@ async fn close_position(
             return;
         }
     };
+    // The account is closed: what follows reports a trade that is over.
     let close_ok = true;
 
     let (total_sell, webhook_url) = {
@@ -1387,22 +1239,12 @@ async fn close_position(
             p.status = PositionStatus::Closed;
         }
         if let Close::Burn(reason) = &how {
-            let note = TradeLog {
-                id: Uuid::new_v4().to_string(),
-                timestamp: Utc::now(),
-                action: TradeAction::Notification,
-                pool: position.pool,
-                base_mint: position.base_mint,
-                amount_sol: 0.0,
-                amount_tokens: position.base_amount,
-                tx_signature: None,
-                error: None,
-                message: Some(format!("Retreat burn: {} | ATA {}", reason, if close_ok { "closed" } else { "close failed" })),
-            };
-            s.push_log(note.clone());
-            if let Some(ref client) = s.redis_client {
-                persist_trade_log_to_redis(client, &note);
-            }
+            s.record(TradeLog::note(
+                position.pool,
+                position.base_mint,
+                position.base_amount,
+                format!("Retreat burn: {reason} | ATA closed"),
+            ));
         }
         (ts, s.webhook_url.clone())
     };
@@ -1447,9 +1289,7 @@ async fn close_position(
             )
         }
     };
-    if let Some(url) = webhook_url {
-        tokio::spawn(async move { notify_discord(&url, &discord_msg).await });
-    }
+    notify(webhook_url, discord_msg);
     maybe_auto_stop_after_cycle(state).await;
 }
 
@@ -1515,28 +1355,11 @@ async fn push_error_log_with_webhook(
     error_msg: String,
 ) {
     error!("{}", error_msg);
-    let log = TradeLog {
-        id: Uuid::new_v4().to_string(),
-        timestamp: Utc::now(),
-        action: TradeAction::Error,
-        pool,
-        base_mint,
-        amount_sol: amount_lamports as f64 / 1e9,
-        amount_tokens: 0,
-        tx_signature: None,
-        error: Some(error_msg.clone()),
-        message: None,
-    };
+    let discord = i18n::error_notify(&pool.to_string(), &base_mint.to_string(), &error_msg);
     let mut s = state.write().await;
-    s.push_log(log);
-
-    // Determine webhook: prefer explicit param, fall back to state.
-    let url = webhook_url.as_ref().or(s.webhook_url.as_ref());
-    if let Some(url) = url {
-        let discord_msg = i18n::error_notify(&pool.to_string(), &base_mint.to_string(), &error_msg);
-        let url = url.clone();
-        tokio::spawn(async move { notify_discord(&url, &discord_msg).await });
-    }
+    s.push_log(TradeLog::error(pool, base_mint, amount_lamports as f64 / 1e9, 0, None, error_msg));
+    // The webhook given, else the one the state knows.
+    notify(webhook_url.clone().or_else(|| s.webhook_url.clone()), discord);
 }
 
 /// Fetch token account balance with retries at confirmed commitment.
@@ -1611,11 +1434,8 @@ async fn burn_and_close_ata(
     burn: u64,
     close_sent: bool,
 ) -> CloseOutcome {
-    let ata_program = Pubkey::from_str_const("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
-    let (ata, _) = Pubkey::find_program_address(
-        &[keypair.pubkey().as_ref(), token_program.as_ref(), mint.as_ref()],
-        &ata_program,
-    );
+    let user = keypair.pubkey();
+    let ata = amm::ata(&user, mint, token_program);
 
     // Check current balance
     let balance = match rpc_client
@@ -1645,34 +1465,12 @@ async fn burn_and_close_ata(
         }
     }
 
+    // What was decided is burned, if anything, then the account is closed.
     let mut instructions = Vec::new();
-
-    // Burn what was decided, if anything
     if burn > 0 {
-        // SPL Token Burn instruction (index 8): amount as u64 LE
-        let mut burn_data = vec![8];
-        burn_data.extend_from_slice(&burn.to_le_bytes());
-        instructions.push(Instruction {
-            program_id: *token_program,
-            accounts: vec![
-                AccountMeta::new(ata, false),                          // account
-                AccountMeta::new(*mint, false),                        // mint
-                AccountMeta::new_readonly(keypair.pubkey(), true),     // authority
-            ],
-            data: burn_data,
-        });
+        instructions.push(amm::burn(&user, mint, token_program, burn));
     }
-
-    // CloseAccount instruction (index 9)
-    instructions.push(Instruction {
-        program_id: *token_program,
-        accounts: vec![
-            AccountMeta::new(ata, false),                          // account to close
-            AccountMeta::new(keypair.pubkey(), false),             // destination for rent
-            AccountMeta::new_readonly(keypair.pubkey(), true),     // authority
-        ],
-        data: vec![9],
-    });
+    instructions.push(amm::close_account(&user, mint, token_program));
 
     let bh = match rpc_client.get_latest_blockhash().await {
         Ok(bh) => bh,
@@ -1729,12 +1527,7 @@ enum Holding {
 }
 
 async fn read_holding(rpc_client: &RpcClient, wallet: &Pubkey, mint: &Pubkey, token_program: &Pubkey) -> Holding {
-    // Derive ATA address
-    let ata_program = Pubkey::from_str_const("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
-    let (ata, _) = Pubkey::find_program_address(
-        &[wallet.as_ref(), token_program.as_ref(), mint.as_ref()],
-        &ata_program,
-    );
+    let ata = amm::ata(wallet, mint, token_program);
     match rpc_client
         .get_token_account_balance_with_commitment(&ata, CommitmentConfig::confirmed())
         .await
@@ -1876,21 +1669,7 @@ async fn record_sell_failure(state: &Arc<RwLock<AppState>>, id: &str, position: 
 /// Lenient Pool deserialization that tolerates trailing bytes.
 /// PumpSwap may add new fields; we only need the known prefix.
 pub fn deserialize_pool_lenient(data: &[u8]) -> Result<Pool, std::io::Error> {
-    if data.len() < 8 {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "Account data too short",
-        ));
-    }
-    if data[..8] != POOL_DISCRIMINATOR {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "Invalid Pool discriminator",
-        ));
-    }
-    solana_sdk::borsh1::try_from_slice_unchecked::<Pool>(&data[8..]).map_err(|e| {
-        std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
-    })
+    amm::decode_pool(data)
 }
 
 /// In single-shot mode (`config.auto_loop == false`), set `running = false`
@@ -1915,13 +1694,8 @@ async fn maybe_auto_stop_after_cycle(state: &Arc<RwLock<AppState>>) {
         info!("AUTO_LOOP=false → trading stopped after one buy/sell cycle");
         s.webhook_url.clone()
     };
-    if let Some(url) = webhook_url {
-        tokio::spawn(async move { notify_discord(&url, &msg).await });
-    }
+    notify(webhook_url, msg);
 }
-
-/// WSOL mint address.
-const WSOL_MINT: &str = "So11111111111111111111111111111111111111112";
 
 /// Restore positions from wallet token holdings on startup.
 ///
@@ -1946,10 +1720,7 @@ pub async fn restore_positions_from_wallet(
 
     info!("Restoring positions from wallet {} ...", wallet_pubkey);
 
-    let token_programs = [
-        Pubkey::from_str_const("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"),
-        Pubkey::from_str_const("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"),
-    ];
+    let token_programs = [pumpswap::TOKEN_PROGRAM, pumpswap::TOKEN_2022_PROGRAM];
 
     let mut restored = 0u32;
 
@@ -1982,8 +1753,8 @@ pub async fn restore_positions_from_wallet(
                 Some(m) => m,
                 None => continue,
             };
-            // Skip WSOL
-            if mint_str == WSOL_MINT {
+            // WSOL is the bot's own change, not a position.
+            if mint_str == pumpswap::WSOL_MINT.to_string() {
                 continue;
             }
             let amount_str = match info
@@ -2006,48 +1777,43 @@ pub async fn restore_positions_from_wallet(
 
             info!("Found token {} amount={} — searching for PumpSwap pool...", mint_str, amount);
 
-            // Find PumpSwap pool for this token.
-            // PumpSwap pools have base_mint (offset 11) or quote_mint (offset 43).
-            // On-chain: base_mint = WSOL, quote_mint = graduated token.
-            // quote_mint is at discriminator(8) + pool_bump(1) + index(2) + creator(32) + base_mint(32) = offset 75
-            let wsol_mint = Pubkey::from_str_const(WSOL_MINT);
-            let pump_amm = Pubkey::from_str_const("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA");
+            // Find the token's PumpSwap pools, WSOL on either side: base_mint
+            // is at offset 43 (discriminator 8, bump 1, index 2, creator 32),
+            // quote_mint at 75.
+            let wsol_mint = pumpswap::WSOL_MINT;
+            let pump_amm = pumpswap::PUMP_AMM_PROGRAM_ID;
 
-            // Filter: base_mint = WSOL (offset 43), quote_mint = token_mint
-            // (offset 75): the only pools the swaps here are built for.
             use solana_rpc_client_api::filter::{Memcmp, RpcFilterType};
             use solana_rpc_client_api::config::RpcProgramAccountsConfig;
             use solana_account_decoder::UiAccountEncoding;
 
-            let filters = vec![
-                RpcFilterType::Memcmp(Memcmp::new_raw_bytes(0, POOL_DISCRIMINATOR.to_vec())),
-                RpcFilterType::Memcmp(Memcmp::new_raw_bytes(43, wsol_mint.to_bytes().to_vec())),
-                RpcFilterType::Memcmp(Memcmp::new_raw_bytes(75, token_mint.to_bytes().to_vec())),
-            ];
-
-            let config = RpcProgramAccountsConfig {
-                filters: Some(filters),
-                account_config: solana_rpc_client_api::config::RpcAccountInfoConfig {
-                    encoding: Some(UiAccountEncoding::Base64),
-                    commitment: Some(CommitmentConfig::confirmed()),
+            let mut pool_accounts = Vec::new();
+            for (base, quote) in [(wsol_mint, token_mint), (token_mint, wsol_mint)] {
+                let filters = vec![
+                    RpcFilterType::Memcmp(Memcmp::new_raw_bytes(0, amm::POOL_DISCRIMINATOR.to_vec())),
+                    RpcFilterType::Memcmp(Memcmp::new_raw_bytes(43, base.to_bytes().to_vec())),
+                    RpcFilterType::Memcmp(Memcmp::new_raw_bytes(75, quote.to_bytes().to_vec())),
+                ];
+                let config = RpcProgramAccountsConfig {
+                    filters: Some(filters),
+                    account_config: solana_rpc_client_api::config::RpcAccountInfoConfig {
+                        encoding: Some(UiAccountEncoding::Base64),
+                        commitment: Some(CommitmentConfig::confirmed()),
+                        ..Default::default()
+                    },
                     ..Default::default()
-                },
-                ..Default::default()
-            };
-
-            let pool_accounts = match rpc_client
-                .get_program_accounts_with_config(&pump_amm, config)
-                .await
-            {
-                Ok(a) => a,
-                Err(e) => {
-                    warn!("getProgramAccounts failed for mint {}: {:?}", mint_str, e);
-                    continue;
+                };
+                // The accounts as bytes, which is how the pools are read; the
+                // replacement hands them over decoded for display.
+                #[allow(deprecated)]
+                let found = rpc_client.get_program_accounts_with_config(&pump_amm, config).await;
+                match found {
+                    Ok(found) => pool_accounts.extend(found),
+                    Err(e) => warn!("getProgramAccounts failed for mint {}: {:?}", mint_str, e),
                 }
-            };
+            }
 
             if pool_accounts.is_empty() {
-                // A pool with the token as its base could only get sells that fail.
                 warn!("No WSOL/{} PumpSwap pool found: not taken up", mint_str);
                 continue;
             } else {
@@ -2056,7 +1822,11 @@ pub async fn restore_positions_from_wallet(
                 let mut deepest: Option<(Pubkey, Vec<u8>, u64)> = None;
                 for (address, account) in &pool_accounts {
                     let Ok(pool) = deserialize_pool_lenient(&account.data) else { continue };
-                    let Ok(sol) = fetch_token_balance_with_retry(&rpc_client, &pool.pool_base_token_account).await else {
+                    let Some(side) = Side::of(&pool) else { continue };
+                    if amm::not_tradable(&pool, Some(&account.data)).is_some() {
+                        continue;
+                    }
+                    let Ok(sol) = fetch_token_balance_with_retry(&rpc_client, &side.vaults(&pool).0).await else {
                         continue;
                     };
                     if deepest.as_ref().is_none_or(|(_, _, best)| sol > *best) {
@@ -2082,6 +1852,7 @@ pub async fn restore_positions_from_wallet(
     info!("Position restore complete: {} positions restored", restored);
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn restore_single_position(
     state: &Arc<RwLock<AppState>>,
     rpc_client: &Arc<RpcClient>,
@@ -2105,51 +1876,30 @@ async fn restore_single_position(
         return Err(format!("not taken up: {}", why));
     }
 
-    // Fetch current reserves to estimate current value as buy_price
-    let quote_reserves = fetch_token_balance_with_retry(rpc_client, &pool_data.pool_quote_token_account)
+    let Some(side) = Side::of(&pool_data) else {
+        return Err(format!("pool {} is not a WSOL/token pool", pool_address));
+    };
+    let (sol_vault, token_vault) = side.vaults(&pool_data);
+    let token_reserves = fetch_token_balance_with_retry(rpc_client, &token_vault)
         .await
-        .map_err(|e| format!("Fetch quote reserves: {:?}", e))?;
-    let base_reserves = fetch_token_balance_with_retry(rpc_client, &pool_data.pool_base_token_account)
+        .map_err(|e| format!("Fetch token reserves: {:?}", e))?;
+    let sol_reserves = fetch_token_balance_with_retry(rpc_client, &sol_vault)
         .await
-        .map_err(|e| format!("Fetch base reserves: {:?}", e))?;
-
-    if pool_data.base_mint != pumpswap::WSOL_MINT {
-        return Err(format!("pool {} does not have WSOL as its base", pool_address));
-    }
+        .map_err(|e| format!("Fetch SOL reserves: {:?}", e))?;
 
     // The original buy price is not known: what the tokens would sell for
     // now is the baseline. The position then takes profit from here, or is
     // sold at the timeout, but only once trading is started: restoring
     // alone sells nothing.
-    let current_value = pumpswap::base_out_for_exact_quote_in(
-        base_reserves,
-        quote_reserves,
-        token_amount,
-        pumpswap::DEFAULT_FEE_BPS,
-    )
-    .unwrap_or(0)
-    .max(1);
+    let current_value = side
+        .sol_for_tokens(sol_reserves, token_reserves, token_amount)
+        .unwrap_or(0)
+        .max(1);
 
-    let position_id = Uuid::new_v4().to_string();
+    // Its value now as the baseline, in place of the buy price.
     let position = Position {
-        id: position_id.clone(),
-        pool: pool_address,
-        base_mint: token_mint,
-        buy_price_lamports: current_value, // current value as baseline
-        base_amount: token_amount,
-        bought_at: Utc::now(),
-        status: PositionStatus::Active,
-        total_sell_lamports: 0,
-        quote_token_program,
-        sell_failures: 0,
-        sell_attempts: 0,
-        next_sell_at: None,
-        draining: false,
-        pending_sell: None,
-        close_sent: false,
-        amount_known: true,
-        closing: false,
         restored: true,
+        ..Position::opened(pool_address, token_mint, current_value, token_amount, quote_token_program, side)
     };
 
     info!(
@@ -2159,7 +1909,7 @@ async fn restore_single_position(
 
     let sell_multiplier = {
         let mut s = state.write().await;
-        s.positions.insert(position_id.clone(), position);
+        s.positions.insert(position.id.clone(), position);
         s.push_notification(
             pool_address,
             token_mint,
@@ -2201,23 +1951,7 @@ mod auto_loop_tests {
             id.clone(),
             Position {
                 id,
-                pool: Pubkey::new_unique(),
-                base_mint: Pubkey::new_unique(),
-                buy_price_lamports: 100_000,
-                base_amount: 1,
-                bought_at: Utc::now(),
-                status: PositionStatus::Active,
-                total_sell_lamports: 0,
-                quote_token_program: Pubkey::default(),
-                sell_failures: 0,
-                sell_attempts: 0,
-                next_sell_at: None,
-                draining: false,
-                pending_sell: None,
-                close_sent: false,
-                amount_known: true,
-                closing: false,
-                restored: false,
+                ..Position::opened(Pubkey::new_unique(), Pubkey::new_unique(), 100_000, 1, Pubkey::default(), Side::SolBase)
             },
         );
     }
@@ -2402,7 +2136,7 @@ mod auto_loop_tests {
         // the pause: still nothing is bought.
         state.write().await.running = true;
         let rpc = Arc::new(RpcClient::new("http://127.0.0.1:9".to_string()));
-        handle_new_pool(Pubkey::new_unique(), Pubkey::new_unique(), state.clone(), rpc.clone(), rpc).await;
+        handle_new_pool(hand_made_pool(), sighting(), state.clone(), rpc.clone(), rpc).await;
         assert!(state.read().await.seen_pools.is_empty());
     }
 
@@ -2457,10 +2191,73 @@ mod auto_loop_tests {
     }
 
     #[test]
-    fn every_transaction_is_simulated_first() {
+    fn every_transaction_but_a_graduation_buy_is_simulated_first() {
         let cfg = send_config();
         assert!(!cfg.skip_preflight);
         assert_eq!(cfg.preflight_commitment, Some(CommitmentLevel::Processed));
+        assert!(buy_now_config().skip_preflight);
+    }
+
+    /// A WSOL/token pool made by hand, as its create_pool reads.
+    fn hand_made_pool() -> NewPool {
+        NewPool {
+            pool: Pubkey::new_unique(),
+            data: Pool {
+                pool_bump: 0,
+                index: 0,
+                creator: Pubkey::new_unique(),
+                base_mint: pumpswap::WSOL_MINT,
+                quote_mint: Pubkey::new_unique(),
+                lp_mint: Pubkey::new_unique(),
+                pool_base_token_account: Pubkey::new_unique(),
+                pool_quote_token_account: Pubkey::new_unique(),
+                lp_supply: 0,
+                is_mayhem_mode: false,
+                coin_creator: Pubkey::default(),
+            },
+            base_token_program: pumpswap::TOKEN_PROGRAM,
+            quote_token_program: pumpswap::TOKEN_PROGRAM,
+            base_reserves: 10_000_000_000,
+            quote_reserves: 1_000_000_000_000,
+            graduated: false,
+            flagged: false,
+        }
+    }
+
+    fn sighting() -> Sighting {
+        Sighting { slot: 1, seen: std::time::Instant::now(), via: crate::timing::Via::Geyser }
+    }
+
+    #[test]
+    fn a_priority_fee_sets_the_limit_and_price_and_is_counted_in_the_cost() {
+        assert!(compute_budget(0, 200_000).is_empty());
+        let ixs = compute_budget(50_000, 200_000);
+        assert_eq!(ixs[0].data, [vec![2], 200_000u32.to_le_bytes().to_vec()].concat());
+        assert_eq!(ixs[1].data, [vec![3], 50_000u64.to_le_bytes().to_vec()].concat());
+        assert!(ixs.iter().all(|ix| ix.program_id == COMPUTE_BUDGET_PROGRAM && ix.accounts.is_empty()));
+
+        let mut config = crate::state::TradeConfig::default();
+        assert_eq!(config.priority_fee_lamports(), 0);
+        config.priority_fee_micro_lamports = 50_000;
+        // 50,000 micro-lamports on each of 200,000 units: 10,000 lamports.
+        assert_eq!(config.priority_fee_lamports(), 10_000);
+        config.compute_unit_limit = 1;
+        assert_eq!(config.priority_fee_lamports(), 1, "rounded up");
+        config.priority_fee_micro_lamports = u64::MAX;
+        config.compute_unit_limit = 1_400_000;
+        assert!(config.validate().is_err(), "a fee above the buy is refused");
+        config.priority_fee_micro_lamports = 0;
+        config.compute_unit_limit = 0;
+        assert!(config.validate().is_err());
+    }
+
+    #[tokio::test]
+    async fn a_pool_made_by_hand_is_not_bought_when_graduated_only() {
+        let state = make_state(true, true);
+        state.write().await.config.graduated_only = true;
+        let rpc = Arc::new(RpcClient::new("http://127.0.0.1:9".to_string()));
+        handle_new_pool(hand_made_pool(), sighting(), state.clone(), rpc.clone(), rpc).await;
+        assert!(state.read().await.seen_pools.is_empty());
     }
 
     #[tokio::test]
@@ -2469,7 +2266,7 @@ mod auto_loop_tests {
         state.write().await.sell_only = true;
         // No RPC is reached: the pool is turned away before anything is fetched.
         let rpc = Arc::new(RpcClient::new("http://127.0.0.1:9".to_string()));
-        handle_new_pool(Pubkey::new_unique(), Pubkey::new_unique(), state.clone(), rpc.clone(), rpc).await;
+        handle_new_pool(hand_made_pool(), sighting(), state.clone(), rpc.clone(), rpc).await;
         assert!(state.read().await.seen_pools.is_empty(), "sell_only must not take a slot");
     }
 

@@ -89,6 +89,15 @@ pub(crate) fn choose(flag: Option<StoreFlag>, vault: Option<&str>) -> Result<Sto
         if vault.is_some() {
             return Err(t!("worker_secrets.vault_without_op"));
         }
+        // A key has to outlive a reboot: on Linux only a Secret Service
+        // keeps it, and a headless box, WSL or an SSH login has none. Said
+        // here, with the ways out, rather than by the keychain crate later.
+        #[cfg(target_os = "linux")]
+        {
+            if !erpc_auth::store::keychain::secret_service_answers() {
+                return Err(t!("worker_secrets.no_durable_keychain"));
+            }
+        }
         return Ok(Store::Keychain);
     }
     let vault = vault
@@ -101,25 +110,24 @@ pub(crate) fn choose(flag: Option<StoreFlag>, vault: Option<&str>) -> Result<Sto
     Ok(Store::OnePassword { vault })
 }
 
-fn op_first_line(stderr: &str) -> String {
-    stderr
-        .lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty())
-        .map_or_else(|| t!("worker_secrets.no_reason"), str::to_owned)
-}
-
-/// Runs `op`, and returns its standard output when it succeeds.
+/// Runs `op`, and returns its standard output when it succeeds. A spinner
+/// turns while it waits on the 1Password app.
 fn op(args: &[&str], stdin: Option<&str>, doing: &str) -> Result<Zeroizing<String>, String> {
     let runner = crate::node_common::op_runner()?;
-    let out = runner.run(args, stdin).map_err(|e| e.to_string())?;
+    let spinner = crate::node_common::op_waiting(doing);
+    let out = runner.run(args, stdin).map_err(|e| e.to_string());
+    if let Some(spinner) = spinner {
+        spinner.done();
+    }
+    let out = out?;
     if out.success {
         Ok(Zeroizing::new(out.stdout))
     } else {
+        let no_reason = t!("worker_secrets.no_reason");
         Err(t!(
             "worker_secrets.op_failed",
             doing,
-            why = op_first_line(&out.stderr)
+            why = crate::node_common::op_why(&out.stderr, &no_reason)
         ))
     }
 }

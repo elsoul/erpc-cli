@@ -21,6 +21,8 @@ nothing_changed = "nothing was changed"
 in_force = "{worker}'s server firewall is in force: SSH from {ssh}; {app}; everything else dropped."
 app_closed = "the app's port closed"
 app_open = "port {port} from {addresses}"
+app_loopback = "port {port} is open at the server's firewall; the app answers there only if its own setting binds it beyond loopback (the pumpfun template: API_BIND = \"0.0.0.0\" in [vars])"
+lockout_note = "the SSH allow list outlives the address it was made from: keep a second address you can reach the server from in firewall.ssh_allow (an office or a VPN exit), since a changed home address locks you out; the way back in is then ERPC support for an ERPC server, and its provider's console for a server of your own (--host)"
 
 [describe]
 nobody = "nobody"

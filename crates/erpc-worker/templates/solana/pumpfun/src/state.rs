@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use log::warn;
 use serde::{Deserialize, Serialize};
+pub use crate::amm::Side;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signer::keypair::Keypair;
 use solana_signature::Signature;
@@ -54,6 +55,30 @@ pub struct TradeConfig {
     /// Creators banned from the start, by address.
     #[serde(default)]
     pub banned_creators: Vec<String>,
+    /// Buy only pools pump.fun's migration made for graduated tokens, none
+    /// made by hand (where most pools opened to be pulled are).
+    #[serde(default)]
+    pub graduated_only: bool,
+    /// Buy a graduation as soon as its migration is seen in the Shreds
+    /// stream (`SHREDS_ENDPOINT`), before any node has run it, instead of
+    /// when Geyser shows it processed. The buy can then land before the
+    /// pool exists and fail, paying its fee.
+    #[serde(default)]
+    pub buy_on_shreds: bool,
+    /// The compute unit price of a buy, in micro-lamports: a priority fee,
+    /// which leaders order transactions by. 0 sends none.
+    #[serde(default)]
+    pub priority_fee_micro_lamports: u64,
+    /// The compute units a buy asks for when it pays a priority fee, which
+    /// is paid on every unit asked for.
+    #[serde(default = "default_compute_unit_limit")]
+    pub compute_unit_limit: u32,
+}
+
+/// What a buy asks for when it pays a priority fee: room for the token's
+/// account, the WSOL wrap and the swap, with some to spare.
+fn default_compute_unit_limit() -> u32 {
+    200_000
 }
 
 fn default_warmup_secs() -> u64 {
@@ -83,11 +108,22 @@ impl Default for TradeConfig {
             creator_window_secs: default_creator_window_secs(),
             creator_max_pools: default_creator_max_pools(),
             banned_creators: Vec::new(),
+            graduated_only: false,
+            buy_on_shreds: false,
+            priority_fee_micro_lamports: 0,
+            compute_unit_limit: default_compute_unit_limit(),
         }
     }
 }
 
 impl TradeConfig {
+    /// The priority fee a buy pays, in lamports: counted in what the buy
+    /// cost, so a take-profit covers it.
+    pub fn priority_fee_lamports(&self) -> u64 {
+        let micro = self.priority_fee_micro_lamports as u128 * self.compute_unit_limit as u128;
+        micro.div_ceil(1_000_000).min(u64::MAX as u128) as u64
+    }
+
     /// Why this configuration would trade badly, if it would.
     pub fn validate(&self) -> Result<(), String> {
         if self.buy_amount_lamports == 0 {
@@ -111,6 +147,15 @@ impl TradeConfig {
             .find(|c| c.parse::<Pubkey>().is_err())
         {
             return Err(format!("banned_creators: {bad} is not an address"));
+        }
+        if !(1..=1_400_000).contains(&self.compute_unit_limit) {
+            return Err("compute_unit_limit must be between 1 and 1400000".to_string());
+        }
+        if self.priority_fee_lamports() > self.buy_amount_lamports {
+            return Err(
+                "the priority fee (priority_fee_micro_lamports x compute_unit_limit / 1000000 lamports) must not be above buy_amount_lamports"
+                    .to_string(),
+            );
         }
         if self.min_pool_sol_lamports <= self.exit_pool_sol_lamports {
             return Err(
@@ -188,6 +233,9 @@ pub struct Position {
     /// Found in the wallet at start rather than bought by this run: it is
     /// sold only while trading runs.
     pub restored: bool,
+    /// Which side of its pool is SOL.
+    #[serde(default)]
+    pub side: Side,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -214,6 +262,87 @@ pub struct TradeLog {
     /// Human-readable message for notification events.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+}
+
+impl TradeLog {
+    fn now(action: TradeAction, pool: Pubkey, base_mint: Pubkey) -> Self {
+        Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            timestamp: Utc::now(),
+            action,
+            pool,
+            base_mint,
+            amount_sol: 0.0,
+            amount_tokens: 0,
+            tx_signature: None,
+            error: None,
+            message: None,
+        }
+    }
+
+    /// A buy that landed: what it spent and what it brought in.
+    pub fn buy(pool: Pubkey, base_mint: Pubkey, amount_sol: f64, amount_tokens: u64, signature: String) -> Self {
+        Self { amount_sol, amount_tokens, tx_signature: Some(signature), ..Self::now(TradeAction::Buy, pool, base_mint) }
+    }
+
+    /// A sell that landed: what it sold and what it brought in.
+    pub fn sell(pool: Pubkey, base_mint: Pubkey, amount_sol: f64, amount_tokens: u64, signature: String) -> Self {
+        Self { amount_sol, amount_tokens, tx_signature: Some(signature), ..Self::now(TradeAction::Sell, pool, base_mint) }
+    }
+
+    /// Something that went wrong with a trade on the pool, with the
+    /// transaction it concerns when there is one.
+    pub fn error(
+        pool: Pubkey,
+        base_mint: Pubkey,
+        amount_sol: f64,
+        amount_tokens: u64,
+        signature: Option<String>,
+        error: String,
+    ) -> Self {
+        Self { amount_sol, amount_tokens, tx_signature: signature, error: Some(error), ..Self::now(TradeAction::Error, pool, base_mint) }
+    }
+
+    /// A note on the pool, for people to read.
+    pub fn note(pool: Pubkey, base_mint: Pubkey, amount_tokens: u64, message: String) -> Self {
+        Self { amount_tokens, message: Some(message), ..Self::now(TradeAction::Notification, pool, base_mint) }
+    }
+}
+
+impl Position {
+    /// A position just opened on `pool`: active, nothing sold yet, its
+    /// amount read from the chain. A buy whose amount could not be read
+    /// sets `amount_known: false`; a position found at start, `restored`.
+    pub fn opened(
+        pool: Pubkey,
+        base_mint: Pubkey,
+        buy_price_lamports: u64,
+        base_amount: u64,
+        quote_token_program: Pubkey,
+        side: Side,
+    ) -> Self {
+        Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            pool,
+            base_mint,
+            buy_price_lamports,
+            base_amount,
+            bought_at: Utc::now(),
+            status: PositionStatus::Active,
+            total_sell_lamports: 0,
+            quote_token_program,
+            sell_failures: 0,
+            sell_attempts: 0,
+            next_sell_at: None,
+            draining: false,
+            pending_sell: None,
+            close_sent: false,
+            amount_known: true,
+            closing: false,
+            restored: false,
+            side,
+        }
+    }
 }
 
 pub struct AppState {
@@ -243,6 +372,10 @@ pub struct AppState {
     pub creators: crate::creators::CreatorWatch,
     /// When the bot started watching: no buys during `warmup_secs`.
     pub started: std::time::Instant,
+    /// How early pools are seen and how late buys land (see `timing`).
+    pub timing: Arc<std::sync::Mutex<crate::timing::Timing>>,
+    /// Address lookup tables, to read transactions from the Shreds stream.
+    pub luts: Arc<crate::shreds::Luts>,
 }
 
 impl AppState {
@@ -262,6 +395,8 @@ impl AppState {
             seen_pools: HashSet::new(),
             creators: crate::creators::CreatorWatch::default(),
             started: std::time::Instant::now(),
+            timing: Default::default(),
+            luts: Default::default(),
         }
     }
 
@@ -397,21 +532,56 @@ impl AppState {
         self.trade_logs.push_back(log);
     }
 
+    /// Keeps a log here and, with Redis, in the trade history that
+    /// outlasts a restart: what a trade did, not what went wrong on the way.
+    pub fn record(&mut self, log: TradeLog) {
+        if let Some(client) = &self.redis_client {
+            persist_trade_log_to_redis(client, &log);
+        }
+        self.push_log(log);
+    }
+
     /// Push a notification event into the trade log.
     pub fn push_notification(&mut self, pool: Pubkey, base_mint: Pubkey, message: String) {
-        let log = TradeLog {
-            id: uuid::Uuid::new_v4().to_string(),
-            timestamp: Utc::now(),
-            action: TradeAction::Notification,
-            pool,
-            base_mint,
-            amount_sol: 0.0,
-            amount_tokens: 0,
-            tx_signature: None,
-            error: None,
-            message: Some(message),
+        self.push_log(TradeLog::note(pool, base_mint, 0, message));
+    }
+
+    /// Takes up what earlier runs kept in Redis: the creators banned and
+    /// those traced, and whether trading was on (so a crash restart or a
+    /// reboot does not leave the bot idle on paid lines); then bans the
+    /// creators the configuration lists. True when trading resumed.
+    pub async fn take_up_saved(&mut self) -> bool {
+        let mut resumed = false;
+        if let Some(client) = self.redis_client.clone() {
+            for (creator, reason) in crate::creators::load_bans(&client).await {
+                self.creators.ban(creator, &reason);
+            }
+            for creator in crate::trace::load_traced(&client).await {
+                self.creators.mark_traced(creator);
+            }
+            if let Some(wanted) = load_trading(&client).await {
+                resumed = wanted != Trading::Stopped;
+                self.running = resumed;
+                self.sell_only = wanted == Trading::SellOnly;
+            }
+        }
+        let listed: Vec<Pubkey> = self.config.banned_creators.iter().filter_map(|c| c.parse().ok()).collect();
+        for creator in listed {
+            self.creators.ban(creator, "listed in banned_creators");
+        }
+        resumed
+    }
+
+    /// Keeps whether trading is on, so that the next start resumes it.
+    pub fn persist_trading(&self) {
+        let wanted = if !self.running {
+            Trading::Stopped
+        } else if self.sell_only {
+            Trading::SellOnly
+        } else {
+            Trading::Running
         };
-        self.push_log(log);
+        persist_trading(self.redis_client.as_ref(), wanted);
     }
 
     pub fn active_position_count(&self) -> usize {
@@ -419,6 +589,52 @@ impl AppState {
             .values()
             .filter(|p| p.status == PositionStatus::Active || p.status == PositionStatus::Selling)
             .count()
+    }
+}
+
+/// What the operator last asked of the bot, kept in Redis so a restart
+/// takes it up again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Trading {
+    Running,
+    SellOnly,
+    Stopped,
+}
+
+/// The Redis key the trading intent is under.
+const TRADING_KEY: &str = "pumpfun:trading";
+
+/// Saves what the operator asked (fire-and-forget).
+pub fn persist_trading(client: Option<&redis::Client>, wanted: Trading) {
+    let Some(client) = client.cloned() else {
+        return;
+    };
+    let value = match wanted {
+        Trading::Running => "running",
+        Trading::SellOnly => "sell_only",
+        Trading::Stopped => "stopped",
+    };
+    tokio::spawn(async move {
+        let result: Result<(), redis::RedisError> = async {
+            let mut con = client.get_multiplexed_async_connection().await?;
+            redis::cmd("SET").arg(TRADING_KEY).arg(value).query_async(&mut con).await
+        }
+        .await;
+        if let Err(e) = result {
+            warn!("Could not save the trading state to Redis: {e:?}");
+        }
+    });
+}
+
+/// What the operator last asked, read at start; none when nothing is kept.
+pub async fn load_trading(client: &redis::Client) -> Option<Trading> {
+    let mut con = client.get_multiplexed_async_connection().await.ok()?;
+    let value: Option<String> = redis::cmd("GET").arg(TRADING_KEY).query_async(&mut con).await.ok()?;
+    match value?.as_str() {
+        "running" => Some(Trading::Running),
+        "sell_only" => Some(Trading::SellOnly),
+        "stopped" => Some(Trading::Stopped),
+        _ => None,
     }
 }
 
@@ -452,7 +668,7 @@ pub fn persist_trade_log_to_redis(client: &redis::Client, log: &TradeLog) {
             redis::pipe()
                 .atomic()
                 .cmd("SET")
-                .arg(format!("trade:logs:{}", &log_id))
+                .arg(format!("trade:logs:{log_id}"))
                 .arg(&json)
                 .ignore()
                 .cmd("ZADD")
@@ -483,23 +699,7 @@ mod tests {
     fn position(id: &str, pool: Pubkey) -> Position {
         Position {
             id: id.to_string(),
-            pool,
-            base_mint: Pubkey::new_unique(),
-            buy_price_lamports: 100_000,
-            base_amount: 1_000,
-            bought_at: Utc::now(),
-            status: PositionStatus::Active,
-            total_sell_lamports: 0,
-            quote_token_program: Pubkey::default(),
-            sell_failures: 0,
-            sell_attempts: 0,
-            draining: false,
-            pending_sell: None,
-            close_sent: false,
-            amount_known: true,
-            closing: false,
-            next_sell_at: None,
-            restored: false,
+            ..Position::opened(pool, Pubkey::new_unique(), 100_000, 1_000, Pubkey::default(), Side::SolBase)
         }
     }
 

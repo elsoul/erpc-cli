@@ -1,6 +1,13 @@
 use log::{error, info};
 use serde_json::json;
 
+/// Tells Discord `message`, when a webhook is set, off the caller's path.
+pub fn notify(webhook_url: Option<String>, message: String) {
+    if let Some(url) = webhook_url {
+        tokio::spawn(async move { notify_discord(&url, &message).await });
+    }
+}
+
 /// Send a notification to a Discord webhook.
 /// Fire-and-forget: errors are logged but don't block the caller.
 pub async fn notify_discord(webhook_url: &str, content: &str) {

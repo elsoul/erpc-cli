@@ -142,6 +142,8 @@ erpc cannot do it yet. Price page: https://erpc.global/en/price/.
 
 ## Common requests
 
+- "I want to run a bot on a server", a trading bot, "deploy my app": that is `erpc worker`, in
+  the skill `erpc-worker`: it makes the app, buys the VPS and the lines it needs, and runs it.
 - "I want an RPC node." Ask which they mean, or answer both: RPC access for an app or bot needs
   no node (shared RPC, or Unlimited / Dedicated RPC for more), with gRPC or shreds when they need
   data streamed or sooner; running their own node needs bare metal RPC, from `server_stock`

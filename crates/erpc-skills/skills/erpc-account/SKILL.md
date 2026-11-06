@@ -9,7 +9,7 @@ description: Signing in to ERPC with erpc (login, logout, whoami, doctor, config
   sees a password.
 - `erpc login` signs in with the OAuth device flow: a browser opens an approval page and shows a
   code. At a terminal it first asks where to keep the session: the OS keychain (default) or
-  1Password (desktop app), then which 1Password vault. `--store keychain|1password|file` and
+  1Password (desktop app), then which 1Password vault. `--store 1password-desktop|1password-service-account|keychain|file` and
   `--vault <ID>` choose without asking. The choice is saved in `~/.erpc/config.toml`
   (`credential_store`, `credential_vault`) and the other commands use it.
 - Moving to another store at `erpc login` signs out of the session kept in the previous one.

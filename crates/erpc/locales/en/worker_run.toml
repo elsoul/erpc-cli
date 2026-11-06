@@ -3,7 +3,9 @@
 
 missing = "{name} cannot start without {settings}"
 missing_hint = "`erpc worker secret put {first}{dir_scope}` keeps a secret; a plain setting goes in [vars]"
+missing_line_hint = "{first} comes from a data line: `erpc worker run{dir_scope} --{flag} --ip <IPV4>` starts an hourly one that lets this machine in; or set it in [vars]"
 watch_only = "no [wallet]: the app starts watch-only (`erpc worker key new{dir_scope}` makes a key)"
+positions_kept = "what the app held stays in its wallet; the next run takes it up (`erpc worker key send{dir_scope} --to <PUBKEY> --all` moves the SOL out)"
 could_not_start = "could not start {bin}: {error}"
 no_stdin = "the app has no standard input to take the key"
 key_not_handed = "could not hand the key over: {error}"
@@ -26,3 +28,13 @@ ended = "it ended on its own: {status}"
 timeout = "it was not healthy within {secs}s"
 healthy = "{name} is healthy ({secs}s after start); stopped"
 failed = "{name} failed its check: {why}"
+interrupted = "stopped with Ctrl-C"
+
+[line]
+taking_up = "taking up {kind} line {id}, which lets in {ip} already"
+active = "{kind} line {id} is active: {setting} = {endpoint}"
+made_anyway = "user-api made the line anyway; it is ended as this run ends"
+not_hourly = "{kind} line {id} is not billed by the hour, and stays as it is"
+kept = "{kind} line {id} is kept, and charged by the hour: `erpc worker run{dir_scope} --{flag} --ip {ip}` takes it up again, the dashboard ends it"
+ended = "{kind} line {id} ended"
+not_ended = "{kind} line {id} was not ended ({message}), and is charged by the hour until it is: `erpc worker run{dir_scope} --{flag} --ip {ip}` takes it up again, the dashboard ends it"

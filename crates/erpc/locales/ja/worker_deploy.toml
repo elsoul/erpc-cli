@@ -3,6 +3,8 @@
 
 missing = "{name} は {settings} がないと起動できません"
 missing_hint = "`erpc worker secret put {first}{dir_scope}` で保管するか、[vars] に設定してください"
+missing_line_hint = "{first} は回線が渡す設定です。`erpc worker deploy{scope} --{flag}` でサーバー用の時間課金の回線を開始します。または [vars] に設定してください"
+not_ready = "デプロイに必要なものがこのマシンにありません：{what}"
 plan = "{name} のリリース {release} を {to} に {worker} としてデプロイします"
 nothing_deployed = "何もデプロイしていません"
 services = "サーバーで {names} が動いているか確かめています（初回は Ubuntu のパッケージから入れます）"

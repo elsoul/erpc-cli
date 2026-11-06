@@ -48,6 +48,7 @@ erpc-ai.workspace = true
 erpc-skills.workspace = true
 erpc-chain.workspace = true
 erpc-chain-solana.workspace = true
+base64.workspace = true
 erpc-chain-arc.workspace = true
 erpc-chain-eth.workspace = true
 erpc-chain-nitro.workspace = true

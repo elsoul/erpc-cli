@@ -560,6 +560,32 @@ pub(crate) async fn line_row(
     kind: LineKind,
     id: &str,
 ) -> Result<Option<Value>, CliError> {
+    Ok(line_rows(api, kind).await?.into_iter().find(|row| {
+        row["id"].as_i64().map(|n| n.to_string()).as_deref() == Some(id)
+            || row["id"].as_str() == Some(id)
+    }))
+}
+
+/// The id of the account's active data line of `kind` that lets in `ip`,
+/// if it has one: what `erpc worker run` takes up rather than buy another.
+pub(crate) async fn line_letting_in(
+    api: &Api,
+    kind: LineKind,
+    ip: Ipv4Addr,
+) -> Result<Option<String>, CliError> {
+    let ip = ip.to_string();
+    Ok(line_rows(api, kind).await?.iter().find_map(|row| {
+        (row["status"] == "active" && line_ips(row).contains(&ip.as_str())).then(|| {
+            row["id"]
+                .as_i64()
+                .map(|n| n.to_string())
+                .or_else(|| row["id"].as_str().map(ToOwned::to_owned))
+        })?
+    }))
+}
+
+/// The account's data lines of `kind`, as their status lists them.
+async fn line_rows(api: &Api, kind: LineKind) -> Result<Vec<Value>, CliError> {
     let product = line_product(kind);
     let url = account::SERVICE_STATUS_URLS
         .iter()
@@ -574,13 +600,7 @@ pub(crate) async fn line_row(
         .flatten()
         .find_map(Value::as_array)
         .ok_or_else(|| failed(t!("worker_vps.line.no_list", kind = kind.label())))?;
-    Ok(rows
-        .iter()
-        .find(|row| {
-            row["id"].as_i64().map(|n| n.to_string()).as_deref() == Some(id)
-                || row["id"].as_str() == Some(id)
-        })
-        .cloned())
+    Ok(rows.clone())
 }
 
 /// The addresses a line's status row lets in: one for gRPC and Shreds, a
@@ -758,6 +778,32 @@ pub(crate) async fn wait_line(
     hourly: bool,
     say: &Say,
 ) -> Result<Line, CliError> {
+    // A person at a terminal sees a spinner while the line is set up, which
+    // can take a while with nothing else to show; its message carries what
+    // would otherwise be said in lines, which a spinner's redraws would
+    // break. The caller says what came of the wait.
+    let spinner = (!say.quiet && crate::ui::stderr_drawn()).then(|| {
+        crate::prompt::Spinner::start(&t!("worker_vps.line.waiting_for", kind = kind.label(), id))
+    });
+    let tell = |text: String| match &spinner {
+        Some(spinner) => spinner.set_message(&text),
+        None => say.line(&text),
+    };
+    let waited = wait_line_saying(api, kind, id, ip, hourly, &tell).await;
+    if let Some(spinner) = spinner {
+        spinner.done();
+    }
+    waited
+}
+
+async fn wait_line_saying(
+    api: &Api,
+    kind: LineKind,
+    id: &str,
+    ip: Ipv4Addr,
+    hourly: bool,
+    tell: &dyn Fn(String),
+) -> Result<Line, CliError> {
     let product = line_product(kind);
     let mut last = t!("worker_vps.line.not_listed");
     let started = std::time::Instant::now();
@@ -782,7 +828,7 @@ pub(crate) async fn wait_line(
             {
                 applied = let_in(api, id, ip, &allowed).await?;
                 if !kept {
-                    say.line(&if applied {
+                    tell(if applied {
                         t!("worker_vps.line.lets_in", id, ip)
                     } else {
                         t!("worker_vps.line.lets_in_later", id, ip)
@@ -816,7 +862,7 @@ pub(crate) async fn wait_line(
                 (status, _) => {
                     if status != last {
                         if kind == LineKind::Unlimited {
-                            say.line(&t!(
+                            tell(t!(
                                 "worker_vps.line.waiting",
                                 id,
                                 status,

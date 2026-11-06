@@ -30,6 +30,41 @@ impl Say {
     }
 }
 
+/// Why `op` failed, as a person reads it. The two answers a beginner meets
+/// most, the desktop app not allowing the request in time and no account
+/// signed in, are said in words with the way out; anything else is op's
+/// own first line, as it came.
+pub(crate) fn op_why(stderr: &str, no_reason: &str) -> String {
+    let first = stderr
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or(no_reason);
+    let lower = first.to_ascii_lowercase();
+    if lower.contains("authorization timeout") || lower.contains("authorization prompt dismissed") {
+        t!("worker_secrets.op_not_allowed")
+    } else if lower.contains("not currently signed in")
+        || lower.contains("not signed in")
+        || lower.contains("no accounts configured")
+        || lower.contains("account is not signed in")
+    {
+        t!("worker_secrets.op_not_signed_in")
+    } else {
+        first
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(300)
+            .collect()
+    }
+}
+
+/// A spinner while `op` waits on the 1Password app, which can take as long
+/// as the person takes to allow it; none off a terminal.
+pub(crate) fn op_waiting(doing: &str) -> Option<crate::prompt::Spinner> {
+    crate::ui::stderr_drawn()
+        .then(|| crate::prompt::Spinner::start(&t!("worker_secrets.op_waiting", doing)))
+}
+
 /// The `op` this machine has: a service account when its token is in the
 /// environment, otherwise the desktop app.
 pub(crate) fn op_runner() -> Result<OpCli, String> {
@@ -350,4 +385,30 @@ pub(crate) fn free_disks(session: &Session) -> Result<Vec<FreeDisk>, String> {
         .run(&RemoteCommand::FreeDisks, None)
         .map_err(|e| e.to_string())?;
     Ok(parse_free_disks(&String::from_utf8_lossy(&out.stdout)))
+}
+
+#[cfg(test)]
+mod op_why_tests {
+    use super::op_why;
+
+    #[test]
+    fn the_two_answers_a_beginner_meets_are_said_in_words() {
+        let timeout = op_why(
+            "[ERROR] 2026/11/04 12:38:37 authorization timeout\n",
+            "no reason",
+        );
+        assert!(timeout.contains("1Password app"), "{timeout}");
+        assert!(!timeout.contains("[ERROR]"), "{timeout}");
+        let out = op_why(
+            "[ERROR] 2026/11/04 12:38:37 You are not currently signed in.\n",
+            "no reason",
+        );
+        assert!(out.contains("op signin"), "{out}");
+        // Anything else comes as op said it, first line only, no control characters.
+        assert_eq!(
+            op_why("\n  something else\x1b[0m\nmore\n", "no reason"),
+            "something else[0m"
+        );
+        assert_eq!(op_why("", "no reason"), "no reason");
+    }
 }

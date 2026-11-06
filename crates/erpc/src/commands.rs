@@ -178,22 +178,22 @@ fn pick_store(
     let mut labels = Vec::new();
     if env.keychain_available {
         kinds.push(StoreKind::OsKeychain);
-        labels.push(format!(
-            "{} (on this machine)",
-            erpc_auth::store::keychain::describe(erpc_core::i18n::Lang::En)
+        labels.push(t!(
+            "login.on_this_machine",
+            store = erpc_auth::store::keychain::describe(crate::i18n::lang())
         ));
     }
     if session::desktop_app_answers() {
         kinds.push(StoreKind::OnePasswordDesktop);
         labels.push(if session::signin_session() {
-            "1Password (through your `op signin` session)".to_owned()
+            t!("login.op_signin")
         } else {
-            "1Password (the desktop app asks to unlock)".to_owned()
+            t!("login.op_desktop")
         });
     }
     if !env.keychain_available {
         kinds.push(StoreKind::File);
-        labels.push("a file on this machine (leaves the session on disk)".to_owned());
+        labels.push(t!("login.file"));
     }
     let reason = erpc_auth::store::select::Reason::Configured;
     if kinds.len() == 1 {
@@ -206,11 +206,7 @@ fn pick_store(
         .credential_store
         .and_then(|kind| kinds.iter().position(|k| *k == kind))
         .unwrap_or(0);
-    let index = crate::prompt::pick(
-        "Where should erpc keep your session?",
-        &labels,
-        Some(default),
-    )?;
+    let index = crate::prompt::pick(&t!("login.where"), &labels, Some(default))?;
     Ok(Selection {
         kind: kinds[index],
         reason,
@@ -221,7 +217,7 @@ fn pick_store(
 fn pick_vault(recorded: Option<&str>) -> Result<String, String> {
     let vaults = session::list_vaults()?;
     if vaults.is_empty() {
-        return Err("the 1Password account has no vault erpc can use".to_owned());
+        return Err(t!("login.no_vault"));
     }
     let labels: Vec<String> = vaults
         .iter()
@@ -230,11 +226,7 @@ fn pick_vault(recorded: Option<&str>) -> Result<String, String> {
     let default = recorded
         .and_then(|id| vaults.iter().position(|v| v.id == id))
         .or_else(|| session::personal_vault(&vaults));
-    let index = crate::prompt::pick(
-        "Which 1Password vault? (anyone who can read it can use the session)",
-        &labels,
-        default,
-    )?;
+    let index = crate::prompt::pick(&t!("login.which_vault"), &labels, default)?;
     Ok(vaults[index].id.clone())
 }
 

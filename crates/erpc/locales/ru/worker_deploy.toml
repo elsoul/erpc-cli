@@ -3,6 +3,8 @@
 
 missing = "Приложение {name} не запустится без {settings}"
 missing_hint = "сохраните значение через `erpc worker secret put {first}{dir_scope}` или задайте его в [vars]"
+missing_line_hint = "{first} даёт линия: `erpc worker deploy{scope} --{flag}` запускает почасовую линию для сервера; или задайте его в [vars]"
+not_ready = "на этой машине нет того, что нужно для развёртывания: {what}"
 plan = "Развёртывание приложения {name}, релиз {release}, на {to} как {worker}"
 nothing_deployed = "ничего не развёрнуто"
 services = "проверяю, что на сервере работают {names} (в первый раз ставлю из пакетов Ubuntu)"

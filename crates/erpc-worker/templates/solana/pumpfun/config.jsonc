@@ -24,7 +24,11 @@
     }
   },
   "accounts": {},
-  "slots": {},
+  // Every slot's progress (first shred received, confirmed, dead): what
+  // GET /api/timing measures migrations against.
+  "slots": {
+    "timing": { "filter_by_commitment": false, "interslot_updates": true }
+  },
   "blocks": {},
   "blocks_meta": {},
   "entry": {}

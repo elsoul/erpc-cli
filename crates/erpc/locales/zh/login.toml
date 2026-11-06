@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+where = "erpc 应把你的会话保存在哪里？"
+on_this_machine = "{store}（本机）"
+op_signin = "1Password（通过你的 `op signin` 会话）"
+op_desktop = "1Password（桌面应用会要求解锁）"
+file = "本机上的一个文件（会话留在磁盘上）"
+which_vault = "用哪个 1Password 保险库？（能读它的人都能使用该会话）"
+no_vault = "这个 1Password 账户没有 erpc 可用的保险库"

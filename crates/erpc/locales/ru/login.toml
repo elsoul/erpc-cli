@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+where = "Где erpc хранить вашу сессию?"
+on_this_machine = "{store} (на этой машине)"
+op_signin = "1Password (через вашу сессию `op signin`)"
+op_desktop = "1Password (настольное приложение попросит разблокировать)"
+file = "файл на этой машине (сессия остаётся на диске)"
+which_vault = "Какое хранилище 1Password? (сессией сможет пользоваться любой, кто его читает)"
+no_vault = "в аккаунте 1Password нет хранилища, которое erpc мог бы использовать"

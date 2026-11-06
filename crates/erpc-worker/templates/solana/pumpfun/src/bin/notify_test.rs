@@ -9,8 +9,11 @@
 //!   WEBHOOK_URL=... TRADE_APP_LANG=ja cargo run --bin notify-test
 //!   WEBHOOK_URL=... cargo run --bin notify-test -- all   # cycle through every language
 
+// The bot's own modules, of which this binary uses a part.
+#[allow(dead_code)]
 #[path = "../i18n.rs"]
 mod i18n;
+#[allow(dead_code)]
 #[path = "../webhook.rs"]
 mod webhook;
 

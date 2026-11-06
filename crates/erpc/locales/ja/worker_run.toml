@@ -3,7 +3,9 @@
 
 missing = "{name} は {settings} がないと起動できません"
 missing_hint = "シークレットは `erpc worker secret put {first}{dir_scope}` で保管します。通常の設定は [vars] に書きます"
+missing_line_hint = "{first} は回線が渡す設定です。`erpc worker run{dir_scope} --{flag} --ip <IPV4>` でこのマシンの接続を許可した時間課金の回線を開始します。または [vars] に設定してください"
 watch_only = "[wallet] がありません。アプリは監視のみのモードで起動します（鍵は `erpc worker key new{dir_scope}` で作成できます）"
+positions_kept = "アプリが保有していたものはウォレットに残り、次の実行が引き継ぎます（SOL を出すには `erpc worker key send{dir_scope} --to <PUBKEY> --all`）"
 could_not_start = "{bin} を起動できませんでした：{error}"
 no_stdin = "アプリに鍵を渡す標準入力がありません"
 key_not_handed = "鍵を渡せませんでした：{error}"
@@ -26,3 +28,13 @@ ended = "アプリが自ら終了しました：{status}"
 timeout = "{secs} 秒以内に正常な状態になりませんでした"
 healthy = "{name} は正常です（起動から {secs} 秒）。停止しました"
 failed = "{name} はチェックに失敗しました：{why}"
+interrupted = "Ctrl-C で停止しました"
+
+[line]
+taking_up = "{ip} の接続をすでに許可している {kind} 回線 {id} を使います"
+active = "{kind} 回線 {id} が有効になりました：{setting} = {endpoint}"
+made_anyway = "user-api は回線を作成しました。この実行の終了時に終了します"
+not_hourly = "{kind} 回線 {id} は時間課金ではないため、そのまま残します"
+kept = "{kind} 回線 {id} を残しました。時間課金が続きます。`erpc worker run{dir_scope} --{flag} --ip {ip}` で再び使え、ダッシュボードで終了できます"
+ended = "{kind} 回線 {id} を終了しました"
+not_ended = "{kind} 回線 {id} は終了していません（{message}）。終了するまで時間課金が続きます。`erpc worker run{dir_scope} --{flag} --ip {ip}` で再び使え、ダッシュボードで終了できます"

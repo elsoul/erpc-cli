@@ -12,6 +12,86 @@ whose version has no entry below.
 
 ## [Unreleased]
 
+### Added
+
+- The `solana/pumpfun` template trades pump.fun graduations as well as
+  pools made by hand. It reads a graduation's `create_pool` where it
+  happens, inside pump.fun's `migrate_v2` and with accounts from address
+  lookup tables; buys and sells with WSOL on either side of the pool and
+  with tokens on Token-2022; and buys a graduation from its `create_pool`
+  without RPC reads or a simulation first. `graduated_only` keeps it to
+  graduations.
+- With `SHREDS_ENDPOINT` set, the template reads `migrate_v2` from the
+  Shreds stream, and `buy_on_shreds` (off by default) buys from there. A
+  transaction in the stream has not run, so a migration is bought only
+  when its curve, pool and vaults are the addresses its mint gives them
+  and the accounts read are owned by the programs that write them.
+  `GET /api/timing` gives p50 and p90 of how long a migration showed in
+  Shreds before Geyser processed it and before its slot was confirmed, how
+  long a buy took from the pool's first sighting to its send, and how many
+  slots late each buy landed. `priority_fee_micro_lamports` and
+  `compute_unit_limit` set a buy's priority fee, which the take-profit
+  counts as cost.
+- `POST /api/bans/trace` in the template bans the wallet that first funded
+  each banned creator, and the other wallets that funder sent SOL to
+  lately. Wallets with a long history, funders that paid many wallets and
+  the bot's own wallet are left alone.
+- `erpc worker run --grpc --shreds --ip <IPV4>` gives a run on this machine
+  hourly gRPC and Shreds lines that admit its public IPv4. An active line
+  that already admits it is taken up; otherwise a new line is bought after
+  its price is asked. When the run ends, Ctrl-C included, erpc asks to end
+  each line; `--keep-lines` keeps them. Ctrl-C while a line is being bought
+  waits for the purchase to be on record, then ends that line with the
+  rest.
+- `erpc worker api` sends one request to the app's API on its server, over
+  SSH, with `API_TOKEN` read here and never shown; `erpc worker trades`
+  shows the app's trade history or the profit per trade.
+- `erpc ai` runs the `erpc worker` verbs that only look without asking:
+  `check`, `list`, `status`, `logs` (not followed), `releases`,
+  `key show`, `key balance`, `secret list`, `firewall list` and
+  `backup status`. Every other verb is shown and asked as before.
+- `erpc worker key send` moves SOL out of the trading wallet to one address
+  after a yes: the key is read behind the same gate as a run, and the
+  transfer is signed in memory and sent through the app's own RPC. It is
+  followed by its own signature until it lands or its blockhash is past,
+  and is said to be unsent only when the RPC node refused it before
+  sending it on. The address is taken only in its canonical base58 and
+  shown as decoded.
+- `run.requires` in `erpc.toml` takes a set of settings of which one is
+  enough, such as `["ERPC_API_KEY", "SOLANA_RPC_ENDPOINT"]`. The pumpfun
+  template asks for its RPC that way, so `erpc worker check` no longer
+  calls an app ready that cannot start. Such a set is an array inside
+  `missing` in `secret list --json`, beside the names of single
+  settings, and in `manifest.run.requires` in `check --json`.
+
+### Changed
+
+- `erpc worker stop`, `status` and `delete` say which hourly server and
+  lines keep charging and how to end them; `status` carries them in its
+  JSON. `deploy` checks the cross-build tools and the SSH key before a VPS
+  is bought, and names every missing piece at once; `check` says the same
+  of the tools, looking for them on `PATH` without running anything in
+  the app's directory.
+- Before `stop`, `restart`, `rollback` and `delete`, an app with a wallet
+  is warned that its positions wait while it is down; a redeploy says so
+  as it restarts the app.
+- The pumpfun template keeps whether trading is on in Redis and takes it
+  up again at start, so a restart does not leave it idle on paid lines.
+- `erpc worker firewall` says, after a change, that the SSH allow list
+  outlives the address it was made from, and that a port opened for the
+  app answers only if the app binds beyond loopback.
+- `erpc worker init` builds its "Next" steps from the manifest. A missing
+  line setting points at `--grpc` or `--shreds` instead of `secret put`.
+- A line that is becoming active shows a spinner, as does 1Password while
+  erpc waits on its app. On Linux without a Secret Service the keychain is
+  refused where the store is chosen, with the ways out.
+- The `erpc login` store picker and vault question speak en, ja, zh and
+  ru.
+- CI renders the `solana/pumpfun` template as `erpc worker init` does and
+  runs its clippy and tests. The templates are not workspace members, and
+  nothing compiled them before.
+
+
 ## [0.1.0-rc.2] - 2026-11-05
 
 Everything erpc does beyond signing in, developed since 0.1.0-rc.1 and

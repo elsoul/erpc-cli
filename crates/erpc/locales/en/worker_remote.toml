@@ -25,7 +25,7 @@ refused = "the server's agent refused"
 unknown = "unknown"
 release = "release {release}"
 pid = "pid {pid}"
-up = "up {seconds}s"
+up = "up {time}"
 last_exit = "last exit: {exit}"
 
 [describe.restarts]
@@ -81,6 +81,7 @@ then_server = ", then end the hourly server"
 then_lines_and_server = ", then end its data lines and the hourly server"
 then_lines = ", then end its data lines (no hourly server is on record)"
 no_server_to_end = " (no hourly server is on record to end)"
+keeps_charging = "; its hourly {items} keep running and are charged (`--release-server` ends them)"
 
 [unreached]
 message = "could not reach the server {host}{vps}; it may have been ended or be down"
@@ -122,3 +123,18 @@ backup = "; a backup key can also be revoked with `erpc storage keys revoke <n>`
 server = "; the server can also be ended in the dashboard"
 lines = "; a line ended outside erpc leaves the record with `--forget-line <id>`, and one still running ends in the dashboard"
 forget = "; if the server can no longer be reached and the worker does not run there, `--forget` leaves it unreached"
+
+[hourly]
+server = "{kind} {id}"
+line = "{kind} line {id}"
+still_charged = "{items}: charged by the hour until ended. `erpc worker delete --release-server{scope}` ends them; `erpc ai` (the credit balance) or the dashboard shows the price per hour"
+
+[api]
+bad_method = "{method} is not a method here: GET, POST, PUT or DELETE"
+bad_path = "{path} is not a path: it starts with / and has no spaces, quotes or control characters"
+no_port = "run.port is not set in erpc.toml, so the app's API has no port to reach"
+no_token = "[secrets] has no API_TOKEN, which every request needs: `erpc worker secret put API_TOKEN{dir_scope}`"
+failed = "the request did not go through: {why}\n{body}"
+
+[positions]
+warning = "the app trades with a key: while it is down nothing it holds is sold, and its positions wait. Wind it down first as its README says; for the pumpfun bot: `erpc worker api{scope} /api/trade/start?mode=sell_only -X POST`, then `erpc worker api{scope} /api/trade/status` until active_positions is 0"

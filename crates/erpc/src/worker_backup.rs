@@ -545,6 +545,9 @@ struct Place {
     app_name: String,
     env: Env,
     whose: Whose,
+    /// What a deploy puts on the server beside the app, whose data a
+    /// backup leaves out.
+    services: erpc_worker::manifest::Services,
 }
 
 impl Place {
@@ -559,6 +562,7 @@ impl Place {
         let id = UnitId::new(&m.unit_id(&app.env)).map_err(failed)?;
         Ok(Self {
             path,
+            services: m.services,
             app_name: m.name,
             env,
             whose: Whose::new(id, &host_key),
@@ -642,6 +646,26 @@ pub(crate) async fn on(json: bool, app: &App, at: &str, yes: bool) -> Outcome {
             at = at.as_str(),
             host
         ));
+        // Redis and PostgreSQL keep their data outside the app's state
+        // directory: a backup of this bot without them is an empty one.
+        let services: Vec<&str> = place
+            .services
+            .vars()
+            .iter()
+            .map(|(var, _)| {
+                if *var == "REDIS_URL" {
+                    "Redis"
+                } else {
+                    "PostgreSQL"
+                }
+            })
+            .collect();
+        if !services.is_empty() {
+            crate::interrupt::say(&t!(
+                "worker_backup.on.services_excluded",
+                names = services.join(" and ")
+            ));
+        }
         go_ahead(yes, &t!("worker_backup.nothing_changed"))?;
 
         // The server first, so a server that cannot be reached leaves the

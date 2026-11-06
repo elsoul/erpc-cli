@@ -4,7 +4,6 @@ use crate::runtime::runner::run_geyser_stream;
 use crate::runtime::settings::{for_log, redact, Settings};
 use crate::runtime::subscription::build_subscribe_request;
 use crate::state::AppState;
-use crate::utils::blocktime::{create_transactions_by_slot, latency_monitor_task, BlockTimeCache};
 use crate::utils::config::Config;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_stream_sdk::GeyserSubscribeUpdate;
@@ -12,13 +11,17 @@ use std::sync::atomic::AtomicU64;
 use std::{fs, net::SocketAddr, sync::Arc};
 use tokio::sync::{mpsc, RwLock};
 
+mod amm;
 mod api;
 mod creators;
 mod engine;
 mod handlers;
 mod i18n;
 mod runtime;
+mod shreds;
 mod state;
+mod timing;
+mod trace;
 mod utils;
 mod wallet;
 mod webhook;
@@ -86,21 +89,18 @@ async fn main() -> Result<(), anyhow::Error> {
     // Creators banned before: saved in Redis, or listed in the config.
     {
         let mut s = app_state.write().await;
-        let saved = match s.redis_client.clone() {
-            Some(client) => creators::load_bans(&client).await,
-            None => Vec::new(),
-        };
-        for (creator, reason) in saved {
-            s.creators.ban(creator, &reason);
-        }
-        let listed: Vec<_> = s
-            .config
-            .banned_creators
-            .iter()
-            .filter_map(|c| c.parse().ok())
-            .collect();
-        for creator in listed {
-            s.creators.ban(creator, "listed in banned_creators");
+        if s.take_up_saved().await {
+            // Trading was on when the last process ended: it is on again,
+            // as a reboot or a crash restart should not leave the bot idle.
+            let sell_only = s.sell_only;
+            log::info!("Trading resumed as before the restart (sell_only = {sell_only})");
+            let msg = i18n::trading_resumed(sell_only);
+            s.push_notification(
+                solana_sdk::pubkey::Pubkey::default(),
+                solana_sdk::pubkey::Pubkey::default(),
+                msg.clone(),
+            );
+            webhook::notify(s.webhook_url.clone(), msg);
         }
         log::info!(
             "Creators banned: {}; no buys for the first {} s",
@@ -111,8 +111,6 @@ async fn main() -> Result<(), anyhow::Error> {
     log::info!("AUTO_LOOP = {}", settings.auto_loop);
 
     // Geyser infrastructure
-    let transactions_by_slot = create_transactions_by_slot();
-    let block_time_cache = BlockTimeCache::new(&settings.rpc_endpoint);
     let tracked_slot = Arc::new(AtomicU64::new(0));
     let (updates_tx, updates_rx) = mpsc::channel::<GeyserSubscribeUpdate>(UPDATE_CHANNEL_CAPACITY);
 
@@ -124,25 +122,12 @@ async fn main() -> Result<(), anyhow::Error> {
         engine::restore_positions_from_wallet(state, rpc, send_rpc).await;
     }
 
-    // Latency monitor disabled to avoid RPC rate-limit exhaustion (getBlockTime
-    // fires per-slot, consuming the entire API quota and starving sell checks).
-    // Re-enable once a dedicated RPC endpoint or rate-limited wrapper is added.
-    let latency_handle = {
-        let _block_time_cache = block_time_cache.clone();
-        let _transactions_by_slot = transactions_by_slot.clone();
-        tokio::spawn(async move {
-            // latency_monitor_task(_block_time_cache, _transactions_by_slot).await;
-            futures::future::pending::<()>().await;
-        })
-    };
-
     let processor_handle = {
-        let transactions_by_slot = transactions_by_slot.clone();
         let state = app_state.clone();
         let rpc = rpc_client.clone();
         let send_rpc = send_rpc_client.clone();
         tokio::spawn(async move {
-            process_updates(updates_rx, transactions_by_slot, state, rpc, send_rpc).await;
+            process_updates(updates_rx, state, rpc, send_rpc).await;
         })
     };
 
@@ -156,6 +141,26 @@ async fn main() -> Result<(), anyhow::Error> {
             tracked_slot,
             updates_tx,
         ))
+    };
+
+    // The Shreds stream, when there is one: migrations seen before they run.
+    let shreds_handle = {
+        let endpoint = settings.shreds_endpoint.clone();
+        let state = app_state.clone();
+        let rpc = rpc_client.clone();
+        let send_rpc = send_rpc_client.clone();
+        tokio::spawn(async move {
+            match endpoint {
+                Some(endpoint) => {
+                    log::info!("Shreds: {}", for_log(&endpoint));
+                    shreds::run(endpoint, state, rpc, send_rpc).await
+                }
+                None => {
+                    log::info!("Shreds: none (SHREDS_ENDPOINT is not set); pools are seen in Geyser only");
+                    futures::future::pending().await
+                }
+            }
+        })
     };
 
     // Axum API server
@@ -172,7 +177,7 @@ async fn main() -> Result<(), anyhow::Error> {
         })
     };
 
-    tokio::try_join!(latency_handle, processor_handle, geyser_handle, api_handle)?;
+    tokio::try_join!(processor_handle, geyser_handle, shreds_handle, api_handle)?;
 
     Ok(())
 }

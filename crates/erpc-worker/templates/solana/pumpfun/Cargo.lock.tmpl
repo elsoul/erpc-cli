@@ -538,6 +538,48 @@ dependencies = [
 ]
 
 [[package]]
+name = "{{name}}"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "backoff",
+ "bs58",
+ "chrono",
+ "darling 0.21.3",
+ "env_logger",
+ "futures",
+ "home",
+ "libc",
+ "log",
+ "rand 0.8.8",
+ "redis",
+ "reqwest",
+ "scalar_api_reference",
+ "serde",
+ "serde_json",
+ "serde_jsonc",
+ "serde_with",
+ "solana-account-decoder",
+ "solana-commitment-config",
+ "solana-instruction",
+ "solana-rpc-client",
+ "solana-rpc-client-api",
+ "solana-sdk",
+ "solana-signature",
+ "solana-stream-sdk",
+ "solana-transaction-status",
+ "time",
+ "tokio",
+ "tonic",
+ "ultima-swap-pumpfun",
+ "url",
+ "utoipa",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
 name = "brotli"
 version = "9.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1030,19 +1072,6 @@ dependencies = [
 
 [[package]]
 name = "dashmap"
-version = "5.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "978747c1d849a7d2ee5e8adc0159961c48fb7e5db2f06af6723b80123bb53856"
-dependencies = [
- "cfg-if",
- "hashbrown 0.14.5",
- "lock_api",
- "once_cell",
- "parking_lot_core",
-]
-
-[[package]]
-name = "dashmap"
 version = "6.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6361d5c062261c78a176addb82d4c821ae42bed6089de0e12603cd25de2059c"
@@ -1161,53 +1190,6 @@ name = "dyn-clone"
 version = "1.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
-
-[[package]]
-name = "{{name}}"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "backoff",
- "bs58",
- "chrono",
- "darling 0.21.3",
- "dashmap 5.5.3",
- "env_logger",
- "futures",
- "hex",
- "home",
- "libc",
- "log",
- "rand 0.8.8",
- "redis",
- "reqwest",
- "scalar_api_reference",
- "serde",
- "serde_json",
- "serde_jsonc",
- "serde_with",
- "solana-account-decoder",
- "solana-commitment-config",
- "solana-hash 3.1.0",
- "solana-instruction",
- "solana-pubkey 3.0.0",
- "solana-rpc-client",
- "solana-rpc-client-api",
- "solana-sdk",
- "solana-signature",
- "solana-stream-sdk",
- "solana-transaction-status",
- "thiserror 1.0.69",
- "time",
- "tokio",
- "tonic",
- "ultima-swap-pumpfun",
- "url",
- "utoipa",
- "uuid",
- "zeroize",
-]
 
 [[package]]
 name = "eager"
@@ -5380,7 +5362,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0eccc0ec40fe246139d4569257007bbf1c9235fd3b8aaecf1c8b9ae506ea2353"
 dependencies = [
  "chrono",
- "dashmap 6.2.1",
+ "dashmap",
  "futures",
  "http 0.2.12",
  "log",

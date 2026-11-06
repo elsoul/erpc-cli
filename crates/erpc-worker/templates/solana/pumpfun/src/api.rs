@@ -1,4 +1,4 @@
-use crate::state::{AppState, TradeAction, TradeLog};
+use crate::state::{AppState, TradeAction, TradeConfig, TradeLog};
 use crate::i18n;
 use crate::webhook::notify_discord;
 use axum::{
@@ -53,8 +53,17 @@ pub struct ApiContext {
         get_wallet,
         post_grpc_start,
         post_grpc_stop,
+        get_timing,
+        post_bans_trace,
     ),
     components(schemas(
+        crate::timing::TimingReport,
+        crate::timing::Summary,
+        crate::timing::BuyTiming,
+        crate::timing::Via,
+        crate::trace::TraceReport,
+        crate::trace::TracedBan,
+        crate::trace::Skipped,
         PartialTradeConfig,
         StartResponse,
         StatusResponse,
@@ -103,6 +112,8 @@ pub fn build_router(
         .route("/api/wallet", get(get_wallet))
         .route("/api/grpc/start", post(post_grpc_start))
         .route("/api/grpc/stop", post(post_grpc_stop))
+        .route("/api/timing", get(get_timing))
+        .route("/api/bans/trace", post(post_bans_trace))
         .route(
             "/openapi.json",
             get(move || {
@@ -154,7 +165,9 @@ fn same_token(a: &[u8], b: &[u8]) -> bool {
 
 // ─── Schemas ─────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+/// The trade configuration's fields, each optional: what `PUT /api/config`
+/// takes. The ones given are laid over the configuration as it is.
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct PartialTradeConfig {
     pub buy_amount_lamports: Option<u64>,
     pub sell_multiplier: Option<f64>,
@@ -169,6 +182,10 @@ pub struct PartialTradeConfig {
     pub creator_max_pools: Option<usize>,
     /// Replaces the list; each one listed is banned at once.
     pub banned_creators: Option<Vec<String>>,
+    pub graduated_only: Option<bool>,
+    pub buy_on_shreds: Option<bool>,
+    pub priority_fee_micro_lamports: Option<u64>,
+    pub compute_unit_limit: Option<u32>,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -263,43 +280,10 @@ async fn put_config(
     Json(body): Json<PartialTradeConfig>,
 ) -> Response {
     let mut s = ctx.state.write().await;
-    let mut next = s.config.clone();
-    if let Some(v) = body.buy_amount_lamports {
-        next.buy_amount_lamports = v;
-    }
-    if let Some(v) = body.sell_multiplier {
-        next.sell_multiplier = v;
-    }
-    if let Some(v) = body.slippage_bps {
-        next.slippage_bps = v;
-    }
-    if let Some(v) = body.max_positions {
-        next.max_positions = v;
-    }
-    if let Some(v) = body.min_pool_sol_lamports {
-        next.min_pool_sol_lamports = v;
-    }
-    if let Some(v) = body.sell_timeout_secs {
-        next.sell_timeout_secs = v;
-    }
-    if let Some(v) = body.exit_pool_sol_lamports {
-        next.exit_pool_sol_lamports = v;
-    }
-    if let Some(v) = body.auto_loop {
-        next.auto_loop = v;
-    }
-    if let Some(v) = body.warmup_secs {
-        next.warmup_secs = v;
-    }
-    if let Some(v) = body.creator_window_secs {
-        next.creator_window_secs = v;
-    }
-    if let Some(v) = body.creator_max_pools {
-        next.creator_max_pools = v;
-    }
-    if let Some(v) = body.banned_creators {
-        next.banned_creators = v;
-    }
+    let next = match patched(&s.config, &body) {
+        Ok(next) => next,
+        Err(why) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": why }))).into_response(),
+    };
     if let Err(why) = next.validate() {
         return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": why }))).into_response();
     }
@@ -319,6 +303,17 @@ async fn put_config(
     }
     s.config = next;
     Json(s.config.clone()).into_response()
+}
+
+/// The configuration with the patch's fields laid over it: every field the
+/// patch gives replaces the one there, the rest stay.
+fn patched(config: &TradeConfig, patch: &PartialTradeConfig) -> Result<TradeConfig, String> {
+    let mut merged = serde_json::to_value(config).map_err(|e| e.to_string())?;
+    let given = serde_json::to_value(patch).map_err(|e| e.to_string())?;
+    if let (Some(into), Some(from)) = (merged.as_object_mut(), given.as_object()) {
+        into.extend(from.iter().filter(|(_, v)| !v.is_null()).map(|(k, v)| (k.clone(), v.clone())));
+    }
+    serde_json::from_value(merged).map_err(|e| e.to_string())
 }
 
 #[derive(Debug, Deserialize)]
@@ -387,6 +382,7 @@ async fn post_trade_start(State(ctx): State<ApiContext>, Query(query): Query<Sta
     // again changes the mode of a run under way.
     s.sell_only = sell_only;
     if s.running {
+        s.persist_trading();
         return (
             StatusCode::OK,
             Json(StartResponse {
@@ -400,6 +396,7 @@ async fn post_trade_start(State(ctx): State<ApiContext>, Query(query): Query<Sta
     }
 
     s.running = true;
+    s.persist_trading();
     let msg = i18n::trading_started(
         &pubkey.to_string(),
         balance_sol,
@@ -424,6 +421,7 @@ async fn post_trade_start(State(ctx): State<ApiContext>, Query(query): Query<Sta
 async fn post_trade_stop(State(ctx): State<ApiContext>) -> impl IntoResponse {
     let mut s = ctx.state.write().await;
     s.running = false;
+    s.persist_trading();
     let positions = s.active_position_count();
     let msg = i18n::trading_stopped(positions);
     fire_notification(&mut s, &msg);
@@ -571,6 +569,33 @@ async fn post_grpc_stop(State(ctx): State<ApiContext>) -> impl IntoResponse {
     let msg = i18n::grpc_stopped();
     fire_notification(&mut s, &msg);
     Json(serde_json::json!({ "grpc_streaming": false }))
+}
+
+/// How early graduations are seen (Shreds, Geyser at processed, confirmed)
+/// and how many slots after its pool each buy landed, in milliseconds and
+/// slots, over the last samples. Kept in memory: a restart starts over.
+#[utoipa::path(get, path = "/api/timing", responses((status = 200, body = crate::timing::TimingReport)), tag = "Trade")]
+async fn get_timing(State(ctx): State<ApiContext>) -> impl IntoResponse {
+    let timing = ctx.state.read().await.timing.clone();
+    let report = timing.lock().expect("timing lock").report();
+    Json(report)
+}
+
+#[derive(Deserialize)]
+struct TraceQuery {
+    limit: Option<usize>,
+}
+
+/// Traces banned creators' funding: the wallet that first sent each one SOL,
+/// and the other wallets it sent SOL to lately, are banned too. Up to
+/// `limit` creators not traced before (10 by default, 100 at most); running
+/// it again traces what it banned. Wallets with a long history (exchanges,
+/// services) are never blamed. Reads about 200 transactions per creator
+/// from the read RPC, so it takes a while.
+#[utoipa::path(post, path = "/api/bans/trace", params(("limit" = Option<usize>, Query, description = "Creators to trace, 10 by default, 100 at most")), responses((status = 200, body = crate::trace::TraceReport)), tag = "Bans")]
+async fn post_bans_trace(State(ctx): State<ApiContext>, Query(q): Query<TraceQuery>) -> impl IntoResponse {
+    let limit = q.limit.unwrap_or(10).clamp(1, 100);
+    Json(crate::trace::trace(&ctx.state, &ctx.rpc_client, limit).await)
 }
 
 /// Get trade history (Buy/Sell only, newest first). Uses Redis if available, otherwise in-memory.
@@ -729,12 +754,6 @@ async fn fetch_trade_history_from_redis(
 ) -> Result<TradeHistoryResponse, redis::RedisError> {
     let mut con = client.get_multiplexed_async_connection().await?;
 
-    // Get total count
-    let total: usize = redis::cmd("ZCARD")
-        .arg("trade:logs:timeline")
-        .query_async(&mut con)
-        .await?;
-
     // Fetch ids from sorted set (newest first = ZREVRANGE)
     // Over-fetch if we need to filter by action
     let fetch_count = if action_filter.is_some() {
@@ -765,28 +784,26 @@ async fn fetch_trade_history_from_redis(
 
     let mut trades: Vec<serde_json::Value> = Vec::new();
     let mut filtered_total = 0usize;
-    for json_opt in jsons {
-        if let Some(json_str) = json_opt {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json_str) {
-                // Filter: only Buy/Sell
-                let action_str = val.get("action").and_then(|a| a.as_str()).unwrap_or("");
-                if action_str != "Buy" && action_str != "Sell" {
+    for json_str in jsons.into_iter().flatten() {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json_str) {
+            // Filter: only Buy/Sell
+            let action_str = val.get("action").and_then(|a| a.as_str()).unwrap_or("");
+            if action_str != "Buy" && action_str != "Sell" {
+                continue;
+            }
+            if let Some(ref af) = action_filter {
+                let expected = match af {
+                    TradeAction::Buy => "Buy",
+                    TradeAction::Sell => "Sell",
+                    _ => "",
+                };
+                if action_str != expected {
                     continue;
                 }
-                if let Some(ref af) = action_filter {
-                    let expected = match af {
-                        TradeAction::Buy => "Buy",
-                        TradeAction::Sell => "Sell",
-                        _ => "",
-                    };
-                    if action_str != expected {
-                        continue;
-                    }
-                }
-                filtered_total += 1;
-                if filtered_total > offset && trades.len() < limit {
-                    trades.push(val);
-                }
+            }
+            filtered_total += 1;
+            if filtered_total > offset && trades.len() < limit {
+                trades.push(val);
             }
         }
     }
@@ -830,5 +847,36 @@ fn fire_notification(state: &mut AppState, msg: &str) {
         tokio::spawn(async move {
             notify_discord(&url, &discord_msg).await;
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every setting can be changed over the API, and the API takes none
+    /// the configuration lacks: the two mirror each other field for field.
+    #[test]
+    fn the_patch_has_every_setting_and_only_those() {
+        let config = serde_json::to_value(TradeConfig::default()).unwrap();
+        let patch: PartialTradeConfig = serde_json::from_value(config.clone()).unwrap();
+        let patch = serde_json::to_value(&patch).unwrap();
+        let (config, patch) = (config.as_object().unwrap(), patch.as_object().unwrap());
+        assert_eq!(config.len(), patch.len());
+        for key in patch.keys() {
+            assert!(config.contains_key(key), "{key} is not a setting");
+        }
+    }
+
+    #[test]
+    fn a_patch_changes_what_it_gives_and_keeps_the_rest() {
+        let before = TradeConfig::default();
+        let patch: PartialTradeConfig =
+            serde_json::from_value(serde_json::json!({ "buy_amount_lamports": 5, "banned_creators": ["x"] })).unwrap();
+        let after = patched(&before, &patch).unwrap();
+        assert_eq!(after.buy_amount_lamports, 5);
+        assert_eq!(after.banned_creators, vec!["x".to_owned()]);
+        assert_eq!(after.sell_multiplier, before.sell_multiplier);
+        assert_eq!(after.compute_unit_limit, before.compute_unit_limit);
     }
 }
