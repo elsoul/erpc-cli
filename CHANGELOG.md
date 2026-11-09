@@ -12,6 +12,16 @@ whose version has no entry below.
 
 ## [Unreleased]
 
+## [0.1.0-rc.3] - 2026-11-09
+
+`erpc rpc` on all 18 chains, `erpc validator` on eight more, and the native
+Solana backend. A native Solana testnet validator that only syncs was deployed
+and run on a real server from this code, and `docs/solana-native.md` says what
+that covered; nginx ingress, voting and mainnet have not been run on a real
+server yet. Acceptance on real hosts is still under way for most chains. Anyone
+with nodes from 0.1.0-rc.2 should read the notes that begin "Coming from
+0.1.0-rc.2" under Changed before upgrading.
+
 ### Added
 
 - The `solana/pumpfun` template trades pump.fun graduations as well as
@@ -393,7 +403,8 @@ version.
 - `docs/verify-release.md`: verify signatures against a key saved once from
   `main`, not against `pubkey.txt` at the tag being checked.
 
-[Unreleased]: https://github.com/elsoul/erpc-cli/compare/v0.1.0-rc.2...HEAD
+[Unreleased]: https://github.com/elsoul/erpc-cli/compare/v0.1.0-rc.3...HEAD
+[0.1.0-rc.3]: https://github.com/elsoul/erpc-cli/releases/tag/v0.1.0-rc.3
 [0.1.0-rc.2]: https://github.com/elsoul/erpc-cli/releases/tag/v0.1.0-rc.2
 [0.1.0-rc.1]: https://github.com/elsoul/erpc-cli/releases/tag/v0.1.0-rc.1
 [0.0.1]: https://github.com/elsoul/erpc-cli/tree/964b507d0276254aeec4451cfbdecc8effd83724

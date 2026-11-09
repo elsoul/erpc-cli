@@ -50,6 +50,10 @@ github-build-setup = "../build-setup.yml"
 # Keep the `dist` cargo profile defined in Cargo.toml.
 precise-builds = false
 
+# dist 0.32 picks macos-14 for this target, a runner GitHub no longer offers.
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
+
 # Pin the actions in the generated release.yml to commit SHAs (scripts/pin-actions.sh prints them).
 [dist.github-action-commits]
 "actions/checkout" = "d23441a48e516b6c34aea4fa41551a30e30af803"            # v6

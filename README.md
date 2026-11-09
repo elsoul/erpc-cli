@@ -52,13 +52,13 @@ its data; a key backup alone does not establish safe validator recovery.
 **macOS and Linux**
 
 ```bash
-curl -fsSL https://install.erpc.global/v0.1.0-rc.2 | sh
+curl -fsSL https://install.erpc.global/v0.1.0-rc.3 | sh
 ```
 
 **Windows** (PowerShell)
 
 ```powershell
-irm https://install.erpc.global/v0.1.0-rc.2/ps1 | iex
+irm https://install.erpc.global/v0.1.0-rc.3/ps1 | iex
 ```
 
 These name a version because every release so far is a pre-release, and the
@@ -386,7 +386,7 @@ The rules for these, and for writing a message, are in
 
 ## Status
 
-Pre-release (`v0.1.0-rc.2`). The commands above exist and pass their offline
+Pre-release (`v0.1.0-rc.3`). The commands above exist and pass their offline
 checks; acceptance on real hosts is still under way for most chains, and each
 chain's guide says where it stands. erpc is the Rust successor of
 [SLV](https://github.com/ValidatorsDAO/slv).
