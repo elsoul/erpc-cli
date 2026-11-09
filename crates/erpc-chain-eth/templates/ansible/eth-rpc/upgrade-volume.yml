@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Upgrade only the original Ethereum filesystem authority
+  hosts: all
+  gather_facts: false
+  become: true
+  any_errors_fatal: true
+  tasks:
+    - name: Require the exact independent original volume request
+      ansible.builtin.assert:
+        that:
+          - eth_authority_request.action == 'upgrade-volume'
+          - eth_authority_request.keys() | list | sort == ['action', 'contract', 'filesystem']
+    - name: Fence and drain original writers then bind the independent filesystem evidence
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, -c, '{{ eth_authority_loader }}', '{{ playbook_dir }}/../../authority/control.py', request]
+        stdin: '{{ eth_authority_request | to_json }}'
+      changed_when: true

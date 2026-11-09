@@ -1,0 +1,348 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+"""Qualified artifacts and original highest database-opening authority."""
+import hashlib
+import json
+import os
+import stat
+import tarfile
+import contextlib
+try:
+    import fcntl
+except ImportError:
+    fcntl = None  # Remote execution is Linux; portable parser tests never acquire this lock.
+
+CATALOG = {'mainnet-v1.82.3': {'network': 'mainnet',
+                     'commit': 'bf4073918ed33cfa0b09c500658fa116a774bcfd',
+                     'x86_64': 'd616d63d90309926cf7f544633c8dd4132f762fdbba555a35c4842cfa4129379',
+                     'aarch64': '1946a62d579b1c1fe8725d4c5c22b3d75ee0312a97ccc726e54dec8f966bc0e6'},
+ 'testnet-v1.82.2': {'network': 'testnet',
+                     'commit': 'e10772f4fafef31c46f598835fe66648caf6e005',
+                     'x86_64': '201427d5121422e878aa27dd6f66642af2b512a9b37b24ce4b3901c29d4b2750',
+                     'aarch64': '56b30fc29db8ffff4552f0f68c2f6e2037c1605c6ebffbe3e0091d8222950ee1'},
+ 'testnet-v1.83.1': {'network': 'testnet',
+                     'commit': '0e0ede4cbf48c6d7654b613f62fdca71542ace03',
+                     'x86_64': '1a59344f7e17c3f694c2f17f4a23c29e55293d5d5eb294d0dcafff304b188347',
+                     'aarch64': 'c58f07c692f7b00a21b0177fff22589ccc89e90eb7a7d629295d16104fbc95b5'}}
+
+HISTORY = '/etc/sui/release-history'
+BINARIES = ('sui-node', 'sui-tool', 'sui')
+
+
+@contextlib.contextmanager
+def opening_lock(context):
+    if fcntl is None:
+        raise ValueError('Sui source opening requires POSIX locking')
+    path = context.protected('/etc/sui/release-history.lock', missing=True)
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != context.owner or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600:
+            raise ValueError('Sui source lock is not an original private file')
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def encoded(value):
+    return (json.dumps(value, sort_keys=True, separators=(',', ':')) + '\n').encode()
+
+
+def source(version, architecture):
+    if not isinstance(version, str) or not isinstance(architecture, str):
+        raise ValueError('Sui source requires a qualified version and architecture')
+    entry = CATALOG.get(version)
+    if entry is None or architecture not in ('x86_64', 'aarch64'):
+        raise ValueError('unqualified Sui release or architecture')
+    return {'version': version, 'commit': entry['commit'], 'architecture': architecture,
+            'archive_sha256': entry[architecture]}
+
+
+def qualified(value, expected):
+    if not isinstance(value, dict) or value != source(value.get('version'), value.get('architecture')):
+        raise ValueError('Sui source identity differs from the closed qualified catalog')
+    if CATALOG[value['version']]['network'] != expected['network']:
+        raise ValueError('Sui source belongs to another network')
+    return value
+
+
+def order(value):
+    return tuple(int(part) for part in value['version'].split('-v')[1].split('.'))
+
+
+def event_name(value):
+    return '.'.join(value[key] for key in ('version', 'architecture', 'commit', 'archive_sha256')) + '.opened'
+
+
+def immutable(context, name, value, complete=False):
+    """Partial bytes retain their qualified filename; never erase a higher claim."""
+    raw = encoded(value)
+    path = context.protected(name, missing=complete)
+    flags = os.O_RDWR if complete else os.O_RDONLY
+    if complete:
+        flags |= os.O_CREAT
+    descriptor = os.open(path, flags | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    try:
+        info = os.fstat(descriptor)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != context.owner or info.st_nlink != 1
+                or stat.S_IMODE(info.st_mode) != 0o600 or info.st_size > len(raw)):
+            raise ValueError('Sui release history is not its original private regular file')
+        existing = os.read(descriptor, len(raw) + 1)
+        if existing != raw and (not complete or not raw.startswith(existing)):
+            raise ValueError('Sui release history differs; retain originals for explicit recovery')
+        if complete:
+            remaining = memoryview(raw)[len(existing):]
+            while remaining:
+                written = os.write(descriptor, remaining)
+                if written <= 0:
+                    raise OSError('Sui history write made no progress')
+                remaining = remaining[written:]
+            os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    if complete:
+        context.sync(path.parent)
+
+
+def scope(context, expected, create=False):
+    account = context.account_record(expected)
+    value = {'format': 1, 'contract': expected, 'service_uid': account['service_uid'],
+             'service_gid': account['service_gid']}
+    directory = context.protected(HISTORY, missing=create, directory=True)
+    if create:
+        directory.mkdir(mode=0o700, exist_ok=True)
+        context.sync(directory)
+    immutable(context, HISTORY + '/scope.json', value, complete=create)
+    return value
+
+
+def claims(context, expected, durable=False):
+    scope(context, expected, create=False)
+    known = {event_name(source(version, arch)): source(version, arch)
+             for version, entry in CATALOG.items() if entry['network'] == expected['network']
+             for arch in ('x86_64', 'aarch64')}
+    values = []
+    for path in sorted(context.path(HISTORY).iterdir()):
+        if path.name == 'scope.json':
+            continue
+        value = known.get(path.name)
+        if value is None:
+            raise ValueError('unknown Sui opening evidence; do not reset its history')
+        # An empty/partial file still records this source in its immutable name.
+        target = context.protected(HISTORY + '/' + path.name)
+        info = target.stat()
+        if info.st_size > len(encoded(value)):
+            raise ValueError('oversized Sui opening evidence')
+        raw = target.read_bytes()
+        if (stat.S_IMODE(info.st_mode) != 0o600 or not encoded(value).startswith(raw)):
+            raise ValueError('invalid Sui opening evidence')
+        if durable:
+            immutable(context, HISTORY + '/' + path.name, value, complete=True)
+        values.append(value)
+    if durable:
+        scope(context, expected, create=True)
+    return values
+
+
+def permitted(context, expected, value):
+    qualified(value, expected)
+    for previous in claims(context, expected):
+        if previous['architecture'] != value['architecture'] or order(previous) > order(value):
+            raise ValueError('Sui database downgrade or architecture replacement is refused')
+
+
+def claim(context, expected, value):
+    permitted(context, expected, value)
+    immutable(context, HISTORY + '/' + event_name(value), value, complete=True)
+    # Replay all original file and ancestor barriers, including interrupted prior claims.
+    claims(context, expected, durable=True)
+
+
+def fresh(context, expected, record):
+    if context.path(HISTORY).exists():
+        scope(context, expected, create=True)
+        claims(context, expected, durable=True)
+        return
+    if record.get('home_established') or context.path('/etc/sui/contract.json').exists():
+        raise ValueError('existing Sui host requires independent source history migration')
+    if context.path('/opt/sui/current').exists() or context.path('/opt/sui/current').is_symlink():
+        raise ValueError('fresh source history cannot adopt an existing Sui release')
+    scope(context, expected, create=True)
+
+
+def digest(path):
+    value = hashlib.sha256()
+    with path.open('rb') as stream:
+        while block := stream.read(1024 * 1024):
+            value.update(block)
+    return value.hexdigest()
+
+
+def qualify_artifact(context, expected, value):
+    qualified(value, expected)
+    root = '/opt/sui/' + value['version']
+    context.protected(root, directory=True)
+    archive = context.protected(root + '/release.tgz')
+    if digest(archive) != value['archive_sha256']:
+        raise ValueError('Sui original archive is not the qualified source')
+    hashes = {}
+    with tarfile.open(archive, 'r:gz') as package:
+        for name in BINARIES:
+            members = [m for m in package.getmembers() if m.name in (name, './' + name)]
+            if len(members) != 1 or not members[0].isfile():
+                raise ValueError('Sui executable archive layout differs')
+            actual = context.protected(root + '/' + name)
+            hashed = hashlib.sha256()
+            with package.extractfile(members[0]) as stream:
+                while block := stream.read(1024 * 1024):
+                    hashed.update(block)
+            if digest(actual) != hashed.hexdigest():
+                raise ValueError('installed Sui executable differs from its original archive')
+            hashes[name] = hashed.hexdigest()
+    context.write(root + '/erpc-release.json', {'source': value, 'binaries': hashes})
+
+
+def selected(context, expected):
+    context.release(expected)
+    version = os.readlink(context.path('/opt/sui/current')).split('/')[-1]
+    root = '/opt/sui/' + version
+    receipt = json.loads(context.protected(root + '/erpc-release.json').read_text())
+    value = qualified(receipt.get('source'), expected)
+    if value['version'] != version or set(receipt.get('binaries', {})) != set(BINARIES):
+        raise ValueError('Sui installed source receipt differs')
+    for name in BINARIES:
+        if digest(context.protected(root + '/' + name)) != receipt['binaries'][name]:
+            raise ValueError('Sui installed executable changed')
+    return value
+
+
+def original_archive_source(context, expected):
+    context.release(expected)
+    version = os.readlink(context.path('/opt/sui/current')).split('/')[-1]
+    entry = CATALOG.get(version)
+    if entry is None or entry['network'] != expected['network']:
+        raise ValueError('installed Sui archive is outside the qualified original network')
+    observed = digest(context.protected('/opt/sui/' + version + '/release.tgz'))
+    architectures = [arch for arch in ('x86_64', 'aarch64') if entry[arch] == observed]
+    if len(architectures) != 1:
+        raise ValueError('installed Sui archive does not identify one qualified architecture')
+    return source(version, architectures[0])
+
+
+def native_used(context):
+    return any(context.path(name).exists() or context.path(name).is_symlink()
+               for name in ('/etc/sui/native-opened.json', '/var/lib/sui/consensus-db'))
+
+
+def mark_native(context, expected):
+    record = context.account_record(expected)
+    immutable(context, '/etc/sui/native-opened.json', {'contract': expected,
+              'service_uid': record['service_uid'], 'service_gid': record['service_gid']}, complete=True)
+
+
+def recovery_allowed(context, expected, durable=True):
+    if json.loads(context.protected('/etc/sui/contract.json').read_text()).get('authority_protocol') != 3:
+        raise ValueError('original source and database-use history must be migrated before bootstrap recovery')
+    if native_used(context) or context.path('/var/lib/sui/.bootstrap-complete').exists():
+        raise ValueError('completed or previously native-opened Sui data cannot be treated as fresh bootstrap')
+    claims(context, expected, durable=durable)
+
+
+def runtime(context, expected, opening=False, native=True):
+    context.contract(expected)
+    with opening_lock(context) if opening else contextlib.nullcontext():
+        runtime_locked(context, expected, opening, native)
+
+
+def runtime_locked(context, expected, opening, native):
+    contract = json.loads(context.protected('/etc/sui/contract.json').read_text())
+    if contract.get('authority_protocol') != 3:
+        raise ValueError('Sui startup needs explicit original source history migration')
+    value = selected(context, expected)
+    permitted(context, expected, value)
+    if opening:
+        if not native:
+            recovery_allowed(context, expected, durable=False)
+        claim(context, expected, value)
+        if native:
+            context.completion_marker(expected)
+            mark_native(context, expected)
+
+
+def migrate(context, expected, supplied):
+    """Independent operator history is required; current selection is not past history."""
+    context.account(expected)
+    with opening_lock(context):
+        return migrate_locked(context, expected, supplied)
+
+
+def migrate_locked(context, expected, supplied):
+    context.account(expected)
+    record = context.account_record(expected)
+    if (not isinstance(supplied, dict) or set(supplied) != {'format', 'contract', 'service_uid', 'service_gid', 'highest_opened', 'database_state'}
+            or type(supplied['format']) is not int or supplied['format'] != 1 or supplied['contract'] != expected
+            or supplied['service_uid'] != record['service_uid'] or supplied['service_gid'] != record['service_gid']):
+        raise ValueError('independent Sui source history does not match original host authority')
+    state = supplied['database_state']
+    if state not in ('never-opened', 'bootstrap-only', 'bootstrap-complete', 'native-opened'):
+        raise ValueError('independent Sui database-use history is required')
+    highest = supplied['highest_opened']
+    if (highest is None) != (state == 'never-opened'):
+        raise ValueError('Sui source and database-use history conflict')
+    if highest is not None:
+        qualified(highest, expected)
+    # Older helpers treat every /etc/sui entry as a regular file. Publishing
+    # this protected directory fences them before later partial migration writes.
+    # A failed first barrier still must not suppress owned shutdown.
+    fence_failure = None
+    try:
+        directory = context.protected(HISTORY, missing=True, directory=True)
+        directory.mkdir(mode=0o700, exist_ok=True)
+        context.sync(directory)
+    except Exception as error:
+        fence_failure = error
+    try:
+        context.cancel_and_stop(expected, 'source-history-migration', installed_only=True)
+    except Exception:
+        if fence_failure is not None:
+            raise ValueError('Sui migration fence and cancellation failed; owned shutdown was attempted') from None
+        raise
+    if fence_failure is not None:
+        raise ValueError('Sui migration fence was not durable; original stopped, repair storage and retry') from None
+    context.retained_quiet(expected)
+    if state in ('native-opened', 'bootstrap-complete'):
+        # Explicit independent established-data evidence repairs only the marker,
+        # never the database or consensus history. No source is opened here.
+        context.completion_marker(expected, create=True)
+        mark_native(context, expected)
+    elif native_used(context) or context.path('/var/lib/sui/.bootstrap-complete').exists():
+        raise ValueError('independent bootstrap-only history conflicts with retained native use')
+    if highest is None:
+        pointer = context.path('/opt/sui/current')
+        if pointer.exists() or pointer.is_symlink():
+            # Download/selection alone is not evidence of a prior DB opening.
+            qualify_artifact(context, expected, original_archive_source(context, expected))
+        home = context.path('/var/lib/sui')
+        descriptor = os.open(home, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            context.fresh_home_entries(descriptor)
+        finally:
+            os.close(descriptor)
+    else:
+        current = original_archive_source(context, expected)
+        if current['architecture'] != highest['architecture']:
+            raise ValueError('independent history and installed archive architecture differ')
+        # A newer current pointer may be an interrupted acquisition, not an opening.
+        qualify_artifact(context, expected, current)
+    scope(context, expected, create=True)
+    if highest is None:
+        if claims(context, expected, durable=True):
+            raise ValueError('unused history conflicts with original source opening evidence')
+    else:
+        claim(context, expected, highest)
+    contract = json.loads(context.protected('/etc/sui/contract.json').read_text())
+    contract['authority_protocol'] = 3
+    context.write('/etc/sui/contract.json', contract, mode=0o640)
+    return {'source_history': 'retained', 'service': 'stopped', 'data_and_keys_retained': True}

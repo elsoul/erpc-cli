@@ -1,0 +1,47 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Explicitly qualify the supported legacy Arc profile without replacing identity
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars_files: [vars.yml]
+  tasks:
+    - name: Make a private rendered proof directory inside the sealed run
+      ansible.builtin.file:
+        path: "{{ playbook_dir }}/../../legacy-rendered"
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+    - name: Render only the supported previous managed unit definitions for byte comparison
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../legacy/{{ item }}.j2"
+        dest: "{{ playbook_dir }}/../../legacy-rendered/{{ item }}"
+        owner: root
+        group: root
+        mode: '0600'
+      loop:
+        - arc-execution.service
+        - arc-consensus.service
+        - arc-snapshots.service
+    - name: Qualify the original historical identity and protected archive destination
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, -c, "{{ arc_authority_loader }}", "{{ playbook_dir }}/../../authority/control.py"]
+        stdin: "{{ arc_migration_request | to_json }}"
+      register: arc_legacy
+      changed_when: true
+    - name: Obtain the original pinned archive to authenticate retained native executables
+      ansible.builtin.get_url:
+        url: "{{ arc_archive_url }}"
+        dest: "{{ (arc_legacy.stdout | from_json).archive }}"
+        checksum: "sha256:{{ arc_archive_sha256 }}"
+        owner: root
+        group: root
+        mode: '0600'
+    - name: Persist original authority and retire the qualified legacy runtime
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, -c, "{{ arc_authority_loader }}", "{{ playbook_dir }}/../../authority/control.py"]
+        stdin: "{{ arc_migration_request | combine({'action':'migrate'}) | to_json }}"
+      changed_when: true

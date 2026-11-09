@@ -4,6 +4,7 @@
 import importlib.util
 import json
 import os
+import shlex
 from pathlib import Path
 import subprocess
 import sys
@@ -11,6 +12,72 @@ import tempfile
 import unittest
 sys.dont_write_bytecode = True
 SOURCE = Path(__file__).resolve().parents[1] / 'templates/rpc-firewall.py'
+
+def run_entrypoint(command, root, scenario='safe', env=None):
+    """Exercise emitted code, modeling root metadata only for our temp fixture.
+
+    Real openat/no-follow operations, file modes, links and read races remain in
+    force. Unrelated temp ancestors are represented as production root-owned
+    directories; fixture owner UID maps to root, with an explicit foreign case.
+    """
+    root=root.resolve();directory=root/'lib';directory.mkdir(exist_ok=True)
+    helper=directory/'rpc-firewall.py';marker=root/'interpreted'
+    helper.write_text('import json,sys\nfrom pathlib import Path\nPath('+repr(str(marker))+').write_text(json.dumps(sys.argv[1:]))\n')
+    helper.chmod(0o600)
+    # A versioned sibling is valid and deliberately not recursively inspected.
+    sibling=directory/'sibling';sibling.mkdir();(sibling/'current').symlink_to('releases/fixture')
+    if scenario=='file-write':helper.chmod(0o666)
+    if scenario=='directory-write':directory.chmod(0o777)
+    if scenario=='ancestor-write':root.chmod(0o777)
+    if scenario=='symlink':
+        moved=root/'payload';helper.rename(moved);helper.symlink_to(moved)
+    if scenario=='ancestor-link':
+        moved=root/'redirect';directory.rename(moved);directory.symlink_to(moved,target_is_directory=True)
+    if scenario=='hardlink':os.link(helper,root/'alias')
+    if scenario=='fifo':helper.unlink();os.mkfifo(helper,0o600)
+    if scenario=='oversized':helper.write_bytes(b'#'+b'x'*1048576)
+    self_prefix=['/usr/bin/python3','-I','-c']
+    assert command[:3]==self_prefix
+    encoded=command[3].removeprefix("exec(bytes.fromhex('").removesuffix("'))")
+    assert encoded and all(character in '0123456789abcdef' for character in encoded)
+    program=bytes.fromhex(encoded).decode().replace('/usr/local/lib/erpc/rpc-firewall.py',str(helper))
+    setup='''import os
+from pathlib import Path
+from types import SimpleNamespace
+actual_open,actual_fstat,actual_read=os.open,os.fstat,os.read
+paths={}
+root=Path(ROOT)
+helper=Path(HELPER)
+uid=os.getuid()
+def opened(path,flags,*args,**kwargs):
+    candidate=Path(path)
+    if not candidate.is_absolute():candidate=paths[kwargs['dir_fd']]/candidate
+    fd=actual_open(path,flags,*args,**kwargs);paths[fd]=candidate;return fd
+def metadata(fd):
+    info=actual_fstat(fd)
+    values={name:getattr(info,name) for name in ('st_dev','st_ino','st_mode','st_nlink','st_uid','st_gid','st_size','st_mtime_ns','st_ctime_ns')}
+    path=paths[fd]
+    if path==root or root in path.parents:
+        if values['st_uid']==uid:values['st_uid']=0
+        if SCENARIO=='owner' and path==helper:values['st_uid']=2
+        if SCENARIO=='ancestor-owner' and path==helper.parent:values['st_uid']=2
+    elif path in root.parents:
+        values['st_uid']=0;values['st_mode']&=~0o022
+    return SimpleNamespace(**values)
+changed=False
+def read(fd,size):
+    global changed
+    raw=actual_read(fd,size)
+    if SCENARIO=='changed' and not changed and paths[fd]==helper:
+        changed=True
+        with open(helper,'ab') as output:output.write(b'\\n# changed during read\\n')
+    return raw
+os.open,os.fstat,os.read=opened,metadata,read
+'''.replace('ROOT',repr(str(root))).replace('HELPER',repr(str(helper))).replace('SCENARIO',repr(scenario))
+    result=subprocess.run([sys.executable,'-I','-c',setup+program,*command[4:]],
+                          env=env,capture_output=True,timeout=10,check=False)
+    return result,marker
+
 
 class FirewallTests(unittest.TestCase):
     family = 'eth'
@@ -21,6 +88,7 @@ class FirewallTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location('avax_firewall', SOURCE)
         self.module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.module)
+        self.module.ROOT_UID = os.getuid()
         self.live, self.calls = None, []
         self.control = self.module.Firewall(self.family, self.root, self.command)
         self.control.directory.mkdir(parents=True)
@@ -59,6 +127,28 @@ class FirewallTests(unittest.TestCase):
         finally:
             os.close(fd)
         return operation, digest
+
+    def test_generated_timer_and_privileged_guard_suppress_ambient_python(self):
+        self.apply('aaaaaa', 'policy-a')
+        timer = next(call for call in self.calls if call[0] == 'systemd-run')
+        executable = timer.index('/usr/bin/python3')
+        generated = [timer[executable:]]
+        for unit in self.control.services():
+            override = self.control.path('/etc/systemd/system/' + unit + '.d/50-erpc-firewall-guard.conf')
+            command = next(line.split('=', 1)[1] for line in override.read_text().splitlines()
+                           if line.startswith('ExecStartPre='))
+            generated.append(shlex.split(command.lstrip('+')))
+        poison = self.root / 'poison'
+        poison.mkdir()
+        marker = self.root / 'unexpected-hook'
+        (poison / 'sitecustomize.py').write_text('open(' + repr(str(marker)) + ', "w").write("inert")')
+        for index,command in enumerate(generated):
+            self.assertEqual(command[:3], ['/usr/bin/python3', '-I', '-c'])
+            folder=self.root/('entry-'+str(index));folder.mkdir()
+            result,interpreted=run_entrypoint(command,folder,env=dict(os.environ,PYTHONPATH=str(poison)))
+            self.assertEqual(result.returncode,0,result.stderr.decode())
+            self.assertEqual(json.loads(interpreted.read_text()),command[4:])
+            self.assertFalse(marker.exists())
 
     def test_late_confirmation_cannot_accept_previous_allowlist_after_timeout(self):
         first = self.apply('aaaaaa', 'old-client-allowed')
@@ -359,11 +449,107 @@ class FirewallTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.control.dispatch('load')
 
+class StandaloneEntrypointTests(unittest.TestCase):
+    def setUp(self):
+        self.fixture=FirewallTests();self.fixture.setUp()
+        self.addCleanup(self.fixture.doCleanups)
+
+    def commands(self):
+        fixture=self.fixture;fixture.apply('entryfixture','policy-a')
+        timer=next(call for call in fixture.calls if call[0]=='systemd-run')
+        guard=shlex.split(fixture.control.guard_config().split('ExecStartPre=+',1)[1].strip())
+        return (timer[timer.index('/usr/bin/python3'):],guard)
+
+    def test_actual_generated_entrypoints_refuse_unsafe_opened_source_before_interpretation(self):
+        scenarios=('safe','file-write','directory-write','ancestor-write','owner','ancestor-owner',
+                   'symlink','ancestor-link','hardlink','fifo','changed','oversized')
+        for index,command in enumerate(self.commands()):
+            for scenario in scenarios:
+                with self.subTest(entry=index,scenario=scenario):
+                    folder=self.fixture.root/(str(index)+'-'+scenario);folder.mkdir()
+                    result,marker=run_entrypoint(command,folder,scenario)
+                    if scenario=='safe':
+                        self.assertEqual(result.returncode,0,result.stderr.decode())
+                        self.assertEqual(json.loads(marker.read_text()),command[4:])
+                    else:
+                        self.assertNotEqual(result.returncode,0)
+                        self.assertFalse(marker.exists(),'untrusted source was interpreted')
+
+    def test_queued_operation_upgrades_exact_protected_legacy_guards_before_filter_removal(self):
+        fixture=self.fixture;token=fixture.apply('legacyfixture','policy-a')
+        for index,service in enumerate(fixture.control.services()):
+            path=fixture.control.path('/etc/systemd/system/'+service+'.d/50-erpc-firewall-guard.conf')
+            legacy=fixture.control.legacy_guard_config()
+            path.write_text(legacy if index%2 else legacy.replace('/usr/bin/python3 -I ', '/usr/bin/python3 '))
+        fixture.calls.clear()
+        fixture.control.dispatch('rollback',*token)
+        reload=fixture.calls.index(['systemctl','daemon-reload'])
+        stopping=next(i for i,call in enumerate(fixture.calls) if call[:3]==['systemctl','disable','--now'])
+        deletion=next(i for i,call in enumerate(fixture.calls) if call[:2]==['nft','delete'])
+        self.assertLess(reload,stopping);self.assertLess(stopping,deletion)
+        self.assertIsNone(fixture.live)
+        fixture.control.require_guards()
+        self.assertTrue((fixture.control.directory/'startup-revoked').exists())
+
+    def test_unknown_or_untrusted_legacy_guard_never_repairs_or_removes_filtering(self):
+        fixture=self.fixture;token=fixture.apply('legacyfixture','policy-a')
+        path=fixture.control.path('/etc/systemd/system/'+fixture.control.services()[0]+'.d/50-erpc-firewall-guard.conf')
+        for scenario in ('unknown','directory-write','file-write','hardlink'):
+            path.write_text(fixture.control.legacy_guard_config());path.chmod(0o644)
+            path.parent.chmod(0o755);alias=fixture.root/'guard-alias'
+            if scenario=='unknown':path.write_text('[Service]\nExecStartPre=\n')
+            if scenario=='directory-write':path.parent.chmod(0o777)
+            if scenario=='file-write':path.chmod(0o666)
+            if scenario=='hardlink':os.link(path,alias)
+            before=path.read_bytes();fixture.calls.clear()
+            with self.subTest(scenario=scenario),self.assertRaises(ValueError):fixture.control.dispatch('rollback',*token)
+            self.assertEqual(path.read_bytes(),before);self.assertEqual(fixture.live,'policy-a')
+            self.assertFalse(any(call[:2]==['nft','delete'] or call[:3]==['systemctl','disable','--now'] for call in fixture.calls))
+            alias.unlink(missing_ok=True)
+
+    def test_extra_override_before_apply_or_rollback_never_changes_guards_or_filtering(self):
+        for phase in ('apply','rollback'):
+            for mode in (0o644,0o666):
+                fixture=FirewallTests();fixture.setUp();self.addCleanup(fixture.doCleanups)
+                token=fixture.apply('beforeforeign','policy-a') if phase=='rollback' else None
+                extra=fixture.control.path('/etc/systemd/system/'+fixture.control.services()[-1]+'.d/99-foreign.conf')
+                extra.parent.mkdir(parents=True,exist_ok=True)
+                extra.write_text('[Service]\nExecStartPre=\nExecStart=/inert\n');extra.chmod(mode)
+                guards=[fixture.control.path('/etc/systemd/system/'+service+'.d/50-erpc-firewall-guard.conf') for service in fixture.control.services()]
+                before=[path.read_bytes() if path.exists() else None for path in guards]
+                fixture.calls.clear()
+                with self.subTest(phase=phase,mode=oct(mode)),self.assertRaises(ValueError):
+                    if phase=='apply':fixture.apply('foreignfixture','policy-a')
+                    else:fixture.control.dispatch('rollback',*token)
+                self.assertEqual([path.read_bytes() if path.exists() else None for path in guards],before)
+                self.assertEqual(extra.read_text(),'[Service]\nExecStartPre=\nExecStart=/inert\n')
+                self.assertEqual(extra.stat().st_mode&0o777,mode)
+                self.assertEqual(fixture.live,'policy-a' if phase=='rollback' else None)
+                self.assertFalse(any(call[0] in ('nft','systemd-run') or call[:2] in (['systemctl','disable'],['systemctl','daemon-reload']) for call in fixture.calls))
+
+    def test_failed_legacy_guard_publication_retains_policy_and_reports_failure(self):
+        from unittest.mock import patch
+        fixture=self.fixture;token=fixture.apply('legacyfixture','policy-a')
+        for service in fixture.control.services():
+            path=fixture.control.path('/etc/systemd/system/'+service+'.d/50-erpc-firewall-guard.conf')
+            path.write_text(fixture.control.legacy_guard_config())
+        fixture.calls.clear()
+        with patch.object(fixture.module.os,'fsync',side_effect=OSError('inert storage failure')):
+            with self.assertRaises(OSError):fixture.control.dispatch('rollback',*token)
+        self.assertEqual(fixture.live,'policy-a')
+        self.assertFalse(any(call[:2]==['nft','delete'] for call in fixture.calls))
+
 class ArcFirewallTests(FirewallTests):
     family = 'arc'
 
+class ArcValidatorFirewallTests(FirewallTests):
+    family = 'arc-validator'
+
 class SolanaFirewallTests(FirewallTests):
     family = 'solana-rpc'
+
+class SolanaNativeFirewallTests(FirewallTests):
+    family = 'solana-native'
 
 class OptimismFirewallTests(FirewallTests):
     family = 'optimism'
@@ -386,5 +572,39 @@ class NearFirewallTests(FirewallTests):
 class TronFirewallTests(FirewallTests):
     family = 'tron'
 
+class AvalancheTests(FirewallTests):
+    family = 'avax'
+
+
+class BscFirewallTests(FirewallTests):
+    family = 'bsc'
+
+class MonadFirewallTests(FirewallTests):
+    family = 'monad'
+class PolygonFirewallTests(FirewallTests):
+    family = 'polygon'
+
+    def test_original_broker_stop_failure_keeps_ingress_and_fence(self):
+        operation, digest = self.apply('aaaaaa', 'original polygon policy')
+        self.control.confirm(operation, digest)
+        original = self.command
+        def refuse(argv, **kwargs):
+            if argv[:3] == ['systemctl', 'disable', '--now'] and 'polygon-broker.service' in argv:
+                raise subprocess.CalledProcessError(1, argv)
+            return original(argv, **kwargs)
+        self.control.run = refuse
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.control.dispatch('teardown')
+        self.assertIsNotNone(self.live)
+        self.assertTrue(self.control.path('/etc/erpc/polygon/startup-revoked').exists())
+
+class KaiaFirewallTests(FirewallTests):
+    family = 'kaia'
+
+class HyperliquidFirewallTests(FirewallTests):
+    family = 'hyperliquid'
+
+class HyperliquidAqaFirewallTests(FirewallTests):
+    family = 'hyperliquid-aqa'
 if __name__ == '__main__':
     unittest.main()

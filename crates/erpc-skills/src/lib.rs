@@ -74,6 +74,12 @@ const FILES: &[(&str, &str)] = &[
         include_str!("../skills/op-follower-node/SKILL.md"),
     ),
     ("nitro-node", include_str!("../skills/nitro-node/SKILL.md")),
+    ("near-node", include_str!("../skills/near-node/SKILL.md")),
+    ("bsc-node", include_str!("../skills/bsc-node/SKILL.md")),
+    (
+        "hyperliquid-node",
+        include_str!("../skills/hyperliquid-node/SKILL.md"),
+    ),
     ("arc-rpc", include_str!("../skills/arc-rpc/SKILL.md")),
     (
         "ethereum-node",

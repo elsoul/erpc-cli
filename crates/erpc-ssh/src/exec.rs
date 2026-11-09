@@ -211,6 +211,13 @@ pub(crate) fn check_settings(output: &str, required: &[(&str, String)]) -> Resul
     Ok(())
 }
 
+fn private_command(remote: &RemoteCommand) -> bool {
+    matches!(
+        remote,
+        RemoteCommand::SolanaNative(crate::solana_native::Command::MigrationExport(_))
+    )
+}
+
 /// What a command printed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Output {
@@ -290,6 +297,11 @@ impl Session {
     /// Returns [`SshError`] when `ssh` cannot run, the host key does not
     /// match, or the command exits with a failure.
     pub fn run(&self, remote: &RemoteCommand, stdin: Option<&[u8]>) -> Result<Output, SshError> {
+        if private_command(remote) {
+            return Err(SshError::Effective(
+                "private output requires its dedicated capture API".into(),
+            ));
+        }
         let mut child = self
             .command(remote)
             .stdin(if stdin.is_some() {
@@ -300,15 +312,42 @@ impl Session {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
-        if let (Some(bytes), Some(mut pipe)) = (stdin, child.stdin.take()) {
-            pipe.write_all(bytes)?;
-        }
+        // A command that fails before it has read all of its input closes the
+        // pipe under the write. How it exited and what it said is the error
+        // then, not the broken pipe, so the write's own error is looked at last.
+        let sent = match (stdin, child.stdin.take()) {
+            (Some(bytes), Some(mut pipe)) => pipe.write_all(bytes),
+            _ => Ok(()),
+        };
         let output = child.wait_with_output()?;
         finish(output.status, &output.stderr)?;
+        sent?;
         Ok(Output {
             stdout: output.stdout,
             stderr: output.stderr,
         })
+    }
+
+    /// Receive secret output without formatting either stream as an error.
+    /// The fixed host-pinned SSH configuration remains unchanged. Input/output
+    /// are bounded to 64 KiB and a stalled operation is killed after 90 seconds.
+    /// # Errors
+    /// Returns a static error on any failure, stderr output, size or time limit.
+    pub fn run_private(
+        &self,
+        remote: &RemoteCommand,
+        stdin: &[u8],
+        maximum: usize,
+    ) -> Result<crate::PrivateOutput, &'static str> {
+        if !private_command(remote) {
+            return Err("unsupported private response operation");
+        }
+        crate::private_output::run(
+            &mut self.command(remote),
+            stdin,
+            maximum,
+            std::time::Duration::from_secs(90),
+        )
     }
 
     /// Runs `remote` and hands each line it prints to `on_line` as it
@@ -322,6 +361,11 @@ impl Session {
         remote: &RemoteCommand,
         on_line: &mut dyn FnMut(Stream, &str),
     ) -> Result<(), SshError> {
+        if private_command(remote) {
+            return Err(SshError::Effective(
+                "private output cannot use a journal stream".into(),
+            ));
+        }
         let mut child = self
             .command(remote)
             .stdin(Stdio::null())
@@ -406,6 +450,52 @@ mod tests {
 
     use super::{SSH_PATHS, Session, SshError, check_effective, find};
     use crate::config::tests::{fixture_path, target};
+
+    #[test]
+    fn original_key_export_never_uses_public_output_or_streaming_transport() {
+        let session = Session {
+            ssh: fixture_path("/inert/no-ssh-execution"),
+            run: crate::config::RunDir::new(&target()).unwrap(),
+        };
+        let revision = crate::solana_native::Revision::new(&"a".repeat(64)).unwrap();
+        let private = crate::RemoteCommand::SolanaNative(
+            crate::solana_native::Command::MigrationExport(revision.clone()),
+        );
+        assert!(matches!(
+            session.run(&private, Some(b"{}")),
+            Err(SshError::Effective(_))
+        ));
+        let mut streamed = false;
+        assert!(matches!(
+            session.stream(&private, &mut |_, _| streamed = true),
+            Err(SshError::Effective(_))
+        ));
+        assert!(!streamed);
+        let public =
+            crate::RemoteCommand::SolanaNative(crate::solana_native::Command::Control(revision));
+        assert_eq!(
+            session.run_private(&public, b"{}", 4096).unwrap_err(),
+            "unsupported private response operation"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_command_that_fails_before_reading_its_input_is_the_error_not_the_broken_pipe() {
+        // `false` stands in for ssh: it exits 1 at once and reads nothing,
+        // as a refused upload does while erpc is still sending.
+        let session = Session {
+            ssh: fixture_path("/usr/bin/false"),
+            run: crate::config::RunDir::new(&target()).unwrap(),
+        };
+        let path = crate::RemotePath::new("/opt/erpc/uploads/agent/erpc-worker-agent").unwrap();
+        // More than a pipe holds, so the write cannot finish.
+        let sent = vec![0_u8; 8 * 1024 * 1024];
+        let err = session
+            .run(&crate::RemoteCommand::WriteFile(path), Some(&sent))
+            .expect_err("the command failed");
+        assert!(matches!(err, SshError::Failed { status: 1, .. }), "{err}");
+    }
 
     #[test]
     fn a_setting_may_read_as_any_of_its_spellings() {

@@ -51,6 +51,22 @@ The backend has no validator wallet or bond activation. See
 [the operator guide](../nitro-rpc.md) for image provenance, private L1 transport,
 network ownership and the deferred acceptance checklist.
 
+The validator `registration` command observes the public allowlist and prepares
+or validates a single-address unsigned administrator intent using the existing
+RPC host's authenticated parent provider. See the
+[admission guide](../robinhood-admission.md) for the external administrator review
+and finalized-block checks. Admission output does not authorize activation.
+
+The dedicated validator backend implements all twelve lifecycle verbs for both
+networks using its separately source-qualified Nitro 3.12.2 catalog. It defaults
+to Watchtower; explicit activation grants only the original admitted EOA's native
+Defensive rival assertion/stake sends. It excludes MakeNodes, confirmations and
+challenge-edge submission. Funding, wrapping, approvals, withdrawals and
+administrator admission remain external. See the
+[Defensive operator guide](../robinhood-defensive-validator.md) for exact source,
+image, custody, financial bounds and deferred real-host acceptance. This profile
+does not convert a follower or reuse Arbitrum One custody.
+
 ## Sources
 
 [S1]: https://docs.robinhood.com/chain/connecting/ "Network IDs, parent chain and endpoint roles; read 2026-10-26"

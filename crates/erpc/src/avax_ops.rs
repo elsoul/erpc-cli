@@ -21,6 +21,7 @@ use erpc_ssh::{
 };
 use secrecy::{ExposeSecret, SecretString};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 
 fn contract(node: &AvaxNode) -> Result<erpc_ssh::avax::Contract, String> {
@@ -32,6 +33,12 @@ fn contract(node: &AvaxNode) -> Result<erpc_ssh::avax::Contract, String> {
         mainnet: network == Network::Mainnet,
         validator: node.validator,
         archive: node.rpc_type == "archive",
+        owner: node.id.as_ref().map(|id| {
+            let mut digest = Sha256::new();
+            digest.update(b"erpc/avax/inventory-owner/v1\0");
+            digest.update(id.as_bytes());
+            digest.finalize().into()
+        }),
     })
 }
 fn verify_contract(session: &Session, node: &AvaxNode, allow_missing: bool) -> Result<(), String> {
@@ -62,7 +69,7 @@ fn mutator_preflight(
     {
         return Ok(());
     }
-    if node.last_result.is_empty() {
+    if node.last_result.is_empty() && !["stop", "destroy"].contains(&verb) {
         return Err("init did not finish; retry init before changing this host".into());
     }
     verify()
@@ -151,6 +158,12 @@ fn vars(
     purge: bool,
 ) -> Result<Value, String> {
     release::validate(&pin(node))?;
+    let owner = contract(node)?
+        .owner_label()
+        .ok_or("reserve the inventory owner before host operations")?;
+    if f.ssh_port == 0 {
+        return Err("observed SSH listener is unavailable".into());
+    }
     let mut v4 = node.management_allow.clone();
     let mut v6 = Vec::new();
     match f.controller_ip()? {
@@ -158,11 +171,49 @@ fn vars(
         std::net::IpAddr::V6(ip) => v6.push(ip.to_string()),
     }
     Ok(json!({"all":{"hosts":{node.name.clone():{
-        "ansible_connection":"local","avax_network":node.network,"avax_type":node.rpc_type,"avax_validator":node.validator,
+        "ansible_connection":"local","avax_owner":owner,"avax_network":node.network,"avax_type":node.rpc_type,"avax_validator":node.validator,
         "avax_version":node.version,"avax_commit":node.commit,"avax_sha256":node.archive_sha256,"avax_url":release::archive_url(&node.version,&node.arch)?,"avax_fingerprint":release::FINGERPRINT,
-        "avax_rpc_allow":node.rpc_allow,"avax_monitoring_allow":node.monitoring_allow,"avax_fw_management_v4":v4,"avax_fw_management_v6":v6,"avax_ssh_port":node.ssh_port,
-        "avax_new_identity":node.node_id.is_empty(),"avax_phase":phase,"avax_purge_data":purge
+        "avax_rpc_allow":node.rpc_allow,"avax_monitoring_allow":node.monitoring_allow,"avax_fw_management_v4":v4,"avax_fw_management_v6":v6,"avax_ssh_port":f.ssh_port,
+        "avax_new_identity":node.node_id.is_empty(),"avax_phase":phase,"avax_purge_data":purge,
+        "avax_migrate_account":phase=="migrate-account","avax_expected_identity":node.identity_hashes,
+        "avax_control_unit":erpc_ssh::python::systemd_command("/usr/local/lib/erpc/avax/control.py")?,
+        "avax_control_condition":erpc_ssh::python::systemd_condition_command("/usr/local/lib/erpc/avax/control.py")?
     }}}}))
+}
+fn run_play(
+    session: &Session,
+    target: &Target,
+    inventory: &str,
+    path: &str,
+    say: &Say,
+) -> Result<(erpc_ssh::RunId, String), String> {
+    let mut bundle = erpc_ops::bundle::Bundle::new();
+    for (path, bytes) in erpc_chain_avax::files() {
+        bundle
+            .add(path, bytes.to_vec())
+            .map_err(|e| e.to_string())?;
+    }
+    bundle
+        .add("rpc-firewall.py", erpc_ops::RPC_FIREWALL.to_vec())
+        .map_err(|e| e.to_string())?;
+    bundle
+        .add("inventory.yml", inventory.as_bytes().to_vec())
+        .map_err(|e| e.to_string())?;
+    let built = bundle.finish().map_err(|e| e.to_string())?;
+    let run = erpc_ops::run::start(session, &built, path).map_err(|e| e.to_string())?;
+    let result = node_common::follow(
+        target,
+        &run,
+        "Retry the same desired operation; identity and data are retained",
+        say,
+    )?;
+    if !result.ok() {
+        return Err(format!(
+            "Avalanche operation failed (run {}); no database rollback was attempted",
+            run.as_str()
+        ));
+    }
+    Ok((run, built.sha256))
 }
 fn play(
     session: &Session,
@@ -173,52 +224,43 @@ fn play(
     purge: bool,
     say: &Say,
 ) -> Result<String, String> {
-    let mut bundle = erpc_ops::bundle::Bundle::new();
-    for (path, bytes) in erpc_chain_avax::files() {
-        bundle
-            .add(path, bytes.to_vec())
-            .map_err(|e| e.to_string())?;
+    let mut inventory = vars(node, f, phase, purge)?;
+    if ["init", "migrate-account", "destroy"].contains(&phase) {
+        let path = if phase == "destroy" {
+            "ansible/avax/destroy.yml"
+        } else {
+            "ansible/avax/init.yml"
+        };
+        return run_play(session, target, &inventory.to_string(), path, say)
+            .map(|(run, _)| run.as_str().into());
     }
-    bundle
-        .add(
-            "inventory.yml",
-            vars(node, f, phase, purge)?.to_string().into_bytes(),
-        )
-        .map_err(|e| e.to_string())?;
-    let built = bundle.finish().map_err(|e| e.to_string())?;
-    let path = match phase {
-        "init" => "ansible/avax/init.yml",
-        "destroy" => "ansible/avax/destroy.yml",
-        _ => "ansible/avax/deploy.yml",
-    };
-    let run = erpc_ops::run::start(session, &built, path).map_err(|e| e.to_string())?;
-    let firewall_token = erpc_ssh::avax::FirewallToken::new(run.clone(), &built.sha256)?;
-    let result = node_common::follow(
+    let mut entropy = [0u8; 16];
+    getrandom::fill(&mut entropy).map_err(|_| "cannot create Avalanche deployment intent")?;
+    let intent = format!("{:032x}", u128::from_be_bytes(entropy));
+    inventory["all"]["hosts"][&node.name]["avax_intent"] = json!(intent);
+    let (prepare, digest) = run_play(
+        session,
         target,
-        &run,
-        "Run the same command again to recover an interrupted operation",
+        &inventory.to_string(),
+        "ansible/avax/firewall.yml",
         say,
     )?;
-    if !result.ok() {
-        return Err(format!(
-            "Avalanche {phase} failed (run {}); no database rollback was attempted",
-            run.as_str()
-        ));
-    }
-    if ["deploy", "config", "update"].contains(&phase) {
-        Session::open(target)
-            .map_err(|e| e.to_string())?
-            .run(
-                &RemoteCommand::AvaxFirewallConfirm {
-                    token: firewall_token,
-                    contract: contract(node)?,
-                },
-                None,
-            )
-            .map_err(|e| e.to_string())?;
-    }
-    Ok(run.as_str().into())
+    let token = erpc_ssh::avax::FirewallToken::new(prepare.clone(), &digest, &intent)?;
+    Session::open(target)
+        .map_err(|e| e.to_string())?
+        .run(
+            &RemoteCommand::AvaxFirewallConfirm {
+                token,
+                contract: contract(node)?,
+            },
+            None,
+        )
+        .map_err(|e| e.to_string())?;
+    let confirmed = erpc_ops::firewall_inventory(&inventory.to_string(), &prepare, &digest)?;
+    run_play(session, target, &confirmed, "ansible/avax/deploy.yml", say)
+        .map(|(run, _)| run.as_str().into())
 }
+
 fn identity(session: &Session, node: &mut AvaxNode, s: &Value) -> Result<(), String> {
     let id = s["identity"]["result"]["nodeID"]
         .as_str()
@@ -272,7 +314,7 @@ fn backup(session: &Session, store: &Store<OpCli>, node: &AvaxNode) -> Result<Av
         .map_err(|_| "could not save/verify identity backup in 1Password".into())
 }
 fn observation(node: &AvaxNode, net: Network, s: &Value) -> Value {
-    json!({"name":node.name,"network":net.name(),"identity_matches":s["identity"]["result"]["nodeID"]==node.node_id,"ready":status::ready(s,net) && s["identity"]["result"]["nodeID"]==node.node_id,"validator_state":if node.validator{status::validator_state(s,&node.node_id,None,0)}else{"not a validator inventory role"},"reward_eligibility":"peer-measured uptime is observational; final reward is not guaranteed","observations":s})
+    json!({"name":node.name,"network":net.name(),"identity_matches":s["identity"]["result"]["nodeID"]==node.node_id,"native_ready":status::native_ready(s,net) && s["identity"]["result"]["nodeID"]==node.node_id,"gateway_ready":status::gateway_ready(s,net) && s["identity"]["result"]["nodeID"]==node.node_id,"external_reachability":"not tested","ready":status::ready(s,net) && s["identity"]["result"]["nodeID"]==node.node_id,"validator_state":if node.validator{status::validator_state(s,&node.node_id,None,0)}else{"not a validator inventory role"},"reward_eligibility":"peer-measured uptime is observational; final reward is not guaranteed","observations":s})
 }
 
 #[allow(clippy::too_many_lines)]
@@ -317,7 +359,9 @@ pub(crate) async fn run(
     release::validate(&pin(&node))?;
     let target = target(&node, sub)?;
     let session = Session::open(&target).map_err(|e| e.to_string())?;
-    mutator_preflight(&node, verb, || verify_contract(&session, &node, false))?;
+    mutator_preflight(&node, verb, || {
+        verify_contract(&session, &node, ["stop", "destroy"].contains(&verb))
+    })?;
     if verb == "logs" {
         let command = RemoteCommand::AvaxLogs {
             lines: sub.get_one::<u32>("lines").copied().unwrap_or(100),
@@ -361,6 +405,33 @@ pub(crate) async fn run(
             json!({"status":"identity restored","service":"stopped","node_id":node.node_id}),
         );
     }
+    if ["stop", "destroy"].contains(&verb) {
+        say.line(&format!(
+            "{verb} Avalanche node {} on {}; preserve identity, inventory and ingress policy{}",
+            node.name,
+            node.network,
+            if flag(sub, "purge-data") {
+                "; explicitly delete only its verified database and logs"
+            } else {
+                ""
+            }
+        ));
+        node_common::go_ahead(flag(sub, "yes"), "nothing changed")?;
+        let inventory = json!({"all":{"hosts":{node.name.clone():{
+            "ansible_connection":"local","avax_owner":contract(&node)?.owner_label().ok_or("missing inventory owner")?,"avax_network":node.network,"avax_type":node.rpc_type,
+            "avax_validator":node.validator,"avax_purge_data":flag(sub,"purge-data")
+        }}}});
+        let path = if verb == "stop" {
+            "ansible/avax/stop.yml"
+        } else {
+            "ansible/avax/destroy.yml"
+        };
+        let (run, _) = run_play(&session, &target, &inventory.to_string(), path, &say)?;
+        node.last_run = run.as_str().into();
+        node.last_result = format!("{verb} completed; identity retained");
+        store.update_avax_node(&node).map_err(|e| e.to_string())?;
+        return Ok(json!({"status":verb,"identity_preserved":true,"run":run.as_str()}));
+    }
     let s = checked_output(&session, &RemoteCommand::AvaxStatus)?;
     if verb == "status" {
         let mut report = observation(&node, net, &s);
@@ -393,6 +464,7 @@ pub(crate) async fn run(
     if verb == "identity-backup" {
         identity(&session, &mut node, &s)?;
         node_common::go_ahead(flag(sub, "yes"), "identity not backed up")?;
+        node = store.update_avax_node(&node).map_err(|e| e.to_string())?;
         backup(&session, &store, &node)?;
         return Ok(json!({"status":"identity backed up and read back","node_id":node.node_id}));
     }
@@ -457,6 +529,8 @@ pub(crate) async fn run(
     } else {
         verb
     };
+    node.last_result = format!("{phase} requested; completion unverified");
+    node = store.update_avax_node(&node).map_err(|e| e.to_string())?;
     let run = play(
         &session,
         &target,
@@ -498,6 +572,9 @@ async fn init(
     say: &Say,
 ) -> Result<Value, CliError> {
     let existing = nodes.iter().find(|n| n.name == name);
+    if flag(sub, "migrate-account") && existing.is_none() {
+        return Err("account migration requires the existing pinned inventory record".into());
+    }
     let mut node = existing.cloned().unwrap_or_else(|| AvaxNode {
         name: name.into(),
         network: net.name().into(),
@@ -555,7 +632,11 @@ async fn init(
         return Err("use update to change a stored release".into());
     }
     allow_lists(&mut node, sub)?;
-    say.line("Avalanche init prepares an unprivileged service user and persistent directories. Mount local NVMe at /var/lib/avalanchego; no disk will be formatted. Deploy generates the identity once and backs it up to 1Password.");
+    if flag(sub, "migrate-account") {
+        say.line("Verify and bind this existing account and pinned identity, stop the services, and require redeployment before restarting. Existing keys and data remain.");
+    } else {
+        say.line("Avalanche init reserves its original unprivileged account and persistent directories. Mount local NVMe at /var/lib/avalanchego; no disk will be formatted. Deploy generates the identity once and backs it up to 1Password.");
+    }
     node_common::go_ahead(flag(sub, "yes"), "nothing changed")?;
     node = if existing.is_none() {
         store.add_avax_node(&node)
@@ -564,7 +645,19 @@ async fn init(
     }
     .map_err(|e| e.to_string())?;
     node_common::save_vault(net.name(), vault)?;
-    node.last_run = play(&session, &target, &node, &f, "init", false, say)?;
+    node.last_run = play(
+        &session,
+        &target,
+        &node,
+        &f,
+        if flag(sub, "migrate-account") {
+            "migrate-account"
+        } else {
+            "init"
+        },
+        false,
+        say,
+    )?;
     node.last_result = "initialized".into();
     store.update_avax_node(&node).map_err(|e| e.to_string())?;
     Ok(
@@ -579,7 +672,7 @@ fn registration(
     sub: &ArgMatches,
     verb: &str,
 ) -> Result<Value, CliError> {
-    if node.node_id.is_empty() || !node.validator || !status::ready(s, net) {
+    if node.node_id.is_empty() || !node.validator || !status::native_ready(s, net) {
         return Err("registration needs a fully bootstrapped healthy validator-intent node on the expected network".into());
     }
     identity(session, node, s)?;
@@ -632,6 +725,30 @@ fn read_registration(path: &std::path::Path) -> Result<Registration, CliError> {
 mod regression_tests {
     use super::*;
     #[test]
+    fn actual_report_keeps_native_progress_when_gateway_is_unavailable() {
+        let node = AvaxNode {
+            name: "fixture".into(),
+            node_id: "NodeID-fixture".into(),
+            ..AvaxNode::default()
+        };
+        let mut s = json!({"authority":{"verified":true},"network":{"result":{"networkID":"5"}},"identity":{"result":{"nodeID":"NodeID-fixture"}},"chain_id":{"result":"0xa869"},"health":{"result":{"healthy":true}},"bootstrap":{"P":{"result":{"isBootstrapped":true}},"X":{"result":{"isBootstrapped":true}},"C":{"result":{"isBootstrapped":true}}}});
+        let report = observation(&node, Network::Fuji, &s);
+        assert_eq!(report["native_ready"], true);
+        assert_eq!(report["gateway_ready"], false);
+        assert_eq!(report["ready"], false);
+        assert_eq!(report["external_reachability"], "not tested");
+        s["gateway"] = s.clone();
+        assert_eq!(observation(&node, Network::Fuji, &s)["ready"], true);
+        let other = AvaxNode {
+            node_id: "NodeID-other".into(),
+            ..node
+        };
+        let report = observation(&other, Network::Fuji, &s);
+        assert_eq!(report["native_ready"], false);
+        assert_eq!(report["gateway_ready"], false);
+    }
+
+    #[test]
     fn failed_initialization_and_cross_scope_reject_all_mutators() {
         let failed = AvaxNode {
             network: "fuji".into(),
@@ -649,10 +766,15 @@ mod regression_tests {
             "identity-backup",
             "identity-restore",
         ] {
-            assert!(
-                mutator_preflight(&failed, verb, || panic!("failed init must not dispatch"))
-                    .is_err()
-            );
+            if ["stop", "destroy"].contains(&verb) {
+                assert!(mutator_preflight(&failed, verb, || Ok(())).is_ok());
+                assert!(mutator_preflight(&failed, verb, || Err("foreign scope".into())).is_err());
+            } else {
+                assert!(
+                    mutator_preflight(&failed, verb, || panic!("failed init must not dispatch"))
+                        .is_err()
+                );
+            }
             let initialized = AvaxNode {
                 last_result: "initialized".into(),
                 ..failed.clone()
@@ -663,6 +785,63 @@ mod regression_tests {
             assert!(mutator_preflight(&initialized, verb, || Ok(())).is_ok());
         }
     }
+    #[cfg(unix)]
+    #[test]
+    fn actual_original_runtime_entrypoints_and_translated_ssh_listener() {
+        use std::io::Write;
+        let node = AvaxNode {
+            name: "fixture".into(),
+            id: Some("fixture-owner".into()),
+            validator: true,
+            network: "fuji".into(),
+            rpc_type: "full".into(),
+            version: "v1.15.2".into(),
+            commit: "a".repeat(40),
+            archive_sha256: "b".repeat(64),
+            arch: "amd64".into(),
+            ssh_port: 2222,
+            ..AvaxNode::default()
+        };
+        let mut facts = crate::eth_rpc::Facts {
+            controller: "192.0.2.1".into(),
+            ssh_port: 22,
+            ..crate::eth_rpc::Facts::default()
+        };
+        let inventory = vars(&node, &facts, "deploy", false).unwrap();
+        let value = &inventory["all"]["hosts"]["fixture"];
+        assert_eq!(value["avax_ssh_port"], 22);
+        let other = AvaxNode {
+            id: Some("other-fixture-owner".into()),
+            ..node.clone()
+        };
+        assert_ne!(
+            contract(&node).unwrap().owner_label(),
+            contract(&other).unwrap().owner_label()
+        );
+        assert_eq!(
+            value["avax_owner"],
+            contract(&node).unwrap().owner_label().unwrap()
+        );
+        facts.ssh_port = 0;
+        assert!(vars(&node, &facts, "deploy", false).is_err());
+        let mut child = std::process::Command::new("python3")
+            .arg("-B")
+            .arg(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../erpc-chain-avax/tests/entrypoints.py"),
+            )
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(&serde_json::to_vec(value).unwrap())
+            .unwrap();
+        assert!(child.wait().unwrap().success());
+    }
+
     #[test]
     fn json_logs_escape_arbitrary_journal_data_and_identify_stream() {
         let line = "quotes \" and newline\n control \u{1b}";

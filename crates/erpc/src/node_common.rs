@@ -237,6 +237,17 @@ pub(crate) fn check_ubuntu(session: &Session) -> Result<String, String> {
 /// flag naming another vault than the saved one is refused rather than
 /// moving the network, and the other chains' nodes with it.
 pub(crate) fn vault_for(network: &str, flag: Option<&str>, first: &str) -> Result<String, String> {
+    vault_given(network, flag)?.ok_or_else(|| {
+        format!(
+            "no vault is set for {network}: run `{first}` first, \
+             or pass --vault <vault id> (op vault list)"
+        )
+    })
+}
+
+/// [`vault_for`]'s vault, or none when neither the flag nor `keyless.toml`
+/// names one, for a command that says what to do then in its own words.
+pub(crate) fn vault_given(network: &str, flag: Option<&str>) -> Result<Option<String>, String> {
     let path = crate::keyless::path()?;
     let keyless = crate::keyless::load(&path)?;
     let vault = match (flag, keyless.networks.get(network)) {
@@ -250,19 +261,14 @@ pub(crate) fn vault_for(network: &str, flag: Option<&str>, first: &str) -> Resul
         }
         (Some(v), _) => v.to_owned(),
         (None, Some(saved)) => saved.vault_id.clone(),
-        (None, None) => {
-            return Err(format!(
-                "no vault is set for {network}: run `{first}` first, \
-                 or pass --vault <vault id> (op vault list)"
-            ));
-        }
+        (None, None) => return Ok(None),
     };
     if !crate::keyless::is_vault_id(&vault) {
         return Err(format!(
             "{vault:?} is not a vault id; `op vault list` prints them"
         ));
     }
-    Ok(vault)
+    Ok(Some(vault))
 }
 
 /// The inventory store of `chain` on `network` in `vault`, with erpc's

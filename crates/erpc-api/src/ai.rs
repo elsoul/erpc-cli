@@ -114,7 +114,7 @@ pub struct ChatRequest<'a> {
     pub thinking: bool,
     /// Tools the model may call, in the Messages format (`name`,
     /// `description`, `input_schema`). Empty sends none. The gateway takes
-    /// only tools the caller runs: Anthropic's server tools are refused.
+    /// only tools the caller runs: the provider's server tools are refused.
     pub tools: &'a [Value],
 }
 

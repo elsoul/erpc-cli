@@ -143,6 +143,9 @@ pub fn authenticate(manifest: &str, signatures: &str) -> Result<String, String> 
 /// # Errors
 /// Transport, source-tag, signature and platform failures are refused.
 pub async fn fetch(version: Version, platform: Platform) -> Result<Authenticated, String> {
+    if version.as_str() != release::RECOMMENDED {
+        return Err(release::Error::Catalog.to_string());
+    }
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .redirect(reqwest::redirect::Policy::none())
@@ -162,6 +165,7 @@ pub async fn fetch(version: Version, platform: Platform) -> Result<Authenticated
     let commit = source["sha"].as_str().ok_or("source tag has no commit")?;
     let pin = Pin::from_verified_manifest(version, commit, platform, &manifest, &status)
         .map_err(|e| e.to_string())?;
+    pin.qualified().map_err(|e| e.to_string())?;
     Ok(Authenticated {
         pin,
         manifest,

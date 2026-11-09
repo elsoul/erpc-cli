@@ -1,0 +1,353 @@
+{
+  "mainnet": {
+    "recommended": "1.8.2",
+    "chain_id": 56,
+    "genesis_hash": "0x0d21840abff46b96c84b2ac9e10e4f5cdaeb5693cb665db62a2f3b02d2d57b5b",
+    "releases": {
+      "1.7.8": {
+        "commit": "cdb7548b5baacfdae92f9f63437d6456411665f3",
+        "published": "2026-08-11T02:38:35Z",
+        "binaries": {
+          "amd64": {
+            "url": "https://github.com/bnb-chain/bsc/releases/download/v1.7.8/geth_linux",
+            "sha256": "28466c6b6b279e2026ddcfea09ddadd920d2bcf02efab3c854e4bb0d5a3ae534",
+            "size": 117031176
+          },
+          "arm64": {
+            "url": "https://github.com/bnb-chain/bsc/releases/download/v1.7.8/geth-linux-arm64",
+            "sha256": "f4ec049dc50297405cdf68efcd0d9b1da444514b6a5d4b982f7346de56ed9636",
+            "size": 110636408
+          }
+        },
+        "network_zip": {
+          "url": "https://github.com/bnb-chain/bsc/releases/download/v1.7.8/mainnet.zip",
+          "sha256": "522cb9902437df2368008b28bebb6b5c35ec026bf2ec41af40117ff507f53fa7",
+          "size": 45720
+        },
+        "genesis_sha256": "85e9131b5ee9d133e68ad1a9f93d4e928ecc862a399b5166676f1c8cff040f59",
+        "config_sha256": "86bb94618a802ab5f90024976fa7262fe843d8848beb58648e67c79b7a4a09c3"
+      },
+      "1.8.2": {
+        "commit": "54afaff4da31ac9e49ba646a4f65104edac5a2f3",
+        "published": "2026-11-03T02:12:36Z",
+        "binaries": {
+          "amd64": {
+            "url": "https://github.com/bnb-chain/bsc/releases/download/v1.8.2/geth_linux",
+            "sha256": "3009f9580dcca1f88123f908d004de487f594b8c6b370830e473c17da0b8e6ee",
+            "size": 119160320
+          },
+          "arm64": {
+            "url": "https://github.com/bnb-chain/bsc/releases/download/v1.8.2/geth-linux-arm64",
+            "sha256": "85fc2a292f307059161f3f4353be4dd8d17c66bfba75413d94d4585a6f0f7c32",
+            "size": 112684328
+          }
+        },
+        "network_zip": {
+          "url": "https://github.com/bnb-chain/bsc/releases/download/v1.8.2/mainnet.zip",
+          "sha256": "522cb9902437df2368008b28bebb6b5c35ec026bf2ec41af40117ff507f53fa7",
+          "size": 45720
+        },
+        "genesis_sha256": "85e9131b5ee9d133e68ad1a9f93d4e928ecc862a399b5166676f1c8cff040f59",
+        "config_sha256": "86bb94618a802ab5f90024976fa7262fe843d8848beb58648e67c79b7a4a09c3"
+      }
+    },
+    "recommended_snapshots": {
+      "full": "mainnet-geth-pbss-20261009",
+      "pruned": "mainnet-geth-pbss-20261009-pruneancient"
+    },
+    "snapshots": {
+      "mainnet-geth-pbss-20261009": {
+        "id": "mainnet-geth-pbss-20261009",
+        "catalog_commit": "258bc869f9fb77e68993bd6a5769832cbf842401",
+        "manifest_sha256": "5a3626afd0fc6c8fabb0821addc5e95ab08e9a934f383255c367213bf23b7b15",
+        "files": [
+          {
+            "filename": "mainnet-geth-pbss-base-126063687.tar.lz4",
+            "URL": "https://pub-c0627345c16f47ab858c9469133073a8.r2.dev/mainnet-geth-pbss-base-126063687.tar.lz4",
+            "md5": "8c567d8f79f9cccdf7914e19f2833b74",
+            "size": "1899.49GB",
+            "estimated_bytes": 1899490000000
+          },
+          {
+            "filename": "mainnet-geth-pbss-blocks-52560000.tar.lz4",
+            "URL": "https://pub-c0627345c16f47ab858c9469133073a8.r2.dev/mainnet-geth-pbss-blocks-52560000.tar.lz4",
+            "md5": "1a3a7f11ab30d6b0b34da2e733ac7d83",
+            "size": "647.96GB",
+            "estimated_bytes": 647960000000
+          },
+          {
+            "filename": "mainnet-geth-pbss-blocks-73584000.tar.lz4",
+            "URL": "https://pub-c0627345c16f47ab858c9469133073a8.r2.dev/mainnet-geth-pbss-blocks-73584000.tar.lz4",
+            "md5": "53f4dc7bf4b6fcbb6cf5a6ea984863f0",
+            "size": "639.74GB",
+            "estimated_bytes": 639740000000
+          },
+          {
+            "filename": "mainnet-geth-pbss-blocks-21024000.tar.lz4",
+            "URL": "https://pub-c0627345c16f47ab858c9469133073a8.r2.dev/mainnet-geth-pbss-blocks-21024000.tar.lz4",
+            "md5": "ef20506070cbe2deb3b0c3c5cae3149d",
+            "size": "601.39GB",
+            "estimated_bytes": 601390000000
+          },
+          {
+            "filename": "mainnet-geth-pbss-blocks-42048000.tar.lz4",
+            "URL": "https://pub-c0627345c16f47ab858c9469133073a8.r2.dev/mainnet-geth-pbss-blocks-42048000.tar.lz4",
+            "md5": "6a21f55892f6da5f6ca5b77f6c0d88bd",
+            "size": "532.23GB",
+            "estimated_bytes": 532230000000
+          },
+          {
+            "filename": "mainnet-geth-pbss-blocks-125973687.tar.lz4",
+            "URL": "https://pub-c0627345c16f47ab858c9469133073a8.r2.dev/mainnet-geth-pbss-blocks-125973687.tar.lz4",
+            "md5": "9e04d08bbc331aa1f638206d81e77ddc",
+            "size": "521.20GB",
+            "estimated_bytes": 521200000000
+          },
+          {
+            "filename": "mainnet-geth-pbss-blocks-63072000.tar.lz4",
+            "URL": "https://pub-c0627345c16f47ab858c9469133073a8.r2.dev/mainnet-geth-pbss-blocks-63072000.tar.lz4",
+            "md5": "7db29b132f6e45f9f52f07381fdac9b3",
+            "size": "445.25GB",
+            "estimated_bytes": 445250000000
+          },
+          {
+            "filename": "mainnet-geth-pbss-blocks-115632000.tar.lz4",
+            "URL": "https://pub-c0627345c16f47ab858c9469133073a8.r2.dev/mainnet-geth-pbss-blocks-115632000.tar.lz4",
+            "md5": "91ecc768f3f52bfd13590ec877d58c83",
+            "size": "386.05GB",
+            "estimated_bytes": 386050000000
+          },
+          {
+            "filename": "mainnet-geth-pbss-blocks-31536000.tar.lz4",
+            "URL": "https://pub-c0627345c16f47ab858c9469133073a8.r2.dev/mainnet-geth-pbss-blocks-31536000.tar.lz4",
+            "md5": "7ed223135e0bb50fdcf625529d89b83c",
+            "size": "376.89GB",
+            "estimated_bytes": 376890000000
+          },
+          {
+            "filename": "mainnet-geth-pbss-blocks-84096000.tar.lz4",
+            "URL": "https://pub-c0627345c16f47ab858c9469133073a8.r2.dev/mainnet-geth-pbss-blocks-84096000.tar.lz4",
+            "md5": "5a324afc3a4b24ee2a16b44475e3d191",
+            "size": "376.58GB",
+            "estimated_bytes": 376580000000
+          },
+          {
+            "filename": "mainnet-geth-pbss-blocks-105120000.tar.lz4",
+            "URL": "https://pub-c0627345c16f47ab858c9469133073a8.r2.dev/mainnet-geth-pbss-blocks-105120000.tar.lz4",
+            "md5": "ab4805de4b89b36ad7ac4ee8f3d7106b",
+            "size": "334.20GB",
+            "estimated_bytes": 334200000000
+          },
+          {
+            "filename": "mainnet-geth-pbss-blocks-94608000.tar.lz4",
+            "URL": "https://pub-c0627345c16f47ab858c9469133073a8.r2.dev/mainnet-geth-pbss-blocks-94608000.tar.lz4",
+            "md5": "c92a8e4d799699ab26483e4fe2bfafed",
+            "size": "324.64GB",
+            "estimated_bytes": 324640000000
+          },
+          {
+            "filename": "mainnet-geth-pbss-blocks-10512000.tar.lz4",
+            "URL": "https://pub-c0627345c16f47ab858c9469133073a8.r2.dev/mainnet-geth-pbss-blocks-10512000.tar.lz4",
+            "md5": "3a973854371e526be8dbbce63aad855b",
+            "size": "289.91GB",
+            "estimated_bytes": 289910000000
+          }
+        ],
+        "retention": "full"
+      },
+      "mainnet-geth-pbss-20261009-pruneancient": {
+        "id": "mainnet-geth-pbss-20261009-pruneancient",
+        "catalog_commit": "258bc869f9fb77e68993bd6a5769832cbf842401",
+        "manifest_sha256": "5f28dfa6ebd89c5b98c3319b67434c29d430b5399d4d2e5db30870f7b7715d35",
+        "files": [
+          {
+            "filename": "mainnet-geth-pbss-base-126063687.tar.lz4",
+            "URL": "https://pub-c0627345c16f47ab858c9469133073a8.r2.dev/mainnet-geth-pbss-base-126063687.tar.lz4",
+            "md5": "8c567d8f79f9cccdf7914e19f2833b74",
+            "size": "1899.49GB",
+            "estimated_bytes": 1899490000000
+          },
+          {
+            "filename": "mainnet-geth-pbss-blocks-pruneancient-125973687.tar.lz4",
+            "URL": "https://pub-c0627345c16f47ab858c9469133073a8.r2.dev/mainnet-geth-pbss-blocks-pruneancient-125973687.tar.lz4",
+            "md5": "7a9735164fd73cbc41a0a5147418f792",
+            "size": "0.00GB",
+            "estimated_bytes": 0
+          }
+        ],
+        "retention": "pruned"
+      }
+    },
+    "network_upgrade": {
+      "name": "Jenner",
+      "activation_unix": 1796697000,
+      "activation_utc": "2026-12-08T02:30:00Z",
+      "minimum_version": "1.8.2",
+      "upgrade_method": "explicit binary update; preserve original data and identity; no automatic downgrade"
+    }
+  },
+  "chapel": {
+    "recommended": "1.8.1",
+    "chain_id": 97,
+    "genesis_hash": "0x6d3c66c5357ec91d5c43af47e234a939b22557cbb552dc45bebbceeed90fbe34",
+    "releases": {
+      "1.8.1": {
+        "commit": "947ba1cb1ef05d4a5f71b738113a3d8b4c16f6b7",
+        "published": "2026-10-16T10:51:12Z",
+        "binaries": {
+          "amd64": {
+            "url": "https://github.com/bnb-chain/bsc/releases/download/v1.8.1/geth_linux",
+            "sha256": "4c23239315e480240ecf2da77185729f925a5f02269696bcec056b97e1b4faed",
+            "size": 119160216
+          },
+          "arm64": {
+            "url": "https://github.com/bnb-chain/bsc/releases/download/v1.8.1/geth-linux-arm64",
+            "sha256": "3b371aec4842279c1d090497609c57dd0fd3335697a082f4fe81d2884fc3798a",
+            "size": 112684504
+          }
+        },
+        "network_zip": {
+          "url": "https://github.com/bnb-chain/bsc/releases/download/v1.8.1/testnet.zip",
+          "sha256": "0d9de8b7f1bafc36711eed80e97bf33f906fadc2ceb5457361645941d7ad19f7",
+          "size": 42010
+        },
+        "genesis_sha256": "821c2c569857a3fa5e8d087a74b66b1996127a6a1236ef0b7a14f25bee2fad0f",
+        "config_sha256": "bf2062271cfd1bbe240764d421fa27b5fbdac7218587e02579eec9e6c6aafe70"
+      }
+    },
+    "recommended_snapshots": {
+      "full": "testnet-geth-pbss-20260917",
+      "pruned": "testnet-geth-pbss-20260917-pruneancient"
+    },
+    "snapshots": {
+      "testnet-geth-pbss-20260917": {
+        "id": "testnet-geth-pbss-20260917",
+        "catalog_commit": "258bc869f9fb77e68993bd6a5769832cbf842401",
+        "manifest_sha256": "5358f8162a4aa101bbca1515d8c348d27346e593a3d8dc901857a6d9b0c81bde",
+        "files": [
+          {
+            "filename": "testnet-geth-pbss-base-131042908.tar.lz4",
+            "URL": "https://pub-c0627345c16f47ab858c9469133073a8.r2.dev/testnet-geth-pbss-base-131042908.tar.lz4",
+            "md5": "905b8a80a27765af6108827da5e8f4a4",
+            "size": "179.73GB",
+            "estimated_bytes": 179730000000
+          },
+          {
+            "filename": "testnet-geth-pbss-blocks-42048000.tar.lz4",
+            "URL": "https://pub-c0627345c16f47ab858c9469133073a8.r2.dev/testnet-geth-pbss-blocks-42048000.tar.lz4",
+            "md5": "60e1af49b60e23d795e5375b88b8a613",
+            "size": "72.20GB",
+            "estimated_bytes": 72200000000
+          },
+          {
+            "filename": "testnet-geth-pbss-blocks-21024000.tar.lz4",
+            "URL": "https://pub-c0627345c16f47ab858c9469133073a8.r2.dev/testnet-geth-pbss-blocks-21024000.tar.lz4",
+            "md5": "7378acc5b51c52f34e4e02497c719804",
+            "size": "35.94GB",
+            "estimated_bytes": 35940000000
+          },
+          {
+            "filename": "testnet-geth-pbss-blocks-31536000.tar.lz4",
+            "URL": "https://pub-c0627345c16f47ab858c9469133073a8.r2.dev/testnet-geth-pbss-blocks-31536000.tar.lz4",
+            "md5": "0428e85d9771a5664e0053305ec30e23",
+            "size": "35.46GB",
+            "estimated_bytes": 35460000000
+          },
+          {
+            "filename": "testnet-geth-pbss-blocks-126144000.tar.lz4",
+            "URL": "https://pub-c0627345c16f47ab858c9469133073a8.r2.dev/testnet-geth-pbss-blocks-126144000.tar.lz4",
+            "md5": "71968fbc99a91fa67c708af7e409c30f",
+            "size": "29.04GB",
+            "estimated_bytes": 29040000000
+          },
+          {
+            "filename": "testnet-geth-pbss-blocks-52560000.tar.lz4",
+            "URL": "https://pub-c0627345c16f47ab858c9469133073a8.r2.dev/testnet-geth-pbss-blocks-52560000.tar.lz4",
+            "md5": "4470dfad7fc649fe652f988b90894422",
+            "size": "27.59GB",
+            "estimated_bytes": 27590000000
+          },
+          {
+            "filename": "testnet-geth-pbss-blocks-130952908.tar.lz4",
+            "URL": "https://pub-c0627345c16f47ab858c9469133073a8.r2.dev/testnet-geth-pbss-blocks-130952908.tar.lz4",
+            "md5": "9ecce8027a5e836740a8f39c4003b71e",
+            "size": "25.81GB",
+            "estimated_bytes": 25810000000
+          },
+          {
+            "filename": "testnet-geth-pbss-blocks-63072000.tar.lz4",
+            "URL": "https://pub-c0627345c16f47ab858c9469133073a8.r2.dev/testnet-geth-pbss-blocks-63072000.tar.lz4",
+            "md5": "0641f00da8e62c317b73dffbe48401aa",
+            "size": "22.21GB",
+            "estimated_bytes": 22210000000
+          },
+          {
+            "filename": "testnet-geth-pbss-blocks-105120000.tar.lz4",
+            "URL": "https://pub-c0627345c16f47ab858c9469133073a8.r2.dev/testnet-geth-pbss-blocks-105120000.tar.lz4",
+            "md5": "2ddc5e5e9e1d295e1d5554a25ba5a553",
+            "size": "18.63GB",
+            "estimated_bytes": 18630000000
+          },
+          {
+            "filename": "testnet-geth-pbss-blocks-115632000.tar.lz4",
+            "URL": "https://pub-c0627345c16f47ab858c9469133073a8.r2.dev/testnet-geth-pbss-blocks-115632000.tar.lz4",
+            "md5": "832806f2e99ad8f4f29cb7fa472b7904",
+            "size": "17.29GB",
+            "estimated_bytes": 17290000000
+          },
+          {
+            "filename": "testnet-geth-pbss-blocks-73584000.tar.lz4",
+            "URL": "https://pub-c0627345c16f47ab858c9469133073a8.r2.dev/testnet-geth-pbss-blocks-73584000.tar.lz4",
+            "md5": "39f163ef9509a9ed04cf5a9fbcb8984c",
+            "size": "16.77GB",
+            "estimated_bytes": 16770000000
+          },
+          {
+            "filename": "testnet-geth-pbss-blocks-94608000.tar.lz4",
+            "URL": "https://pub-c0627345c16f47ab858c9469133073a8.r2.dev/testnet-geth-pbss-blocks-94608000.tar.lz4",
+            "md5": "6f3ec5e18914f02aaa607d47f6ce558a",
+            "size": "16.73GB",
+            "estimated_bytes": 16730000000
+          },
+          {
+            "filename": "testnet-geth-pbss-blocks-84096000.tar.lz4",
+            "URL": "https://pub-c0627345c16f47ab858c9469133073a8.r2.dev/testnet-geth-pbss-blocks-84096000.tar.lz4",
+            "md5": "6e795408276a9433d103487355b69237",
+            "size": "12.50GB",
+            "estimated_bytes": 12500000000
+          },
+          {
+            "filename": "testnet-geth-pbss-blocks-10512000.tar.lz4",
+            "URL": "https://pub-c0627345c16f47ab858c9469133073a8.r2.dev/testnet-geth-pbss-blocks-10512000.tar.lz4",
+            "md5": "5c4efc11b698d26f1c085b9b4796222d",
+            "size": "11.77GB",
+            "estimated_bytes": 11770000000
+          }
+        ],
+        "retention": "full"
+      },
+      "testnet-geth-pbss-20260917-pruneancient": {
+        "id": "testnet-geth-pbss-20260917-pruneancient",
+        "catalog_commit": "258bc869f9fb77e68993bd6a5769832cbf842401",
+        "manifest_sha256": "75ebe568bb294f5716e77bdf5b346f0d7d14b1c7855bc4785ebf4c4b99981e1a",
+        "files": [
+          {
+            "filename": "testnet-geth-pbss-base-131042908.tar.lz4",
+            "URL": "https://pub-c0627345c16f47ab858c9469133073a8.r2.dev/testnet-geth-pbss-base-131042908.tar.lz4",
+            "md5": "905b8a80a27765af6108827da5e8f4a4",
+            "size": "179.73GB",
+            "estimated_bytes": 179730000000
+          },
+          {
+            "filename": "testnet-geth-pbss-blocks-pruneancient-130952908.tar.lz4",
+            "URL": "https://pub-c0627345c16f47ab858c9469133073a8.r2.dev/testnet-geth-pbss-blocks-pruneancient-130952908.tar.lz4",
+            "md5": "637bc67cc5d697ebd462a59712a1305f",
+            "size": "0.00GB",
+            "estimated_bytes": 0
+          }
+        ],
+        "retention": "pruned"
+      }
+    }
+  }
+}

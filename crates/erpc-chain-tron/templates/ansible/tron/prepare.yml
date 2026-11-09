@@ -12,7 +12,7 @@
       vars: {tron_guard: guard}
     - name: Fence this operation and gracefully stop any existing node
       ansible.builtin.command:
-        argv: "{{ ['python3', tron_control, 'prepare'] + tron_contract_args + [tron_intent, tron_release_target | to_json] }}"
+        argv: "{{ ['/usr/bin/python3', '-I', tron_control, 'prepare'] + tron_contract_args + [tron_intent, tron_release_target | to_json] }}"
       changed_when: true
     - name: Create the reviewed release directory
       ansible.builtin.file:
@@ -35,7 +35,7 @@
         - {url: "{{ tron_config_url }}", name: network.conf, sha256: "{{ tron_config_sha256 }}"}
     - name: Authenticate the exact network signer and Java platform
       ansible.builtin.command:
-        argv: [python3, "{{ tron_templates }}/verify.py", "{{ tron_release }}", "{{ playbook_dir }}/../../gpg/{{ tron_network }}.asc", "{{ tron_primary_fingerprint }}", "{{ tron_signing_fingerprint }}", "{{ tron_java }}", "{{ tron_java_major | string }}", "{{ tron_javac }}", "{{ playbook_dir }}/../../ErpcTronKey.java"]
+        argv: [/usr/bin/python3, -I, "{{ tron_templates }}/verify.py", "{{ tron_release }}", "{{ playbook_dir }}/../../gpg/{{ tron_network }}.asc", "{{ tron_primary_fingerprint }}", "{{ tron_signing_fingerprint }}", "{{ tron_java }}", "{{ tron_java_major | string }}", "{{ tron_javac }}", "{{ playbook_dir }}/../../ErpcTronKey.java"]
       changed_when: false
     - name: Install root-owned host controllers
       ansible.builtin.copy:
@@ -44,7 +44,7 @@
         owner: root
         group: root
         mode: '0755'
-      loop: [control.py, identity.py, observe.py, launch.py]
+      loop: [control.py, identity.py, observe.py, launch.py, host.py, accounts.py]
     - name: Select the verified release while the node is stopped
       ansible.builtin.file:
         src: "{{ tron_release }}"
@@ -87,7 +87,7 @@
         mode: '0644'
     - name: Record the exact installed public files
       ansible.builtin.command:
-        argv: [python3, "{{ tron_templates }}/manifest.py", "{{ tron_release }}", "{{ tron_intent }}", "{{ tron_release_target | to_json }}"]
+        argv: [/usr/bin/python3, -I, "{{ tron_templates }}/manifest.py", "{{ tron_release }}", "{{ tron_intent }}", "{{ tron_release_target | to_json }}"]
       changed_when: true
     - name: Reload unit definitions without starting a listener
       ansible.builtin.systemd_service:

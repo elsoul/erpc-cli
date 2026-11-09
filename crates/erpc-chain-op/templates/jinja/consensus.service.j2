@@ -19,13 +19,13 @@ RuntimeDirectoryMode=0700
 {% endif %}
 Type=exec
 UMask=0077
-ExecStartPre=+/usr/bin/python3 /usr/local/lib/erpc/rollup_control.py guard consensus {{ op_owner }} {{ op_family }} {{ op_network }} {{ op_history }}
-ExecStartPre=+/usr/bin/python3 /usr/local/lib/erpc/rollup_control.py wait-engine
+ExecStartPre=+/usr/bin/python3 -I /usr/local/lib/erpc/rollup_control.py guard consensus {{ op_owner }} {{ op_family }} {{ op_network }} {{ op_history }}
+ExecStartPre=+/usr/bin/python3 -I /usr/local/lib/erpc/rollup_control.py wait-engine
 LoadCredentialEncrypted=engine-jwt:/etc/credstore.encrypted/erpc-{{ op_family }}-engine-jwt
 LoadCredentialEncrypted=consensus-peer:/etc/credstore.encrypted/erpc-{{ op_family }}-consensus-peer
 {% if op_family != 'base' %}
-ExecStartPre=/usr/bin/python3 /usr/local/lib/erpc/rollup_runtime_jwt.py {{ op_family }} consensus
-ExecStartPre=/usr/bin/python3 /usr/local/lib/erpc/rollup_container.py {{ op_family }} consensus
+ExecStartPre=/usr/bin/python3 -I /usr/local/lib/erpc/rollup_runtime_jwt.py {{ op_family }} consensus
+ExecStartPre=/usr/bin/python3 -I /usr/local/lib/erpc/rollup_container.py {{ op_family }} consensus
 ExecStart=/usr/bin/docker --config {{ op_conf }}/docker run --rm --name erpc-{{ op_family }}-consensus --network host --user {{ op_uid }}:{{ op_gid }} \
   --label erpc.owner={{ op_owner }} --label erpc.family={{ op_family }} --label erpc.network={{ op_network }} --label erpc.history={{ op_history }} \
   --cap-drop ALL --security-opt no-new-privileges --read-only --tmpfs /tmp:rw,nosuid,nodev,noexec,size=256m \

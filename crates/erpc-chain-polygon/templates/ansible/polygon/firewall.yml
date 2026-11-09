@@ -1,0 +1,53 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Apply a short receipt-bound Polygon ingress transaction
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars_files: [vars.yml]
+  tasks:
+    - name: Check the exact stopped preparation before changing ingress
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ polygon_scripts }}/control.py", within-run]
+        stdin: "{{ polygon_request | combine({'action':'phase'}) | to_json }}"
+      changed_when: false
+    - name: Install the reviewed operation-bound firewall helper
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../rpc-firewall.py"
+        dest: /usr/local/lib/erpc/rpc-firewall.py
+        owner: root
+        group: root
+        mode: '0755'
+    - name: Install the fail-closed confirmed-policy boot loader
+      ansible.builtin.template:
+        src: "{{ polygon_templates }}/firewall.service.j2"
+        dest: /etc/systemd/system/erpc-polygon-firewall.service
+        owner: root
+        group: root
+        mode: '0644'
+    - name: Enable the boot loader without starting an unconfirmed policy
+      ansible.builtin.systemd_service:
+        name: erpc-polygon-firewall.service
+        daemon_reload: true
+        enabled: true
+    - name: Render the candidate within this immutable run
+      ansible.builtin.template:
+        src: "{{ polygon_templates }}/firewall.nft.j2"
+        dest: "{{ playbook_dir }}/../../firewall-candidate.nft"
+        owner: root
+        group: root
+        mode: '0600'
+    - name: Validate the complete candidate without applying it
+      ansible.builtin.command:
+        argv: [nft, -c, -f, "{{ playbook_dir }}/../../firewall-candidate.nft"]
+      changed_when: false
+    - name: Bind the candidate to this submitted bundle
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/../../../bundle.tar.gz"
+        checksum_algorithm: sha256
+      register: polygon_submission
+    - name: Apply with an immutable per-operation rollback callback
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, /usr/local/lib/erpc/rpc-firewall.py, polygon, apply, "{{ (playbook_dir ~ '/../../..') | realpath | basename }}", "{{ polygon_submission.stat.checksum }}"]

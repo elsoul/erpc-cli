@@ -1,0 +1,70 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Finalize the original stopped validator after custody and parent import
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars_files: [vars.yml]
+  tasks:
+    - name: Publish only phase-bound original native dependencies and stopped broker
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ polygon_scripts }}/control.py", within-run]
+        stdin: "{{ polygon_request | combine({'action':'validator-finalize'}) | to_json }}"
+      register: polygon_finalized
+    - name: Bind definitions to original numeric recipients and immutable container generation
+      ansible.builtin.set_fact:
+        polygon_runtime_accounts: "{{ (polygon_finalized.stdout | from_json).runtime_accounts }}"
+        polygon_broker_token: "{{ (polygon_finalized.stdout | from_json).broker_token }}"
+    - name: Install native phase-bound service definitions while stopped
+      ansible.builtin.template:
+        src: "{{ polygon_templates }}/native.service.j2"
+        dest: "/etc/systemd/system/polygon-{{ item }}.service"
+        owner: root
+        group: root
+        mode: '0644'
+      vars:
+        polygon_component: "{{ item }}"
+      loop: [bor, heimdall]
+    - name: Install the authenticated private dependency gateway
+      ansible.builtin.template:
+        src: "{{ polygon_templates }}/parent.service.j2"
+        dest: /etc/systemd/system/polygon-l1-proxy.service
+        owner: root
+        group: root
+        mode: '0644'
+    - name: Install the exact original broker lifecycle without starting it
+      ansible.builtin.template:
+        src: "{{ polygon_templates }}/broker.service.j2"
+        dest: /etc/systemd/system/polygon-broker.service
+        owner: root
+        group: root
+        mode: '0644'
+    - name: Install short original Unix peer publishers
+      ansible.builtin.template:
+        src: "{{ polygon_templates }}/peer.service.j2"
+        dest: "/etc/systemd/system/polygon-peer-{{ item }}.service"
+        owner: root
+        group: root
+        mode: '0644'
+      vars:
+        polygon_component: "{{ item }}"
+      loop: [bor, heimdall]
+    - name: Install asynchronous refresh without blocking native genesis import
+      ansible.builtin.template:
+        src: "{{ polygon_templates }}/peer.timer.j2"
+        dest: "/etc/systemd/system/polygon-peer-{{ item }}.timer"
+        owner: root
+        group: root
+        mode: '0644'
+      vars:
+        polygon_component: "{{ item }}"
+      loop: [bor, heimdall]
+    - name: Reload all stopped native and auxiliary definitions
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+    - name: Seal exact credential recipients, native phase and callback generations
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ polygon_scripts }}/control.py", within-run]
+        stdin: "{{ polygon_request | combine({'action':'seal'}) | to_json }}"

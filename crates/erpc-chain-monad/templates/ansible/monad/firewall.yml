@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+- name: Prepare precisely one Monad firewall candidate
+  hosts: all
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Verify the still-authorized host operation before any shared file write
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, '{{ playbook_dir }}/../../node/control.py', within-run]
+        stdin: '{{ monad_request | combine({"operation": "prepared"}) | to_json }}'
+      changed_when: false
+    - name: Install the reviewed common firewall controller
+      ansible.builtin.copy:
+        src: '{{ playbook_dir }}/../../rpc-firewall.py'
+        dest: /usr/local/lib/erpc/rpc-firewall.py
+        owner: root
+        group: root
+        mode: '0644'
+    - name: Render the candidate into this immutable bundle
+      ansible.builtin.template:
+        src: '{{ playbook_dir }}/../../node/firewall.nft.j2'
+        dest: '{{ playbook_dir }}/../../firewall-candidate.nft'
+        owner: root
+        group: root
+        mode: '0600'
+    - name: Validate only this candidate's nftables syntax
+      ansible.builtin.command:
+        argv: [/usr/sbin/nft, -c, -f, '{{ playbook_dir }}/../../firewall-candidate.nft']
+      changed_when: false
+    - name: Read the submitted archive digest
+      ansible.builtin.stat:
+        path: '{{ playbook_dir }}/../../../bundle.tar.gz'
+        checksum_algorithm: sha256
+      register: monad_submitted
+    - name: Apply an operation-bound candidate with rollback
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, '{{ playbook_dir }}/../../node/control.py', within-run]
+        stdin: '{{ monad_request | combine({"operation": "firewall-apply", "run": (playbook_dir ~ "/../../..") | realpath | basename, "bundle": monad_submitted.stat.checksum}) | to_json }}'
+      changed_when: true

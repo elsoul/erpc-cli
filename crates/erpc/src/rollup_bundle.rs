@@ -58,14 +58,9 @@ pub(crate) fn vars(
         return Err("follower record differs from selected chain/network".into());
     }
     let architecture = architecture(node)?;
-    let pair = release::recommended(profile.family, architecture);
+    let pair = release::qualify(profile.family, architecture, &node.pair)?;
     let pair_json =
         serde_json::to_value(&pair).map_err(|_| "cannot encode reviewed client pair")?;
-    if node.pair != pair_json {
-        return Err(
-            "stored clients differ from this CLI's reviewed pair; plan an explicit update".into(),
-        );
-    }
     let controller: std::net::IpAddr = facts
         .controller
         .parse()
@@ -162,6 +157,37 @@ pub(crate) fn build(
 mod tests {
     use super::*;
 
+    fn render_qualified_bundle_if_requested(bundle: &Built) {
+        use std::io::Write as _;
+        let Some(python) = std::env::var_os("ERPC_TEST_ANSIBLE_PYTHON") else {
+            return;
+        };
+        let mut child = std::process::Command::new(python)
+            .args(["-I", "-B"])
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/op_release_play.py"
+            ))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(&bundle.bytes)
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("qualified bundle rendered"));
+    }
+
     #[test]
     fn every_profile_carries_its_own_pair_and_no_provider_reference() {
         for family in [Family::Optimism, Family::Base, Family::Soneium] {
@@ -220,12 +246,56 @@ mod tests {
                                 .contains("@sha256:")
                         );
                     }
-                    build(&node, profile, &facts, None, None, None)
+                    let bundle = build(&node, profile, &facts, None, None, None)
                         .expect("carried files form valid bundle");
+                    render_qualified_bundle_if_requested(&bundle);
                     node.pair["execution"]["sha256"] = json!("f".repeat(64));
                     assert!(vars(&node, profile, &facts, false).is_err());
                 }
             }
+        }
+    }
+    #[test]
+    fn original_op_pair_can_reach_resume_without_selecting_unreviewed_artifacts() {
+        let stored = json!({"architecture":"amd64", "execution":{
+                "name":"op-reth","version":"2.6.1","commit":"e16bffa18420c86dbab693097bc33117f74a5f7d",
+                "sha256":"02be1f9c1eef42abadcf7b6440a311ee0d63fe6e7289e784e544d5cb5a4de473","distribution":"op-image"},
+                "consensus":{"name":"op-node","version":"1.19.11","commit":"43c071cbff8ad7512581561aa2d43c990544b650",
+                "sha256":"dc7a525974c88d0c369bcffaea0f735ca268e64a354507e688328f426c0c363a","distribution":"op-image"}});
+        for family in [Family::Optimism, Family::Soneium] {
+            let profile = erpc_chain_rollup::profile::get(family, "mainnet").unwrap();
+            let mut node = RollupRpc {
+                id: Some("syntheticowner".into()),
+                name: "follower".into(),
+                family: family.name().into(),
+                network: "mainnet".into(),
+                history: "full".into(),
+                pair: stored.clone(),
+                ..Default::default()
+            };
+            let facts = crate::eth_rpc::Facts {
+                controller: "192.0.2.3".into(),
+                ssh_port: 22,
+                ..Default::default()
+            };
+            let original = vars(&node, profile, &facts, false).unwrap();
+            render_qualified_bundle_if_requested(
+                &build(&node, profile, &facts, None, None, None).unwrap(),
+            );
+            assert_eq!(original["op_pair"], stored);
+            assert!(
+                original["op_execution_image"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with(stored["execution"]["sha256"].as_str().unwrap())
+            );
+            node.pair =
+                serde_json::to_value(release::recommended(family, Architecture::Amd64)).unwrap();
+            let next = vars(&node, profile, &facts, false).unwrap();
+            assert_eq!(next["op_pair"]["execution"]["version"], "2.8.0");
+            assert_ne!(next["op_execution_image"], original["op_execution_image"]);
+            node.pair["execution"]["commit"] = json!("0".repeat(40));
+            assert!(vars(&node, profile, &facts, false).is_err());
         }
     }
 }

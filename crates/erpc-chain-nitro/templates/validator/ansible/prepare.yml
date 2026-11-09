@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Prepare original Arbitrum validator ownership and reviewed content
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Reserve or verify original numeric identities before package mutations
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/../node/entry.py", play-init]
+        stdin: "{{ {'action':'init','contract':validator_request.contract} | to_json }}"
+      changed_when: false
+    - name: Install reviewed operating system prerequisites
+      ansible.builtin.apt:
+        name: [ca-certificates, python3, python3-cryptography, python3-pycryptodome, libsecp256k1-1, docker.io, nftables, iproute2]
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+    - name: Start the distribution Docker daemon
+      ansible.builtin.systemd_service:
+        name: docker
+        enabled: true
+        state: started
+    - name: Pull and verify the exact image before draining a live original validator
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/../node/entry.py", play-pull]
+        stdin: "{{ validator_request | to_json }}"
+      changed_when: false
+    - name: Persist this new cancellation intent and drain only the original runtime
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/../node/entry.py"]
+        stdin: "{{ validator_request | to_json }}"
+      changed_when: true
+    - name: Publish and verify the complete carried helper profile while fenced
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/../node/entry.py", play-publish]
+        stdin: "{{ validator_request | to_json }}"
+      changed_when: true

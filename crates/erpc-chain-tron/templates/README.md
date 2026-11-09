@@ -192,3 +192,58 @@ for implementation acceptance.
 [permissions]: https://developers.tron.network/docs/advanced-configuration-for-super-representative
 [sr-guide]: https://developers.tron.network/docs/super-representatives
 [systemd]: https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html
+
+## Process ownership and durable recovery
+
+A missing or inactive `tron-node.service` is not proof that a writer stopped.
+Before changing client/configuration or credentials, the controller checks the
+service cgroup, dedicated `tron` UID, native JAR arguments and open/argument
+references to `/var/lib/tron`. It also refuses occupied managed TCP/UDP ports.
+Unknown processes are never killed automatically; stop them through their
+actual owner before retrying. First initialization and manual/service startup
+apply the same ownership boundary.
+
+Readiness requires the managed JVM's MainPID, process generation, UID, cgroup,
+executable inode, exact launch arguments and native API socket ownership to
+match before and after observations. The launcher names the immutable reviewed
+JAR directory directly. The public release manifest is readable by the runtime
+account; credentials remain private systemd inputs. Matching responses from an
+unowned loopback server cannot make a node ready. Fixed HTTP observations reject
+redirects and ambient proxies; the gRPC probe ignores curlrc configuration.
+Ingress uses the observed server-side SSH port, including forwarded connections.
+
+Ownership, intents, stop/preparation fences, activation and credential receipts
+sync files and directory entries before later phases run. An interrupted initial
+credential import can retry only when its durable preparation marker matches,
+no generation was selected, and no prior activation or native history exists.
+Unused encrypted generations are retained. Once an original receipt exists,
+`--restore-keys` remains the explicit recovery path; it preserves chain data.
+A stopped fence rejects delayed deployment phases even if invalidating their
+intent failed. Only a new durable preparation, or an explicit start that first
+invalidates the old intent, may clear it. Stop attempts both cancellation
+barriers and disables/drains known units even on storage failure, retaining
+ingress and reporting the error. Persistent storage failure cannot establish a
+durable reboot guarantee; repair storage and retry before relying on it.
+Destroy retains the existing deny-by-default firewall and data.
+
+These boundaries have offline process/cgroup/socket models, a real inert data
+writer, injected sync failures and fixed-transport tests. Real Linux service,
+filesystem, keystore and node acceptance remain deferred; no chain executable,
+real key or financial transaction was run for this correction.
+
+Privileged helper, firewall, release, configuration and custody destinations are
+checked before provisioning changes, including every existing ancestor. Unknown
+symlinks, non-root owners and group/world writable paths are refused rather than
+repaired implicitly. Only the exact managed release/credential pointers are
+accepted. The service's inline root bootstrap validates its helper before
+executing it; validation inside a replaceable script is not its trust boundary.
+
+A new runtime account starts from a durable reservation of unused system UID/GID
+values. Account/group creation may resume only that reservation. Startup checks
+the original UID/GID, dedicated home and non-login shell, primary group and NSS
+supplementary membership. Unknown existing accounts/groups and privilege drift
+are refused. Earlier versions did not record original UID/GID authority: such
+hosts can still stop/destroy their known services and retain data, but startup
+or update requires a separately reviewed migration; no implicit adoption is
+performed. Stop also considers the retained UID when the current NSS entry has
+changed. No real account or group was created by the offline verification.

@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Check prospective Hyperliquid ownership without reserving native state
+  hosts: all
+  gather_facts: false
+  become: true
+  any_errors_fatal: true
+  tasks:
+    - name: Refuse foreign namespaces and unsupported capacity before inventory reservation
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, '{{ playbook_dir }}/../../node/control.py', play]
+        stdin: '{{ hyperliquid_request | combine({"action":"preflight"}) | to_json }}'
+      changed_when: false

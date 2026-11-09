@@ -15,7 +15,7 @@
     # cross-network init cannot replace the old owner's installed controller.
     - name: Check or reserve the immutable remote host contract
       ansible.builtin.command:
-        argv: [python3, "{{ playbook_dir }}/control.py"]
+        argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/control.py"]
         stdin: "{{ btc_request | combine({'action': 'prepare'}) | to_json }}"
       changed_when: false
 
@@ -26,13 +26,6 @@
         update_cache: true
         cache_valid_time: 3600
 
-    - name: Create the non-login Bitcoin service account
-      ansible.builtin.user:
-        name: bitcoin
-        system: true
-        create_home: false
-        shell: /usr/sbin/nologin
-
     - name: Create isolated data and release directories
       ansible.builtin.file:
         path: "{{ item.path }}"
@@ -41,32 +34,24 @@
         group: "{{ item.owner }}"
         mode: "{{ item.mode }}"
       loop:
-        - { path: "{{ btc_root }}/data", owner: bitcoin, mode: '0700' }
         - { path: "{{ btc_opt }}/releases", owner: root, mode: '0755' }
         - { path: /etc/erpc, owner: root, mode: '0755' }
         - { path: /usr/local/lib/erpc, owner: root, mode: '0755' }
-
-    - name: Install the ownership-checking controller
-      ansible.builtin.copy:
-        src: "{{ playbook_dir }}/control.py"
-        dest: /usr/local/lib/erpc/bitcoin-control
-        owner: root
-        group: root
-        mode: '0755'
 
     - name: Install and start the selected release
       when: btc_phase != 'init'
       block:
         - name: Stop the owned node and persist the desired installation
           ansible.builtin.command:
-            argv: [python3, /usr/local/lib/erpc/bitcoin-control]
+            argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/control.py"]
             stdin: "{{ btc_request | combine({'action': 'begin-install'}) | to_json }}"
           changed_when: true
 
         - name: Authenticate both manifest signatures and exact selected archive
           ansible.builtin.command:
             argv:
-              - python3
+              - /usr/bin/python3
+              - -I
               - "{{ playbook_dir }}/verify.py"
               - "{{ playbook_dir }}/SHA256SUMS"
               - "{{ playbook_dir }}/SHA256SUMS.asc"
@@ -86,92 +71,19 @@
 
         - name: Rehash the complete archive before any extraction or execution
           ansible.builtin.command:
-            argv: [python3, "{{ playbook_dir }}/verify.py", archive, "{{ btc_opt }}/{{ btc_archive }}", "{{ btc_sha256 }}"]
+            argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/verify.py", archive, "{{ btc_opt }}/{{ btc_archive }}", "{{ btc_sha256 }}"]
           changed_when: false
 
-        - name: Create the version-specific release directory
-          ansible.builtin.file:
-            path: "{{ btc_release }}"
-            state: directory
-            owner: root
-            group: root
-            mode: '0755'
-
-        - name: Extract only the daemon and local RPC client
+        - name: Publish the authenticated release under its still-current caller intent
           ansible.builtin.command:
-            argv:
-              - tar
-              - -xzf
-              - "{{ btc_opt }}/{{ btc_archive }}"
-              - --no-same-owner
-              - --no-same-permissions
-              - --strip-components=1
-              - -C
-              - "{{ btc_release }}"
-              - "bitcoin-{{ btc_version }}/bin/bitcoind"
-              - "bitcoin-{{ btc_version }}/bin/bitcoin-cli"
+            argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/control.py"]
+            stdin: "{{ btc_request | combine({'action': 'install-artifacts'}) | to_json }}"
           changed_when: true
-
-        - name: Restrict executable ownership and clear special mode bits
-          ansible.builtin.file:
-            path: "{{ btc_release }}/bin/{{ item }}"
-            owner: root
-            group: root
-            mode: '0755'
-          loop: [bitcoind, bitcoin-cli]
-
-        - name: Check the installed daemon identifies the selected version
-          ansible.builtin.command:
-            argv: ["{{ btc_release }}/bin/bitcoind", --version]
-          register: btc_binary
-          changed_when: false
-          failed_when: btc_binary.rc != 0 or ('Bitcoin Core version v' ~ btc_version) not in btc_binary.stdout
-
-        - name: Record the authenticated release identity
-          ansible.builtin.copy:
-            content: "{{ btc_request.pin | to_json }}"
-            dest: "{{ btc_release }}/verified.json"
-            owner: root
-            group: root
-            mode: '0644'
-
-        - name: Write cookie-authenticated loopback-only configuration before enabling service
-          ansible.builtin.copy:
-            content: "{{ btc_config }}"
-            dest: /etc/erpc/bitcoin.conf
-            owner: root
-            group: bitcoin
-            mode: '0640'
-
-        - name: Select the verified release without automatic database rollback
-          ansible.builtin.file:
-            src: "{{ btc_release }}"
-            dest: "{{ btc_opt }}/current"
-            state: link
-            force: true
-
-        - name: Install the owned hardened service with a reboot guard
-          ansible.builtin.copy:
-            src: "{{ playbook_dir }}/erpc-bitcoin.service"
-            dest: /etc/systemd/system/erpc-bitcoin.service
-            owner: root
-            group: root
-            mode: '0644'
-
-        - name: End the durable installation fence
-          ansible.builtin.command:
-            argv: [python3, /usr/local/lib/erpc/bitcoin-control]
-            stdin: "{{ btc_request | combine({'action': 'finish-install'}) | to_json }}"
-          changed_when: true
-
-        - name: Reload service definitions
-          ansible.builtin.systemd_service:
-            daemon_reload: true
 
         - name: Start through the same owner and network guard used by ongoing operations
           ansible.builtin.command:
-            argv: [python3, /usr/local/lib/erpc/bitcoin-control]
-            stdin: "{{ btc_request | combine({'action': 'start'}) | to_json }}"
+            argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/control.py"]
+            stdin: "{{ btc_request | combine({'action': 'activate'}) | to_json }}"
           changed_when: true
 
         - name: Remove the verified download archive

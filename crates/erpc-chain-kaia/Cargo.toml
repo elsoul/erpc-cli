@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "erpc-chain-kaia"
+description = "Qualified Kaia endpoint node operations for the erpc CLI"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+publish = true
+
+[dependencies]
+erpc-core.workspace = true
+sha2.workspace = true
+include_dir.workspace = true
+serde_json.workspace = true
+serde.workspace = true
+secrecy.workspace = true
+zeroize.workspace = true
+k256.workspace = true
+sha3.workspace = true
+# The already-qualified native BLS implementation used by Ethereum deposits.
+blst = { version = "=0.3.16", default-features = false }
+
+[lints]
+workspace = true

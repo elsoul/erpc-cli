@@ -102,6 +102,13 @@ pub fn evaluate(
     if response["phase"] != "installed" || response["service"] != "active" {
         problems.push("service is not installed and active");
     }
+    if response["stopped"] != false
+        || response["authority_valid"] != true
+        || response["process_owned"] != true
+        || response["source_current"] != true
+    {
+        problems.push("original active process, source or account authority is unproven or fenced");
+    }
     if response["rpc_available"] != true {
         problems.push("RPC inspection is unavailable or warming up");
     }

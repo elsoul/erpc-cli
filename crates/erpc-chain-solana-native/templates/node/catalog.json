@@ -1,0 +1,106 @@
+{
+  "schema": 1,
+  "repository": "https://github.com/anza-xyz/agave.git",
+  "networks": {
+    "mainnet": {
+      "genesis": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+      "version": "4.4.0",
+      "commit": "9ef63128134af559561f6a91a641ec01e665c70d",
+      "cargo_lock_sha256": "1e6fe8ad3523e2cb00a87406b4d59c13142b3f505b43ca169727a9ec626222c5",
+      "rust": "1.98.1",
+      "rust_date": "2026-09-03",
+      "rust_manifest_sha256": "a7c8774a5fd8441c997d94c029776cbc5eb111e9d72ab5d256fa69866644347e",
+      "components": {
+        "rustc": {
+          "url": "https://static.rust-lang.org/dist/2026-09-03/rustc-1.98.1-x86_64-unknown-linux-gnu.tar.xz",
+          "sha256": "e974f036b28565f37c0f3bd92ddefa809bee16c04f9dcf07b9ed96e05aaaf7c4",
+          "maximum_bytes": 536870912,
+          "size": 79727616
+        },
+        "cargo": {
+          "url": "https://static.rust-lang.org/dist/2026-09-03/cargo-1.98.1-x86_64-unknown-linux-gnu.tar.xz",
+          "sha256": "ea1de9f9e23107d97ee2b41a72c552f34064a593da503789218387aee59f3ba4",
+          "maximum_bytes": 536870912,
+          "size": 11662108
+        },
+        "rust-std": {
+          "url": "https://static.rust-lang.org/dist/2026-09-03/rust-std-1.98.1-x86_64-unknown-linux-gnu.tar.xz",
+          "sha256": "fa3ff450172a16c026944030230c5069947af93c728d9179971d44e5e0cfb561",
+          "maximum_bytes": 536870912,
+          "size": 30715684
+        }
+      },
+      "entrypoints": [
+        "entrypoint.mainnet-beta.solana.com:8001",
+        "entrypoint2.mainnet-beta.solana.com:8001",
+        "entrypoint3.mainnet-beta.solana.com:8001",
+        "entrypoint4.mainnet-beta.solana.com:8001",
+        "entrypoint5.mainnet-beta.solana.com:8001"
+      ],
+      "known_validators": [
+        "7Np41oeYqPefeNQEHSv1UDhYrehxin3NStELsSKCT4K2",
+        "GdnSyH3YtwcxFvQrVVJMm1JhTS4QVX7MFsX56uJLUfiZ",
+        "DE1bawNcRJB9rVm3buyMVfr8mBEoyyu73NBovf2oXJsJ",
+        "CakcnaRDHka2gXyfbEd2d3xsvkJkqsLw2akB3zsN1D2S"
+      ]
+    },
+    "testnet": {
+      "genesis": "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY",
+      "version": "4.4.0",
+      "commit": "9ef63128134af559561f6a91a641ec01e665c70d",
+      "cargo_lock_sha256": "1e6fe8ad3523e2cb00a87406b4d59c13142b3f505b43ca169727a9ec626222c5",
+      "rust": "1.98.1",
+      "rust_date": "2026-09-03",
+      "rust_manifest_sha256": "a7c8774a5fd8441c997d94c029776cbc5eb111e9d72ab5d256fa69866644347e",
+      "components": {
+        "rustc": {
+          "url": "https://static.rust-lang.org/dist/2026-09-03/rustc-1.98.1-x86_64-unknown-linux-gnu.tar.xz",
+          "sha256": "e974f036b28565f37c0f3bd92ddefa809bee16c04f9dcf07b9ed96e05aaaf7c4",
+          "maximum_bytes": 536870912,
+          "size": 79727616
+        },
+        "cargo": {
+          "url": "https://static.rust-lang.org/dist/2026-09-03/cargo-1.98.1-x86_64-unknown-linux-gnu.tar.xz",
+          "sha256": "ea1de9f9e23107d97ee2b41a72c552f34064a593da503789218387aee59f3ba4",
+          "maximum_bytes": 536870912,
+          "size": 11662108
+        },
+        "rust-std": {
+          "url": "https://static.rust-lang.org/dist/2026-09-03/rust-std-1.98.1-x86_64-unknown-linux-gnu.tar.xz",
+          "sha256": "fa3ff450172a16c026944030230c5069947af93c728d9179971d44e5e0cfb561",
+          "maximum_bytes": 536870912,
+          "size": 30715684
+        }
+      },
+      "entrypoints": [
+        "entrypoint.testnet.solana.com:8001",
+        "entrypoint2.testnet.solana.com:8001",
+        "entrypoint3.testnet.solana.com:8001"
+      ],
+      "known_validators": [
+        "5D1fNXzvv5NjV1ysLjirC4WY92RNsVH18vjmcszZd8on",
+        "dDzy5SR3AXdYWVqbDEkVFdvSPCtS9ihF5kJkHCtXoFs",
+        "Ft5fbkqNa76vnsjYNwjDZUXoTWpP7VYm3mtsaQckQADN",
+        "eoKpUABi59aT4rR9HGS3LcMecfut9x7zJyodWWP43YQ",
+        "9QxCLckBiJc783jnMvXZubK4wH86Eqqvashtrwvcsgkv"
+      ]
+    }
+  },
+  "git_sources": [
+    "git+https://github.com/anza-xyz/blstrs?rev=a1faffa3420bdaf4102425c43f00cdd815d4f145#a1faffa3420bdaf4102425c43f00cdd815d4f145",
+    "git+https://github.com/anza-xyz/crossbeam?rev=5ee1c6ec671d94db14ed9238eb99e59a84555aad#5ee1c6ec671d94db14ed9238eb99e59a84555aad",
+    "git+https://github.com/anza-xyz/rust-rocksdb?rev=4dba80dfe9434e595a971f5b2985ff9ba4fb31e7#4dba80dfe9434e595a971f5b2985ff9ba4fb31e7"
+  ],
+  "build_options": [
+    "--no-build-dcou-bins",
+    "--no-build-deprecated-bins",
+    "--no-build-dev-bins",
+    "--no-build-platform-tools",
+    "--no-spl-token"
+  ],
+  "publish_binaries": [
+    "agave-validator",
+    "solana",
+    "solana-keygen"
+  ]
+}

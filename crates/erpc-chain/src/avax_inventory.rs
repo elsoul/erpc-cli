@@ -2,11 +2,17 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Avalanche inventory. Node identities are not Solana keypairs or vote accounts.
-use super::{FORMAT, InventoryError, Kind, OpItem, Store, check_name, checked, field};
+use super::{FORMAT, InventoryError, Kind, Store, check_name};
 use erpc_auth::store::one_password::OpRunner;
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use serde_json::json;
+
+#[path = "avax_inventory/projection.rs"]
+mod projection;
+#[path = "avax_inventory/write.rs"]
+mod write;
 
 /// One physical `AvalancheGo` node; its role and network are immutable after init.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -59,24 +65,6 @@ pub struct AvaxNode {
     /// Last run result.
     pub last_result: String,
 }
-fn fields(node: &AvaxNode) -> Result<Vec<(&'static str, String)>, InventoryError> {
-    Ok(vec![
-        ("erpc_format", FORMAT.into()),
-        (
-            "avax_node",
-            serde_json::to_string(node)
-                .map_err(|_| InventoryError::Unreadable("Avalanche node"))?,
-        ),
-    ])
-}
-fn read(item: &OpItem) -> Result<AvaxNode, InventoryError> {
-    let f = checked(item)?;
-    let mut node: AvaxNode = serde_json::from_str(&field(&f, "avax_node"))
-        .map_err(|_| InventoryError::Unreadable("Avalanche node"))?;
-    node.id = Some(item.id.clone());
-    node.item_version = item.version;
-    Ok(node)
-}
 impl<R: OpRunner> Store<R> {
     fn avax_scope(&self) -> Result<(), InventoryError> {
         if self.scope.chain != "avax" || !["mainnet", "fuji"].contains(&self.scope.network.as_str())
@@ -92,18 +80,15 @@ impl<R: OpRunner> Store<R> {
     /// Rejects malformed/cross-network items and storage errors.
     pub fn avax_nodes(&self) -> Result<Vec<AvaxNode>, InventoryError> {
         self.avax_scope()?;
-        self.items(Kind::Rpc)?
+        let before = self.avax_listing()?;
+        let nodes = before
             .iter()
-            .map(|item| {
-                let node = read(item)?;
-                if node.network != self.scope.network {
-                    return Err(InventoryError::Refused(
-                        "Avalanche inventory network mismatch".into(),
-                    ));
-                }
-                Ok(node)
-            })
-            .collect()
+            .map(|item| self.avax_public(item))
+            .collect::<Result<Vec<_>, _>>()?;
+        if before != self.avax_listing()? {
+            return Err(projection::invalid());
+        }
+        Ok(nodes)
     }
     /// Persist an immutable node identity/host contract.
     /// # Errors
@@ -122,7 +107,10 @@ impl<R: OpRunner> Store<R> {
                 "Avalanche network/name/host collision".into(),
             ));
         }
-        read(&self.create(Kind::Rpc, &node.name, &fields(node)?, None)?)
+        if node.id.is_some() || node.item_version != 0 {
+            return Err(projection::invalid());
+        }
+        self.avax_create(node)
     }
     /// Update mutable release/API state; retain any concealed identity backup.
     /// # Errors
@@ -130,12 +118,8 @@ impl<R: OpRunner> Store<R> {
     pub fn update_avax_node(&self, node: &AvaxNode) -> Result<AvaxNode, InventoryError> {
         self.avax_scope()?;
         let _lock = self.lock()?;
-        let id = node
-            .id
-            .as_deref()
-            .ok_or_else(|| InventoryError::Refused("node has no item".into()))?;
-        let previous = self.get(id)?;
-        let old = read(&previous)?;
+        let selected = self.avax_selected(node)?;
+        let old = self.avax_public(&selected)?;
         if old.item_version != node.item_version {
             return Err(InventoryError::Changed(node.name.clone()));
         }
@@ -154,53 +138,11 @@ impl<R: OpRunner> Store<R> {
                 "Avalanche host, role, history and established identity are immutable".into(),
             ));
         }
+        let previous = self.avax_snapshot(selected)?;
+        if previous.node != old {
+            return Err(projection::invalid());
+        }
         self.avax_write(node, &previous, None)
-    }
-    fn avax_write(
-        &self,
-        node: &AvaxNode,
-        previous: &OpItem,
-        backup: Option<&SecretString>,
-    ) -> Result<AvaxNode, InventoryError> {
-        let mut document: serde_json::Value =
-            serde_json::from_str(&self.template(Kind::Rpc, &node.name, &fields(node)?, None))
-                .map_err(|_| InventoryError::Unreadable("Avalanche template"))?;
-        let retained = previous
-            .fields
-            .iter()
-            .find(|f| f.label == "staking_backup")
-            .and_then(|f| f.value.as_deref());
-        if let Some(secret) = backup.map(ExposeSecret::expose_secret).or(retained) {
-            document["fields"].as_array_mut().ok_or(InventoryError::Unreadable("fields"))?.push(json!({"id":"staking_backup","label":"staking_backup","type":"CONCEALED","value":secret}));
-        }
-        let template = SecretString::from(document.to_string());
-        let id = node
-            .id
-            .as_deref()
-            .ok_or(InventoryError::Unreadable("item id"))?;
-        let out = self
-            .runner
-            .run(
-                &["item", "edit", id, "--vault", &self.vault],
-                Some(template.expose_secret()),
-            )
-            .map_err(|_| InventoryError::Unreadable("Avalanche write"))?;
-        if !out.success {
-            return Err(InventoryError::Unreadable("Avalanche write"));
-        }
-        let back = self.get(id)?;
-        super::verify(&back, &fields(node)?, &node.name)?;
-        if let Some(wanted) = backup {
-            let got = back
-                .fields
-                .iter()
-                .find(|f| f.label == "staking_backup")
-                .and_then(|f| f.value.as_deref());
-            if got != Some(wanted.expose_secret()) {
-                return Err(InventoryError::Unreadable("identity backup readback"));
-            }
-        }
-        read(&back)
     }
     /// Save a concealed identity bundle only after public identity is pinned.
     /// # Errors
@@ -212,18 +154,16 @@ impl<R: OpRunner> Store<R> {
     ) -> Result<AvaxNode, InventoryError> {
         self.avax_scope()?;
         let _lock = self.lock()?;
-        let previous = self.get(
-            node.id
-                .as_deref()
-                .ok_or(InventoryError::Unreadable("item id"))?,
-        )?;
-        if previous.version != node.item_version {
-            return Err(InventoryError::Changed(node.name.clone()));
-        }
-        if node.node_id.is_empty() || read(&previous)? != *node {
+        let selected = self.avax_selected(node)?;
+        let old = self.avax_public(&selected)?;
+        if node.node_id.is_empty() || old != *node || backup.expose_secret().is_empty() {
             return Err(InventoryError::Refused(
                 "pin the node identity before backup".into(),
             ));
+        }
+        let previous = self.avax_snapshot(selected)?;
+        if previous.node != old {
+            return Err(projection::invalid());
         }
         self.avax_write(node, &previous, Some(backup))
     }
@@ -232,19 +172,33 @@ impl<R: OpRunner> Store<R> {
     /// Rejects missing backup or a stale inventory read.
     pub fn avax_identity_backup(&self, node: &AvaxNode) -> Result<SecretString, InventoryError> {
         self.avax_scope()?;
-        let item = self.get(
-            node.id
-                .as_deref()
-                .ok_or(InventoryError::Unreadable("item id"))?,
-        )?;
-        if item.version != node.item_version {
-            return Err(InventoryError::Changed(node.name.clone()));
+        let selected = self.avax_selected(node)?;
+        if self.avax_public(&selected)? != *node {
+            return Err(projection::invalid());
         }
-        item.fields
-            .into_iter()
-            .find(|f| f.label == "staking_backup" && f.kind == "CONCEALED")
-            .and_then(|f| f.value)
-            .map(SecretString::from)
-            .ok_or(InventoryError::Unreadable("identity backup"))
+        let mut fields = self.avax_fields(&selected, "label=staking_backup", true)?;
+        if fields.len() != 1 {
+            return Err(projection::invalid());
+        }
+        let field = fields.pop().ok_or_else(projection::invalid)?;
+        if field.label != "staking_backup"
+            || field.kind != "CONCEALED"
+            || field.id.is_empty()
+            || field.section.is_some()
+        {
+            return Err(projection::invalid());
+        }
+        let secret = field
+            .value
+            .filter(|v| !v.expose_secret().is_empty())
+            .ok_or(InventoryError::Unreadable("identity backup"))?;
+        if self.avax_selected(node)? != selected {
+            return Err(projection::invalid());
+        }
+        Ok(secret)
     }
 }
+
+#[cfg(test)]
+#[path = "avax_inventory/tests.rs"]
+mod tests;

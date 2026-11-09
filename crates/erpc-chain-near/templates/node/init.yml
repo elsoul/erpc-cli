@@ -1,0 +1,81 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Reserve a dedicated NEAR follower host
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Reserve immutable owner and refuse retained unowned artifacts
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/control.py", play-reserve, "{{ near_contract }}"]
+      changed_when: false
+    - name: Install distribution prerequisites
+      ansible.builtin.apt:
+        name: [ca-certificates, python3, docker.io, iproute2, nftables, openssl]
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+    - name: Discover existing clock synchronization
+      ansible.builtin.service_facts:
+      when: near_validator | default(false) | bool
+    - name: Preserve an existing clock daemon
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/time_service.py"]
+        stdin: "{{ ansible_facts.services | to_json }}"
+      register: near_clock
+      changed_when: false
+      when: near_validator | default(false) | bool
+    - name: Install fallback time synchronization when necessary
+      ansible.builtin.apt:
+        name: systemd-timesyncd
+        state: present
+      when: near_validator | default(false) | bool and (near_clock.stdout | from_json).install_fallback | bool
+    - name: Enable the selected clock daemon
+      ansible.builtin.systemd_service:
+        name: "{{ (near_clock.stdout | from_json).service }}"
+        enabled: true
+        state: started
+      when: near_validator | default(false) | bool
+    - name: Create only the original durably reserved service account
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/control.py", play-accounts, "{{ near_contract }}"]
+      register: near_accounts
+    - name: Create the data home using original numeric ownership
+      ansible.builtin.file:
+        path: /var/lib/near
+        state: directory
+        owner: "{{ (near_accounts.stdout | from_json).uid | string }}"
+        group: "{{ (near_accounts.stdout | from_json).gid | string }}"
+        mode: '0700'
+    - name: Create owned database and protected configuration directories
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: "{{ item.owner }}"
+        group: "{{ item.owner }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - {path: /etc/near, owner: root, mode: '0755'}
+        - {path: /etc/erpc/near/docker, owner: root, mode: '0700'}
+        - {path: /usr/local/lib/erpc, owner: root, mode: '0755'}
+        - {path: /usr/local/lib/erpc/near, owner: root, mode: '0755'}
+    - name: Install initial controller
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/control.py"
+        dest: /usr/local/lib/erpc/near/control.py
+        owner: root
+        group: root
+        mode: '0755'
+    - name: Install validator custody and read-only observer
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/near_validator.py"
+        dest: /usr/local/lib/erpc/near/near_validator.py
+        owner: root
+        group: root
+        mode: '0644'
+    - name: Verify installed namespace and controller against carried source
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/control.py", publication, "{{ near_contract }}"]
+      changed_when: false

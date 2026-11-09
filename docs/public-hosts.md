@@ -198,9 +198,10 @@ code as authoritative if the two ever disagree.
   not as something the gate has already cleared.
   Some files are not scanned at all. That list is not copied here, because a
   copy drifts: run `scripts/check-endpoints.sh --print-exceptions`.
-- `erpc_core::endpoints::ensure_service_url` accepts a URL on any host
-  declared in the code, of any kind: `https` or `wss` with no explicit
-  port, or any of `http`, `https`, `ws` and `wss` with any port on loopback.
+- `erpc_core::endpoints::ensure_service_url` accepts application hosts returned
+  by `all_hosts()` and application host patterns. Documentation links and scoped
+  node/validator lists are excluded. It accepts `https` or `wss` with no explicit
+  port, or `http`, `https`, `ws` and `wss` with any port on general loopback.
   - Every request URL `erpc` builds is a constant, and a test runs each one
     through it.
   - At runtime it is called before `erpc` opens a page in a browser. The only
@@ -222,9 +223,10 @@ cannot redirect ERPC traffic, and a new destination cannot enter the source
 unreviewed. What it does not buy: this is not an egress sandbox, and it does
 not constrain what a malicious dependency does at runtime.
 
-Node endpoints the operator names themselves, such as `erpc check rpc --url`,
-are not on this list: they are the user's own targets and are validated for
-scheme and shape only.
+Operators can supply their own endpoints for `erpc rpc call --endpoint-url`,
+`erpc webhook run --endpoint-url` and the webhook callback. The CLI validates
+the URL scheme and shape and sends account credentials only to the fixed ERPC
+services listed below.
 
 | Host | Purpose | Credentials that may be sent |
 |---|---|---|
@@ -232,7 +234,7 @@ scheme and shape only.
 | `user-api.erpc.global` | ERPC account API | auth-api access token only |
 | `mcp-user-api.erpc.global` | ERPC User MCP server, and the issuer of its own tokens | the device code, the MCP refresh token to the token and revoke endpoints, and the MCP access token; never the auth-api tokens |
 | `x402.erpc.global` | x402 payments and credit top-up | x402 billing session token and payment headers only; never auth-api/MCP tokens, never ERPC API keys |
-| `edge.erpc.global` | RPC endpoint, for the planned `check` command | RPC API key supplied by the operator |
+| `edge.erpc.global`, `eth.erpc.global` | Shared Solana and Ethereum RPC and WebSocket subscriptions | RPC API key for the signed-in account |
 | `dashboard.erpc.global` | opened in the browser for signup and payment setup | none |
 | `erpc.global` | project home page, linked from package metadata | none |
 | `solana-snapshot-*.erpc.global` | snapshot mirrors | none |
@@ -246,15 +248,25 @@ scheme and shape only.
 | `crates.io`, `index.crates.io`, `static.crates.io` | dependencies (cargo, build time) | none |
 | `registry.npmjs.org` | installer worker dependencies (npm, build time) | none |
 | `sh.rustup.rs` | toolchain installation in CI | none |
-| `api.testnet.solana.com` | Solana testnet's public RPC, which the Solana CLI erpc runs on the operator's machine reads and sends transactions to | none |
+| `api.testnet.solana.com` | Public validator-registration observations; the legacy native Solana CLI also reads and sends testnet transactions here | none |
+| `api.mainnet-beta.solana.com` | Read-only public validator-registration observations; Old Faithful nodes also read epochs and proxy unsupported archive queries here | none |
 | `docs.jito.wtf` | Jito's region table, read by the scheduled job that checks erpc's copy of it | none |
-| `127.0.0.1`, `localhost`, `[::1]` | planned OAuth redirect listener and local MCP server; plaintext `http`/`ws` allowed here only | session token for the local MCP server |
+| `127.0.0.1`, `localhost`, `[::1]` | operator-supplied RPC, WebSocket or webhook callback; local plaintext `http`/`ws` permitted; planned OAuth redirect listener and local MCP server | user-supplied URL credentials for local RPC or callbacks; session token planned for the local MCP server |
+| `127.0.0.10`, `127.0.0.11`, `127.0.0.12`, `127.0.0.13`, `127.0.0.14` | reserved fixed Polygon validator TLS authorities for Ethereum parent, Bor, Heimdall REST, Comet RPC and AMQP; distinct IP certificate SANs prevent one service leaf from impersonating another; no general loopback-range exception | public native requests and signed checkpoint transactions; AMQP authentication stays within its TLS connection |
 
-This version of `erpc` contacts `auth-api.erpc.global` and
-`user-api.erpc.global`, and opens the verification page on
-`auth-api.erpc.global` in a browser during `erpc login`. The other rows are
-contacted by a later version, by the release pipeline, or at build time, as
-their purpose says.
+`ETH_VALIDATOR_LOCAL_HOSTS` contains `127.0.0.2` and `127.0.0.3` for the
+original Ethereum validator's Engine and Beacon TLS audiences. The source gate
+accepts them only over HTTPS in its dedicated `eth_validator_*.py` authority
+helpers, validator templates, or their dedicated `authority_validator_*.py`
+regression tests. They are excluded from general ERPC service
+URLs, other chains, RPC follower helpers and the plaintext loopback allowance.
+Their transport identity is established by the original validator's TLS policy;
+this source allowlist alone does not authenticate a local process.
+
+During `erpc login`, the CLI opens the verification page on
+`auth-api.erpc.global`. Shared RPC calls and WebSocket subscriptions use the
+account's RPC API key at `edge.erpc.global` or `eth.erpc.global`. Pay-per-call
+RPC uses `x402.erpc.global` and sends a signed payment only after confirmation.
 
 The restic that `erpc backup` runs sends one more credential to
 `user-api.erpc.global`: a storage access key, as Basic authentication, to
@@ -275,21 +287,35 @@ never contacts them, and nothing is sent but the request.
 
 ## Hosts a node contacts
 
-`NODE_HOSTS` lists hosts named in the playbooks and templates erpc carries for
-a node (`crates/erpc-chain-solana/templates/`, `crates/erpc-chain-arc/templates/`,
-`crates/erpc-chain-eth/templates/`, `crates/erpc-chain-sui/templates/`,
-`crates/erpc-chain-tron/templates/`, `crates/erpc-chain-op/templates/`,
-`crates/erpc-chain-nitro/templates/`), in the Jito region table (`crates/erpc-chain-solana/regions/`) and in the Arc
-network tables (`crates/erpc-chain-arc/networks/`, `crates/erpc-chain-nitro/networks/`). The node reaches them once it runs the
-scripts those templates write; `erpc` itself never contacts them, and the gate
-accepts them in those trees and nowhere else. A plaintext URL is
-accepted there when the node's client uses plaintext for that service.
+The isolated Agave source-build catalog declares `static.rust-lang.org` only for
+exact dated compiler components with compiled SHA-256 pins. The compiler host is not a controller service destination.
+
+`NODE_HOSTS` lists destinations used by carried chain templates, network
+catalogs and the Solana region table. The [endpoint gate](../scripts/check-endpoints.sh)
+defines the exact source paths where node URLs are allowed. These declarations
+do not add ERPC service destinations or authorize session credentials. Node
+clients may use plaintext only where the gate permits their protocol; Polygon
+and Kaia artifact and trust-material transport remains HTTPS-only.
 
 | Host | Why the node reaches it |
 |---|---|
+| `entrypoint.mainnet-beta.solana.com`, `entrypoint2.mainnet-beta.solana.com`, `entrypoint3.mainnet-beta.solana.com`, `entrypoint4.mainnet-beta.solana.com`, `entrypoint5.mainnet-beta.solana.com` | Official Mainnet gossip rendezvous for native Agave nodes; no controller credentials |
+| `entrypoint.testnet.solana.com`, `entrypoint2.testnet.solana.com`, `entrypoint3.testnet.solana.com` | Official Testnet gossip rendezvous for native Agave nodes; no controller credentials |
+| `s3-us-west-1.amazonaws.com` | NEAR's official network-qualified RPC configuration and Testnet genesis archive; bounded HTTPS downloads require the compiled SHA256 pins |
+| `rpc.mainnet.near.org`, `rpc.testnet.near.org` | NEAR's official read-only status and network-info observations for initial peer selection; matching fresh network/genesis required, only public numeric producer peers are selected, no credentials or transactions sent |
+| `raw.githubusercontent.com` | NEAR Mainnet genesis at its exact nearcore source revision; byte digest checked before native initialization |
+| `storage.googleapis.com` | Polygon's official network-specific Heimdall v2 migrated genesis, constrained to an immutable object generation, exact byte length and observed SHA-256 |
+| `tuf-repo-cdn.sigstore.dev`, `rekor.sigstore.dev` | Pinned Cosign verifies Polygon package signatures using signed TUF trust metadata and Rekor transparency evidence; no node or provider credential is sent |
+| `token.actions.githubusercontent.com` | Exact GitHub Actions OIDC issuer string checked in Polygon release certificates; this is an identity matcher, not an authentication request |
+| `kaia-chaindata-r2-logging.kaia-foundation.workers.dev` | Exact official Kaia live-pruned snapshot objects, with fixed metadata/checksum and bounded staging; no provider or ERPC credentials |
+| `binaries.hyperliquid.xyz`, `binaries.hyperliquid-testnet.xyz` | Official network-specific Hyperliquid supervisor artifacts and detached public signatures; ERPC checks fixed byte hashes and publisher fingerprint before publication |
+| `fred.stlouisfed.org`, `markets.newyorkfed.org`, `data.financialresearch.gov` | Public reference-rate feeds in the pinned AQA publisher source; native node traffic only, no ERPC access token or agent key is supplied to these feeds |
+| `api.hyperliquid.xyz`, `api.hyperliquid-testnet.xyz` | Official read-only Hyperliquid peer and network observations; no ERPC token or wallet key is sent |
+| `rpc.hyperliquid.xyz`, `rpc.hyperliquid-testnet.xyz` | Public reference HyperEVM endpoints recorded with the network qualification; native health uses its owned loopback listener |
 | `raw.githubusercontent.com`, `cdn.robinhood.com` | Nitro's exact source-pinned Arbitrum chain information and official Robinhood chain/genesis metadata; byte digests are checked |
+| `pub-c0627345c16f47ab858c9469133073a8.r2.dev` | Public BSC Geth snapshots linked by the official `bnb-chain/bsc-snapshots` catalog; fixed manifest and MD5 transfer checks, no signature claim; no credentials |
 | `snapshot.arbitrum.foundation` | Nitro's official checksummed snapshot catalog and bootstrap archives |
-| `docker.io`, `registry-1.docker.io`, `auth.docker.io` | Official Nitro container content, pulled by reviewed manifest digest; Docker registry authorization only, never ERPC or L1 provider credentials |
+| `docker.io`, `registry-1.docker.io`, `auth.docker.io` | Official Nitro, NEAR, Kaia and dedicated Polygon RabbitMQ container content, pulled by reviewed manifest digest; Docker registry authorization only, never ERPC or L1 provider credentials |
 | `feed.mainnet.chain.robinhood.com`, `feed.testnet.chain.robinhood.com`, `delayed-feed.mainnet.chain.robinhood.com` | Official Robinhood sequencer feeds for their respective networks |
 | `sequencer.mainnet.chain.robinhood.com`, `sequencer.testnet.chain.robinhood.com` | Official Robinhood transaction forwarding endpoints; no signing key or provider credential is sent |
 | `metrics.solana.com` | the cluster's public metrics, which the validator service reports to |
@@ -302,7 +328,6 @@ accepted there when the node's client uses plaintext for that service.
 | `dallas.testnet.relayer.jito.wtf`, `ny.testnet.relayer.jito.wtf` | the testnet relayers, one per region |
 | `dallas.testnet.bam.jito.wtf` | the other testnet BAM endpoint |
 | `files.old-faithful.net` | the Old Faithful archive a Solana Index RPC node's `faithful-cli` reads epoch indexes and blocks from |
-| `api.mainnet-beta.solana.com` | Solana mainnet's public RPC: Old Faithful asks it for the current epoch and proxies to it what its archive cannot answer |
 | `snapshots.reth.rs`, `snapshots-r2.reth.rs` | where an Ethereum RPC node's `reth download` lists Reth's official snapshot and fetches its archives |
 | `hoodi.checkpoint.sigp.io` | Sigma Prime's Hoodi checkpoint server for a dedicated validator beacon node |
 | `mainnet.checkpoint.sigp.io` | Sigma Prime's checkpoint server, which an Ethereum RPC node's Lighthouse starts from |
@@ -320,18 +345,27 @@ an instruction a reader will run.
 
 | Host | Linked from |
 |---|---|
+| `www.1password.dev` | Arc and Avalanche inventory/custody: official CLI field projection and JSON item-template documentation; prose only, never an ERPC runtime destination |
+| `www.apache.org` | the licence text and headers |
 | `www.contributor-covenant.org` | `CODE_OF_CONDUCT.md` |
 | `keepachangelog.com` | `CHANGELOG.md` |
 | `semver.org` | `CHANGELOG.md` |
 | `elsoul.nl` | `NOTICE` |
+| `docs.rs` | Exact dotenvy library source used to qualify the separate AQA publisher credential-loading behavior; documentation only |
+| `axodotdev.github.io` | the cargo-dist configuration comment |
+| `docs.github.com` | contributor documentation |
+| `reuse.software` | licensing documentation |
 | `docs.arc.io` | the Arc RPC skill (`crates/erpc-skills/skills/arc-rpc`) |
-| `docs.anza.xyz` | the Solana skills: Agave's operator guide |
+| `docs.anza.xyz` | the Solana skills and native node lifecycle: Agave's operator guide |
+| `nginx.org` | Native Solana RPC ingress configuration and WebSocket proxy documentation |
+| `www.rfc-editor.org` | RFC 6455 WebSocket handshake and close protocol for native RPC ingress checks |
 | `docs.firedancer.io` | the Solana validator skills: Firedancer's guide |
 | `reth.rs` | the Ethereum skill: Reth's documentation |
 | `lighthouse-book.sigmaprime.io` | the Ethereum skill: Lighthouse's book |
 | `build.avax.network` | the Avalanche skill |
 | `docs.sui.io` | the Sui skill |
 | `solana.com` | Solana network, RPC and staking references in `docs/chains/solana.md` |
+| `www.iana.org` | Authoritative IPv4/IPv6 special-purpose and address-space registries for the shared upstream routing policy; documentation only |
 | `ethereum.org` | Ethereum networks, clients and validator rules in `docs/chains/ethereum.md` |
 | `blog.ethereum.org` | Ethereum Foundation protocol upgrade announcements in `docs/chains/ethereum.md` |
 | `docs.arbitrum.io` | Nitro node and validator documentation in `docs/chains/` |
@@ -341,12 +375,22 @@ an instruction a reader will run.
 | `docs.soneium.org` | Soneium network documentation in `docs/chains/` |
 | `snapshot-explorer.arbitrum.io` | Official Arbitrum and Robinhood snapshot catalog in `docs/chains/` |
 | `docs.bnbchain.org` | BNB Smart Chain node and validator documentation in `docs/chains/` |
+| `www.bnbchain.org` | Official mainnet staking application linked in `docs/bsc-validator.md`; external wallet signing only |
+| `testnet-staking.bnbchain.org` | Official Chapel staking application linked in `docs/bsc-validator.md`; external wallet signing only |
+| `www.1password.dev` | Official concealed-field and stdin-template documentation linked in `docs/bsc-validator.md` |
 | `docs.kaia.io` | Kaia node documentation in `docs/chains/` |
 | `docs.monad.xyz` | Monad node and validator documentation in `docs/chains/` |
+| `docs.kernel.org` | Linux cgroup CPU/memory hierarchy and runtime resource qualification in the Polygon validator guide; documentation only |
+| `docs.docker.com` | Docker systemd cgroup-parent configuration for the dedicated Polygon broker; documentation only |
+| `www.rabbitmq.com` | RabbitMQ production guidance and release support calendar for the dedicated Polygon broker; documentation only |
+| `docs.sigstore.dev` | First-party keyless verification and verifier-bootstrap documentation |
+| `storage.googleapis.com` | Polygon immutable genesis objects; current runtime callers are Polygon. The source gate permits this shared node origin in declared node paths. Offline HTTPS references are additionally allowed only in `crates/erpc-chain-polygon/tests/fixtures/pre-karwar-mainnet.json`, `pre-karwar-amoy.json` and `pre-karwar-state.py`; this does not expand CLI or general test-tree destinations |
 | `docs.polygon.technology` | Polygon PoS node documentation in `docs/chains/` |
 | `forum.polygon.technology` | Polygon official upgrade announcements in `docs/chains/` |
 | `hyperliquid.gitbook.io` | Hyperliquid node and staking documentation in `docs/chains/` |
-| `pkg.category.xyz` | Category Labs Monad package-signing public key in `docs/chains/` |
+| `pkg.category.xyz` | Category Labs Monad package and public signing metadata; currently used by Monad. The source gate permits this shared node origin in declared node paths and documentation |
+| `bucket.monadinfra.com` | Foundation Monad configuration/checkpoint/validator-set provenance; currently used by Monad. The source gate permits this shared node origin in declared node paths and documentation |
+
 | `bitcoin.org` | Bitcoin full-node operator guide in `docs/chains/` |
 | `developer.bitcoin.org` | Bitcoin Core RPC reference in `docs/chains/` |
 | `developers.tron.network` | TRON node and Super Representative documentation in `docs/chains/` |
@@ -423,3 +467,18 @@ and an encrypted systemd credential, not the public node record or Ansible bundl
 The shared loopback transport checks DNS/IP destinations, TLS, redirects and L1
 identity, and excludes ERPC service hosts. This does not replace the fixed ERPC
 account/payment endpoint lists. See the [transport contract](../crates/erpc-chain-rollup/README.md).
+
+`www.iana.org` is linked only for authoritative special-purpose IP address registries;
+no runtime request or ERPC credential is sent to it.
+
+## Monad native nodes
+
+`pkg.category.xyz` supplies the compiled SHA-256-qualified Monad Debian package.
+The release catalog was qualified against Category Labs signed APT metadata.
+The node extracts only native executables and private libraries, without running
+package maintainer scripts. `bucket.monadinfra.com` supplies source-hashed network
+configuration and bounded, fresh official forkpoint/validator-set observations.
+The latter are explicit trusted consensus bootstrap inputs rather than signed
+release artifacts. Both origins refuse redirects and receive no keystore,
+1Password, ERPC or financial credential. They are allowed in Monad node templates
+and documentation, not arbitrary Rust/controller service requests.

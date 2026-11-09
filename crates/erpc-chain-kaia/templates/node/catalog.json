@@ -1,0 +1,49 @@
+{
+  "schema": 1,
+  "reviewed_at": "2026-10-26",
+  "version": "2.2.2",
+  "tag": "v2.2.2",
+  "commit": "ac7c81f3a9759704b5ce77b42ae91851ce45a9c3",
+  "published_at": "2026-03-10T02:03:35Z",
+  "index": "sha256:1037dcea32df3c634f04962b2b63a17167caa8f9cf957c5e266031a08ba07f80",
+  "image": "docker.io/kaiachain/kaia@sha256:3d7c03285024e393848ffc001309e1cb27b3271b9c84f0d6f1548557e894f5c5",
+  "architecture": "amd64",
+  "networks": {
+    "mainnet": {
+      "chain_id": 8217,
+      "genesis": "0xc72e5293c3c3ba38ed8ae910f780e4caaa9fb95e79784f7ab74c3c262ea7137e",
+      "manifest_sha256": "029b53923e1e638632f755507b32e6807eee4307377b01459a3f894cffa2a6f7",
+      "manifest_generated_at": "2026-10-26T09:59:09Z",
+      "recommended_snapshot": "kaia-mainnet-pruning-chaindata-20261026010012.tar.zst",
+      "snapshots": {
+        "kaia-mainnet-pruning-chaindata-20261026010012.tar.zst": {
+          "name": "kaia-mainnet-pruning-chaindata-20261026010012.tar.zst",
+          "url": "https://kaia-chaindata-r2-logging.kaia-foundation.workers.dev/mainnet/pruning/kaia-mainnet-pruning-chaindata-20261026010012.tar.zst",
+          "bytes": 2497720630732,
+          "uncompressed_bytes": 3148568052186,
+          "md5": "3dc18993226665deb2c2fc815fd2e129",
+          "sha256": null,
+          "created": "2026-10-26T09:58:43Z"
+        }
+      }
+    },
+    "kairos": {
+      "chain_id": 1001,
+      "genesis": "0xe33ff05ceec2581ca9496f38a2bf9baad5d4eed629e896ccb33d1dc991bc4b4a",
+      "manifest_sha256": "0bccb0407fcfcd9bdc818cf1efa30b17b81cbbdca489d187897c0f9ed1e80fd4",
+      "manifest_generated_at": "2026-10-26T03:36:58Z",
+      "recommended_snapshot": "kaia-kairos-pruning-chaindata-20261026010014.tar.zst",
+      "snapshots": {
+        "kaia-kairos-pruning-chaindata-20261026010014.tar.zst": {
+          "name": "kaia-kairos-pruning-chaindata-20261026010014.tar.zst",
+          "url": "https://kaia-chaindata-r2-logging.kaia-foundation.workers.dev/kairos/pruning/kaia-kairos-pruning-chaindata-20261026010014.tar.zst",
+          "bytes": 652782389315,
+          "uncompressed_bytes": 821336252176,
+          "md5": "ec1285ba058014a2c8449825945ac668",
+          "sha256": null,
+          "created": "2026-10-26T03:36:31Z"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Retain independent original Sui source history while stopped
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars_files: [vars.yml]
+  tasks:
+    # The common runner holds the original operation lock across this controller.
+    - name: Authenticate original account and scope before accepting independent history
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ sui_jinja }}/erpc-sui-control.py.j2", migrate-source-history, "{{ sui_network }}", "{{ sui_role }}", "{{ sui_genesis_sha256 }}"]
+        stdin: "{{ sui_source_history | to_json }}"
+      changed_when: true

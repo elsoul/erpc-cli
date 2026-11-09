@@ -59,6 +59,22 @@ mod tests {
         assert!(status.success(), "firewall failure-path regressions failed");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn isolated_python_and_sealed_run_failure_paths() {
+        let status = std::process::Command::new("python3")
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/python_isolation.py"
+            ))
+            .status()
+            .expect("python3 is required for offline isolation verification");
+        assert!(
+            status.success(),
+            "Python startup/run sealing regression failed"
+        );
+    }
+
     #[test]
     fn deployment_receipt_is_in_the_only_host_and_cannot_be_replaced_by_old_inventory() {
         let run = erpc_ssh::RunId::new("r-20261026t120000-abc123").unwrap();

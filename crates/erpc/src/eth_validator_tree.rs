@@ -41,6 +41,31 @@ pub(crate) fn args(mut sub: Command, verb: &str) -> Command {
                 .help("Execution fee destination; never withdrawal authority"),
         );
     }
+    if verb == "init" {
+        sub=sub.arg(Arg::new("migrate-authority").long("migrate-authority").action(ArgAction::SetTrue)
+            .requires_all(["original-passwd","original-group","original-machine-id","original-client-record"])
+            .help("Explicitly convert an independently stopped stock legacy validator using original host backup evidence"));
+        for name in [
+            "original-passwd",
+            "original-group",
+            "original-machine-id",
+            "original-client-record",
+        ] {
+            sub = sub.arg(
+                Arg::new(name)
+                    .long(name)
+                    .requires("migrate-authority")
+                    .value_parser(value_parser!(std::path::PathBuf)),
+            );
+        }
+    }
+    if matches!(verb, "deploy" | "update" | "update-config") {
+        sub = sub.arg(Arg::new("recover-cutover").long("recover-cutover").value_name("ORIGINAL_INTENT")
+            .help("Stop and recover only this original interrupted deployment; preserve all data and keys"))
+            .arg(Arg::new("renew-transport").long("renew-transport").action(ArgAction::SetTrue)
+            .conflicts_with("recover-cutover")
+            .help("Renew the original host's private Engine/Beacon TLS leaves during stopped deployment"));
+    }
     match verb {
         "init" => sub.about("Reserve and prepare a dedicated Reth/Lighthouse validator host; never import keys or deposit")
             .arg(Arg::new("host").long("host"))
@@ -57,6 +82,10 @@ pub(crate) fn args(mut sub: Command, verb: &str) -> Command {
             .arg(Arg::new("new-key").long("new-key").required(true).action(ArgAction::SetTrue).help("Assert this key has never signed anywhere; used keys require managed migration")),
         "migrate" => sub.about("Fence the old managed signer and transfer its current encrypted key and signing history; leave destination stopped")
             .arg(Arg::new("to").long("to").required(true).help("Prepared destination inventory name in the same network/vault")),
+        "keys-backup" => sub.about("Save the original host-bound encrypted signer capsule; never export plaintext or overwrite a backup")
+            .arg(Arg::new("output").long("output").required(true).value_parser(value_parser!(std::path::PathBuf))),
+        "keys-restore" => sub.about("Stop and restore only the exact original encrypted signer capsule; never restore or reset slashing history")
+            .arg(Arg::new("backup").long("backup").required(true).value_parser(value_parser!(std::path::PathBuf))),
         "deposit-review" => sub.about("Verify public deposit SSZ/BLS, destination, network, amount and activation absence; never sign or submit")
             .arg(Arg::new("deposit-data").long("deposit-data").required(true).value_parser(value_parser!(std::path::PathBuf)))
             .arg(Arg::new("withdrawal-address").long("withdrawal-address").required(true)),
@@ -67,11 +96,17 @@ pub(crate) fn args(mut sub: Command, verb: &str) -> Command {
 }
 
 pub(crate) fn extras(command: Command) -> Command {
-    ["keys-import", "migrate", "deposit-review"]
-        .into_iter()
-        .fold(command, |cmd, verb| {
-            cmd.subcommand(args(Command::new(verb), verb))
-        })
+    [
+        "keys-import",
+        "keys-backup",
+        "keys-restore",
+        "migrate",
+        "deposit-review",
+    ]
+    .into_iter()
+    .fold(command, |cmd, verb| {
+        cmd.subcommand(args(Command::new(verb), verb))
+    })
 }
 
 pub(crate) async fn run(verb: &str, sub: &ArgMatches, source: Source, json: bool) -> Outcome {
@@ -109,6 +144,95 @@ mod tests {
         );
         extras(Command::new("validator")).debug_assert();
     }
+    #[test]
+    fn recovery_custody_and_migration_flags_require_their_actual_input_boundary() {
+        let tree = crate::tree::command(
+            erpc_core::chain::Role::Validator,
+            erpc_core::chain::Chain::Eth,
+        );
+        for args in [
+            vec!["validator", "keys-backup"],
+            vec!["validator", "keys-restore"],
+            vec!["validator", "init", "--migrate-authority"],
+            vec![
+                "validator",
+                "deploy",
+                "--renew-transport",
+                "--recover-cutover",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            ],
+        ] {
+            assert!(tree.clone().try_get_matches_from(args).is_err());
+        }
+        let selected = tree
+            .try_get_matches_from([
+                "validator",
+                "init",
+                "--migrate-authority",
+                "--original-passwd",
+                "inert-passwd",
+                "--original-group",
+                "inert-group",
+                "--original-machine-id",
+                "inert-machine",
+                "--original-client-record",
+                "inert-clients",
+            ])
+            .unwrap();
+        assert!(
+            selected
+                .subcommand()
+                .unwrap()
+                .1
+                .get_flag("migrate-authority")
+        );
+    }
+
+    #[tokio::test]
+    async fn every_funded_mutation_rejects_implicit_mainnet_before_tools_or_input_reads() {
+        for (verb, extra) in [
+            ("init", vec![]),
+            ("deploy", vec![]),
+            ("start", vec![]),
+            ("stop", vec![]),
+            ("restart", vec![]),
+            ("update", vec![]),
+            ("update-config", vec![]),
+            ("destroy", vec![]),
+            (
+                "keys-import",
+                vec![
+                    "--keystore",
+                    "missing-inert-key",
+                    "--password-file",
+                    "missing-inert-password",
+                    "--slashing-history",
+                    "missing-inert-history",
+                    "--new-key",
+                ],
+            ),
+            ("keys-backup", vec!["--output", "missing-inert-backup"]),
+            ("keys-restore", vec!["--backup", "missing-inert-backup"]),
+            ("migrate", vec!["--to", "inert-destination"]),
+        ] {
+            let mut args = vec!["validator", verb, "-n", "mainnet", "--name", "fixture"];
+            args.extend(extra);
+            let parsed = crate::tree::command(
+                erpc_core::chain::Role::Validator,
+                erpc_core::chain::Chain::Eth,
+            )
+            .try_get_matches_from(args)
+            .unwrap();
+            assert!(
+                matches!(
+                    run(verb, parsed.subcommand().unwrap().1, Source::Env, true).await,
+                    Outcome::Usage(_)
+                ),
+                "{verb}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn unsupported_validator_network_and_implicit_mainnet_fail_before_inventory() {
         for (network, source) in [("sepolia", Source::Flag), ("mainnet", Source::Env)] {

@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Reserve one non-validator Hyperliquid host
+  hosts: all
+  gather_facts: false
+  become: true
+  any_errors_fatal: true
+  tasks:
+    - name: Validate ownership and reserve original numeric service identities
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, '{{ playbook_dir }}/../../node/control.py', play]
+        stdin: '{{ hyperliquid_request | combine({"action":"initialize"}) | to_json }}'
+      changed_when: true
+    - name: Install distribution runtime and public signature verification tools
+      ansible.builtin.apt:
+        name: [python3, ca-certificates, curl, gnupg, nftables, openssl]
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+        policy_rc_d: 101

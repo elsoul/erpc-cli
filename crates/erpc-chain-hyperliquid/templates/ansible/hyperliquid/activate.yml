@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Activate only the prepared target and freshly confirmed firewall
+  hosts: all
+  gather_facts: false
+  become: true
+  any_errors_fatal: true
+  tasks:
+    - name: Verify exact target and confirmation before publishing startup authority
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, '{{ playbook_dir }}/../../node/control.py', play]
+        stdin: '{{ hyperliquid_request | combine({"action":"activate", "firewall":{"run":erpc_fw_confirmed_run,"bundle":erpc_fw_confirmed_bundle}}) | to_json }}'
+      changed_when: true

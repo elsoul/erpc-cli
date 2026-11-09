@@ -4,12 +4,15 @@
 import copy
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+
+sys.dont_write_bytecode = True
 
 spec = importlib.util.spec_from_file_location('control', sys.argv.pop(1))
 c = importlib.util.module_from_spec(spec)
@@ -50,6 +53,78 @@ class CustodyTests(unittest.TestCase):
         (validators / 'validator_definitions.yml').write_text('existing-definitions')
         (self.root / 'custody.json').write_text(json.dumps(self.material))
         c.save(self.state)
+
+    def test_actual_fsync_failures_still_quiesce_and_never_export(self):
+        self.make_imported()
+        original = c.read_json(self.root / 'owner.json')
+        original_custody = (self.root / 'custody.json').read_bytes()
+        original_history = (self.root / 'vc/validators/slashing_protection.sqlite').read_bytes()
+        real_sync = os.fsync
+        for action in ('destroy', 'fence-export', 'install-check'):
+            for fault in (1, 2):
+                with self.subTest(action=action, fault=fault):
+                    c.save(original)
+                    self.calls.clear()
+                    syncs = []
+                    def fail_at(fd):
+                        syncs.append(fd)
+                        if len(syncs) == fault:
+                            raise OSError('inert persistence failure')
+                        return real_sync(fd)
+                    with patch.object(c.os, 'fsync', side_effect=fail_at), patch.object(c, 'lighthouse') as lh:
+                        with self.assertRaises(c.Refused):
+                            c.locked_dispatch(self.config, self.request(action, destination='next'))
+                    lh.assert_not_called()
+                    self.assertIn(('stop', c.UNITS[0]), self.calls)
+                    self.assertIn(('disable', c.UNITS[0]), self.calls)
+                    if action == 'destroy':
+                        self.assertEqual(self.calls, [(op, unit) for unit in c.UNITS for op in ('stop', 'disable')])
+                    self.assertEqual((self.root / 'custody.json').read_bytes(), original_custody)
+                    self.assertEqual((self.root / 'vc/validators/slashing_protection.sqlite').read_bytes(), original_history)
+
+    def test_shutdown_failures_do_not_skip_disable_other_units_or_export(self):
+        self.make_imported()
+        original = c.read_json(self.root / 'owner.json')
+        for action in ('stop', 'destroy', 'fence-export', 'install-check'):
+            c.save(original)
+            self.calls.clear()
+            def failure(operation, unit):
+                self.calls.append((operation, unit))
+                if operation == 'stop':
+                    raise c.Refused('inert shutdown failure')
+            with patch.object(c, 'ctl', side_effect=failure), patch.object(c, 'run', return_value=b'loaded'), patch.object(c, 'lighthouse') as lh:
+                with self.assertRaises(c.Refused):
+                    c.locked_dispatch(self.config, self.request(action, destination='next'))
+            lh.assert_not_called()
+            self.assertIn(('disable', c.UNITS[0]), self.calls)
+            if action in ('stop', 'destroy'):
+                self.assertEqual(self.calls, [(op, unit) for unit in c.UNITS for op in ('stop', 'disable')])
+
+    def test_maintenance_retry_resyncs_visible_fence_and_never_publishes_on_failure(self):
+        self.make_imported()
+        with patch.object(c, 'run', return_value=b'loaded'):
+            c.locked_dispatch(self.config, self.request('install-check'))
+        before = (self.root / 'owner.json').read_bytes()
+        self.calls.clear()
+        with patch.object(c.os, 'fsync', side_effect=OSError('persistent disk failure')):
+            with self.assertRaises(c.Refused):
+                c.locked_dispatch(self.config, self.request('install-check'))
+        self.assertEqual((self.root / 'owner.json').read_bytes(), before)
+        self.assertIn(('stop', c.UNITS[0]), self.calls)
+        with patch.object(c, 'run', return_value=b'loaded'):
+            self.assertEqual(c.locked_dispatch(self.config, self.request('install-check'))['state'], 'maintenance')
+        c.locked_dispatch(self.config, self.request('install-end'))
+        self.assertEqual(c.read_json(self.root / 'owner.json')['state'], 'imported')
+
+    def test_wrong_scope_never_persists_or_shuts_down_even_with_storage_fault(self):
+        self.make_imported()
+        for config, request in [(dict(self.config, network='mainnet'), self.request('destroy')),
+                                (self.config, dict(self.request('fence-export', destination='next'), owner='other'))]:
+            with patch.object(c.os, 'fsync', side_effect=OSError('inert fault')) as sync:
+                with self.assertRaises(c.Refused):
+                    c.locked_dispatch(config, request)
+            sync.assert_not_called()
+        self.assertEqual(self.calls, [])
 
     def test_wrong_network_or_history_key_never_invokes_import(self):
         for mutation in ('network', 'key', 'nonempty'):
@@ -220,6 +295,55 @@ class ReadinessTests(unittest.TestCase):
 
 
 class ClockTests(unittest.TestCase):
+    def test_actual_rpc_clock_tasks_preserve_chrony_and_install_only_needed_fallback(self):
+        import shutil
+        try:
+            import yaml
+        except ImportError:
+            self.skipTest('optional pinned Ansible/PyYAML runtime')
+        ansible = shutil.which('ansible-playbook')
+        if not ansible:
+            self.skipTest('optional pinned Ansible runtime')
+        templates = Path(c.__file__).resolve().parent.parent
+        original = yaml.safe_load((templates / 'ansible/eth-rpc/init.yml').read_text())[0]['tasks']
+        begin = next(i for i, task in enumerate(original) if 'ansible.builtin.service_facts' in task)
+        selected = original[begin:begin + 4]
+        for services, expected, fallback in [
+            ({}, 'systemd-timesyncd.service', True),
+            ({'chrony.service': {'state': 'running'}}, 'chrony.service', False),
+            ({'chrony.service': {'state': 'stopped'}}, 'chrony.service', False),
+            ({'chrony.service': {'state': 'stopped'}, 'ntpd.service': {'state': 'running'}}, 'ntpd.service', False),
+        ]:
+            with self.subTest(services=services), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                play_root = root / 'ansible/eth-rpc'
+                play_root.mkdir(parents=True)
+                (root / 'validator').mkdir()
+                shutil.copyfile(templates / 'validator/time_service.py', root / 'validator/time_service.py')
+                tasks = copy.deepcopy(selected)
+                tasks[0] = {'ansible.builtin.set_fact': {'ansible_facts': {'services': services}, 'fixture_installed': False}}
+                # Only the host-changing package/service modules are inert.
+                # The carried command, relative source path, stdin, registered
+                # result, condition and templates execute through real Ansible.
+                package = tasks[2].pop('ansible.builtin.apt')
+                self.assertEqual(package, {'name': 'systemd-timesyncd', 'state': 'present'})
+                tasks[2]['ansible.builtin.set_fact'] = {'fixture_installed': True}
+                service = tasks[3].pop('ansible.builtin.systemd_service')
+                self.assertEqual(service['state'], 'started')
+                self.assertIs(service['enabled'], True)
+                tasks[3]['ansible.builtin.assert'] = {'that': [
+                    '(eth_clock.stdout | from_json).service == fixture_expected',
+                    'fixture_installed == fixture_fallback',
+                    'fixture_selected == fixture_expected']}
+                tasks[3]['vars'] = {'fixture_selected': service['name']}
+                play = [{'hosts': 'all', 'gather_facts': False, 'vars': {
+                    'fixture_expected': expected, 'fixture_fallback': fallback}, 'tasks': tasks}]
+                path = play_root / 'clock-test.yml'
+                path.write_text(yaml.safe_dump(play))
+                result = subprocess.run([ansible, '-i', 'localhost,', '-c', 'local', str(path)],
+                                        capture_output=True, text=True, timeout=60, check=False)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_existing_daemons_are_preserved_and_absence_installs_fallback(self):
         spec = importlib.util.spec_from_file_location('time_service', Path(c.__file__).with_name('time_service.py'))
         clock = importlib.util.module_from_spec(spec)

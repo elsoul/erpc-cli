@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+[Unit]
+Description=Restore confirmed Polygon RPC ingress filtering
+DefaultDependencies=no
+After=local-fs.target
+Before=network-pre.target polygon-bor.service polygon-heimdall.service polygon-l1-proxy.service
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+ExecStart={{ polygon_service_guard }} firewall '{{ polygon_contract | to_json }}'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

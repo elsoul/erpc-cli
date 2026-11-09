@@ -6,10 +6,10 @@
 //!
 //! Everything is checked before anything is written: the vault opens, the
 //! server's host key is the one the operator confirms, the server is Ubuntu
-//! with the memory, systemd and sudo an Arc node needs, a free disk is found
-//! for the data, and a release is pinned with its commit and archive digest.
-//! Then the consensus key goes into 1Password, the node's item is stored,
-//! and `init.yml` runs on the node.
+//! with the memory, systemd and sudo an Arc node needs, original pre-mounted
+//! storage is qualified, and the carried release is pinned by commit and digest.
+//! Then the public host and consensus identity are reserved, their original
+//! key is stored and verified, and `init.yml` runs on the node.
 //!
 //! The same command again picks up a run that stopped part way: what was
 //! stored is found and reused, never made twice.
@@ -22,14 +22,11 @@ use erpc_ssh::{Identity, Session, Target};
 use serde_json::json;
 
 use crate::arc_rpc::{
-    Facts, KindFlags, Login, RunVars, WANT_DATA_KB, allow_list, facts, gb, open, run_play,
-    with_kind,
+    Facts, KindFlags, Login, RunVars, allow_list, facts, gb, open, run_play, with_kind,
 };
 use crate::commands::Outcome;
 use crate::error::CliError;
-use crate::node_common::{
-    FreeDisk, Say, agent_socket, check_ubuntu, free_disks, go_ahead, host_key, save_vault,
-};
+use crate::node_common::{Say, agent_socket, check_ubuntu, go_ahead, host_key, save_vault};
 
 /// What `erpc r --chain arc init` was asked to do.
 #[derive(Debug, Clone, Default)]
@@ -62,6 +59,8 @@ pub struct Args {
     pub login: Login,
     /// Do not ask before writing.
     pub yes: bool,
+    /// Explicit historical original-account adoption; never inferred from live NSS.
+    pub migration: crate::arc_migration::Inputs,
 }
 
 /// What a finished init reports.
@@ -137,6 +136,9 @@ impl Done {
 /// Runs `erpc r --chain arc init`.
 pub async fn run(args: Args, json_out: bool) -> Outcome {
     let say = Say { quiet: json_out };
+    if args.migration.enabled {
+        return migrate(&args, json_out, &say);
+    }
     match init(&args, &say).await {
         Ok(done) => {
             if json_out {
@@ -219,9 +221,13 @@ async fn pin(
 ) -> Result<(String, String, String), String> {
     let platform = facts.platform()?;
     let github = releases::Github::new().map_err(|e| e.to_string())?;
-    let (release, source) = releases::pin(&github, wanted, platform)
-        .await
-        .map_err(|e| e.to_string())?;
+    let (release, source) = releases::pin(
+        &github,
+        Some(wanted.unwrap_or(erpc_chain_arc::authority::VERSION)),
+        platform,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
     let digest = release
         .digest(platform)
         .ok_or("the release has no digest for this platform")?
@@ -232,6 +238,7 @@ async fn pin(
             releases::snapshot().read
         ));
     }
+    erpc_chain_arc::authority::qualify_source(&release.tag, &release.commit, &digest, platform)?;
     say.line(&format!(
         "release    arc-node {} @ {} ({})",
         release.tag,
@@ -239,45 +246,6 @@ async fn pin(
         platform.target()
     ));
     Ok((release.tag, release.commit, digest))
-}
-
-/// The disk the data goes on, if the server has a free one.
-fn disk(disks: &[FreeDisk], facts: &Facts, say: &Say) -> Option<FreeDisk> {
-    if let Some(first) = disks.first() {
-        say.line(&format!(
-            "disk       /dev/{} ({}) becomes /var/lib/arc{}",
-            first.name,
-            gb(first.bytes / 1000),
-            if first.wipe {
-                format!(
-                    ", after removing its empty partitions ({})",
-                    first.partitions
-                )
-            } else {
-                String::new()
-            }
-        ));
-        return Some(first.clone());
-    }
-    let free = facts.data_free_kb.unwrap_or(facts.root_free_kb);
-    if !facts.data_mount.is_empty() {
-        say.line(&format!(
-            "disk       {} is /var/lib/arc already ({} free)",
-            facts.data_mount,
-            gb(free)
-        ));
-        return None;
-    }
-    say.line(&format!(
-        "disk       no free disk; the data goes on the root disk ({} free){}",
-        gb(free),
-        if free < WANT_DATA_KB {
-            " — Arc asks for 1 TB"
-        } else {
-            ""
-        }
-    ));
-    None
 }
 
 #[allow(clippy::too_many_lines)]
@@ -350,7 +318,9 @@ async fn init(args: &Args, say: &Say) -> Result<Done, CliError> {
         say.line("rpc        open to everyone (0.0.0.0/0)");
     }
 
-    let data_disk = disk(&free_disks(&session)?, &facts, say);
+    say.line(
+        "storage    using the original pre-mounted /var/lib/arc filesystem; no disk is formatted",
+    );
     let (version, commit, digest) = match &existing {
         Some(node) => (
             node.version.clone(),
@@ -397,24 +367,7 @@ async fn init(args: &Args, say: &Say) -> Result<Done, CliError> {
     }
     go_ahead(args.yes, "nothing was written")?;
 
-    let found = key::find(&opened.runner, &opened.vault, &args.network, &args.name)
-        .map_err(|e| e.to_string())?;
-    let stored_key = if let Some(found) = found {
-        say.line(&format!(
-            "key        {} (stored by an earlier run)",
-            found.public_key
-        ));
-        found
-    } else {
-        let made = key::store_new(&opened.runner, &opened.vault, &args.network, &args.name)
-            .map_err(|e| e.to_string())?;
-        say.line(&format!(
-            "key        {} stored in 1Password",
-            made.public_key
-        ));
-        made
-    };
-
+    crate::arc_authority::preflight(&session, &target, existing.as_ref(), &opened.network, say)?;
     let wanted = RpcNode {
         name: args.name.clone(),
         address: address.clone(),
@@ -424,8 +377,9 @@ async fn init(args: &Args, say: &Say) -> Result<Done, CliError> {
         version,
         commit,
         archive_sha256: digest,
-        consensus_key_ref: stored_key.reference.clone(),
-        consensus_public_key: stored_key.public_key.clone(),
+        consensus_public_key: existing
+            .as_ref()
+            .map_or_else(String::new, |v| v.consensus_public_key.clone()),
         rpc_type: kind.rpc_type,
         debug_api: kind.debug_api,
         trusted_peers: kind.trusted_peers,
@@ -435,40 +389,25 @@ async fn init(args: &Args, say: &Say) -> Result<Done, CliError> {
         monitoring_allow: monitoring,
         ..RpcNode::default()
     };
-    let node = match &existing {
-        None => opened
-            .store
-            .add_rpc_node(&wanted)
-            .map_err(|e| e.to_string())?,
-        Some(stored) => {
-            let merged = RpcNode {
-                id: stored.id.clone(),
-                item_version: stored.item_version,
-                last_run: stored.last_run.clone(),
-                last_result: stored.last_result.clone(),
-                ..wanted
-            };
-            if &merged == stored {
-                merged
-            } else {
-                opened
-                    .store
-                    .update_rpc_node(&merged)
-                    .map_err(|e| e.to_string())?
-            }
-        }
-    };
+    erpc_chain_arc::authority::qualify_source(
+        &wanted.version,
+        &wanted.commit,
+        &wanted.archive_sha256,
+        facts.platform()?,
+    )?;
+    let node = crate::arc_custody::provision(
+        &opened.store,
+        &opened.runner,
+        &opened.vault,
+        &args.network,
+        wanted,
+        existing.as_ref(),
+        key::ConsensusKey::generate,
+    )?;
     say.line(&format!("inventory  {} stored", node.name));
     save_vault(&args.network, &opened.vault)?;
 
-    let mut extra = serde_json::Map::new();
-    extra.insert(
-        "arc_disk".to_owned(),
-        data_disk.map_or(
-            serde_json::Value::Null,
-            |d| json!({ "name": d.name, "wipe": d.wipe }),
-        ),
-    );
+    let extra = serde_json::Map::new();
     let vars = RunVars {
         node: &node,
         network: &opened.network,
@@ -500,7 +439,67 @@ async fn init(args: &Args, say: &Say) -> Result<Done, CliError> {
     })
 }
 
-/// A host key, as `HostKey` is used above; here so a test can build one.
+fn migrate(args: &Args, json_out: bool, say: &Say) -> Outcome {
+    let result = (|| -> Result<_, CliError> {
+        if args.host.is_some()
+            || args.version.is_some()
+            || args.kind.rpc_type.is_some()
+            || args.rpc_allow.is_some()
+            || args.management_allow.is_some()
+            || args.monitoring_allow.is_some()
+            || args.kind.debug_api.is_some()
+            || args.kind.trusted_peers.is_some()
+            || args.kind.sentry_peers.is_some()
+        {
+            return Err("Arc authority migration retains the original inventory host, source, policy and history profile".into());
+        }
+        let proof = crate::arc_migration::evidence(&args.migration)?;
+        let opened = open(&args.network, args.vault.as_deref(), say)?;
+        let node = crate::arc_rpc::find(&opened.nodes, &args.name, &args.network)?.clone();
+        let target = crate::arc_rpc::target(&node, &args.login)?;
+        let session = Session::open(&target).map_err(|e| e.to_string())?;
+        check_ubuntu(&session)?;
+        let facts = facts(&session)?;
+        if !facts.refusals().is_empty() {
+            return Err("original Arc host does not meet its supported operating baseline".into());
+        }
+        say.line("migration  qualify original account/source evidence, preserve keys and data, and leave supported legacy services retired");
+        go_ahead(args.yes, "nothing was changed")?;
+        let mut extra = serde_json::Map::new();
+        extra.insert("arc_migration_request".into(), crate::arc_authority::request(&node,&opened.network,"migration-check",json!({
+            "target":crate::arc_authority::source(&node,&facts)?,"policy":crate::arc_authority::policy(&node,&facts)?,
+            "evidence":proof,"helpers":erpc_chain_arc::authority::helper_hash()?
+        }))?);
+        let run = run_play(
+            &session,
+            &target,
+            &RunVars {
+                node: &node,
+                network: &opened.network,
+                facts: &facts,
+                extra,
+            },
+            "ansible/arc-rpc/migrate.yml",
+            "Repeat the same explicit migration with its original records",
+            say,
+        )?;
+        Ok((node, run))
+    })();
+    match result {
+        Err(error) => Outcome::from(error),
+        Ok((node, run)) => {
+            if json_out {
+                crate::print_json(
+                    &json!({"migration":"recorded","name":node.name,"run":run,"runtime_started":false}),
+                );
+                Outcome::Done(String::new())
+            } else {
+                Outcome::Done("Original Arc authority is recorded. First migration leaves services retired; repeating a completed migration leaves runtime unchanged.".into())
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 fn sample_key() -> erpc_ssh::HostKey {
     erpc_ssh::HostKey::parse(

@@ -1,0 +1,64 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Prepare a firewall-only run for fresh SSH confirmation
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Verify host ownership before touching any firewall
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/control.py", play]
+        stdin: "{{ kaia_request | combine({'action':'check-deploy'}) | to_json }}"
+      changed_when: false
+    - name: Install nftables
+      ansible.builtin.apt:
+        name: nftables
+        state: present
+    - name: Create root-controlled policy directory
+      ansible.builtin.file:
+        path: "/etc/erpc/kaia"
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+    - name: Install the common operation-bound firewall controller
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../rpc-firewall.py"
+        dest: /usr/local/lib/erpc/rpc-firewall.py
+        owner: root
+        group: root
+        mode: '0700'
+    - name: Install boot policy loader
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/firewall.service.j2"
+        dest: "/etc/systemd/system/erpc-kaia-firewall.service"
+        owner: root
+        group: root
+        mode: '0644'
+    - name: Render this operation's immutable candidate
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/firewall.nft.j2"
+        dest: "{{ playbook_dir }}/../firewall-candidate.nft"
+        owner: root
+        group: root
+        mode: '0600'
+    - name: Check policy syntax
+      ansible.builtin.command:
+        argv: [nft, -c, -f, "{{ playbook_dir }}/../firewall-candidate.nft"]
+      changed_when: false
+    - name: Identify the submitted bundle
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/../../bundle.tar.gz"
+        checksum_algorithm: sha256
+      register: firewall_submission
+    - name: Apply under the common rollback timer
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/control.py", firewall-apply, "{{ (playbook_dir ~ '/../..') | realpath | basename }}", "{{ firewall_submission.stat.checksum }}"]
+      changed_when: true
+    - name: Enable confirmed policy at boot
+      ansible.builtin.systemd_service:
+        name: "erpc-kaia-firewall"
+        enabled: true
+        daemon_reload: true

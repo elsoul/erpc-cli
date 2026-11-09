@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3 -I
 # SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
 # SPDX-License-Identifier: Apache-2.0
 """Atomic Sui mutation boundary and fail-closed runtime firewall checks."""
@@ -6,6 +6,9 @@ import fcntl
 import hashlib
 import json
 import os
+import stat
+import importlib.machinery
+import importlib.util
 import pathlib
 import re
 import shutil
@@ -13,20 +16,423 @@ import subprocess
 import sys
 import time
 
+# BEGIN ERPC TRUSTED IMPORTS
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+# Embedded verbatim in helpers that need sibling modules. Startup uses -I;
+# only this checked directory is added, after the standard-library paths.
+def trusted_imports(directory):
+    import os
+    import stat
+    import sys
+    path = os.fspath(directory)
+    if not os.path.isabs(path):
+        raise ValueError('helper directory must be an absolute path')
+    current = os.path.sep
+    for part in path.split(os.path.sep)[1:]:
+        if part in ('', '.'):
+            continue
+        if part == '..':
+            # The component being left was already checked as a real root-only
+            # directory. Never normalize away an unchecked symlink ancestor.
+            current = os.path.dirname(current)
+            continue
+        current = os.path.join(current, part)
+        info = os.lstat(current)
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+            raise ValueError('helper ancestors must be real root-owned directories')
+    path = current
+    if path == os.path.sep:
+        raise ValueError('the filesystem root is not a helper directory')
+    # Do not create root0700 bytecode caches before an unprivileged helper
+    # imports the same module. Existing readable caches remain fully checked.
+    sys.dont_write_bytecode = True
+    pending = [path]
+    while pending:
+        for child in os.scandir(pending.pop()):
+            info = child.stat(follow_symlinks=False)
+            if info.st_uid != 0 or info.st_mode & 0o022:
+                raise ValueError('helper modules must be writable only by root')
+            if stat.S_ISDIR(info.st_mode):
+                if (child.name == '__pycache__'
+                        and not os.access(child.path, os.X_OK, effective_ids=True)):
+                    # No traversal means Python cannot read any cached module
+                    # here and must use the checked source. Denied listing alone
+                    # (e.g. mode0711) is not sufficient for this exception.
+                    continue
+                pending.append(child.path)
+            elif not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise ValueError('helper modules cannot be links or special files')
+    if path not in sys.path:
+        sys.path.append(path)
+# END ERPC TRUSTED IMPORTS
+if __name__ == '__main__':
+    trusted_imports(pathlib.Path(__file__).absolute().parent)
+_account_path = pathlib.Path(__file__).with_name('erpc-sui-account.py' + ('.j2' if __file__.endswith('.j2') else ''))
+_account_loader = importlib.machinery.SourceFileLoader('erpc_sui_account', str(_account_path))
+_account_spec = importlib.util.spec_from_loader('erpc_sui_account', _account_loader)
+account = importlib.util.module_from_spec(_account_spec)
+_account_loader.exec_module(account)
+_release_path = pathlib.Path(__file__).with_name('erpc-sui-release.py' + ('.j2' if __file__.endswith('.j2') else ''))
+_release_loader = importlib.machinery.SourceFileLoader('erpc_sui_release', str(_release_path))
+_release_spec = importlib.util.spec_from_loader('erpc_sui_release', _release_loader)
+release_authority = importlib.util.module_from_spec(_release_spec)
+_release_loader.exec_module(release_authority)
+
+
 
 class Control:
-    def __init__(self, root=pathlib.Path('/'), run=subprocess.run):
-        self.root, self.run = root, run
+    def __init__(self, root=pathlib.Path('/'), run=subprocess.run, owner=0):
+        self.root, self.run, self.owner = root, run, owner
+        self.ROOT, self.TRUST_ANCHOR = self.path('/etc/sui'), root
+
+    @staticmethod
+    def checked(name):
+        if name not in ('control', 'identity', 'validator', 'status'):
+            raise ValueError('unsupported Sui helper entrypoint')
+        source = pathlib.Path(__file__).read_text()
+        trust = source.split('# BEGIN ERPC TRUSTED IMPORTS\n', 1)[1].split('# END ERPC TRUSTED IMPORTS', 1)[0]
+        path = '/usr/local/lib/erpc/sui/erpc-sui-' + name + '.py'
+        program = trust + "\nimport runpy\ntrusted_imports('/usr/local/lib/erpc/sui')\nrunpy.run_path('" + path + "', run_name='__main__')"
+        return ['/usr/bin/python3', '-I', '-c', program]
 
     def path(self, name):
         return self.root / name.lstrip('/')
 
     def command(self, *args, check=True):
-        return self.run(list(args), check=check, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return self.run(list(args), check=check, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        env={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LC_ALL': 'C'})
+
+    Refused = ValueError
+
+    @staticmethod
+    def require(value, message):
+        if not value:
+            raise ValueError(message)
+
+    def protected(self, name, missing=False, directory=False):
+        """Authenticate every real ancestor; never repair an unknown writable path."""
+        target = self.path(name)
+        current = self.root
+        anchor = current.lstat()
+        if not stat.S_ISDIR(anchor.st_mode) or anchor.st_uid != self.owner or anchor.st_mode & 0o022:
+            raise ValueError('Sui trust anchor is unsafe')
+        parts = target.relative_to(self.root).parts
+        for index, part in enumerate(parts):
+            current = current / part
+            try:
+                info = current.lstat()
+            except FileNotFoundError:
+                if missing:
+                    return target
+                raise
+            last = index == len(parts) - 1
+            if info.st_uid != self.owner or info.st_mode & 0o022:
+                raise ValueError('Sui protected path is not owned exclusively by root')
+            if not last or directory:
+                if not stat.S_ISDIR(info.st_mode):
+                    raise ValueError('Sui protected ancestor is not a real directory')
+            elif not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise ValueError('Sui protected state must be a regular single-link file')
+        return target
+
+    def sync(self, directory):
+        while True:
+            descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            if directory == self.root:
+                break
+            directory = directory.parent
+
+    def write(self, name, value, mode=0o600):
+        target = self.protected(name, missing=True)
+        pending = self.protected(name + '.pending', missing=True)
+        with open(pending, 'w', encoding='utf-8') as stream:
+            os.fchmod(stream.fileno(), mode)
+            stream.write(json.dumps(value, sort_keys=True))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(pending, target)
+        self.sync(target.parent)
+
+    def write_text(self, name, text):
+        target = self.protected(name, missing=True)
+        pending = self.protected(name + '.pending', missing=True)
+        with open(pending, 'w', encoding='utf-8') as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(text); stream.flush(); os.fsync(stream.fileno())
+        os.replace(pending, target); self.sync(target.parent)
+
+    def remove(self, name):
+        target = self.protected(name, missing=True)
+        if target.exists():
+            target.unlink(); self.sync(target.parent)
+
+    def retained_quiet(self, expected):
+        # Shutdown follows retained identity, never current NSS name resolution.
+        contract = json.loads(self.protected('/etc/sui/contract.json').read_text())
+        if not self.path('/etc/sui/original-account.json').exists() and contract.get('original_account') is None:
+            return  # Legacy stop retains filtering/data; migration qualifies its account separately.
+        uid = self.account_record(expected).get('service_uid')
+        self.quiet_uid(uid)
+
+    def quiet_uid(self, uid):
+        if type(uid) is not int or not 100 <= uid <= 999:
+            raise ValueError('original Sui UID is unavailable for shutdown verification')
+        proc = self.path('/proc')
+        if not proc.is_dir():
+            raise ValueError('process authority is unavailable')
+        for process in proc.iterdir():
+            if not process.name.isdecimal():
+                continue
+            try:
+                info = process.lstat()
+            except FileNotFoundError:
+                continue
+            if info.st_uid == uid:
+                raise ValueError('an original Sui process remains; data and filtering retained')
+
+    def save(self, state):
+        self.write('/etc/sui/original-account.json', state)
+
+    def account_record(self, expected):
+        # The protocol-2 contract atomically carries the migration reservation.
+        # A failed secondary receipt write cannot erase its original UID/GID.
+        embedded = None
+        contract_path = self.protected('/etc/sui/contract.json', missing=True)
+        if contract_path.exists():
+            embedded = json.loads(contract_path.read_text()).get('original_account')
+        path = self.protected('/etc/sui/original-account.json', missing=True)
+        record = json.loads(path.read_text()) if path.exists() else embedded
+        if (not isinstance(record, dict) or record.get('contract') != expected or record.get('protocol') != 2
+                or embedded is not None and embedded != record):
+            raise ValueError('original Sui numeric account receipt belongs to another scope or changed')
+        return record
+
+    def namespaces(self):
+        for directory in ('/etc/sui', '/etc/erpc/sui', '/etc/credstore.encrypted',
+                          '/etc/credstore.encrypted/sui-validator', '/opt/sui',
+                          '/usr/local/lib/erpc/sui', '/etc/systemd/system'):
+            self.protected(directory, missing=True, directory=True)
+        for directory in ('/etc/sui', '/etc/erpc/sui', '/etc/credstore.encrypted/sui-validator'):
+            parent = self.path(directory)
+            if parent.exists():
+                for entry in parent.iterdir():
+                    is_history = str(entry.relative_to(self.root)) == 'etc/sui/release-history'
+                    self.protected(str(entry.relative_to(self.root)), directory=is_history)
+                    if is_history:
+                        for item in entry.iterdir():
+                            self.protected(str(item.relative_to(self.root)))
+        for helper in ('erpc-sui-control.py', 'erpc-sui-status.py', 'erpc-sui-identity.py', 'erpc-sui-validator.py'):
+            self.protected('/usr/local/lib/erpc/' + helper, missing=True)
+        namespace = self.path('/usr/local/lib/erpc/sui')
+        if namespace.exists():
+            allowed = {'erpc-sui-' + name + '.py' for name in ('control', 'status', 'identity', 'validator', 'account', 'release')}
+            for entry in namespace.iterdir():
+                if entry.name not in allowed:
+                    raise ValueError('unexpected Sui privileged helper namespace entry')
+                self.protected(str(entry.relative_to(self.root)))
+        for unit in ('sui-node.service', 'sui-bootstrap.service', 'erpc-sui-firewall.service'):
+            self.protected('/etc/systemd/system/' + unit, missing=True)
+            folder = self.protected('/etc/systemd/system/' + unit + '.d', missing=True, directory=True)
+            if folder.exists():
+                for entry in folder.iterdir():
+                    if entry.name not in ('50-erpc-firewall-guard.conf', '50-erpc-firewall-guard.conf.new'):
+                        raise ValueError('unknown Sui service override')
+                    self.protected(str(entry.relative_to(self.root)))
+        for credential in ('sui-network.key', 'sui-network.pending'):
+            self.protected('/etc/credstore.encrypted/' + credential, missing=True)
+
+    def fresh_home_entries(self, descriptor):
+        entries = os.listdir(descriptor)
+        if not entries:
+            return
+        if entries != ['lost+found']:
+            raise ValueError('unowned Sui data cannot be adopted')
+        recovery = os.open('lost+found', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                           dir_fd=descriptor)
+        try:
+            info = os.fstat(recovery)
+            if (not stat.S_ISDIR(info.st_mode) or info.st_uid != self.owner
+                    or info.st_mode & 0o022 or os.listdir(recovery)):
+                raise ValueError('unowned filesystem recovery content cannot be adopted')
+            named = os.stat('lost+found', dir_fd=descriptor, follow_symlinks=False)
+            if (named.st_dev, named.st_ino) != (info.st_dev, info.st_ino):
+                raise ValueError('filesystem recovery directory changed during qualification')
+        finally:
+            os.close(recovery)
+
+    def fresh_home_descriptor(self, descriptor, record=None):
+        info = os.fstat(descriptor)
+        root_owned = info.st_uid == self.owner and not info.st_mode & 0o022
+        original = (record is not None and info.st_uid == record['service_uid']
+                    and info.st_gid == record['service_gid'] and stat.S_IMODE(info.st_mode) == 0o700)
+        if not stat.S_ISDIR(info.st_mode) or not (root_owned or original):
+            raise ValueError('fresh Sui data root has untrusted ownership or permissions')
+        self.fresh_home_entries(descriptor)
+        return info
+
+    def fresh_home(self):
+        self.protected('/var/lib', directory=True)
+        home = self.path('/var/lib/sui')
+        if not home.exists() and not home.is_symlink():
+            return
+        descriptor = os.open(home, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            info = self.fresh_home_descriptor(descriptor)
+            named = home.lstat()
+            if (named.st_dev, named.st_ino) != (info.st_dev, info.st_ino):
+                raise ValueError('fresh Sui data path changed during qualification')
+        finally:
+            os.close(descriptor)
+
+    def data_home(self, record, prepare=False):
+        self.protected('/var/lib', directory=True)
+        home = self.path('/var/lib/sui')
+        if record.get('home_established') is not True:
+            if not prepare:
+                raise ValueError('original Sui data home is not established')
+            self.quiet_uid(record['service_uid'])
+            if not home.exists() and not home.is_symlink():
+                home.mkdir(mode=0o700)
+            descriptor = os.open(home, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            try:
+                info = self.fresh_home_descriptor(descriptor, record)
+                named = home.lstat()
+                if (named.st_dev, named.st_ino) != (info.st_dev, info.st_ino):
+                    raise ValueError('fresh Sui data path was replaced')
+                # Only the qualified empty root-owned volume (or the exact
+                # interrupted original reservation) may change ownership/mode.
+                os.fchmod(descriptor, 0o700)
+                os.fchown(descriptor, record['service_uid'], record['service_gid'])
+                os.fsync(descriptor)
+                named = home.lstat()
+                if (named.st_dev, named.st_ino) != (info.st_dev, info.st_ino):
+                    raise ValueError('prepared Sui data path was replaced')
+            finally:
+                os.close(descriptor)
+            self.sync(home.parent)
+            record['home_established'] = True
+            self.save(record)
+        info = home.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != record['service_uid']
+                or info.st_gid != record['service_gid'] or stat.S_IMODE(info.st_mode) != 0o700):
+            raise ValueError('original Sui data root ownership or mode changed')
+
+    def account(self, expected):
+        self.namespaces()
+        record = self.account_record(expected)
+        account.verify(self, record)
+        self.data_home(record)
+        return record
+
+    def platform(self):
+        value = self.command('/usr/bin/systemctl', '--version').stdout.decode('ascii').splitlines()
+        if not value or re.match(r'^systemd 255(?: |$)', value[0]) is None:
+            raise ValueError('Sui credential delivery requires qualified systemd 255')
+
+    def prepare_account(self, expected):
+        self.contract(expected, initial=True)
+        self.platform()
+        self.namespaces()
+        receipt = self.path('/etc/sui/original-account.json')
+        contract_path = self.path('/etc/sui/contract.json')
+        embedded = json.loads(contract_path.read_text()).get('original_account') if contract_path.exists() else None
+        if receipt.exists() or embedded is not None:
+            record = self.account_record(expected)
+        else:
+            if self.path('/etc/sui/contract.json').exists():
+                raise ValueError('legacy Sui account requires explicit verified migration')
+            record = dict(account.reserve(self), contract=expected, protocol=2, account_established=False, home_established=False)
+            directory = self.protected('/etc/sui', missing=True, directory=True)
+            directory.mkdir(mode=0o750, exist_ok=True)
+            self.sync(directory)
+            self.save(record)
+        # New source authority is established only while the original home is unused.
+        # Existing protocol-2 hosts need explicit independent stopped migration.
+        if contract_path.exists():
+            if json.loads(contract_path.read_text()).get('authority_protocol') != 3:
+                raise ValueError('existing Sui host requires explicit source history migration')
+            release_authority.scope(self, expected)
+            release_authority.claims(self, expected, durable=True)
+        else:
+            release_authority.fresh(self, expected, record)
+        # A resumed original reservation is qualified before either NSS mutation.
+        account.provision(self, record)
+        self.data_home(record, prepare=True)
+        self.write('/etc/sui/contract.json', dict(expected, authority_protocol=3, original_account=record), mode=0o640)
+        return {'uid': record['service_uid'], 'gid': record['service_gid']}
+
+    def migrate_account(self, expected):
+        """Explicit same-host account migration, never a key or live signer migration."""
+        self.contract(expected)
+        self.platform()
+        previous = json.loads(self.protected('/etc/sui/contract.json').read_text())
+        if previous.get('original_account') is not None or self.path('/etc/sui/original-account.json').exists():
+            record = self.account_record(expected)
+            account.verify(self, record)
+            self.data_home(record)
+            self.save(record)
+            return {'uid': record['service_uid'], 'gid': record['service_gid']}
+        if previous != expected:
+            raise ValueError('only the exact protected legacy contract can be migrated')
+        user = account.lookup(account.pwd.getpwnam, account.NAME)
+        group = account.lookup(account.grp.getgrnam, account.NAME)
+        if user is None or group is None:
+            raise ValueError('legacy original service identity is absent')
+        record = {'contract': expected, 'protocol': 2, 'service_uid': user.pw_uid,
+                  'service_gid': group.gr_gid, 'account_established': True, 'home_established': True}
+        account.verify(self, record)
+        self.protected('/var/lib', directory=True)
+        home = self.path('/var/lib/sui'); info = home.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != user.pw_uid or info.st_gid != group.gr_gid or info.st_mode & 0o077:
+            raise ValueError('legacy Sui data root does not belong exclusively to its verified numeric account')
+        if self.path('/opt/sui/current').is_symlink():
+            self.release(expected)
+            genesis = self.protected('/etc/sui/genesis.blob')
+            if hashlib.sha256(genesis.read_bytes()).hexdigest() != expected['genesis']:
+                raise ValueError('legacy genesis differs from the immutable network')
+        else:
+            # A legacy init may have reserved an otherwise unused ext4 volume.
+            # Empty filesystem recovery storage is not native chain data.
+            descriptor = os.open(home, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            try:
+                self.fresh_home_entries(descriptor)
+            finally:
+                os.close(descriptor)
+        if expected['role'] == 'validator' and self.path('/etc/sui/validator-identity-established').exists():
+            receipt = json.loads(self.protected('/etc/sui/validator-identity-established').read_text())
+            if receipt.get('metadata') != hashlib.sha256(self.protected('/etc/sui/validator.json').read_bytes()).hexdigest():
+                raise ValueError('legacy validator metadata no longer matches its custody receipt')
+            for name in ('protocol', 'network', 'worker'):
+                cipher = self.protected('/etc/credstore.encrypted/sui-validator/' + name + '.key')
+                if receipt.get(name) != hashlib.sha256(cipher.read_bytes()).hexdigest():
+                    raise ValueError('legacy validator ciphertext no longer matches its custody receipt')
+        elif expected['role'] == 'fullnode' and self.path('/etc/sui/identity-established').exists():
+            cipher = self.protected('/etc/credstore.encrypted/sui-network.key')
+            self.run(['systemd-creds', 'decrypt', '--name=network.key', str(cipher), '-'],
+                     check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        elif self.path('/var/lib/sui/db').exists() or self.path('/etc/credstore.encrypted/sui-validator').exists() or self.path('/etc/credstore.encrypted/sui-network.key').exists():
+            raise ValueError('legacy custody is partial; restore the original receipt before migrating')
+        self.cancel_and_stop(expected, 'account-migration', installed_only=True)
+        self.quiet_uid(record['service_uid'])
+        # Atomic protocol publication rejects old managed helpers, and preserves
+        # the original reservation if the secondary receipt publication fails.
+        self.write('/etc/sui/contract.json', dict(expected, authority_protocol=2, original_account=record), mode=0o640)
+        self.save(record)
+        return {'uid': record['service_uid'], 'gid': record['service_gid']}
 
     def contract(self, expected, initial=False):
-        path = self.path('/etc/sui/contract.json')
+        self.namespaces()
+        path = self.protected('/etc/sui/contract.json', missing=True)
         if not path.exists():
+            if not self.path('/etc/sui/original-account.json').exists() and self.path('/etc/sui/release-history').exists():
+                raise ValueError('original Sui authority is missing beside retained source history')
+            if initial and not self.path('/etc/sui/original-account.json').exists():
+                self.fresh_home()
             if initial and not any(self.path(p).exists() for p in [
                 '/etc/systemd/system/sui-node.service', '/etc/sui/node.yaml',
                 '/etc/credstore.encrypted/sui-network.key', '/etc/sui/identity-established',
@@ -36,7 +442,12 @@ class Control:
             ]):
                 return
             raise ValueError('Sui host ownership is absent; no operation was authorized')
-        if json.loads(path.read_text()) != expected:
+        stored = json.loads(path.read_text())
+        protocol = stored.pop('authority_protocol', None)
+        embedded = stored.pop('original_account', None)
+        if embedded is not None and (not isinstance(embedded, dict) or embedded.get('contract') != expected or embedded.get('protocol') != 2):
+            raise ValueError('atomic original-account reservation is malformed')
+        if stored != expected or protocol not in (None, 2, 3):
             raise ValueError('Sui network, role or genesis differs; no operation was authorized')
 
     def fingerprint(self):
@@ -54,9 +465,35 @@ class Control:
         path = self.path('/etc/erpc/sui/' + filename)
         return hashlib.sha256(path.read_bytes()).hexdigest()
 
+    def release(self, expected):
+        pointer = self.path('/opt/sui/current')
+        info = pointer.lstat()
+        if not stat.S_ISLNK(info.st_mode) or info.st_uid != self.owner:
+            raise ValueError('native release pointer is not the managed root-owned link')
+        target = os.readlink(pointer)
+        if not re.fullmatch('/opt/sui/' + re.escape(expected['network']) + r'-v[0-9]+[.][0-9]+[.][0-9]+', target):
+            raise ValueError('native release pointer is outside the qualified network namespace')
+        self.protected(target, directory=True)
+        for name in ('sui-node', 'sui-tool', 'sui'):
+            self.protected(target + '/' + name)
+
+    def credential_condition(self, expected, startup=True):
+        self.runtime(expected)
+        if startup: self.retained_quiet(expected)
+        record = self.account(expected)
+        def value(name):
+            return self.command('systemctl', 'show', '--property=' + name, '--value', 'sui-node.service').stdout.decode().strip()
+        if (value('User') != str(record['service_uid']) or value('Group') != str(record['service_gid'])
+                or value('DynamicUser') != 'no' or value('SupplementaryGroups') != ''):
+            raise ValueError('loaded Sui credential recipient differs from its original account')
+
     def runtime(self, expected, confirming=False):
         self.contract(expected)
-        if not confirming and self.path('/etc/sui/validator-preparing').exists():
+        self.platform()
+        self.account(expected)
+        self.release(expected)
+        release_authority.runtime(self, expected)
+        if not confirming and any(self.path('/etc/sui/' + name).exists() for name in ('validator-preparing', 'stopped', 'deploy-preparing')):
             raise ValueError('validator credential preparation has not been confirmed')
         record = json.loads(self.path('/etc/erpc/sui/confirmed.json').read_text())
         if record['contract'] != expected or record['file'] != self.firewall_record('firewall.nft'):
@@ -78,14 +515,15 @@ class Control:
         marker = self.path('/run/erpc-sui-firewall.armed')
         if marker.exists() and not re.fullmatch('[a-f0-9]{32}', marker.read_text()):
             raise ValueError('wait for the legacy firewall rollback before upgrading this host')
-        pending = self.path('/etc/erpc/sui/latest-intent.pending')
-        pending.write_text(intent)
-        os.replace(pending, self.path('/etc/erpc/sui/latest-intent'))
+        self.write_text('/etc/sui/deploy-preparing', intent)
+        self.write_text('/etc/erpc/sui/latest-intent', intent)
+        self.stop_installed()
+        self.retained_quiet(expected)
 
     def invalidate(self, reason):
-        current = self.path('/etc/erpc/sui/latest-intent')
-        if current.exists():
-            current.write_text(reason + ':' + current.read_text())
+        current = self.protected('/etc/erpc/sui/latest-intent', missing=True)
+        previous = current.read_text() if current.exists() else ''
+        self.write_text('/etc/erpc/sui/latest-intent', reason + ':' + previous)
 
     @staticmethod
     def timer(intent):
@@ -111,8 +549,7 @@ class Control:
             # Arguments are copied into the transient unit. A later deployment
             # cannot rewrite the callback's identity through a shared wrapper.
             self.command('systemd-run', '--quiet', '--collect', '--unit=' + unit,
-                         '--on-active=120', '/usr/bin/python3',
-                         '/usr/local/lib/erpc/erpc-sui-control.py', 'rollback',
+                         '--on-active=120', *self.checked('control'), 'rollback',
                          expected['network'], expected['role'], expected['genesis'], intent)
         except subprocess.SubprocessError:
             self.rollback(expected, intent)
@@ -124,8 +561,9 @@ class Control:
             raise ValueError('credential preparation requires validator ownership')
         # Persistent across reboot and user prompts; cleared only after the
         # final deployment confirms both its firewall and credential receipt.
-        self.path('/etc/sui/validator-preparing').touch()
-        self.invalidate('key-preparation')
+        self.cancel_and_stop(expected, 'key-preparation', validator_preparation=True)
+
+    def stop_installed(self):
         present = []
         for unit in ('sui-bootstrap', 'sui-node'):
             state = self.command('systemctl', 'show', '--property=LoadState', '--value', unit, check=False)
@@ -136,7 +574,14 @@ class Control:
                 raise ValueError('cannot verify service state before credential preparation')
             present.append(unit)
         if present:
-            self.command('systemctl', 'stop', *present)
+            failure = None
+            for verb in ('stop', 'disable'):
+                try:
+                    self.command('systemctl', verb, *present)
+                except Exception as error:
+                    failure = error
+            if failure is not None:
+                raise ValueError('Sui owned stop or disable failed; filtering and data retained') from None
 
     def capture(self, expected, intent):
         self.contract(expected)
@@ -167,7 +612,8 @@ class Control:
         if json.loads(self.path('/etc/erpc/sui/confirmed.json').read_text()).get('intent') != intent:
             raise ValueError('this deployment was not confirmed; its candidate was rolled back')
         self.runtime(expected, confirming=True)
-        self.path('/etc/sui/validator-preparing').unlink(missing_ok=True)
+        for name in ('validator-preparing', 'stopped', 'deploy-preparing'):
+            self.remove('/etc/sui/' + name)
         # Enable only after a fresh connection proved the candidate is reachable.
         self.command('systemctl', 'daemon-reload')
         self.command('systemctl', 'enable', 'erpc-sui-firewall', 'sui-node', 'sui-bootstrap')
@@ -181,7 +627,36 @@ class Control:
         self.runtime(expected)
 
     def stop(self):
-        self.command('systemctl', 'stop', 'sui-bootstrap', 'sui-node')
+        self.stop_installed()
+
+    def cancel_and_stop(self, expected, reason, validator_preparation=False, installed_only=False):
+        # Ownership failure never authorizes shutdown. Once scope is verified,
+        # storage failure must not prevent attempting the owned shutdown.
+        self.contract(expected)
+        failure = None
+        try:
+            self.write_text('/etc/sui/stopped', reason)
+        except Exception as error:
+            failure = error
+        if validator_preparation:
+            try:
+                self.write_text('/etc/sui/validator-preparing', reason)
+            except Exception as error:
+                failure = error
+        try:
+            self.invalidate(reason)
+        except Exception as error:
+            if failure is None:
+                failure = error
+        try:
+            self.stop_installed() if validator_preparation or installed_only else self.stop()
+            self.retained_quiet(expected)
+        except Exception:
+            if failure is not None:
+                raise ValueError('Sui cancellation persistence and owned shutdown both failed') from None
+            raise
+        if failure is not None:
+            raise ValueError('Sui owned shutdown attempted but cancellation could not be persisted; repair storage') from None
 
     def rollback(self, expected, intent):
         self.contract(expected)
@@ -193,8 +668,7 @@ class Control:
         if record['intent'] != intent or record['contract'] != expected:
             raise ValueError('pending rollback ownership differs')
         # Stop every possible listener before removing/restoring filtering.
-        self.invalidate('rolled-back')
-        self.stop()
+        self.cancel_and_stop(expected, 'rolled-back')
         previous = self.path('/etc/erpc/sui/previous.nft')
         if previous.exists() and previous.stat().st_size:
             restored = self.command('nft', '-f', str(previous), check=False)
@@ -209,28 +683,39 @@ class Control:
     def service(self, action, expected):
         self.contract(expected)
         if action == 'stop':
-            self.invalidate('stopped')
-            self.stop()
+            self.cancel_and_stop(expected, 'stopped')
             return
-        self.runtime(expected)
+        if any(self.path('/etc/sui/' + name).exists() for name in ('validator-preparing', 'deploy-preparing')):
+            raise ValueError('Sui preparation must finish before an explicit start')
+        self.runtime(expected, confirming=True)
+        self.invalidate('manual-start')
+        self.remove('/etc/sui/stopped')
         if self.path('/var/lib/sui/.bootstrap-complete').exists():
+            self.credential_condition(expected, startup=False)
             restart = self.path('/etc/sui/restart-required')
             operation = 'restart' if action == 'restart' or restart.exists() else 'start'
+            self.command('systemctl', 'reset-failed', 'sui-node')
             self.command('systemctl', operation, '--no-block', 'sui-node')
-            restart.unlink(missing_ok=True)
+            self.remove('/etc/sui/restart-required')
+            result = self.command('systemctl', 'show', '--property=Result', '--value', 'sui-node.service').stdout.decode().strip()
+            condition = self.command('systemctl', 'show', '--property=ExecCondition', '--value', 'sui-node.service').stdout.decode().strip()
+            if result == 'exec-condition' or result != 'success' and any(int(code) != 0 for code in re.findall(r'\bstatus=([0-9]+)', condition)):
+                raise ValueError('Sui credential condition failed or skipped the service')
         else:
             self.command('systemctl', 'start', '--no-block', 'sui-bootstrap')
 
     def recover(self, expected):
         self.contract(expected)
+        self.account(expected)
+        release_authority.recovery_allowed(self, expected)
         marker = self.path('/var/lib/sui/.bootstrap-complete')
         if marker.exists():
             raise ValueError('completed bootstrap cannot be discarded by recovery')
         home = self.path('/var/lib/sui')
         if shutil.disk_usage(home).free < 3_500_000_000_000:
             raise ValueError('recovery retains old data and needs 3.5 TB additional free space')
-        self.invalidate('recovery')
-        self.stop()
+        self.cancel_and_stop(expected, 'recovery')
+        release_authority.recovery_allowed(self, expected)
         if marker.exists():
             raise ValueError('bootstrap completed while stopping; data retained, use start')
         db = home / 'db'
@@ -238,13 +723,56 @@ class Control:
             quarantine = home / ('db.quarantine.' + str(time.time_ns()))
             os.rename(db, quarantine)
             print('quarantined=' + quarantine.name)
+        # Also replay this barrier after a rename became visible before failure.
+        self.sync(home)
         # The service user creates a new db on the next verified bootstrap.
 
+    def completion_marker(self, expected, create=False):
+        record = self.account(expected)
+        self.retained_quiet(expected)
+        home = self.path('/var/lib/sui')
+        directory = os.open(home, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        descriptors = [directory]
+        try:
+            parent = directory
+            for name in ('db', 'live'):
+                child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+                descriptors.append(child)
+                info = os.fstat(child)
+                if info.st_uid != record['service_uid'] or info.st_mode & 0o022:
+                    raise ValueError('original Sui database directory ownership differs')
+                parent = child
+            if not os.listdir(parent):
+                raise ValueError('an empty database cannot establish completed Sui bootstrap')
+            flags = os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK
+            marker = os.open('.bootstrap-complete', flags | (os.O_CREAT if create else 0), 0o600, dir_fd=directory)
+            descriptors.append(marker)
+            info = os.fstat(marker)
+            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size != 0
+                    or info.st_uid not in (self.owner, record['service_uid']) or info.st_mode & 0o022):
+                raise ValueError('Sui completion marker is not its original bounded regular file')
+            os.fsync(marker)
+        finally:
+            for descriptor in reversed(descriptors): os.close(descriptor)
+        self.sync(home)
+
+    def complete_bootstrap(self, expected):
+        # Called only by the managed unit after strict native verification exits zero.
+        self.runtime(expected)
+        if release_authority.selected(self, expected) not in release_authority.claims(self, expected):
+            raise ValueError('verified bootstrap has no original source-opening record')
+        self.completion_marker(expected, create=True)
+        release_authority.mark_native(self, expected)
+
     def dispatch(self, action, expected, intent=None):
-        if action in ('guard-init', 'guard', 'runtime', 'capture', 'begin-intent', 'guard-metadata', 'arm', 'prepare-validator'):
+        if action in ('prepare-account', 'migrate-account', 'account', 'publication', 'guard-account', 'credential-condition', 'guard-init', 'guard', 'runtime', 'open-release', 'open-bootstrap', 'complete-bootstrap', 'recover-owned', 'check-source', 'qualify-release', 'migrate-source-history', 'capture', 'begin-intent', 'guard-metadata', 'arm', 'prepare-validator', 'stop-owned'):
             # Ansible holds /opt/erpc's run lock for these mutation phases.
-            # Runtime is the separate read-only systemd precondition.
-            if action == 'guard-init': self.contract(expected, initial=True)
+            # Native opening guards use their own short source-history lock before execution.
+            if action == 'prepare-account':
+                print(json.dumps(self.prepare_account(expected)))
+            elif action == 'migrate-account':
+                print(json.dumps(self.migrate_account(expected)))
+            elif action == 'guard-init': self.contract(expected, initial=True)
             elif action == 'guard': self.contract(expected)
             elif action == 'guard-metadata':
                 self.contract(expected, initial=True)
@@ -252,10 +780,49 @@ class Control:
                 previous = self.path('/etc/sui/validator.json')
                 if expected['role'] != 'validator' or (previous.exists() and json.loads(previous.read_text()) != supplied):
                     raise ValueError('validator metadata is immutable on this host')
-            elif action == 'runtime': self.runtime(expected)
+            elif action == 'account':
+                record = self.account(expected)
+                print(json.dumps({'uid': record['service_uid'], 'gid': record['service_gid']}))
+            elif action == 'guard-account': self.account(expected)
+            elif action == 'publication':
+                self.account(expected)
+                source = pathlib.Path(__file__).absolute().parent
+                for name in ('control', 'status', 'identity', 'validator', 'account', 'release'):
+                    filename = 'erpc-sui-' + name + '.py'
+                    if self.protected('/usr/local/lib/erpc/sui/' + filename).read_bytes() != (source / (filename + '.j2')).read_bytes():
+                        raise ValueError('published Sui helper differs from the sealed carried source')
+                # Old managed callbacks must not reinterpret obsolete helpers.
+                # Only known public code is removed after complete publication;
+                # data, encrypted custody and lifecycle records are retained.
+                for name in ('control', 'status', 'identity', 'validator'):
+                    self.remove('/usr/local/lib/erpc/erpc-sui-' + name + '.py')
+            elif action == 'credential-condition': self.credential_condition(expected)
+            elif action in ('runtime', 'open-release', 'open-bootstrap'):
+                self.runtime(expected)
+                self.retained_quiet(expected)
+                # Retained pre-upgrade units used the runtime action. They must
+                # also claim before DB execution while a unit reload is pending.
+                release_authority.runtime(self, expected, opening=True, native=action != 'open-bootstrap')
+            elif action == 'recover-owned': self.recover(expected)
+            elif action == 'complete-bootstrap': self.complete_bootstrap(expected)
+            elif action in ('check-source', 'qualify-release', 'migrate-source-history'):
+                self.account(expected)
+                raw = sys.stdin.buffer.read(16385)
+                if len(raw) > 16384:
+                    raise ValueError('Sui source evidence is oversized')
+                supplied = json.loads(raw)
+                if action == 'check-source':
+                    if json.loads(self.protected('/etc/sui/contract.json').read_text()).get('authority_protocol') != 3:
+                        raise ValueError('explicit original source history migration is required')
+                    release_authority.permitted(self, expected, supplied)
+                elif action == 'qualify-release':
+                    release_authority.qualify_artifact(self, expected, supplied)
+                else:
+                    print(json.dumps(release_authority.migrate(self, expected, supplied)))
             elif action == 'begin-intent': self.begin(expected, intent)
             elif action == 'arm': self.arm(expected, intent)
             elif action == 'prepare-validator': self.prepare_validator(expected)
+            elif action == 'stop-owned': self.cancel_and_stop(expected, 'destroyed', installed_only=True)
             else: self.capture(expected, intent)
             return
         lock = os.open(self.path('/opt/erpc'), os.O_RDONLY)
@@ -272,14 +839,17 @@ class Control:
                     raise ValueError('startup intent is not the confirmed deployment')
                 self.service('start', expected)
             elif action in ('import-validator', 'restore-validator', 'check-validator', 'validator-status'):
+                self.account(expected)
+                self.release(expected)
                 if expected['role'] != 'validator':
                     raise ValueError('validator operation requires validator ownership')
                 operation = {'import-validator': 'import', 'restore-validator': 'restore', 'check-validator': 'check', 'validator-status': 'status'}[action]
                 if operation == 'restore':
                     self.service('stop', expected)
-                result = self.run(['/usr/local/lib/erpc/erpc-sui-validator.py', operation],
+                result = self.run([*self.checked('validator'), operation],
                                   stdin=sys.stdin.buffer if operation in ('import', 'restore') else subprocess.DEVNULL,
-                                  check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                                  check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                  env={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LC_ALL': 'C'})
                 print(result.stdout.decode().strip())
             elif action in ('start', 'stop', 'restart'): self.service(action, expected)
             else: raise ValueError('unknown Sui operation')
@@ -288,6 +858,9 @@ class Control:
 
 
 def main():
+    if os.name == 'posix':
+        import resource
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     os.umask(0o077)
     if len(sys.argv) not in (5, 6):
         raise ValueError('expected operation, network, role and genesis')
@@ -298,7 +871,8 @@ def main():
     if network not in ('mainnet', 'testnet') or role not in ('fullnode', 'validator') or len(genesis) != 64 or any(c not in '0123456789abcdef' for c in genesis):
         raise ValueError('invalid expected host contract')
     Control().dispatch(operation, {'network': network, 'role': role, 'genesis': genesis}, intent)
-    print('sui_operation=' + operation)
+    if operation not in ('prepare-account', 'migrate-account', 'account'):
+        print('sui_operation=' + operation)
 
 
 if __name__ == '__main__':
@@ -306,4 +880,4 @@ if __name__ == '__main__':
         main()
     except (ValueError, KeyError, OSError, subprocess.SubprocessError):
         print('Sui operation refused: host contract, runtime firewall or recovery prerequisite failed', file=sys.stderr)
-        raise SystemExit(1)
+        raise SystemExit(255 if len(sys.argv) > 1 and sys.argv[1] == 'credential-condition' else 1)

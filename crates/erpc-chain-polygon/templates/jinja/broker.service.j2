@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+[Unit]
+Description=Polygon original dedicated native checkpoint queue
+RequiresMountsFor=/var/lib/polygon
+Requires=docker.service erpc-polygon-firewall.service
+After=docker.service erpc-polygon-firewall.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+User=0
+Group={{ polygon_runtime_accounts['broker'].gid }}
+SupplementaryGroups=
+DynamicUser=no
+UMask=0077
+ExecCondition={{ polygon_credential_condition }} broker-condition '{{ polygon_contract | to_json }}' '{{ polygon_broker_token | to_json }}'
+ExecStart={{ polygon_service_guard }} broker-start '{{ polygon_contract | to_json }}' '{{ polygon_broker_token | to_json }}'
+ExecStop={{ polygon_service_guard }} broker-stop '{{ polygon_contract | to_json }}' '{{ polygon_broker_token | to_json }}'
+RuntimeDirectory=erpc-polygon-broker
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=no
+Restart=on-failure
+RestartSec=30
+TimeoutStartSec=120
+TimeoutStopSec=180
+KillMode=control-group
+SendSIGKILL=no
+LimitCORE=0
+LimitNOFILE=65536
+TasksMax=128
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

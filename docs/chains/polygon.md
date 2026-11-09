@@ -9,6 +9,25 @@ Researched 2026-10-26 against **Bor v2.10.3** and **Heimdall v2 v0.12.2**.
 All operational pages below were read on 2026-10-26. This file covers Polygon
 PoS, not Polygon zkEVM or a CDK chain. [S1], [S2], [S3]
 
+## erpc implementation
+
+RPC/sentry operations now cover both Bor and Heimdall v2 on Mainnet and Amoy,
+with all twelve common verbs, persistent identities, separate synchronization
+status, authenticated native packages, immutable official genesis and retained
+history recovery. [Operations and verification limits](../../crates/erpc-chain-polygon/templates/README.md)
+describe the implementation. Live-host acceptance remains deferred. Validator
+admission and signing are not implemented by the RPC role. The separate
+[validator lifecycle](../polygon-validator.md) connects original 1Password-backed
+hot custody, an observing first deployment, current admission validation and
+explicit native checkpoint activation. Staking/registration/funding stay external;
+real-host and financial acceptance remain deferred.
+
+The source-verified package workflow clarifies the research-era verification
+gap below: public `.sig`/`.pem` companions are Sigstore keyless artifacts. The
+implementation checks workflow identity, tag, commit and issuer; it does not
+interpret them as GPG signatures. [Bor workflow](https://github.com/0xPolygon/bor/blob/a16f123d9b4f41a552a3a98d93a0340430838576/.github/workflows/packager_deb.yml),
+[Heimdall workflow](https://github.com/0xPolygon/heimdall-v2/blob/ced0710a3f6e269b8d5e996eb7d2b740fd9f80c5/.github/workflows/packager_deb.yml).
+
 ## Networks
 
 Polygon PoS mainnet chain ID is **137**, with Ethereum as parent; Amoy testnet

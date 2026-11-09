@@ -29,14 +29,14 @@ fn about(verb: &Verb) -> &'static str {
         "stop" => "Stop Lighthouse, then Reth",
         "restart" => "Restart both layers in order, or one",
         "update" => {
-            "Move the node to another Reth and Lighthouse release pair, rolling back on failure"
+            "Move the original node to a qualified release pair; preserve fenced data on failure"
         }
         "update-config" => {
-            "Write the units and the firewall again from the inventory, restarting only on a change"
+            "Apply inventory access through an original guarded cutover and restart the pair"
         }
         "plan" => "Show what deploy, update or update-config would change, without changing it",
         "destroy" => {
-            "Stop and remove the services and the firewall; the chain data only with --purge-data"
+            "Retire the original node and fence startup while retaining native data, JWT and ownership"
         }
         _ => verb.about,
     }
@@ -80,6 +80,17 @@ pub(crate) fn args(sub: Command, verb: &Verb) -> Command {
 /// `init`'s own flags: where the server is, the vault, and the node's type.
 fn init_args() -> Vec<Arg> {
     vec![
+        Arg::new("migrate-authority").long("migrate-authority").action(ArgAction::SetTrue)
+            .requires_all(["original-passwd","original-group","original-machine-id","original-client-record"])
+            .help("Migrate a stopped legacy host using independently retained original numeric account records; retain data/JWT and do not start it"),
+        Arg::new("original-passwd").long("original-passwd").value_parser(value_parser!(std::path::PathBuf)).requires("migrate-authority")
+            .help("Original host backup's passwd file; a current NSS export is not evidence of original identity"),
+        Arg::new("original-group").long("original-group").value_parser(value_parser!(std::path::PathBuf)).requires("migrate-authority")
+            .help("Original host backup's group file"),
+        Arg::new("original-machine-id").long("original-machine-id").value_parser(value_parser!(std::path::PathBuf)).requires("migrate-authority")
+            .help("Original host backup's machine-id file"),
+        Arg::new("original-client-record").long("original-client-record").value_parser(value_parser!(std::path::PathBuf)).requires("migrate-authority")
+            .help("Independently retained highest-opened Reth/Lighthouse version and commit JSON; never inferred from current inventory"),
         Arg::new("host").long("host").help("The server's address"),
         Arg::new("user")
             .long("user")
@@ -145,8 +156,22 @@ fn verb_args(verb: &str) -> Vec<Arg> {
             args.extend(allow_lists());
             args
         }
-        "update" => versions().into(),
-        "update-config" => allow_lists().into(),
+        "deploy" | "update" | "update-config" => {
+            let mut args=vec![Arg::new("recover-cutover").long("recover-cutover").value_name("ORIGINAL_INTENT")
+                .help("Stop and archive an interrupted original deployment, preserving identity/data; do not restart")];
+            if verb == "deploy" {
+                args.push(Arg::new("upgrade-volume-authority").long("upgrade-volume-authority")
+                    .value_parser(value_parser!(std::path::PathBuf)).conflicts_with("recover-cutover")
+                    .help("Fence and stop the original node, bind an independently retained original filesystem UUID record, and publish current helpers; no deploy/start"));
+            }
+            if verb == "update" {
+                args.extend(versions());
+            }
+            if verb == "update-config" {
+                args.extend(allow_lists());
+            }
+            args
+        }
         "logs" => vec![
             layer(),
             Arg::new("lines")
@@ -177,12 +202,12 @@ fn verb_args(verb: &str) -> Vec<Arg> {
             Arg::new("purge-data")
                 .long("purge-data")
                 .action(ArgAction::SetTrue)
-                .help("Also delete the chain data (the 1Password item is kept)"),
+                .help("Unsupported for original-authority retirement; data and identity are retained"),
             Arg::new("forget")
                 .long("forget")
                 .action(ArgAction::SetTrue)
                 .requires("purge-data")
-                .help("With --purge-data: then remove the node's 1Password item"),
+                .help("Unsupported for original-authority retirement; the original inventory binding is retained"),
         ],
         _ => Vec::new(),
     }
@@ -215,6 +240,7 @@ fn ops(
             &layer,
             sub.get_one::<u32>("lines").copied().unwrap_or(100),
             sub.get_flag("follow"),
+            json,
         ),
         other => {
             let action = match other {
@@ -224,6 +250,43 @@ fn ops(
             };
             crate::eth_ops::service(args, action, &layer, yes, json)
         }
+    }
+}
+
+fn init_request(
+    sub: &ArgMatches,
+    network: &str,
+    name: &str,
+    login: crate::eth_rpc::Login,
+    yes: bool,
+) -> crate::eth_init::Args {
+    crate::eth_init::Args {
+        network: network.to_owned(),
+        name: name.to_owned(),
+        host: one(sub, "host"),
+        user: one(sub, "user").unwrap_or_default(),
+        port: sub.get_one::<u16>("port").copied().unwrap_or(22),
+        fingerprint: one(sub, "fingerprint"),
+        vault: one(sub, "vault"),
+        rpc_type: one(sub, "type"),
+        reth_version: one(sub, "reth-version"),
+        lighthouse_version: one(sub, "lighthouse-version"),
+        rpc_allow: many(sub, "rpc-allow"),
+        management_allow: many(sub, "management-allow"),
+        monitoring_allow: many(sub, "monitoring-allow"),
+        login,
+        yes,
+        migrate_authority: sub.get_flag("migrate-authority"),
+        original_passwd: sub
+            .get_one::<std::path::PathBuf>("original-passwd")
+            .cloned(),
+        original_group: sub.get_one::<std::path::PathBuf>("original-group").cloned(),
+        original_client_record: sub
+            .get_one::<std::path::PathBuf>("original-client-record")
+            .cloned(),
+        original_machine_id: sub
+            .get_one::<std::path::PathBuf>("original-machine-id")
+            .cloned(),
     }
 }
 
@@ -264,23 +327,7 @@ pub(crate) async fn run(
     };
     match verb.name {
         "init" => {
-            let args = crate::eth_init::Args {
-                network: network.to_owned(),
-                name: name.to_owned(),
-                host: one(sub, "host"),
-                user: one(sub, "user").unwrap_or_default(),
-                port: sub.get_one::<u16>("port").copied().unwrap_or(22),
-                fingerprint: one(sub, "fingerprint"),
-                vault: one(sub, "vault"),
-                rpc_type: one(sub, "type"),
-                reth_version: one(sub, "reth-version"),
-                lighthouse_version: one(sub, "lighthouse-version"),
-                rpc_allow: many(sub, "rpc-allow"),
-                management_allow: many(sub, "management-allow"),
-                monitoring_allow: many(sub, "monitoring-allow"),
-                login,
-                yes,
-            };
+            let args = init_request(sub, network, name, login, yes);
             crate::eth_init::run(args, json).await
         }
         "status" | "logs" | "start" | "stop" | "restart" => {
@@ -315,6 +362,12 @@ pub(crate) async fn run(
                     .copied()
                     .unwrap_or(false),
                 change: one(sub, "change").unwrap_or_else(|| "deploy".to_owned()),
+                recover_cutover: one(sub, "recover-cutover"),
+                upgrade_volume_authority: sub
+                    .try_get_one::<std::path::PathBuf>("upgrade-volume-authority")
+                    .ok()
+                    .flatten()
+                    .cloned(),
             };
             match verb.name {
                 "deploy" => crate::eth_deploy::deploy(&args, json),
@@ -331,6 +384,79 @@ pub(crate) async fn run(
 #[cfg(test)]
 mod tests {
     use erpc_core::chain::{Chain, Role};
+
+    #[test]
+    fn legacy_migration_requires_explicit_historical_source_records() {
+        let tree = crate::tree::command(Role::Rpc, Chain::Eth);
+        let mut args = vec![
+            "rpc",
+            "init",
+            "--migrate-authority",
+            "--original-passwd",
+            "inert-passwd",
+            "--original-group",
+            "inert-group",
+            "--original-machine-id",
+            "inert-machine",
+        ];
+        assert!(tree.clone().try_get_matches_from(args.clone()).is_err());
+        args.extend(["--original-client-record", "inert-client-record"]);
+        let parsed = tree
+            .try_get_matches_from(args)
+            .expect("complete original evidence parses without external tools");
+        let (_, sub) = parsed.subcommand().unwrap();
+        assert_eq!(
+            sub.get_one::<std::path::PathBuf>("original-client-record")
+                .unwrap(),
+            &std::path::PathBuf::from("inert-client-record")
+        );
+    }
+    #[test]
+    fn volume_upgrade_is_an_explicit_deploy_only_recovery_action() {
+        let tree = crate::tree::command(Role::Rpc, Chain::Eth);
+        let parsed = tree
+            .clone()
+            .try_get_matches_from([
+                "erpc rpc",
+                "deploy",
+                "-n",
+                "mainnet",
+                "--name",
+                "eth1",
+                "--upgrade-volume-authority",
+                "original-volume.json",
+            ])
+            .unwrap();
+        let sub = parsed.subcommand().unwrap().1;
+        assert_eq!(
+            sub.get_one::<std::path::PathBuf>("upgrade-volume-authority")
+                .unwrap(),
+            &std::path::PathBuf::from("original-volume.json")
+        );
+        for verb in ["start", "update", "update-config", "destroy", "init"] {
+            assert!(
+                tree.clone()
+                    .try_get_matches_from([
+                        "erpc rpc",
+                        verb,
+                        "--upgrade-volume-authority",
+                        "original-volume.json"
+                    ])
+                    .is_err()
+            );
+        }
+        assert!(
+            tree.try_get_matches_from([
+                "erpc rpc",
+                "deploy",
+                "--upgrade-volume-authority",
+                "original-volume.json",
+                "--recover-cutover",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ])
+            .is_err()
+        );
+    }
 
     #[test]
     fn every_verb_is_there_with_its_flags() {

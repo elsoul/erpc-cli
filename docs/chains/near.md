@@ -38,6 +38,19 @@ Public networks use string chain IDs `mainnet` and `testnet`. The official initi
 - Changing a validator key while that key is expected by the active epoch causes signature rejection and loss of validator position. [S18]
 - Testnet validator storage recommendations contain inconsistent minimum/recommended values; do not derive a production size from the smaller row without resolving that upstream inconsistency. [S20]
 
+## ERPC implementation
+
+The dedicated RPC follower implements all twelve lifecycle verbs with qualified
+Mainnet/Testnet image and source pins, all-shard tracking, five-epoch retention,
+native peer identity preserved under systemd encryption, and operation-bound
+firewall activation. RPC and separate monitoring listeners default to loopback.
+The separately reserved validator role implements the same twelve lifecycle
+verbs with original dedicated-key custody and external staking-pool registration.
+See [validator operations](../near-validator.md) for the reviewed factory profile,
+key restoration, dynamic membership and owner-signing boundaries. See
+[the operations guide](../near-rpc.md) for release provenance, interruption and
+recovery boundaries, and the deferred real-host acceptance checklist.
+
 ## Sources
 
 [S1]: https://github.com/near/nearcore/releases/tag/2.13.4 "Stable release, timestamp and urgent upgrade classification"

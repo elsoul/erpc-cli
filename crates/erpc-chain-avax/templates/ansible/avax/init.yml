@@ -4,6 +4,8 @@
 - name: Prepare an Avalanche host without formatting any disks
   hosts: all
   become: true
+  environment:
+    PATH: /usr/sbin:/usr/bin:/sbin:/bin
   gather_facts: true
   any_errors_fatal: true
   vars_files: [vars.yml]
@@ -21,45 +23,36 @@
           - ansible_memtotal_mb >= 15000
           - ansible_processor_vcpus >= 8
         quiet: true
+    - name: Reserve original account or explicitly qualify the legacy account
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ avax_jinja }}/control.py"]
+        stdin: "{{ {'action': ('migrate' if avax_migrate_account else 'prepare'), 'contract': avax_contract_value, 'expected_hashes': avax_expected_identity} | to_json }}"
+      register: avax_original_account
+    - name: Use the verified original numeric account
+      ansible.builtin.set_fact:
+        avax_runtime_account: "{{ avax_original_account.stdout | from_json }}"
+    - name: Refuse taking over an active or overridden distribution nginx service
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ avax_jinja }}/control.py"]
+        stdin: "{{ {'action':'package-guard','contract':avax_contract_value} | to_json }}"
+      changed_when: false
+    - name: Prevent the distribution default listener now and on reboot
+      ansible.builtin.systemd_service:
+        name: nginx.service
+        masked: true
     - name: Install host dependencies
       ansible.builtin.apt:
         name: [ca-certificates, curl, gnupg, nftables, nginx-core, python3, openssl]
         state: present
         update_cache: true
-    - name: Create an unprivileged node user
-      ansible.builtin.user:
-        name: avalanchego
-        system: true
-        shell: /usr/sbin/nologin
-        create_home: false
-    - name: Create persistent and configuration directories
+        policy_rc_d: 101
+    - name: Create only protected public configuration directories
       ansible.builtin.file:
-        path: "{{ item.path }}"
+        path: "{{ item }}"
         state: directory
-        owner: "{{ item.owner }}"
-        group: "{{ item.owner }}"
-        mode: "{{ item.mode }}"
-      loop:
-        - {path: /var/lib/avalanchego, owner: avalanchego, mode: '0700'}
-        - {path: /var/lib/avalanchego/staking, owner: avalanchego, mode: '0700'}
-        - {path: /etc/avalanchego, owner: root, mode: '0755'}
-        - {path: /etc/avalanchego/chains/C, owner: root, mode: '0755'}
-        - {path: /opt/avalanchego, owner: root, mode: '0755'}
-        - {path: /etc/erpc/avax, owner: root, mode: '0700'}
-        - {path: /usr/local/lib/erpc, owner: root, mode: '0755'}
-    - name: Refuse adoption of an unmanaged database or identity
-      ansible.builtin.shell:
-        cmd: |
-          set -eu
-          test ! -e /var/lib/avalanchego/db
-          test -z "$(find /var/lib/avalanchego/staking -mindepth 1 -print -quit)"
-        executable: /bin/bash
-      changed_when: false
-      when: not avax_contract.stat.exists
-    - name: Persist the immutable contract
-      ansible.builtin.copy:
-        dest: /etc/avalanchego/contract.json
-        content: "{{ {'network': avax_network, 'type': avax_type, 'validator': avax_validator} | to_json }}"
         owner: root
         group: root
-        mode: '0644'
+        mode: '0755'
+      loop: [/etc/avalanchego/chains/C, /opt/avalanchego, /etc/erpc/avax]
+    - name: Publish the authenticated carried helpers
+      ansible.builtin.import_tasks: tasks/publication.yml

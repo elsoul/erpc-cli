@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Activate only the prepared NEAR node and this caller's confirmed policy
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Require confirmed operation before activation
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/../rpc-firewall.py", near, require-confirmed, "{{ erpc_fw_confirmed_run }}", "{{ erpc_fw_confirmed_bundle }}"]
+      changed_when: false
+    - name: Match prepared policy and consume the receipt before service startup
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/control.py", play-activate, "{{ near_contract }}"]
+        stdin: "{{ {'policy_sha256':near_prepare.policy_sha256,'intent':near_prepare.intent,'firewall':{'run':erpc_fw_confirmed_run,'bundle':erpc_fw_confirmed_bundle}} | to_json }}"
+      changed_when: true

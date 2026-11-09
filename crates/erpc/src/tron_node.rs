@@ -216,6 +216,9 @@ fn variables(
         &node.archive_sha256,
     )?;
     ownership(node, net)?;
+    if facts.ssh_port == 0 {
+        return Err("cannot establish the SSH server port for TRON ingress".into());
+    }
     if node.role == "fullnode"
         && (!node.candidate_url.is_empty()
             || node.credential_references.iter().any(|s| !s.is_empty()))
@@ -239,13 +242,15 @@ fn variables(
     let artifact = net.artifact(&node.architecture)?;
     Ok(json!({"all":{"hosts":{node.name.clone():{
         "ansible_connection":"local", "tron_network":net.name,"tron_role":node.role,"tron_architecture":node.architecture,
+        "tron_service_guard":erpc_ssh::python::systemd_command("/usr/local/lib/erpc/tron/control.py")?,
+        "tron_firewall_guard":erpc_ssh::python::systemd_command("/usr/local/lib/erpc/rpc-firewall.py")?,
         "tron_genesis":net.genesis,"tron_contract":contract(node,net),"tron_intent":intent.text(),"tron_release_target":release_target(node,net),
         "tron_owner":node.owner,"tron_signer":node.signer,"tron_inventory_owner":node.id,"tron_tag":net.tag,"tron_client_version":net.version,
         "tron_jar_url":artifact.url,"tron_jar_sha256":artifact.sha256,"tron_signature_url":artifact.signature_url,
         "tron_signature_sha256":artifact.signature_sha256,"tron_config_url":net.config_url(),"tron_config_sha256":net.config_sha256,
         "tron_primary_fingerprint":net.primary_fingerprint,"tron_signing_fingerprint":net.signing_fingerprint,
         "tron_java":artifact.java,"tron_javac":artifact.javac,"tron_java_major":artifact.java_major,"tron_java_package":artifact.java_package,
-        "tron_database":artifact.database,"tron_ssh_port":node.ssh_port,"tron_management_allow":management,
+        "tron_database":artifact.database,"tron_ssh_port":facts.ssh_port,"tron_management_allow":management,
         "tron_rpc_allow":node.rpc_allow,"tron_monitoring_allow":node.monitoring_allow
     }}}}).to_string())
 }
@@ -515,15 +520,37 @@ fn execute(verb: &str, args: &Args, say: &Say) -> Result<Value, CliError> {
         return Err("init has not completed; retry init first".into());
     }
     node_common::go_ahead(args.yes, "TRON operation was not started")?;
-    if ["start", "stop", "restart"].contains(&verb) {
+    if ["stop", "destroy"].contains(&verb) {
+        if verb == "stop"
+            && let Ok(result) = observation(&session, Action::Stop, &node, net)
+        {
+            return Ok(result);
+        }
+        // Recover through the sealed current helper if an older installed
+        // controller cannot enforce the current lifecycle protocol. No native
+        // capacity/account adoption or helper publication is needed to stop.
+        let inventory = json!({"all":{"hosts":{node.name.clone():{
+            "ansible_connection":"local","tron_shutdown":verb,"tron_network":net.name,
+            "tron_role":node.role,"tron_genesis":net.genesis,"tron_architecture":node.architecture,
+            "tron_owner":node.owner,"tron_signer":node.signer,"tron_inventory_owner":node.id
+        }}}})
+        .to_string();
+        let (run, _) = play(&session, &target, &inventory, "destroy", say)?;
+        node.last_run = run.as_str().into();
+        node.last_result = format!("{verb} ok; data retained");
+        store
+            .update_tron_node(&node)
+            .map_err(|_| "TRON stopped but inventory update failed")?;
+        return Ok(json!({"operation":verb,"stopped":true,"data_retained":true}));
+    }
+    if ["start", "restart"].contains(&verb) {
         let action = match verb {
             "start" => Action::Start,
-            "stop" => Action::Stop,
             _ => Action::Restart,
         };
         return observation(&session, action, &node, net).map_err(Into::into);
     }
-    if !["deploy", "update", "update-config", "destroy"].contains(&verb) {
+    if !["deploy", "update", "update-config"].contains(&verb) {
         return Err("unsupported TRON operation".into());
     }
     let facts = facts(&session)?;
@@ -538,9 +565,7 @@ fn execute(verb: &str, args: &Args, say: &Say) -> Result<Value, CliError> {
         allow_lists(&mut node, args)?;
     }
     let inventory = variables(&node, net, &facts, intent)?;
-    let run = if verb == "destroy" {
-        play(&session, &target, &inventory, "destroy", say)?.0
-    } else {
+    let run = {
         play(&session, &target, &inventory, "prepare", say)?;
         if args.validator {
             import_identity(&session, &node, net, intent, args.restore_keys)?;
@@ -663,16 +688,22 @@ mod tests {
             id: Some("i".repeat(26)),
             architecture: "x86_64".into(),
             role: "fullnode".into(),
-            ssh_port: 22,
+            ssh_port: 2222,
             ..TronNode::default()
         };
         pin(&mut node, net).unwrap();
         let mut facts = Facts::parse("");
         facts.controller = "192.0.2.1".into();
+        facts.ssh_port = 22;
         let inventory = variables(&node, net, &facts, Confirmation::new([3; 16])).unwrap();
         let parsed: Value = serde_json::from_str(&inventory).unwrap();
         let host = &parsed["all"]["hosts"]["tron1"];
         assert_eq!(host["tron_genesis"], net.genesis);
+        assert_eq!(host["tron_ssh_port"], 22);
+        assert_eq!(
+            node.ssh_port, 2222,
+            "external SSH forwarding port stays in inventory"
+        );
         assert_eq!(host["tron_inventory_owner"], "i".repeat(26));
         assert_eq!(host["tron_contract"]["inventory_owner"], "i".repeat(26));
         assert_eq!(host["tron_database"], "LEVELDB");

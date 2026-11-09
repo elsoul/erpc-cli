@@ -1,7 +1,58 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3 -I
 # SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
 # SPDX-License-Identifier: Apache-2.0
 """Owned follower operations. Provider credentials are accepted only on stdin."""
+# BEGIN ERPC TRUSTED IMPORTS
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+# Embedded verbatim in helpers that need sibling modules. Startup uses -I;
+# only this checked directory is added, after the standard-library paths.
+def trusted_imports(directory):
+    import os
+    import stat
+    import sys
+    path = os.fspath(directory)
+    if not os.path.isabs(path):
+        raise ValueError('helper directory must be an absolute path')
+    current = os.path.sep
+    for part in path.split(os.path.sep)[1:]:
+        if part in ('', '.'):
+            continue
+        if part == '..':
+            # The component being left was already checked as a real root-only
+            # directory. Never normalize away an unchecked symlink ancestor.
+            current = os.path.dirname(current)
+            continue
+        current = os.path.join(current, part)
+        info = os.lstat(current)
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+            raise ValueError('helper ancestors must be real root-owned directories')
+    path = current
+    if path == os.path.sep:
+        raise ValueError('the filesystem root is not a helper directory')
+    # Do not create root0700 bytecode caches before an unprivileged helper
+    # imports the same module. Existing readable caches remain fully checked.
+    sys.dont_write_bytecode = True
+    pending = [path]
+    while pending:
+        for child in os.scandir(pending.pop()):
+            info = child.stat(follow_symlinks=False)
+            if info.st_uid != 0 or info.st_mode & 0o022:
+                raise ValueError('helper modules must be writable only by root')
+            if stat.S_ISDIR(info.st_mode):
+                if (child.name == '__pycache__'
+                        and not os.access(child.path, os.X_OK, effective_ids=True)):
+                    # No traversal means Python cannot read any cached module
+                    # here and must use the checked source. Denied listing alone
+                    # (e.g. mode0711) is not sufficient for this exception.
+                    continue
+                pending.append(child.path)
+            elif not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise ValueError('helper modules cannot be links or special files')
+    if path not in sys.path:
+        sys.path.append(path)
+# END ERPC TRUSTED IMPORTS
+
 
 import fcntl
 import base64
@@ -178,7 +229,7 @@ def stop(contract):
     state = read_state()
     check(state, contract)
     if contract['family'] != 'base' and state.get('pair'):
-        sys.path.insert(0, str(LIB))
+        trusted_imports(LIB)
         import rollup_container
         for role in ('consensus', 'execution'):
             rollup_container.stop_owned(state, role)
@@ -415,9 +466,9 @@ def configure_upstreams(state, request):
         verify_identity(state)
     require(state['phase'] != 'bootstrapping' or service_active(units(state['contract'])['bootstrap']) in {'inactive', 'failed'}, 'stop bootstrap before rotating upstreams')
     receipt = request['firewall']
-    run(['python3', str(LIB / 'rpc-firewall.py'), state['contract']['family'], 'require-confirmed', receipt['run'], receipt['bundle']])
+    run(['/usr/bin/python3', '-I', str(LIB / 'rpc-firewall.py'), state['contract']['family'], 'require-confirmed', receipt['run'], receipt['bundle']])
     # Import only the carried validator. Credentials are never returned from it.
-    sys.path.insert(0, str(LIB))
+    trusted_imports(LIB)
     import rollup_upstreams
     config = request['upstreams']
     l1 = 'mainnet' if state['contract']['network'] == 'mainnet' else 'sepolia'
@@ -449,7 +500,7 @@ def verify_files(state):
 
 def firewall(state, command='guard'):
     family = state['contract']['family']
-    run(['python3', str(LIB / 'rpc-firewall.py'), family, command])
+    run(['/usr/bin/python3', '-I', str(LIB / 'rpc-firewall.py'), family, command])
 
 
 def validate_accounts(contract):
@@ -490,7 +541,7 @@ def inspect(state, gateway=True):
                 'bootstrap_done': state.get('bootstrap_done', False), 'readiness': {'ready': False, 'problems': ['not yet deployed']}}
     root_file(conf / 'network.json')
     expected = json.loads((conf / 'network.json').read_bytes())
-    sys.path.insert(0, str(LIB))
+    trusted_imports(LIB)
     import rollup_status
     services = {key: service_active(value) for key, value in units(state['contract']).items()}
     result = rollup_status.inspect(state, expected, services, gateway)
@@ -666,7 +717,7 @@ def dispatch(request):
 def wait_listener(engine):
     state = read_state()
     expected = '0x1' if state['contract']['network'] == 'mainnet' else '0xaa36a7'
-    sys.path.insert(0, str(LIB))
+    trusted_imports(LIB)
     import rollup_status
     deadline = time.monotonic() + 600
     while time.monotonic() < deadline:

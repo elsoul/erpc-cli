@@ -14,12 +14,23 @@ authors.workspace = true
 publish = true
 
 [dependencies]
+erpc-chain-hyperliquid.workspace = true
 erpc-auth.workspace = true
+erpc-chain-solana-native.workspace = true
+
+erpc-chain-monad.workspace = true
+erpc-chain-nitro.workspace = true
 erpc-secret.workspace = true
+erpc-ssh.workspace = true
 secrecy.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

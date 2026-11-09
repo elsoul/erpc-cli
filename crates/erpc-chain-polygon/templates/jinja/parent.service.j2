@@ -1,0 +1,52 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+[Unit]
+Description=Polygon verified execution parent transport
+RequiresMountsFor=/var/lib/polygon /opt/polygon
+Wants=network-online.target
+After=network-online.target erpc-polygon-firewall.service
+Requires=erpc-polygon-firewall.service
+{% if polygon_contract.role == 'validator' %}Wants=polygon-broker.service
+After=polygon-broker.service
+{% endif %}StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User={{ polygon_runtime_accounts['parent'].uid }}
+Group={{ polygon_runtime_accounts['parent'].gid }}
+SupplementaryGroups=
+DynamicUser=no
+UMask=0077
+ExecCondition=+{{ polygon_credential_condition }} credential-condition parent '{{ polygon_contract | to_json }}'
+ExecStartPre=+{{ polygon_service_guard }} runtime parent '{{ polygon_contract | to_json }}'
+ExecStart=/usr/bin/python3 -I /usr/local/lib/erpc/polygon/releases/{{ polygon_helpers }}/parent.py {{ polygon_profile.parent }}
+LoadCredentialEncrypted=execution.json:/etc/credstore.encrypted/polygon/execution.json
+{% if polygon_contract.role == 'validator' %}LoadCredentialEncrypted=polygon-bor-auth:/etc/credstore.encrypted/polygon/bor-auth
+LoadCredentialEncrypted=polygon-gateway-tls:/etc/credstore.encrypted/polygon/local-tls/polygon-gateway-tls
+{% endif %}Restart=on-failure
+RestartSec=10
+TimeoutStartSec=60
+TimeoutStopSec=30
+KillMode=control-group
+LimitCORE=0
+LimitNOFILE=4096
+TasksMax=128
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

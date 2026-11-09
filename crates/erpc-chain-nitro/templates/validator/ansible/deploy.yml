@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Activate the exact original validator runtime behind a confirmed caller policy
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Require this exact firewall receipt before any deployment mutation
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/../node/entry.py", play-confirmed, "{{ erpc_fw_confirmed_run }}", "{{ erpc_fw_confirmed_bundle }}"]
+        stdin: "{{ validator_request | to_json }}"
+      changed_when: false
+    - name: Render root credential recipients with checked pre-credential conditions
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/{{ item }}.service.j2"
+        dest: "{{ playbook_dir }}/{{ item }}.service"
+        owner: root
+        group: root
+        mode: '0644'
+      loop: [nitro, upstreams]
+    - name: Publish exact configuration and units then start through original authority
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/../node/entry.py", play-deploy, "{{ erpc_fw_confirmed_run }}", "{{ erpc_fw_confirmed_bundle }}"]
+        stdin: "{{ validator_request | to_json }}"
+      changed_when: true

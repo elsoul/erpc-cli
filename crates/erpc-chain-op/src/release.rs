@@ -67,7 +67,7 @@ pub struct Pair {
 /// Base release signing key primary fingerprint.
 pub const BASE_SIGNER: &str = "5EFE7BCFCD85682711F9FC30904841FFEBD38BAD";
 
-/// Recommended stable pair, inspected 2026-10-26; not a latest-tag lookup.
+/// Network-qualified stable pairs; OP execution requalified 2026-11-04.
 #[must_use]
 pub const fn recommended(family: Family, architecture: Architecture) -> Pair {
     let base = matches!(family, Family::Base);
@@ -103,12 +103,12 @@ pub const fn recommended(family: Family, architecture: Architecture) -> Pair {
             architecture,
             execution: Client {
                 name: "op-reth",
-                version: "2.6.1",
-                commit: "e16bffa18420c86dbab693097bc33117f74a5f7d",
+                version: "2.8.0",
+                commit: "d6620202d4e563957830e688007a0cab29bd80f3",
                 sha256: if arm {
-                    "b9c8fc9733c9123a17c9223a480d1f1a05cd1ad64fab2d792f76565cc44bad80"
+                    "393a99bb7435ad0f1f0e25a45ea4b9c190aa74683bf5367dab321abfe92f7f8a"
                 } else {
-                    "02be1f9c1eef42abadcf7b6440a311ee0d63fe6e7289e784e544d5cb5a4de473"
+                    "1a5118245d0b348c7a5efb65eabbce684279b95e9661728fb15447a43490944f"
                 },
                 distribution: Distribution::OpImage,
             },
@@ -127,10 +127,62 @@ pub const fn recommended(family: Family, architecture: Architecture) -> Pair {
     }
 }
 
+/// Retained original pair for resuming a previously authorized installation.
+/// This does not replace the new default or authorize a database downgrade.
+fn previous(family: Family, architecture: Architecture) -> Option<Pair> {
+    if family == Family::Base {
+        return None;
+    }
+    let mut pair = recommended(family, architecture);
+    pair.execution.version = "2.6.1";
+    pair.execution.commit = "e16bffa18420c86dbab693097bc33117f74a5f7d";
+    pair.execution.sha256 = if architecture == Architecture::Arm64 {
+        "b9c8fc9733c9123a17c9223a480d1f1a05cd1ad64fab2d792f76565cc44bad80"
+    } else {
+        "02be1f9c1eef42abadcf7b6440a311ee0d63fe6e7289e784e544d5cb5a4de473"
+    };
+    Some(pair)
+}
+
+/// Resolve only an exact current or retained original source/architecture pair.
+///
+/// # Errors
+/// Rejects modified artifacts, unknown releases and cross-family/platform pins.
+pub fn qualify(
+    family: Family,
+    architecture: Architecture,
+    stored: &serde_json::Value,
+) -> Result<Pair, String> {
+    for pair in
+        std::iter::once(recommended(family, architecture)).chain(previous(family, architecture))
+    {
+        if serde_json::to_value(&pair).map_err(|_| "cannot encode qualified pair")? == *stored {
+            return Ok(pair);
+        }
+    }
+    Err("stored clients differ from this CLI's qualified current and original pairs; use an explicit reviewed update".into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Architecture, Distribution, recommended};
     use erpc_chain_rollup::profile::Family;
+
+    #[test]
+    fn legacy_pair_is_exactly_scoped_and_does_not_replace_the_new_default() {
+        for architecture in [Architecture::Amd64, Architecture::Arm64] {
+            for family in [Family::Optimism, Family::Soneium] {
+                let old = super::previous(family, architecture).unwrap();
+                let encoded = serde_json::to_value(&old).unwrap();
+                assert_eq!(super::qualify(family, architecture, &encoded).unwrap(), old);
+                assert_eq!(recommended(family, architecture).execution.version, "2.8.0");
+                assert!(super::qualify(Family::Base, architecture, &encoded).is_err());
+                let mut changed = encoded;
+                changed["execution"]["sha256"] = serde_json::json!("f".repeat(64));
+                assert!(super::qualify(family, architecture, &changed).is_err());
+            }
+        }
+    }
 
     #[test]
     fn base_cannot_silently_receive_an_op_stack_client_or_wrong_architecture() {

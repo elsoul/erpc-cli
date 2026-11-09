@@ -84,8 +84,9 @@ fn send_credential(
     network: Network,
     secret: &Credential,
     action: &str,
+    intent: Option<&str>,
 ) -> Result<(), String> {
-    let encoded = secret_request(node, network, secret, action)?;
+    let encoded = secret_request(node, network, secret, action, intent)?;
     session
         .run(
             &RemoteCommand::NitroControl,
@@ -99,12 +100,17 @@ fn secret_request(
     network: Network,
     secret: &Credential,
     action: &str,
+    intent: Option<&str>,
 ) -> Result<SecretString, String> {
     let quoted = SecretString::from(
         serde_json::to_string(secret.secret().expose_secret())
             .map_err(|_| "cannot encode L1 credential")?,
     );
-    let base = request(node, network, action)?.to_string();
+    let mut public = request(node, network, action)?;
+    if let Some(intent) = intent {
+        public["intent"] = json!(intent);
+    }
+    let base = public.to_string();
     let encoded = SecretString::from(format!(
         "{},\"secret\":{}}}",
         base.trim_end_matches('}'),
@@ -177,6 +183,23 @@ fn find(store: &Store<OpCli>, args: &ArgMatches) -> Result<NitroRpc, String> {
         .find(|n| n.name == name)
         .ok_or_else(|| "Nitro node is not initialized in this network".into())
 }
+/// Read public RPC inventory and open its pinned management connection for an
+/// explicitly requested admission observation; no concealed provider is read here.
+pub(crate) fn admission_session(
+    network: Network,
+    args: &ArgMatches,
+) -> Result<(NitroRpc, Target, Session, Value), String> {
+    if network.family() != "robinhood" {
+        return Err("admission observation requires a Robinhood RPC scope".into());
+    }
+    let (store, _) = open(network, args)?;
+    let node = find(&store, args)?;
+    let scope = request(&node, network, "admission-observe")?;
+    let target = target(&node, args)?;
+    let session = Session::open(&target).map_err(|e| e.to_string())?;
+    Ok((node, target, session, scope))
+}
+
 fn management(args: &ArgMatches, old: &[String]) -> Result<Vec<String>, String> {
     let values = args
         .try_get_many::<String>("management-allow")
@@ -261,6 +284,49 @@ fn play(
     }
     Ok(run.as_str().into())
 }
+fn control_play(
+    session: &Session,
+    target: &Target,
+    node: &NitroRpc,
+    request: &Value,
+    say: &Say,
+) -> Result<String, String> {
+    let check = if request["action"] == "authorize-deploy" {
+        "check-authorize"
+    } else {
+        "check-owner"
+    };
+    let inventory = json!({"all":{"hosts":{node.name.clone():{
+        "ansible_connection":"local", "nitro_request":request, "nitro_control_check":check
+    }}}})
+    .to_string();
+    play(session, target, &inventory, "node/control.yml", say)
+}
+
+fn authorize_deploy(
+    session: &Session,
+    target: &Target,
+    node: &NitroRpc,
+    network: Network,
+    observed: &Value,
+    say: &Say,
+) -> Result<String, String> {
+    let generation = match observed.get("generation") {
+        None => 0, // A pre-migration owner has no cancellation generation.
+        Some(value) => value
+            .as_u64()
+            .ok_or("invalid observed Nitro lifecycle generation")?,
+    };
+    let mut entropy = [0u8; 16];
+    getrandom::fill(&mut entropy).map_err(|_| "cannot create Nitro deployment intent")?;
+    let intent = format!("{:032x}", u128::from_be_bytes(entropy));
+    let mut request = request(node, network, "authorize-deploy")?;
+    request["generation"] = json!(generation);
+    request["intent"] = json!(intent);
+    control_play(session, target, node, &request, say)?;
+    Ok(intent)
+}
+
 fn deploy(
     session: &Session,
     target: &Target,
@@ -358,7 +424,7 @@ fn init(network: Network, args: &ArgMatches, say: &Say) -> Result<Value, String>
     // performs a fenced refresh. A prepared host has no listener to interrupt.
     let status = control(&session, &node, network, "status")?;
     if status["phase"] == "prepared" {
-        send_credential(&session, &node, network, &secret, "install-upstreams")?;
+        send_credential(&session, &node, network, &secret, "install-upstreams", None)?;
     }
     node.last_result = "prepared; deploy required".into();
     store.update_nitro_rpc(&node).map_err(|e| e.to_string())?;
@@ -367,6 +433,69 @@ fn init(network: Network, args: &ArgMatches, say: &Say) -> Result<Value, String>
         json!({"name":node.name,"family":network.family(),"network":network.name(),"state":status["phase"]}),
     )
 }
+fn recover(
+    session: &Session,
+    target: &Target,
+    node: &mut NitroRpc,
+    network: Network,
+    verb: &str,
+    say: &Say,
+) -> Result<Value, String> {
+    // A compatible installed helper needs no new bundle/storage to stop. The
+    // carried fallback also recovers an old helper left by an interrupted upgrade.
+    let compatible = control(session, node, network, "capabilities")
+        .is_ok_and(|value| value["controller_protocol"] == 2);
+    if compatible {
+        control(session, node, network, verb)
+    } else {
+        node.last_run = control_play(session, target, node, &request(node, network, verb)?, say)?;
+        let observed = control(session, node, network, "status")?;
+        Ok(json!({"phase":observed["phase"],"data_preserved":true,"startup_revoked":true}))
+    }
+}
+
+fn journal_output(
+    json_out: bool,
+    stream: impl FnOnce(&mut dyn FnMut(erpc_ssh::Stream, &str)) -> Result<(), String>,
+    mut stdout: impl FnMut(&str),
+    mut stderr: impl FnMut(&str),
+) -> Result<Value, String> {
+    stream(&mut |_, line| {
+        if json_out {
+            stdout(&json!({"journal": line}).to_string());
+        } else {
+            stderr(line);
+        }
+    })?;
+    Ok(json!({"logs":"complete"}))
+}
+
+fn journal(
+    session: &Session,
+    network: Network,
+    args: &ArgMatches,
+    json_out: bool,
+) -> Result<Value, String> {
+    let output = Say { quiet: false };
+    journal_output(
+        json_out,
+        |sink| {
+            session
+                .stream(
+                    &RemoteCommand::NitroLogs {
+                        robinhood: network.family() == "robinhood",
+                        lines: args.get_one::<u32>("lines").copied().unwrap_or(100),
+                        follow: args.get_flag("follow"),
+                    },
+                    sink,
+                )
+                .map_err(|e| e.to_string())
+        },
+        crate::print_line,
+        |line| output.line(line),
+    )
+}
+
 fn operation(verb: &str, network: Network, args: &ArgMatches, say: &Say) -> Result<Value, String> {
     if verb == "init" {
         return init(network, args, say);
@@ -385,23 +514,19 @@ fn operation(verb: &str, network: Network, args: &ArgMatches, say: &Say) -> Resu
     }
     let target = target(&node, args)?;
     let session = Session::open(&target).map_err(|e| e.to_string())?;
+    if matches!(verb, "stop" | "destroy") {
+        node_common::go_ahead(yes(args), "no Nitro host changed").map_err(|e| e.to_string())?;
+        let result = recover(&session, &target, &mut node, network, verb, say)?;
+        node.last_result = format!("{verb} complete; data retained");
+        store.update_nitro_rpc(&node).map_err(|e| e.to_string())?;
+        return Ok(result);
+    }
     let before = control(&session, &node, network, "status")?;
     if verb == "status" {
         return Ok(before);
     }
     if verb == "logs" {
-        let output = Say { quiet: false };
-        session
-            .stream(
-                &RemoteCommand::NitroLogs {
-                    robinhood: network.family() == "robinhood",
-                    lines: args.get_one::<u32>("lines").copied().unwrap_or(100),
-                    follow: args.get_flag("follow"),
-                },
-                &mut |_, line| output.line(line),
-            )
-            .map_err(|e| e.to_string())?;
-        return Ok(json!({"logs":"complete"}));
+        return journal(&session, network, args, say.quiet);
     }
     if before["phase"] == "installing" && verb != "deploy" {
         return Err("resume deploy at the stored target before another operation".into());
@@ -426,24 +551,46 @@ fn operation(verb: &str, network: Network, args: &ArgMatches, say: &Say) -> Resu
             }
             node.management_allow = management(args, &node.management_allow)?;
             let secret = credential(&node_common::op_runner()?, &node.upstreams_ref)?;
-            send_credential(&session, &existing, network, &secret, "validate-upstreams")?;
+            send_credential(
+                &session,
+                &existing,
+                network,
+                &secret,
+                "validate-upstreams",
+                None,
+            )?;
             // Keep the desired reference before remote mutation so an interrupted
             // encrypted credential rotation resumes exactly that intended source.
             node = store.update_nitro_rpc(&node).map_err(|e| e.to_string())?;
+            let intent = authorize_deploy(&session, &target, &node, network, &before, say)?;
             let mut vars = variables(&node, network, &facts)?;
+            vars["nitro_request"]["intent"] = json!(intent);
             vars["nitro_prepare_action"] = json!("begin-install");
             let inventory = json!({"all":{"hosts":{node.name.clone():vars}}}).to_string();
             // The carried controller understands this CLI's release catalog. It
             // fences/stops the old owner before replacing the installed helper.
             play(&session, &target, &inventory, "node/prepare.yml", say)?;
-            send_credential(&session, &node, network, &secret, "install-upstreams")?;
+            send_credential(
+                &session,
+                &node,
+                network,
+                &secret,
+                "install-upstreams",
+                Some(&intent),
+            )?;
             node.last_run = deploy(&session, &target, &node, network, &inventory, say)?;
             node.last_result = format!("{verb} complete; synchronization observed separately");
             store.update_nitro_rpc(&node).map_err(|e| e.to_string())?;
             control(&session, &node, network, "status")
         }
-        "start" | "stop" | "restart" | "destroy" => {
-            let result = control(&session, &node, network, verb)?;
+        "start" | "restart" => {
+            let mut startup = request(&node, network, &format!("operator-{verb}"))?;
+            startup["generation"] = before
+                .get("generation")
+                .cloned()
+                .unwrap_or_else(|| json!(0));
+            node.last_run = control_play(&session, &target, &node, &startup, say)?;
+            let result = control(&session, &node, network, "status")?;
             node.last_result = format!("{verb} complete; data retained");
             store.update_nitro_rpc(&node).map_err(|e| e.to_string())?;
             Ok(result)
@@ -451,6 +598,14 @@ fn operation(verb: &str, network: Network, args: &ArgMatches, say: &Say) -> Resu
         _ => Err("unsupported Nitro operation".into()),
     }
 }
+pub(crate) fn report_status(
+    result: Result<Value, String>,
+    json_out: bool,
+    output: &mut dyn FnMut(&str),
+) -> Outcome {
+    crate::node_report::status(result, "/ready", json_out, output)
+}
+
 pub(crate) fn run(
     verb: &str,
     family: &str,
@@ -464,22 +619,18 @@ pub(crate) fn run(
         );
     };
     let say = Say { quiet: json_out };
-    match operation(verb, network, args, &say) {
+    let result = operation(verb, network, args, &say);
+    if verb == "status" {
+        return report_status(result, json_out, &mut crate::print_line);
+    }
+    match result {
         Ok(value) => {
-            let unhealthy = verb == "status" && value["ready"] != true;
             if json_out {
                 crate::print_json(&value);
             } else {
                 say.line(&serde_json::to_string_pretty(&value).unwrap_or_default());
             }
-            if unhealthy {
-                Outcome::Failed(
-                    "Nitro follower is not ready; inspect sync and parent-chain connectivity"
-                        .into(),
-                )
-            } else {
-                Outcome::Done(String::new())
-            }
+            Outcome::Done(String::new())
         }
         Err(error) => Outcome::Failed(error),
     }
@@ -490,6 +641,96 @@ mod tests {
     use super::*;
     use erpc_auth::store::{StoreError, one_password::OpOutput};
     use std::cell::Cell;
+    #[test]
+    fn both_journal_streams_and_completion_remain_stdout_ndjson() {
+        use erpc_ssh::Stream::{Stderr, Stdout};
+        let events = [
+            (Stdout, "normal journal"),
+            (Stderr, "quoted \"diagnostic\"\nsecond line\r\n\t\\path"),
+            (Stdout, "日本語 🦀"),
+            (Stderr, ""),
+        ];
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let completion = journal_output(
+            true,
+            |sink| {
+                for (stream, line) in events {
+                    sink(stream, line);
+                }
+                Ok(())
+            },
+            |line| stdout.push(line.to_owned()),
+            |line| stderr.push(line.to_owned()),
+        )
+        .expect("journal stream");
+        // dispatch uses this same global compact serializer for the outcome.
+        crate::emit_json_record(&completion, |line| stdout.push(line.to_owned()))
+            .expect("completion record");
+        assert!(stderr.is_empty());
+        assert_eq!(stdout.len(), events.len() + 1);
+        let records: Vec<Value> = stdout
+            .iter()
+            .map(|line| {
+                assert_eq!(line.lines().count(), 1);
+                assert!(!line.contains('\r'));
+                serde_json::from_str(line).expect("one complete JSON record")
+            })
+            .collect();
+        for (record, (_, original)) in records.iter().zip(events) {
+            assert_eq!(record, &json!({"journal": original}));
+        }
+        assert_eq!(records.last().unwrap(), &json!({"logs":"complete"}));
+    }
+
+    #[test]
+    fn human_journal_preserves_both_streams_on_stderr() {
+        use erpc_ssh::Stream::{Stderr, Stdout};
+        let mut stderr = Vec::new();
+        let completion = journal_output(
+            false,
+            |sink| {
+                sink(Stdout, "native log");
+                sink(Stderr, "ssh diagnostic");
+                Ok(())
+            },
+            |_| panic!("human logs do not use stdout"),
+            |line| stderr.push(line.to_owned()),
+        )
+        .unwrap();
+        assert_eq!(stderr, ["native log", "ssh diagnostic"]);
+        assert_eq!(completion, json!({"logs":"complete"}));
+    }
+
+    #[test]
+    fn failed_journal_keeps_records_valid_and_never_reports_completion() {
+        let mut stdout = Vec::new();
+        let error = journal_output(
+            true,
+            |sink| {
+                sink(
+                    erpc_ssh::Stream::Stderr,
+                    "remote \"diagnostic\"\ncontinuation",
+                );
+                Err("connection lost\nretry later".into())
+            },
+            |line| stdout.push(line.to_owned()),
+            |_| panic!("JSON diagnostics stay on stdout"),
+        )
+        .expect_err("stream failure");
+        // The actual Outcome error and global formatter used by finish preserve
+        // one record even when the underlying diagnostic contains line breaks.
+        let failure = Outcome::Failed(error).error().unwrap().json();
+        crate::emit_json_record(&failure, |line| stdout.push(line.to_owned())).unwrap();
+        assert_eq!(stdout.len(), 2);
+        for line in &stdout {
+            assert_eq!(line.lines().count(), 1);
+            let value: Value = serde_json::from_str(line).unwrap();
+            assert!(value.get("logs").is_none());
+        }
+        assert_eq!(serde_json::from_str::<Value>(&stdout[1]).unwrap(), failure);
+    }
+
     struct FakeOp {
         called: Cell<bool>,
         success: bool,
@@ -544,11 +785,30 @@ mod tests {
             body: json!({"id":"l1","label":"l1","type":"CONCEALED","value":raw}).to_string(),
         };
         let secret = credential(&fake, &reference()).expect("concealed schema");
-        let encoded = secret_request(&node(), Network::Sepolia, &secret, "validate-upstreams")
-            .expect("stdin encoding");
+        let encoded = secret_request(
+            &node(),
+            Network::Sepolia,
+            &secret,
+            "validate-upstreams",
+            None,
+        )
+        .expect("stdin encoding");
         let decoded: Value = serde_json::from_str(encoded.expose_secret()).expect("valid JSON");
         assert_eq!(decoded["secret"], raw);
         assert_eq!(decoded["action"], "validate-upstreams");
+        let intent = "d".repeat(32);
+        let installation = secret_request(
+            &node(),
+            Network::Sepolia,
+            &secret,
+            "install-upstreams",
+            Some(&intent),
+        )
+        .expect("bound concealed payload");
+        let decoded: Value =
+            serde_json::from_str(installation.expose_secret()).expect("bound JSON");
+        assert_eq!(decoded["intent"], intent);
+        assert_eq!(decoded["secret"], raw);
         let public = request(&node(), Network::Sepolia, "status").expect("metadata");
         assert!(!public.to_string().contains("concealed"));
         let mut changed = node();

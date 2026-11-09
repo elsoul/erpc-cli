@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+# Native peer ports are public; query/metrics ports need explicit trusted CIDRs.
+table inet erpc_polygon
+flush table inet erpc_polygon
+table inet erpc_polygon {
+    chain input {
+        type filter hook input priority -5; policy accept;
+        iifname lo accept
+        ct state established,related accept
+        ip protocol icmp accept
+        meta l4proto ipv6-icmp accept
+{% for cidr in polygon_management_v4 %}        ip saddr {{ cidr }} tcp dport {{ polygon_ssh_port }} accept
+{% endfor %}{% for cidr in polygon_management_v6 %}        ip6 saddr {{ cidr }} tcp dport {{ polygon_ssh_port }} accept
+{% endfor %}        tcp dport { 30303, 26656 } accept
+        udp dport 30303 accept
+{% for cidr in polygon_rpc_v4 %}        ip saddr {{ cidr }} tcp dport { 8545, 8546 } accept
+{% endfor %}{% for cidr in polygon_rpc_v6 %}        ip6 saddr {{ cidr }} tcp dport { 8545, 8546 } accept
+{% endfor %}{% for cidr in polygon_metrics_v4 %}        ip saddr {{ cidr }} tcp dport { 7071, 26660 } accept
+{% endfor %}{% for cidr in polygon_metrics_v6 %}        ip6 saddr {{ cidr }} tcp dport { 7071, 26660 } accept
+{% endfor %}        counter drop
+    }
+}

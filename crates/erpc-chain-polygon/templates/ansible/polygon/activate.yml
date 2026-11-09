@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Start only the freshly confirmed Polygon release pair
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars_files: [vars.yml]
+  tasks:
+    - name: Require the fresh SSH confirmation before activation work
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, /usr/local/lib/erpc/rpc-firewall.py, polygon, require-confirmed, "{{ erpc_fw_confirmed_run }}", "{{ erpc_fw_confirmed_bundle }}"]
+      changed_when: false
+    - name: Atomically authorize the pair and request guarded native startup
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ polygon_scripts }}/control.py", within-run]
+        stdin: "{{ polygon_request | combine({'action':'activate','firewall':{'run':erpc_fw_confirmed_run,'bundle':erpc_fw_confirmed_bundle}}) | to_json }}"

@@ -12,7 +12,7 @@ RequiresMountsFor=/opt/erpc /etc/erpc/tron
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/bin/python3 /usr/local/lib/erpc/rpc-firewall.py tron load
+ExecStart={{ tron_firewall_guard }} tron load
 
 [Install]
 WantedBy=multi-user.target

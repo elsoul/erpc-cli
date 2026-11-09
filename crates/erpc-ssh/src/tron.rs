@@ -52,10 +52,7 @@ impl Contract {
         )))
     }
     fn command(&self, operation: &str) -> String {
-        format!(
-            "sudo -n /usr/bin/python3 /usr/local/lib/erpc/tron/control.py {operation} {}",
-            self.0
-        )
+        format!("{} {operation} {}", crate::python::tron_control(), self.0)
     }
 }
 
@@ -81,9 +78,9 @@ impl Action {
     const fn name(self) -> &'static str {
         match self {
             Self::Status => "status",
-            Self::Start => "start",
-            Self::Stop => "stop",
-            Self::Restart => "restart",
+            Self::Start => "start-v2",
+            Self::Stop => "stop-v2",
+            Self::Restart => "restart-v2",
             Self::CheckKeys => "check-keys",
             Self::Registration => "registration",
             Self::ValidateRegistration => "validate-registration",

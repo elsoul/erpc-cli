@@ -63,6 +63,28 @@ whose version has no entry below.
   calls an app ready that cannot start. Such a set is an array inside
   `missing` in `secret list --json`, beside the names of single
   settings, and in `manifest.run.requires` in `check --json`.
+- `erpc rpc` on six more chains, which makes all 18: Polygon PoS (Bor and
+  Heimdall v2), BNB Chain (Geth, with full or pruned history), Kaia (an
+  endpoint node), Monad, Hyperliquid (a non-validator node) and NEAR (a
+  nearcore follower). Each has the same twelve verbs and a guide that
+  `docs/nodes.md` links.
+- `erpc validator` on eight more chains: Polygon PoS, BNB Chain, Kaia (a
+  consensus node or a proxy node), Monad, Hyperliquid, NEAR, Arbitrum One and
+  Robinhood Chain. Deposits, staking and registration are signed outside
+  erpc; `registration` on Polygon, NEAR and Robinhood Chain prepares and
+  checks them. `erpc validator --chain hyperliquid aqa` runs the separate
+  AQA publisher. On Arc, `erpc validator` prepares a validator host and runs
+  it as an observer; it does not sign.
+- Solana on the native backend, for validators and RPC nodes on mainnet and
+  testnet: Agave built from source on the server and run under accounts of
+  its own. A validator has every verb now (`logs`, `start`, `stop`,
+  `restart`, `update`, `update-config`, `plan` and `destroy` were not
+  implemented), syncs under a separate identity and starts voting with
+  `deploy --activate-validator`. `erpc v registration` reads the vote account
+  and prepares what an external wallet signs. `docs/solana-native.md` is the
+  guide.
+- Live acceptance on real hosts is still under way for most of these chains:
+  `docs/chains/README.md` says where each one stands.
 
 ### Changed
 
@@ -90,7 +112,79 @@ whose version has no entry below.
 - CI renders the `solana/pumpfun` template as `erpc worker init` does and
   runs its clippy and tests. The templates are not workspace members, and
   nothing compiled them before.
-
+- **Coming from 0.1.0-rc.2: new Solana nodes use the native backend.**
+  `erpc v init` and `erpc r --chain solana init` for a name whose server is
+  not in the inventory no longer set up a `solv` node, and `--backend solv`
+  is refused for it. The server must be Ubuntu 24.04 with systemd 255, AVX2
+  and SHA-NI, at least 24 threads and 300 GiB of memory for a mainnet
+  validator or 120 GiB for a testnet validator (32 and 480 GiB for an RPC
+  node on either), with three filesystems
+  already mounted, which erpc does not partition, format or mount for a new
+  node. You make the keys and keep them in 1Password before `init`, which
+  takes new flags for them; erpc generates none. There is no choice of
+  client, release or RPC type, and making or importing keys and
+  `erpc v vote-account` are refused. `docs/solana-native.md` has the
+  preparation. A node whose server 0.1.0-rc.2 recorded keeps the commands it
+  was set up with, and `erpc v migration` or
+  `erpc r --chain solana migration` moves a qualified one to the native
+  backend.
+- **Coming from 0.1.0-rc.2: nodes it deployed on six other chains.** This
+  version looks on the server for helpers and ownership records that a
+  0.1.0-rc.2 deploy did not write, so `deploy`, `update`, `start` and
+  `restart` fail on such a node until it has been migrated once, and so does
+  `status` except on TRON and Bitcoin. Until then erpc cannot stop an
+  Ethereum or Arc node either: the Ethereum entries below start by stopping
+  the services on the server, and Arc's migration stops them itself. A
+  migration leaves the node stopped; the guide named beside each has the
+  records of the original server it asks for and the `deploy` or `update`
+  that follows.
+  - Ethereum RPC: stop Reth and Lighthouse on the server, then
+    `erpc r --chain eth init --migrate-authority` with `--original-passwd`,
+    `--original-group`, `--original-machine-id` and
+    `--original-client-record` (`docs/ethereum-rpc.md`).
+  - Ethereum validator: stop its three services, then the same flags on
+    `erpc v --chain eth init` (`docs/ethereum-validator.md`).
+  - Arc RPC: the same flags on `erpc r --chain arc init`
+    (`docs/arc-runtime.md`).
+  - Avalanche: `init --migrate-account` (`docs/avalanche.md`).
+  - Sui: `init --migrate-account` and `update --migrate-source-history`
+    (`crates/erpc-chain-sui/templates/README.md`).
+  - Bitcoin: `erpc r --chain bitcoin deploy --original-runtime-record`
+    (`docs/bitcoin-rpc.md`).
+  - TRON has no migration. This version can stop or destroy a TRON node that
+    0.1.0-rc.2 deployed, keeping its data, but cannot start or update it.
+- **Coming from 0.1.0-rc.2: what erpc needs on a server.** Every file erpc
+  uploads, for a node and for `erpc worker`, is now written on the server by
+  a Python program run through `sudo`. The server needs `/usr/bin/python3`
+  and `sudo` that asks for no password: check a server of your own before
+  `erpc worker deploy --host`. `/opt` must be a real directory owned by root
+  that its group and others cannot write, and so must `/opt/erpc` and the
+  `runs` and `uploads` directories in it where they exist; none of them may
+  be a symbolic link. For a node, the filesystem that holds `/opt/erpc` must
+  also keep POSIX ACLs, as ext4 and XFS do by default. To keep `/opt/erpc` on
+  another volume, mount the volume there instead of linking it, and keep the
+  volume's top directory owned by root and not writable by its group or
+  others. Ubuntu ships that Python and such an `/opt`.
+- **Coming from 0.1.0-rc.2: your own systemd drop-ins.** The firewall step
+  refuses to run while `/etc/systemd/system/<unit>.d/` of a service it
+  protects holds any file but erpc's `50-erpc-firewall-guard.conf`, such as
+  an `override.conf` made by `systemctl edit`. It changes nothing, and on
+  every node whose firewall erpc manages, the command that applies or removes
+  the firewall stops there: on a solv Solana RPC node, `deploy`, `update`,
+  `update-config` and `destroy`, for `solv.service`, `faithful.service` and
+  `of1-index-sync.service`. Move your drop-in out of that directory and run
+  the command again.
+- **Coming from 0.1.0-rc.2: `erpc v keys` and `erpc v vote-account` on
+  mainnet need `--chain solana` on the command line,** as every other command
+  that changes a mainnet node does: a chain taken from `ERPC_CHAIN` or
+  `default_chain` is refused. `keys` can write a validator's vote account key
+  and withdraw authority to 1Password, even without its flags when one is
+  missing.
+- `erpc v list` and `erpc r --chain solana list` show each node's backend,
+  list a validator registered without a host as `[no host yet]`
+  (`"backend": null` in `--json`), whose other commands say that the init
+  that registered it resumes it, and, when there is no node, point to
+  `init --help` and `docs/solana-native.md`.
 
 ## [0.1.0-rc.2] - 2026-11-05
 

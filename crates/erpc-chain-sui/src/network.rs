@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Reviewed network-qualified releases, sourced 2026-10-26 from `MystenLabs`.
+//! Reviewed network-qualified releases, Testnet requalified 2026-11-04; Mainnet sourced 2026-10-26 from `MystenLabs`.
 //! GitHub asset SHA-256 metadata is the binary trust anchor, not a GPG claim.
 
 use serde::Serialize;
@@ -44,14 +44,31 @@ pub fn get(name: &str) -> Option<Network> {
         "testnet" => Some(Network {
             name: "testnet",
             chain_id: "4c78adac",
-            version: "testnet-v1.82.2",
-            commit: "e10772f4fafef31c46f598835fe66648caf6e005",
+            version: "testnet-v1.83.1",
+            commit: "0e0ede4cbf48c6d7654b613f62fdca71542ace03",
             genesis_sha256: "df78eb5e525294d29c9f710a0d80c3b8e5c9f6e2e6485098584f0695d80de2aa",
-            amd64_sha256: "201427d5121422e878aa27dd6f66642af2b512a9b37b24ce4b3901c29d4b2750",
-            arm64_sha256: "56b30fc29db8ffff4552f0f68c2f6e2037c1605c6ebffbe3e0091d8222950ee1",
+            amd64_sha256: "1a59344f7e17c3f694c2f17f4a23c29e55293d5d5eb294d0dcafff304b188347",
+            arm64_sha256: "c58f07c692f7b00a21b0177fff22589ccc89e90eb7a7d629295d16104fbc95b5",
         }),
         _ => None,
     }
+}
+
+/// Qualified original releases, including the previous testnet source for explicit history.
+#[must_use]
+pub fn historical(name: &str, version: &str) -> Option<Network> {
+    let mut profile = get(name)?;
+    if profile.version == version {
+        return Some(profile);
+    }
+    if name == "testnet" && version == "testnet-v1.82.2" {
+        profile.version = "testnet-v1.82.2";
+        profile.commit = "e10772f4fafef31c46f598835fe66648caf6e005";
+        profile.amd64_sha256 = "201427d5121422e878aa27dd6f66642af2b512a9b37b24ce4b3901c29d4b2750";
+        profile.arm64_sha256 = "56b30fc29db8ffff4552f0f68c2f6e2037c1605c6ebffbe3e0091d8222950ee1";
+        return Some(profile);
+    }
+    None
 }
 
 impl Network {

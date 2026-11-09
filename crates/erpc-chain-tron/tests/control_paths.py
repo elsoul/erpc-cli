@@ -22,6 +22,22 @@ import identity
 import observe
 
 
+class FixtureAccounts:
+    def preflight(self,*args):return None
+    def provision(self,*args):return None
+    def verify(self,*args):return {'uid':1001,'gid':1001}
+    def retained_uid(self):return None
+
+
+class FixtureAuthority:
+    def initial(self):pass
+    def quiescent(self):pass
+    def unoccupied(self):pass
+    def startable(self):pass
+    def can_start(self,*args):pass
+    def listener(self,*args):return ('external-authority-fixture',)
+
+
 def load(name, path):
     spec = importlib.util.spec_from_file_location(name, path)
     value = importlib.util.module_from_spec(spec)
@@ -75,7 +91,7 @@ class Observation(unittest.TestCase):
         self.assertEqual(value['candidate_fee_sun'], 9999000000)
         with self.assertRaises(ValueError): observe.network_state(dict(expected, genesis='a' * 64), query)
         with self.assertRaises(ValueError): observe.head({'blockID': 'd' * 64, 'block_header': {'raw_data': {'number': 100, 'timestamp': 1}}})
-        with patch.object(observe.urllib.request, 'urlopen', side_effect=AssertionError('must not contact network')):
+        with patch.object(observe, 'open_fixed', side_effect=AssertionError('must not contact network')):
             with self.assertRaises(ValueError): observe.request('nile', 'wallet/broadcasttransaction')
 
     def test_native_grpc_requires_success_trailer_and_complete_uncompressed_frame(self):
@@ -92,6 +108,8 @@ class Observation(unittest.TestCase):
             ]:
                 def run(args, **kwargs):
                     self.assertEqual(kwargs['input'], bytes(5))
+                    self.assertEqual(args[:4],['/usr/bin/curl','--disable','--noproxy','*'])
+                    self.assertEqual(kwargs['env'],{'PATH':'/usr/sbin:/usr/bin:/sbin:/bin','HOME':'/root','LANG':'C.UTF-8'})
                     Path(args[args.index('-D') + 1]).write_text('HTTP/2 200\r\n' + trailers + '\r\n')
                     Path(args[args.index('-o') + 1]).write_bytes(frame)
                     return subprocess.CompletedProcess(args, 0)
@@ -104,18 +122,22 @@ class Observation(unittest.TestCase):
             ({'jsonrpc': '2.0', 'id': 1, 'result': '0x2b6653dc'}, False),
             ({'jsonrpc': '2.0', 'id': 1, 'error': {'message': 'not ready'}}, False),
             ({'jsonrpc': '2.0', 'id': True, 'result': '0xcccccccc'}, False),
+            ({'jsonrpc': '2.0', 'id': 1, 'result': '0xcccccccc','error':{}}, False),
         ]:
             import io
-            with patch.object(observe.urllib.request, 'urlopen', return_value=io.BytesIO(json.dumps(value).encode())):
+            with patch.object(observe, 'open_fixed', return_value=io.BytesIO(json.dumps(value).encode())):
                 self.assertEqual(observe.json_rpc(expected), accepted)
 
     def test_launch_password_uses_only_inherited_stdin_and_clean_environment(self):
         launch = load('tron_launch_fixture', ROOT / 'templates/jinja/launch.py')
         for architecture in ('x86_64', 'aarch64'):
             for role in ('fullnode', 'validator'):
-                contract = {'architecture': architecture, 'role': role}
-                with patch.object(launch.Path, 'read_text', return_value=json.dumps(contract)), \
-                     patch.object(launch.os, 'open', return_value=12) as opened, \
+                contract = {'architecture': architecture, 'role': role,'network':'nile','genesis':'c'*64}
+                release={**contract,'directory':'/opt/tron/releases/GreatVoyage-Nile-v4.8.2.4-PQ1-build1-'+architecture}
+                with patch.object(launch.Path, 'read_text', side_effect=[json.dumps(contract),json.dumps(release),json.dumps({'format':1,'state':'established','contract':contract,'uid':999,'gid':999})]), \
+                     patch.object(launch.os,'getuid',return_value=999,create=True), patch.object(launch.os,'geteuid',return_value=999,create=True), \
+                     patch.object(launch.os,'getgid',return_value=999,create=True), patch.object(launch.os,'getegid',return_value=999,create=True), \
+                     patch.object(launch.os,'getgroups',return_value=[999],create=True), patch.object(launch.os, 'open', return_value=12) as opened, \
                      patch.object(launch.os, 'dup2') as duplicate, \
                      patch.object(launch.os, 'close'), patch.object(launch.os, 'execve') as execute:
                     launch.main()
@@ -123,6 +145,7 @@ class Observation(unittest.TestCase):
                     self.assertEqual(opened.call_args.args[0], '/run/credentials/tron-node.service/witness-password' if role == 'validator' else '/dev/null')
                     program, args, env = execute.call_args.args
                     self.assertEqual(program, launch.JAVA[architecture])
+                    self.assertEqual(args[args.index('-jar')+1],release['directory']+'/FullNode.jar')
                     self.assertEqual(set(env), {'PATH', 'LANG'})
                     self.assertEqual('--witness' in args, role == 'validator')
                     self.assertIn('-XX:-HeapDumpOnOutOfMemoryError', args)
@@ -148,6 +171,7 @@ class ControlPaths(unittest.TestCase):
         self.root = Path(self.folder.name)
         self.module = load('tron_control_fixture', ROOT / 'templates/jinja/control.py')
         self.common = load('common_firewall_fixture', ROOT.parent / 'erpc-ops/templates/rpc-firewall.py')
+        self.common.ROOT_UID = os.getuid()  # Temp fixtures model the production root owner.
         self.calls, self.queries = [], []
         self.active, self.live, self.elected, self.clock = False, None, False, True
         self.expected = self.module.expected_contract('nile', 'fullnode', 'c' * 64, 'x86_64', '-', '-', 'i' * 26)
@@ -156,7 +180,7 @@ class ControlPaths(unittest.TestCase):
         self.firewall = self.common.Firewall('tron', self.root, self.command)
         self.available, self.allocated = 4_000_000_000_000, 0
         self.control = self.module.Control(self.root, self.command, lambda: self.firewall, self.query,
-            lambda data, run: {'available_bytes': self.available, 'allocated_bytes': self.allocated})
+            lambda data, run: {'available_bytes': self.available, 'allocated_bytes': self.allocated}, proof=FixtureAuthority(),owner=os.getuid(),account=FixtureAccounts())
         self.file('/etc/tron/contract.json', json.dumps(self.expected))
         self.install()
         self.intent = 'a' * 32
@@ -258,12 +282,8 @@ class ControlPaths(unittest.TestCase):
         release = self.control.read('/etc/tron/release.json')
         self.prepare()
         argv = ['manifest.py', release['directory'], self.intent, json.dumps(self.target)]
-        original_replace = os.replace
-        def replace(source, target):
-            original_replace(source, self.control.path(str(target)))
         with patch.object(manifest.sys, 'argv', argv), patch.object(manifest, 'Control', return_value=self.control), \
-             patch.object(manifest, 'Path', side_effect=lambda path: self.control.path(path)), \
-             patch.object(manifest.os, 'replace', side_effect=replace):
+             patch.object(manifest, 'Path', side_effect=lambda path: self.control.path(path)):
             manifest.main()
             self.control.verify_install(self.expected)
             self.file(release['directory'] + '/network.conf', 'changed upstream fixture')
@@ -341,7 +361,7 @@ class ControlPaths(unittest.TestCase):
         self.validator()
         self.prepare()
         payload = {'keystore': 'encrypted native fixture', 'password': 'fixture password'}
-        with self.assertRaises(OSError): self.control.dispatch('restore', self.expected, self.intent, payload=payload)
+        with self.assertRaises(ValueError): self.control.dispatch('restore', self.expected, self.intent, payload=payload)
         replace = self.module.os.replace
         def interrupted(source, target):
             if str(target).endswith('/tron/current'): raise OSError('inert interrupted pointer publication')
@@ -495,7 +515,7 @@ class ControlPaths(unittest.TestCase):
     def test_missing_contract_rejects_any_retained_data_without_mutation(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
-            control = self.module.Control(root, self.command, lambda: self.firewall, self.query)
+            control = self.module.Control(root, self.command, lambda: self.firewall, self.query,proof=FixtureAuthority(),owner=os.getuid(),account=FixtureAccounts())
             for directory in ('etc/tron', 'var/lib/tron', 'etc/erpc/tron'):
                 path = root / directory
                 path.mkdir(parents=True, exist_ok=True)

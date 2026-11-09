@@ -322,11 +322,24 @@ impl Status {
 }
 
 /// Reads the node's state.
-pub(crate) fn read_status(session: &Session) -> Result<Status, String> {
+pub(crate) fn read_status(
+    session: &Session,
+    node: &EthRpc,
+    network: &str,
+) -> Result<Status, String> {
+    let authority =
+        crate::eth_authority::invoke(session, node, network, "public-status", json!({}))?;
     let out = session
         .run(&RemoteCommand::EthStatus, None)
         .map_err(|e| e.to_string())?;
-    Ok(Status::parse(&String::from_utf8_lossy(&out.stdout)))
+    let mut status = Status::parse(&String::from_utf8_lossy(&out.stdout));
+    status.current = authority["current"]
+        .as_str()
+        .map(|pair| format!("/opt/ethereum/{pair}"))
+        .unwrap_or_default();
+    status.jwt = authority["jwt"] == true;
+    status.snapshot_done = authority["bootstrapped"] == true;
+    Ok(status)
 }
 
 fn mb(bytes: Option<u64>) -> String {
@@ -495,7 +508,7 @@ pub fn status(args: &Args, json_out: bool) -> Outcome {
         let opened = open(&args.network, None, &say)?;
         let node = find(&opened.nodes, &args.name, &args.network)?.clone();
         let session = Session::open(&target(&node, &args.login)?).map_err(|e| e.to_string())?;
-        let s = read_status(&session)?;
+        let s = read_status(&session, &node, &args.network)?;
         let problems = s.problems(&node, opened.network.chain_id);
         Ok::<_, String>((node, s, problems))
     })();
@@ -505,8 +518,20 @@ pub fn status(args: &Args, json_out: bool) -> Outcome {
     }
 }
 
+fn journal_line(stream: Stream, line: &str, json_out: bool) -> (bool, String) {
+    let stdout = matches!(stream, Stream::Stdout);
+    if json_out {
+        (
+            true,
+            json!({"stream":if stdout{"stdout"}else{"stderr"},"line":line}).to_string(),
+        )
+    } else {
+        (stdout, line.to_owned())
+    }
+}
+
 /// Runs `erpc r --chain eth logs`.
-pub fn logs(args: &Args, layer: &str, lines: u32, follow: bool) -> Outcome {
+pub fn logs(args: &Args, layer: &str, lines: u32, follow: bool, json_out: bool) -> Outcome {
     let say = Say { quiet: true };
     let Some(layer) = Layer::parse(layer) else {
         return Outcome::Usage(format!(
@@ -517,6 +542,7 @@ pub fn logs(args: &Args, layer: &str, lines: u32, follow: bool) -> Outcome {
         let opened = open(&args.network, None, &say)?;
         let node = find(&opened.nodes, &args.name, &args.network)?.clone();
         let session = Session::open(&target(&node, &args.login)?).map_err(|e| e.to_string())?;
+        crate::eth_authority::invoke(&session, &node, &args.network, "public-status", json!({}))?;
         session
             .stream(
                 &RemoteCommand::EthLogs {
@@ -524,9 +550,13 @@ pub fn logs(args: &Args, layer: &str, lines: u32, follow: bool) -> Outcome {
                     lines,
                     follow,
                 },
-                &mut |stream, line| match stream {
-                    Stream::Stdout => crate::print_line(line),
-                    Stream::Stderr => eprintln!("{line}"),
+                &mut |stream, line| {
+                    let (stdout, text) = journal_line(stream, line, json_out);
+                    if stdout {
+                        crate::print_line(&text);
+                    } else {
+                        eprintln!("{text}");
+                    }
                 },
             )
             .map_err(|e| e.to_string())
@@ -579,10 +609,14 @@ pub fn service(args: &Args, action: Action, layer: &str, yes: bool, json_out: bo
             go_ahead(yes, "nothing was changed")?;
         }
         say.line(&format!("service    {verb}…"));
-        session
-            .run(&RemoteCommand::EthService { action, layer }, None)
-            .map_err(|e| e.to_string())?;
-        let s = read_status(&session)?;
+        crate::eth_authority::invoke(
+            &session,
+            &node,
+            &args.network,
+            verb,
+            json!({"layer":match layer{Layer::Both=>"both",Layer::Execution=>"execution",Layer::Consensus=>"consensus"}}),
+        )?;
+        let s = read_status(&session, &node, &args.network)?;
         Ok::<_, CliError>((node, s, opened.network.chain_id))
     })();
     match result {
@@ -595,7 +629,7 @@ pub fn service(args: &Args, action: Action, layer: &str, yes: bool, json_out: bo
                 return Outcome::Done(String::new());
             }
             Outcome::Done(format!(
-                "{}: reth {}, lighthouse {}. It starts again at boot; `erpc r --chain eth start` starts it now.",
+                "{}: reth {}, lighthouse {}. Startup remains fenced until an explicit `erpc r --chain eth start`.",
                 node.name, s.execution, s.consensus
             ))
         }
@@ -608,6 +642,18 @@ pub fn service(args: &Args, action: Action, layer: &str, yes: bool, json_out: bo
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn actual_journal_route_emits_compact_json_on_stdout_for_both_remote_streams() {
+        for stream in [erpc_ssh::Stream::Stdout, erpc_ssh::Stream::Stderr] {
+            let (stdout, line) = super::journal_line(stream, "one\r\ntwo\"", true);
+            assert!(stdout);
+            assert_eq!(line.lines().count(), 1);
+            let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(value["line"], "one\r\ntwo\"");
+        }
+        assert!(!super::journal_line(erpc_ssh::Stream::Stderr, "ordinary diagnostic", false).0);
+    }
+
     use erpc_chain::inventory::EthRpc;
     use erpc_ssh::arc::Layer;
 

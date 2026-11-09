@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Cancel and stop the owned Sui runtime using the sealed carried helper
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars_files: [vars.yml]
+  tasks:
+    - name: Authenticate scope and attempt shutdown even after cancellation persistence failure
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ sui_jinja }}/erpc-sui-control.py.j2", stop-owned, "{{ sui_network }}", "{{ sui_role }}", "{{ sui_genesis_sha256 }}"]

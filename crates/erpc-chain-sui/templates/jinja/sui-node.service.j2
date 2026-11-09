@@ -9,10 +9,14 @@ Requires=erpc-sui-firewall.service
 ConditionPathExists=/var/lib/sui/.bootstrap-complete
 
 [Service]
-ExecStartPre=+/usr/local/lib/erpc/erpc-sui-control.py runtime {{ sui_network }} {{ sui_role }} {{ sui_genesis_sha256 }}
+ExecCondition=+{{ sui_credential_condition }} credential-condition {{ sui_network }} {{ sui_role }} {{ sui_genesis_sha256 }}
+ExecStartPre=+{{ sui_service_guard }} open-release {{ sui_network }} {{ sui_role }} {{ sui_genesis_sha256 }}
 Type=simple
-User=sui
-Group=sui
+User={{ sui_runtime_account.uid }}
+Group={{ sui_runtime_account.gid }}
+SupplementaryGroups=
+DynamicUser=no
+LimitCORE=0
 WorkingDirectory=/var/lib/sui
 {% if sui_role == 'validator' %}
 LoadCredentialEncrypted=network.key:/etc/credstore.encrypted/sui-validator/network.key
@@ -25,6 +29,8 @@ ExecStart=/opt/sui/current/sui-node --config-path /etc/sui/node.yaml
 Restart=on-failure
 RestartSec=10
 TimeoutStopSec=600
+KillMode=control-group
+SendSIGKILL=no
 LimitNOFILE=1048576
 UMask=0077
 NoNewPrivileges=true

@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "sources": {
+    "mainnet": [
+      {
+        "cargo_lock_sha256": "d5ae4d5728e42e45637bee3ea3b9acbb3cc98df20f16e5b2c463f567006030f6",
+        "commit": "a203300045b405f86c9c84308b2eae76af69ac3b",
+        "rust": "1.97.1",
+        "rust_manifest_sha256": "03569b1886ceb5c05276b50c8431ab111de944cd6140fe1fa7d821dd8e0f29cf",
+        "version": "4.3.2"
+      }
+    ],
+    "testnet": [
+      {
+        "cargo_lock_sha256": "e153bced39cabfc15a4ee99cf8cc2e10952aaf59a13a3b1d1eaa6788a23da024",
+        "commit": "3ad9da2c390eb7ad2630ed15afcd463e72e007a8",
+        "rust": "1.98.1",
+        "rust_manifest_sha256": "a7c8774a5fd8441c997d94c029776cbc5eb111e9d72ab5d256fa69866644347e",
+        "version": "4.4.0-beta.1"
+      }
+    ]
+  },
+  "git_sources": {
+    "a203300045b405f86c9c84308b2eae76af69ac3b": [
+      "git+https://github.com/anza-xyz/crossbeam?rev=5ee1c6ec671d94db14ed9238eb99e59a84555aad#5ee1c6ec671d94db14ed9238eb99e59a84555aad",
+      "git+https://github.com/anza-xyz/rust-rocksdb?rev=4dba80dfe9434e595a971f5b2985ff9ba4fb31e7#4dba80dfe9434e595a971f5b2985ff9ba4fb31e7"
+    ],
+    "3ad9da2c390eb7ad2630ed15afcd463e72e007a8": [
+      "git+https://github.com/anza-xyz/crossbeam?rev=5ee1c6ec671d94db14ed9238eb99e59a84555aad#5ee1c6ec671d94db14ed9238eb99e59a84555aad",
+      "git+https://github.com/anza-xyz/rust-rocksdb?rev=4dba80dfe9434e595a971f5b2985ff9ba4fb31e7#4dba80dfe9434e595a971f5b2985ff9ba4fb31e7"
+    ]
+  }
+}

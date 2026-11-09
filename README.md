@@ -7,7 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # erpc
 
-**Run validators and RPC nodes on 12 chains, and your own apps on Linux servers.**
+**Run validators, RPC nodes and your own apps on 18 chains, with 1Password-backed access and key management.**
 
 One command line for your nodes, your apps and your [ERPC](https://erpc.global) account,
 and an assistant that runs it for you when you ask.
@@ -18,15 +18,18 @@ and an assistant that runs it for you when you ask.
 
 ## Where your keys are
 
-erpc stores keys in **1Password** or your operating system's keychain where it
-can, and hands a server only what it needs. What has to live on a server depends
+erpc uses **1Password** for node inventory and managed signing-key backups,
+and supports the operating system's keychain for operator credentials.
+A node process needs its runtime secrets, so what stays on a server depends
 on the chain: [Running nodes](docs/nodes.md#where-keys-are-kept) has the table.
 
-- **Solana validators.** The staked identity is kept in 1Password, and so is the
-  withdraw authority unless you give erpc only its public key. A deploy never copies the staked key to the node: it starts under
-  a throwaway identity, and the withdraw authority never goes to a server at all.
-- **Trading bots and Web3 apps.** An `erpc worker` app gets its wallet key from
-  1Password or the keychain, on a pipe, when it starts. The worker holds it in memory only, locked and
+- **Solana validators.** Original identities are retained in 1Password. A new
+  native validator syncs under a separate non-voting identity; voting needs
+  explicit registration and history checks. The withdrawal authority is not
+  imported into the node. Other chains have their own custody and admission
+  rules in the [node guides](docs/nodes.md).
+- **Trading bots and Web3 apps.** An `erpc worker` app gets its wallet key on
+  a pipe when it starts. The worker holds it in memory only, locked and
   undumpable; there is no `wallet.json`, no `.env`, no copy on disk. After a
   reboot the app stays locked until you send the key again.
 - **Secrets.** API tokens and RPC keys are stored as `op://…` or `keychain:…`
@@ -35,9 +38,14 @@ on the chain: [Running nodes](docs/nodes.md#where-keys-are-kept) has the table.
 - **Your team.** The node inventory lives in 1Password too. Share the vault
   and everyone on the team manages the same nodes from their own machine,
   with 1Password deciding who can do what.
-- **Keys that stay on a server.** Many nodes hold a key on the host. A Solana RPC
-  node's identity never leaves it, and an Ethereum validator's keystores and
-  unlock password live on it. Those hosts need backups of their own.
+- **Keys that stay on a server.** Many nodes hold a key on the host. An Ethereum
+  validator's keystores and unlock password live on it, and a Solana node on the
+  solv backend keeps a throwaway identity in plain text. Those hosts need backups
+  of their own.
+
+Node recovery must preserve the original identity and signing history.
+Follow the chain's recovery procedure before replacing a server or restoring
+its data; a key backup alone does not establish safe validator recovery.
 
 ## Install
 
@@ -103,45 +111,49 @@ cargo build --release
 </tr>
 </table>
 
-Eighteen chains are researched in [`docs/chains/`](docs/chains/README.md).
-erpc deploys **RPC nodes on 12** of them today and **validators on five**;
-Polygon, BNB Chain, Kaia, Monad, Hyperliquid and NEAR have their research and
-no backend yet, and `erpc rpc --chain polygon` says so rather than pretending.
-
-Two commands take a bare server to a running node. Every implemented chain
-uses the same verbs.
+`init` prepares a server and `deploy` installs and starts the node; every chain
+uses the same verbs. An Ethereum RPC node starts from a bare Ubuntu server
+(24.04 or later):
 
 ```bash
-erpc rpc init --chain ethereum        # check the server, pin the client release, store the node in 1Password
-erpc rpc deploy --chain ethereum      # install, fetch a snapshot, apply the firewall, start
-
-erpc validator init --chain solana -n testnet
-erpc validator deploy --chain solana -n testnet
-erpc validator status                 # health, slot and identity
+# check the server, pin the client releases, store the node in 1Password
+erpc rpc --chain ethereum -n mainnet --name eth1 init --host <address> --vault <vault id> --ssh-key ~/.ssh/id_ed25519.pub
+# install, fetch a snapshot, apply the firewall, start
+erpc rpc --chain ethereum -n mainnet --name eth1 deploy --ssh-key ~/.ssh/id_ed25519.pub
+# both layers, sync and head
+erpc rpc --chain ethereum -n mainnet --name eth1 status --ssh-key ~/.ssh/id_ed25519.pub
 ```
+
+Some chains need more in place first, and each chain's guide says what. A new
+Solana validator or RPC node needs three filesystems mounted and its keys
+already in 1Password: see [native Solana nodes](docs/solana-native.md). A
+Solana node whose server an earlier erpc recorded keeps the commands it was
+set up with.
 
 | | Chains |
 |---|---|
-| **RPC node** (`erpc rpc`) | Solana, Ethereum, Base, Optimism, Soneium, Arbitrum, Robinhood Chain, Avalanche, Bitcoin, Sui, TRON, Arc |
-| **Validator** (`erpc validator`) | Solana, Ethereum, Avalanche, Sui, TRON |
-| **Researched, not implemented** | Polygon, BNB Chain, Kaia, Monad, Hyperliquid, NEAR |
+| **RPC node** (`erpc rpc`) | all 18 |
+| **Validator** (`erpc validator`) | Solana, Ethereum, Avalanche, Sui, TRON, Polygon, BNB Chain, Kaia, Monad, Hyperliquid, NEAR, Arbitrum One, Robinhood Chain |
 
 Every deploy logs in over SSH with your key, from the 1Password SSH agent or
 `SSH_AUTH_SOCK`, and pins the host key. Most chains run the client as its own
 user that cannot log in, check each release against a pinned checksum, and
-apply an nftables firewall that rolls itself back unless a fresh connection
-still gets in. Not all of them do: Solana nodes run as a login user with
-passwordless sudo and fetch some tools without a checksum, and Solana
-validators, Ethereum validators and Bitcoin nodes get no firewall from erpc.
-[The node guide](docs/nodes.md) has the details.
+apply an nftables firewall that uses a timed rollback and requires a fresh
+management connection to confirm access. Not all of them do: a new Solana node
+is built on the server from a pinned source commit; a Solana node recorded on
+the earlier solv backend runs as a login user with passwordless sudo and
+fetches some tools without a checksum; and solv Solana validators, Ethereum
+validators and Bitcoin nodes get no firewall from erpc.
+[Running nodes](docs/nodes.md) has the details. Retain an independent way to
+reach the host during network changes.
 
 `init`, `deploy`, `status`, `logs`, `start`, `stop`, `restart`, `update`,
-`update-config`, `plan` and `destroy` work the same on every implemented chain
-except Solana validators, which have `init`, `deploy`, `list`, `status`, `keys`
-and `vote-account` so far. Live acceptance on real hosts is still under way for
-most chains. [Running nodes](docs/nodes.md) has the clients, networks and guides
-for each chain, and the [chain source map](docs/chains/README.md) says where
-each one stands.
+`update-config`, `plan` and `destroy` work the same on every chain, except
+that a Solana validator on the solv backend has only `init`, `deploy` and
+`status` of them, besides `list`, `keys`, `vote-account`, `registration` and
+`migration`. Live acceptance on real hosts is still under way for most chains.
+[Running nodes](docs/nodes.md) has the clients, networks and guides for each
+chain, and the [chain source map](docs/chains/README.md) where each one stands.
 
 ## `erpc ai`: just ask
 
@@ -171,6 +183,59 @@ them for you.
 `erpc skills install --agent claude` gives the same knowledge to Claude Code
 or another agent. What the assistant can see, and what it never sees, is in
 [the assistant guide](docs/ai.md) and [SECURITY.md](SECURITY.md#what-the-assistant-reads).
+
+## RPC calls and webhooks
+
+Use your signed-in ERPC account to call Solana or Ethereum mainnet. The CLI
+selects the shared endpoint from the method, or you can select the network.
+
+```sh
+erpc login
+erpc rpc call getSlot
+erpc --json rpc call eth_getBlockByNumber '["latest", false]' --network ethereum-mainnet
+erpc rpc call eth_call --params-file params.json
+printf '%s' '["finalized", false]' | erpc rpc call eth_getBlockByNumber -
+erpc rpc call getHealth --endpoint-url http://127.0.0.1:8899
+```
+
+For pay-per-call access without an account, request an x402 quote. To pay,
+run the command without `--quote` at a terminal. The CLI shows the amount,
+asks for confirmation and signs the quoted Base EURC payment with the wallet
+configured by `erpc wallet create`. Keep EURC on Base in that wallet.
+
+```sh
+erpc rpc call getSlot --network solana-mainnet --x402 --quote
+erpc rpc call eth_blockNumber --x402
+```
+
+A local webhook subscribes to the RPC WebSocket and POSTs events to your URL.
+Start a receiver, create the subscription, then run the **ID returned by create**
+in a terminal or under your process supervisor.
+
+```sh
+erpc webhook create --name slots --network solana-mainnet \
+  --url http://127.0.0.1:8080/events --method slotSubscribe
+erpc webhook create --name heads --network ethereum-mainnet \
+  --url http://127.0.0.1:8080/events --method eth_subscribe --params '["newHeads"]'
+erpc webhook list
+erpc webhook run 1
+```
+
+For wallet activity on Solana, use `--template solana-wallet --wallet ADDRESS`
+in place of `--method`. For Ethereum contract logs, use
+`--template evm-contract-events --address CONTRACT`.
+
+Each POST contains `webhook_id`, `network` and the original JSON-RPC
+`notification`. Return HTTP 2xx to accept it. Delivery starts at the current
+live subscription. A disconnect or failed callback ends the runner with a
+nonzero status. Restarting subscribes to new events. Use `--once` to test a
+single delivery or `--endpoint-url` on `run` to supply your own WebSocket RPC.
+
+`webhook show ID`, `list` and `enabled-count` inspect local configuration.
+`pause ID` disables delivery, `activate ID` enables a later `run`, and
+`delete ID` removes the definition. Pass `--yes` for these changes in scripts.
+Generate shell completions with `erpc completions zsh` (also bash, fish,
+powershell and elvish).
 
 ## `erpc worker`: your app as a tuned Rust binary
 
@@ -223,13 +288,13 @@ See [storage encryption](docs/storage-encryption.md) and [backups](docs/backup.m
 
 ## Free to start
 
-`erpc validator` and `erpc rpc` are free and need no account. Install and go.
+Validator and RPC node lifecycle commands are free and need no account. Install and go.
 
 An account at [dashboard.erpc.global](https://dashboard.erpc.global) unlocks the rest:
 
 | Command | No account | With an account |
 |---|:---:|:---:|
-| `erpc validator`, `erpc rpc` | ✅ | ✅ |
+| Validator and RPC node lifecycle | ✅ | ✅ |
 | `erpc ai` | | ✅ |
 | `erpc worker` | | ✅ |
 | `erpc storage`, `erpc backup` | | ✅ |

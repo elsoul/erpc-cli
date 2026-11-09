@@ -9,7 +9,7 @@
   tasks:
     - name: Refuse foreign ownership and insufficient capacity before host changes
       ansible.builtin.command:
-        argv: [python3, "{{ playbook_dir }}/control.py", play]
+        argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/control.py", play]
         stdin: "{{ nitro_request | combine({'action':nitro_prepare_action}) | to_json }}"
       changed_when: false
 
@@ -51,3 +51,9 @@
       loop:
         - {source: control.py, name: nitro-control}
         - {source: upstreams.py, name: nitro-upstreams.py}
+
+    - name: Recheck the complete published helper pair from the sealed carried source
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/control.py", published-play]
+        stdin: "{{ nitro_request | combine({'action':'verify-helpers'}) | to_json }}"
+      changed_when: false

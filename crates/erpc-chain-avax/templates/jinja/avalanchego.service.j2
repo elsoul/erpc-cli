@@ -3,21 +3,29 @@ Description=ERPC AvalancheGo ({{ avax_network }})
 After=network-online.target erpc-avax-firewall.service
 Wants=network-online.target
 [Service]
-User=avalanchego
-Group=avalanchego
+User={{ avax_runtime_account.uid }}
+Group={{ avax_runtime_account.gid }}
+SupplementaryGroups=
+DynamicUser=no
+LimitCORE=0
+WorkingDirectory=/var/lib/avalanchego
+Environment=HOME=/var/lib/avalanchego
 UMask=0077
-ExecStartPre=/usr/bin/python3 /usr/local/lib/erpc/avax-identity.py guard
-ExecStart=/opt/avalanchego/current/avalanchego --config-file=/etc/avalanchego/node.json
-ExecStartPost=/usr/bin/python3 /usr/local/lib/erpc/avax-identity.py seal
+ExecCondition=+{{ avax_control_condition }} native-condition
+ExecStartPre=+{{ avax_control_unit }} native-guard
+ExecStart=/usr/bin/env -i HOME=/var/lib/avalanchego PATH=/usr/sbin:/usr/bin:/sbin:/bin /opt/avalanchego/current/avalanchego --config-file=/etc/avalanchego/node.json
+ExecStartPost=+{{ avax_control_unit }} seal
 Restart=on-failure
 RestartSec=10
 TimeoutStartSec=120
 TimeoutStopSec=180
+KillMode=control-group
+SendSIGKILL=no
 LimitNOFILE=65536
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/avalanchego
+ReadWritePaths=/var/lib/avalanchego /etc/avalanchego
 [Install]
 WantedBy=multi-user.target

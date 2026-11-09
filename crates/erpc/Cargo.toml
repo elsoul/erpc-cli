@@ -21,12 +21,16 @@ name = "erpc"
 path = "src/main.rs"
 
 [dependencies]
+erpc-chain-hyperliquid.workspace = true
 getrandom.workspace = true
 erpc-auth = { workspace = true }
 erpc-api = { workspace = true }
 tokio = { workspace = true }
 erpc-secret = { workspace = true }
 erpc-wallet.workspace = true
+erpc-x402.workspace = true
+clap_complete.workspace = true
+tokio-tungstenite.workspace = true
 # `string` for help headings in the language of the run (src/i18n.rs).
 clap = { workspace = true, features = ["string"] }
 serde.workspace = true
@@ -42,16 +46,21 @@ zeroize.workspace = true
 tempfile.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
-futures-util.workspace = true
+futures-util = { workspace = true, features = ["sink"] }
 unicode-width.workspace = true
 erpc-ai.workspace = true
 erpc-skills.workspace = true
 erpc-chain.workspace = true
 erpc-chain-solana.workspace = true
+erpc-chain-solana-native.workspace = true
 base64.workspace = true
 erpc-chain-arc.workspace = true
 erpc-chain-eth.workspace = true
 erpc-chain-nitro.workspace = true
+erpc-chain-near.workspace = true
+
+erpc-chain-bsc.workspace = true
+erpc-chain-kaia.workspace = true
 erpc-chain-rollup.workspace = true
 include_dir.workspace = true
 sha2.workspace = true
@@ -59,6 +68,8 @@ aws-lc-rs.workspace = true
 erpc-chain-avax.workspace = true
 erpc-chain-sui.workspace = true
 erpc-chain-tron.workspace = true
+erpc-chain-monad.workspace = true
+erpc-chain-polygon.workspace = true
 erpc-chain-bitcoin.workspace = true
 erpc-chain-op.workspace = true
 erpc-ops.workspace = true
@@ -67,6 +78,7 @@ erpc-core.workspace = true
 erpc-worker = { workspace = true, features = ["templates"] }
 
 [target.'cfg(unix)'.dependencies]
+libc.workspace = true
 signal-hook.workspace = true
 
 [dev-dependencies]

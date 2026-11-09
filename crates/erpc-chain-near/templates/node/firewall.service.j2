@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+[Unit]
+Description=ERPC NEAR confirmed ingress policy
+DefaultDependencies=no
+After=nftables.service
+Before=network-pre.target shutdown.target near-node.service
+Wants=network-pre.target
+Conflicts=shutdown.target
+RequiresMountsFor=/opt/erpc /etc/erpc/near
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart={{ near_systemd_control }} firewall-load
+
+[Install]
+WantedBy=multi-user.target

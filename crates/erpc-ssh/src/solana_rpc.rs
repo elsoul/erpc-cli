@@ -116,7 +116,7 @@ pub(crate) fn logs(source: LogSource, lines: u32, follow: bool) -> String {
 /// Runs the firewall confirmation helper.
 pub(crate) fn confirm_firewall(token: &crate::firewall::FirewallToken) -> String {
     format!(
-        "sudo -n python3 /usr/local/lib/erpc/rpc-firewall.py solana-rpc confirm {} {}",
+        "sudo -n /usr/bin/python3 -I /usr/local/lib/erpc/rpc-firewall.py solana-rpc confirm {} {}",
         token.run.as_str(),
         token.bundle
     )

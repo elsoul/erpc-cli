@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3 -I
 # SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
 # SPDX-License-Identifier: Apache-2.0
 """Dedicated Nitro follower: persistent ownership before every host mutation."""
@@ -10,12 +10,16 @@ from pathlib import Path
 import re
 import resource
 import shutil
+import stat
 import subprocess
 import sys
 import time
 import urllib.request
 
 ROOT = Path('/var/lib/erpc-nitro')
+TRUST_ANCHOR = Path('/')
+ROOT_UID = 0
+NAMESPACE = Path('/usr/local/lib/erpc')
 CONF = Path('/etc/erpc/nitro')
 LOCK = Path('/run/lock/erpc-nitro.lock')
 OPERATION_ROOT = Path('/opt/erpc')
@@ -104,22 +108,85 @@ def active(name):
     return run(['systemctl', 'is-active', name], allowed=(0, 3, 4)).decode().strip()
 
 
+def protected_directory(path, missing=False):
+    current = TRUST_ANCHOR
+    require(path.is_absolute() and os.path.normpath(path) == str(path), 'invalid protected Nitro directory')
+    for part in (None, *path.relative_to(TRUST_ANCHOR).parts):
+        if part is not None:
+            current = current / part
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            require(missing, 'protected Nitro ancestor is missing')
+            continue
+        require(stat.S_ISDIR(info.st_mode) and info.st_uid == ROOT_UID and info.st_mode & 0o022 == 0,
+                'Nitro state and helpers require protected real root-owned ancestors')
+
+
+def protected_root():
+    protected_directory(ROOT, missing=True)
+
+
+def control_destination(expected=None):
+    # A sealed upload does not make an existing installed namespace trustworthy.
+    # Only the final erpc directory may be absent; never adopt an unsafe parent.
+    protected_directory(NAMESPACE.parent)
+    protected_directory(NAMESPACE, missing=True)
+    pending = [NAMESPACE] if NAMESPACE.exists() else []
+    while pending:
+        with os.scandir(pending.pop()) as children:
+            for child in children:
+                info = child.stat(follow_symlinks=False)
+                require(info.st_uid == ROOT_UID and info.st_mode & 0o022 == 0,
+                        'installed Nitro helper namespace contains untrusted content')
+                if stat.S_ISDIR(info.st_mode):
+                    pending.append(Path(child.path))
+                else:
+                    require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1,
+                            'installed Nitro helpers cannot be links or special files')
+    path = NAMESPACE / 'nitro-control'
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        require(expected is None, 'published Nitro controller is missing')
+        return
+    require(stat.S_ISREG(info.st_mode) and info.st_uid == ROOT_UID and
+            info.st_mode & 0o022 == 0 and info.st_nlink == 1,
+            'installed Nitro controller is not a protected ordinary file')
+    if expected is not None:
+        require(info.st_size <= 256 * 1024 and hashlib.sha256(path.read_bytes()).hexdigest() == expected,
+                'published Nitro controller differs from the sealed carried source')
+
+
 def state_read():
+    protected_root()
     path = ROOT / 'owner.json'
     require(not ROOT.is_symlink() and path.is_file() and not path.is_symlink(), 'Nitro ownership missing or unsafe')
+    info = path.stat()
+    require(info.st_uid == ROOT_UID and info.st_mode & 0o077 == 0 and info.st_nlink == 1 and info.st_size <= 65536, 'unsafe Nitro ownership file')
     state = json.loads(path.read_text())
     validate(state)
+    if isinstance(state.get('phase'), str) and state['phase'].startswith('v2:'):
+        require(state.get('lifecycle_schema') == 2, 'incomplete Nitro lifecycle migration')
+        state['phase'] = state['phase'][3:]
+    elif 'lifecycle_schema' in state:
+        raise Refused('invalid Nitro lifecycle format')
+    require(type(state.get('generation', 0)) is int and 0 <= state.get('generation', 0) < 2**63, 'invalid Nitro cancellation generation')
     require(state.get('phase') in ('prepared', 'installing', 'installed', 'retired'), 'unknown Nitro ownership format')
     return state
 
 
 def save(state):
+    protected_root()
     temporary = ROOT / 'owner.new'
     require(not temporary.is_symlink(), 'unsafe ownership file')
     temporary.unlink(missing_ok=True)
     fd = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_WRONLY, 0o600)
     with os.fdopen(fd, 'w') as stream:
-        json.dump(state, stream)
+        # Old carried/installed helpers reject this phase before mutation. They
+        # cannot silently erase a stop fence or restart a cancelled deployment.
+        stored = dict(state, lifecycle_schema=2, phase='v2:' + state['phase'])
+        json.dump(stored, stream)
         stream.flush()
         os.fsync(stream.fileno())
     os.replace(temporary, ROOT / 'owner.json')
@@ -174,7 +241,9 @@ def capacity(state):
 
 
 def prepare(request):
+    protected_root()
     validate(request)
+    control_destination()
     require(not ROOT.is_symlink(), 'unsafe Nitro root')
     if (ROOT / 'owner.json').exists():
         state = state_read()
@@ -188,9 +257,14 @@ def prepare(request):
             require(not loaded('erpc-' + family + '-' + component), 'unowned Nitro service exists')
     require(not (ROOT / 'data').exists(), 'unowned Nitro data cannot be adopted')
     check_container(request)
-    state = dict(contract(request), version=request['version'], commit=request['commit'], config_id=request['config_id'], phase='prepared')
+    state = dict(contract(request), version=request['version'], commit=request['commit'], config_id=request['config_id'], phase='prepared', startup_revoked=True, generation=0)
     capacity(state)
     ROOT.mkdir(mode=0o755, parents=True, exist_ok=True)
+    fd = os.open(ROOT.parent, os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
     save(state)
     return {'phase': 'prepared'}
 
@@ -235,12 +309,13 @@ def firewall(state):
     receipt = state.get('firewall')
     require(isinstance(receipt, dict) and set(receipt) == {'run', 'bundle'}, 'confirmed firewall receipt missing')
     require(re.fullmatch('[a-z0-9-]{1,80}', receipt['run']) and re.fullmatch('[a-f0-9]{64}', receipt['bundle']), 'invalid firewall receipt')
-    run(['python3', '/usr/local/lib/erpc/rpc-firewall.py', state['family'], 'require-confirmed', receipt['run'], receipt['bundle']])
+    run(['/usr/bin/python3', '-I', '/usr/local/lib/erpc/rpc-firewall.py', state['family'], 'require-confirmed', receipt['run'], receipt['bundle']])
 
 
 def guard(state):
     check(state, state)
     require(state['phase'] == 'installed' and state.get('installed') == pin(state), 'Nitro installation is incomplete or retired')
+    require(state.get('startup_revoked', False) is False, 'Nitro startup is persistently revoked')
     capacity(state)
     artifacts(state)
     firewall(state)
@@ -331,6 +406,10 @@ def install_upstreams(state, request):
     validating = request.get('action') == 'validate-upstreams'
     require(validating or state['phase'] in ('prepared', 'installing'), 'upstream changes require a prepared or fenced installation')
     if not validating:
+        if state['phase'] == 'installing':
+            check_deploy(state, request)
+        else:
+            require(state.get('generation', 0) == 0 and state.get('target') is None, 'cancelled preparation cannot install credentials')
         require(request['config_id'] == state.get('target', state)['config_id'], 'upstream installation belongs to another desired configuration')
     raw = request.get('secret')
     require(isinstance(raw, str) and 0 < len(raw.encode()) <= 65536, 'invalid concealed upstream data')
@@ -352,6 +431,11 @@ def install_upstreams(state, request):
     with temporary.open('rb') as stream:
         os.fsync(stream.fileno())
     os.replace(temporary, CONF / 'l1-upstreams.cred')
+    fd = os.open(CONF, os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
     return {'upstreams': 'encrypted and parent identity verified'}
 
 
@@ -410,7 +494,9 @@ def latest(port):
 def status(state):
     result = {'phase': state['phase'], 'network': state['network'], 'family': state['family'],
               'service': active(unit(state)), 'upstreams': active(unit(state, 'upstreams')), 'ready': False,
-              'installed': state.get('installed'), 'target': state.get('target')}
+              'installed': state.get('installed'), 'target': state.get('target'),
+              'startup_revoked': state.get('startup_revoked', False), 'generation': state.get('generation', 0),
+              'controller_protocol': 2}
     try:
         firewall(state)
         result['firewall_confirmed'] = True
@@ -431,7 +517,7 @@ def status(state):
         parent_block, parent_age = latest(18545)
         result.update(syncing=sync, block=block['number'], block_age_seconds=age,
                       parent_block=parent_block['number'], parent_block_age_seconds=parent_age)
-        result['ready'] = (state['phase'] == 'installed' and result['service'] == 'active' and
+        result['ready'] = (state.get('startup_revoked', False) is False and state['phase'] == 'installed' and result['service'] == 'active' and
                            result['upstreams'] == 'active' and result['firewall_confirmed'] and
                            sync is False and -120 <= age <= 600 and -120 <= parent_age <= 600)
     except Exception:
@@ -439,21 +525,70 @@ def status(state):
     return result
 
 
+def deployment_intent(request):
+    value = request.get('intent')
+    require(isinstance(value, str) and re.fullmatch('[a-f0-9]{32}', value), 'invalid Nitro deployment intent')
+    return value
+
+
+def check_authorize(state, request):
+    generation = request.get('generation')
+    require(type(generation) is int and generation == state.get('generation', 0), 'Nitro lifecycle changed; observe the owner again')
+    deployment_intent(request)
+    target = pin(request)
+    if 'target' in state:
+        require(state['target'] == target, 'resume interrupted installation at its exact target')
+    return target
+
+
+def check_deploy(state, request):
+    require(state.get('deploy_intent') == deployment_intent(request) and
+            state.get('deploy_target') == pin(request), 'Nitro deployment cancelled or superseded')
+
+
+def cancel(state):
+    generation = state.get('generation', 0)
+    require(type(generation) is int and 0 <= generation < 2**63 - 1, 'Nitro cancellation generation exhausted')
+    state.update(generation=generation + 1, deploy_intent=None, deploy_target=None, startup_revoked=True)
+
+
 def dispatch(state, request):
     check(state, request)
     action = request.get('action')
+    if action == 'verify-helpers':
+        control_destination(hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
+        source = Path(__file__).with_name('upstreams.py')
+        file_hash(NAMESPACE / 'nitro-upstreams.py', hashlib.sha256(source.read_bytes()).hexdigest())
+        return {'helpers': 'published from the sealed source'}
+    if action == 'capabilities':
+        return {'controller_protocol': 2}
+    if action == 'check-owner':
+        control_destination()
+        return {'owner': 'verified'}
+    if action in ('check-authorize', 'authorize-deploy'):
+        control_destination()
+        target = check_authorize(state, request)
+        if action == 'authorize-deploy':
+            state.update(deploy_intent=deployment_intent(request), deploy_target=target)
+            save(state)
+        return {'authorized': True}
+    if action in ('check-deploy', 'begin-install', 'pull-image', 'finish-install'):
+        check_deploy(state, request)
+    if action == 'check-deploy':
+        return {'authorized': True}
     if action == 'status':
         return status(state)
     if action in ('install-upstreams', 'validate-upstreams'):
         return install_upstreams(state, request)
     if action == 'begin-install':
+        control_destination()
         target = pin(request)
         capacity(state)
         previous = state.get('installed', pin(state))['version']
         require(tuple(map(int, target['version'].split('.'))) >= tuple(map(int, previous.split('.'))), 'Nitro database downgrades are refused')
         if state['phase'] == 'installing':
             require(state['target'] == target, 'resume interrupted installation at the same release')
-        state.update(phase='installing', target=target)
+        state.update(phase='installing', target=target, startup_revoked=True)
         save(state)
         stop(state)
         return {'phase': 'installing'}
@@ -468,29 +603,53 @@ def dispatch(state, request):
         verify_image(request)
         uid, gid = request.get('service_uid'), request.get('service_gid')
         require(all(type(value) is int and 100 <= value <= 65534 for value in (uid, gid)), 'invalid Nitro service identity')
-        state.update(service_uid=uid, service_gid=gid)
-        state['installed'] = state.pop('target')
-        state.update(version=request['version'], commit=request['commit'], config_id=request['config_id'])
-        state['firewall'] = request['firewall']
-        state['phase'] = 'installed'
-        save(state)
-        guard(state)
+        candidate = dict(state, service_uid=uid, service_gid=gid, installed=state['target'],
+                         version=request['version'], commit=request['commit'], config_id=request['config_id'],
+                         firewall=request['firewall'], phase='installed', startup_revoked=False)
+        candidate.pop('target')
+        guard(candidate)
+        save(candidate)
         return {'phase': 'installed'}
-    if action in ('start', 'restart'):
+    if action in ('start', 'restart', 'operator-start', 'operator-restart'):
         require(pin(request) == state.get('installed'), 'inventory configuration differs; resume deployment')
-        guard(state)
+        if action.startswith('operator-'):
+            require('intent' not in request and type(request.get('generation')) is int and request['generation'] == state.get('generation', 0), 'explicit Nitro startup observed a stale lifecycle')
+            cancel(state)
+            action = action.removeprefix('operator-')
+        else:
+            # Old queued playbooks supplied no intent: they must never be
+            # interpreted as a new operator start after a cancellation.
+            check_deploy(state, request)
+        candidate = dict(state, startup_revoked=False)
+        guard(candidate)
         if action == 'restart':
+            state['startup_revoked'] = True
+            save(state)
             stop(state)
+        save(candidate)
         for component in ('upstreams', 'nitro'):
             run(['systemctl', 'enable', unit(state, component)])
             run(['systemctl', 'start', unit(state, component)], timeout=240)
             require(active(unit(state, component)) == 'active', 'Nitro service did not start')
-        return status(state)
+        candidate.update(deploy_intent=None, deploy_target=None)
+        save(candidate)
+        return status(candidate)
     if action in ('stop', 'destroy'):
-        require(state['phase'] != 'installing', 'finish interrupted installation first')
+        cancel(state)
         if action == 'destroy':
             state['phase'] = 'retired'
+        try:
             save(state)
+        except Exception:
+            # Even failed fence publication must attempt owned shutdown. Never
+            # claim durable cancellation when the storage write did not succeed.
+            try:
+                stop(state)
+            finally:
+                for component in ('nitro', 'upstreams'):
+                    if loaded(unit(state, component)):
+                        run(['systemctl', 'disable', unit(state, component)])
+            raise Refused('Nitro stopped but cancellation could not be persisted; repair ownership storage') from None
         stop(state)
         for component in ('nitro', 'upstreams'):
             if loaded(unit(state, component)):
@@ -536,10 +695,12 @@ def main():
         if sys.argv[1:] == ['guard-node']:
             wait_upstreams(state)
         return
-    require(sys.argv[1:] in ([], ['play']), 'unsupported controller invocation')
+    require(sys.argv[1:] in ([], ['play'], ['published-play']), 'unsupported controller invocation')
+    if sys.argv[1:] == ['published-play']:
+        control_destination(hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
     raw = sys.stdin.buffer.read(262145)
     require(len(raw) <= 262144, 'request too large')
-    print(json.dumps(locked(json.loads(raw), in_play=sys.argv[1:] == ['play'])))
+    print(json.dumps(locked(json.loads(raw), in_play=sys.argv[1:] in (['play'], ['published-play']))))
 
 
 if __name__ == '__main__':

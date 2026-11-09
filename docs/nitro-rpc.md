@@ -122,6 +122,12 @@ The twelve verbs are `init`, `deploy`, `list`, `status`, `logs`, `start`, `stop`
 `restart`, `plan`, `update`, `update-config`, and `destroy`. Always select the
 network explicitly. Production mutations require an explicit `--chain` too.
 
+With `--json`, `logs` writes each native or SSH diagnostic line as a compact
+`{"journal":"..."}` record on stdout, followed by the compact completion record.
+A failed stream returns the normal JSON error record instead of a success
+record. Embedded line breaks are escaped, so every stdout line is independently
+parseable JSON. Human-mode journal output remains on stderr.
+
 `init` retries only an unfinished preparation. An installed, installing or retired
 host must use `deploy`; initialization cannot replace a running service helper.
 
@@ -160,3 +166,39 @@ private service arguments and public metadata hashes. No container/node image,
 production credential or transaction was executed. The live batch must separately
 record all five networks' bootstrap/sync, parent blob access, RPC/WS queries, restart,
 reboot, capacity behavior and failed-update recovery.
+
+## Interrupted installation and explicit cancellation
+
+`stop` and `destroy` remain available while installation is incomplete. They
+verify the immutable owner first, persist the startup fence and cancel the
+current deployment intent before draining the owned services/container. They
+do not require deployment hardware/capacity checks or a healthy RPC endpoint.
+An already installed compatible controller stops without uploading a new bundle.
+For an older or interrupted controller installation, a short carried recovery
+play checks ownership and the real root-owned helper namespace/ancestors before
+publishing the current controller. Unsafe existing directories, links, file
+owners or write permissions are refused without adopting them. Its final action
+executes the sealed carried source, rechecks destination trust and verifies the
+copied controller digest before changing owner state. Installed controller probes
+use the shared isolated trusted-directory loader before executing any helper.
+Ordinary initialization, retries and update preparation enforce the same
+namespace checks before publication and verify both copied helpers against the
+sealed controller and L1 transport source afterward.
+The data, credentials and ownership record remain retained.
+
+Every deployment authorization binds the observed cancellation generation and
+one new caller intent to its reviewed target. Credential installation, firewall
+preparation, image installation, completion and queued startup check that intent.
+A stop between any two stages rejects the old continuation; a fresh explicit
+`deploy` can resume the retained target. Explicit `start` can reopen a fully
+installed stopped node, while an incomplete installation must first resume
+`deploy`. An invalid or failed final guard leaves the installation fenced.
+
+The root-owned state file atomically records both cancellation and its startup
+fence. Its parent and every ancestor must also be protected from replacement;
+unsafe directory ownership, permissions or symlinks are refused without adopting
+them. Upgraded state uses a versioned phase that older controllers reject before
+mutation, so an old queued bundle cannot erase the new cancellation fields.
+Keep the current CLI for future operations on that owner. If storage prevents
+fence publication, the controller still attempts owned shutdown and reports a
+failure rather than claiming durable cancellation.

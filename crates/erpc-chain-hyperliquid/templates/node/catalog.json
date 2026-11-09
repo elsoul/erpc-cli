@@ -1,0 +1,49 @@
+{
+  "schema": 1,
+  "qualified_at": "2026-10-27",
+  "instructions_commit": "405cc08b17a727ee51b0f9128918955a84439915",
+  "child_update_policy": "vendor-managed signed rolling child",
+  "node_source_commit": null,
+  "node_stable_tag": null,
+  "public_key": {
+    "url": "https://raw.githubusercontent.com/hyperliquid-dex/node/405cc08b17a727ee51b0f9128918955a84439915/pub_key.asc",
+    "sha256": "586b5d1104da3b16df92f3901afa567231f813ae74f0660425c8dc07fb1a9872",
+    "primary_fingerprint": "CF2C2EA3DC3E8F042A55FB6503254A9349F1820B"
+  },
+  "networks": {
+    "mainnet": {
+      "chain": "Mainnet",
+      "chain_id": 999,
+      "info_url": "https://api.hyperliquid.xyz/info",
+      "reference_rpc": "https://rpc.hyperliquid.xyz/evm",
+      "genesis_hash": null,
+      "supervisor": {
+        "id": "visor-89338207c793d80a",
+        "url": "https://binaries.hyperliquid.xyz/Mainnet/hl-visor",
+        "size": 8305392,
+        "sha256": "89338207c793d80ac2fba75bb0d36c659e2cabc87a94e61a57ba532b8d212e31",
+        "signature_url": "https://binaries.hyperliquid.xyz/Mainnet/hl-visor.asc",
+        "signature_sha256": "21c92eebdb66307ad4a41e4d38b78c7534ac21e2c1c62f6075bfb2645deb91ce",
+        "architecture": "x86_64",
+        "signed_at": 1788946154
+      }
+    },
+    "testnet": {
+      "chain": "Testnet",
+      "chain_id": 998,
+      "info_url": "https://api.hyperliquid-testnet.xyz/info",
+      "reference_rpc": "https://rpc.hyperliquid-testnet.xyz/evm",
+      "genesis_hash": null,
+      "supervisor": {
+        "id": "visor-9190ff844064ec87",
+        "url": "https://binaries.hyperliquid-testnet.xyz/Testnet/hl-visor",
+        "size": 8312976,
+        "sha256": "9190ff844064ec879778f1441488d0384ae74c83fb30720296118638bf408b83",
+        "signature_url": "https://binaries.hyperliquid-testnet.xyz/Testnet/hl-visor.asc",
+        "signature_sha256": "941808c65c948f9f7a7202a4ae9d580be561468b08e7b6dba00b3457a23cd918",
+        "architecture": "x86_64",
+        "signed_at": 1788863627
+      }
+    }
+  }
+}

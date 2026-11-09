@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+- name: Activate the exact confirmed Monad deployment
+  hosts: all
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Require a current deployment intent and exact confirmed firewall before changes
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, '{{ playbook_dir }}/../../node/control.py', within-run]
+        stdin: '{{ monad_request | combine({"operation": "confirmed", "run": erpc_fw_confirmed_run, "bundle": erpc_fw_confirmed_bundle}) | to_json }}'
+      changed_when: false
+    - name: First-create or preserve the raw TrieDB under explicit authorization
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, '{{ playbook_dir }}/../../node/control.py', within-run]
+        stdin: '{{ monad_request | combine({"operation": "initialize-device", "explicit": monad_initialize_device | bool}) | to_json }}'
+      changed_when: true
+    - name: Install the source-qualified public config and guarded native units
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, '{{ playbook_dir }}/../../node/control.py', within-run]
+        stdin: '{{ monad_request | combine({"operation": "configure", "run": erpc_fw_confirmed_run, "bundle": erpc_fw_confirmed_bundle, "rpc_allow": monad_rpc_allow, "monitoring_allow": monad_monitoring_allow}) | to_json }}'
+      changed_when: true
+    - name: Publish the completed immutable target receipt
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, '{{ playbook_dir }}/../../node/control.py', within-run]
+        stdin: '{{ monad_request | combine({"operation": "finish", "run": erpc_fw_confirmed_run, "bundle": erpc_fw_confirmed_bundle}) | to_json }}'
+      changed_when: true
+    - name: Start only the matching target and consume activation authority
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, '{{ playbook_dir }}/../../node/control.py', within-run]
+        stdin: '{{ monad_request | combine({"operation": "activate"}) | to_json }}'
+      changed_when: true

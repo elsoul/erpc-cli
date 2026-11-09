@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+[Unit]
+Description=ERPC BSC public registration and synchronization observer
+After=erpc-bsc.service
+Requires=erpc-bsc.service
+
+[Service]
+Type=oneshot
+UMask=0077
+LimitCORE=0
+ExecStart=@ERPC_BSC_CONTROL@ activate
+# Permit bounded IPC inspection plus the existing 1800-second graceful writer
+# shutdown fallback; a durable startup fence precedes that fallback.
+TimeoutStartSec=2100
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/erpc /run/lock /var/lib/erpc-bsc
+# Missing custody must reach the observer's stop path, not fail mount setup.
+ReadOnlyPaths=-/var/lib/erpc-bsc/data -/var/lib/erpc-bsc/identity -/var/lib/erpc-bsc/signer

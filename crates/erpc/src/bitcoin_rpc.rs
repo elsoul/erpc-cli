@@ -90,6 +90,7 @@ fn host_check(facts: &Facts) -> Result<Platform, String> {
         .ok_or_else(|| "Bitcoin release platform must be Linux x86_64 or aarch64".into())
 }
 fn request(node: &BitcoinRpc, network: Network, action: &str) -> Result<Value, String> {
+    use sha2::{Digest as _, Sha256};
     storage(node)?;
     let version = Version::parse(&node.version).map_err(|e| e.to_string())?;
     let platform = Platform::parse(&node.platform).ok_or("invalid stored platform")?;
@@ -100,8 +101,18 @@ fn request(node: &BitcoinRpc, network: Network, action: &str) -> Result<Value, S
     {
         return Err("invalid stored release pin".into());
     }
+    let binding = serde_json::to_vec(&json!([
+        "erpc-bitcoin-original-host-v1",
+        node.address,
+        node.ssh_user,
+        node.ssh_port,
+        node.host_key
+    ]))
+    .map_err(|_| "cannot encode original Bitcoin host binding")?;
     Ok(
-        json!({"owner":owner(node)?,"network":network.name(),"storage":node.storage,"prune_mib":node.prune_mib,"action":action,"pin":{"version":version.as_str(),"commit":node.commit,"sha256":node.sha256,"platform":platform.target()}}),
+        json!({"owner":owner(node)?,"network":network.name(),"storage":node.storage,"prune_mib":node.prune_mib,
+        "action":action,"host_binding":format!("{:x}",Sha256::digest(binding)),
+        "pin":{"version":version.as_str(),"commit":node.commit,"sha256":node.sha256,"platform":platform.target()}}),
     )
 }
 fn control(
@@ -110,11 +121,127 @@ fn control(
     network: Network,
     action: &str,
 ) -> Result<Value, String> {
-    let body = request(node, network, action)?.to_string();
+    control_request(session, &request(node, network, action)?)
+}
+fn control_request(session: &Session, request: &Value) -> Result<Value, String> {
+    let body = erpc_ssh::bitcoin::input(
+        erpc_chain_bitcoin::CONTROLLER,
+        request.to_string().as_bytes(),
+    )
+    .map_err(str::to_owned)?;
     let output = session
-        .run(&RemoteCommand::BitcoinControl, Some(body.as_bytes()))
+        .run(
+            &RemoteCommand::BitcoinControl {
+                program: erpc_chain_bitcoin::CONTROLLER,
+            },
+            Some(&body),
+        )
         .map_err(|e| e.to_string())?;
     serde_json::from_slice(&output.stdout).map_err(|_| "invalid Bitcoin controller response".into())
+}
+
+fn migration_request(
+    node: &BitcoinRpc,
+    network: Network,
+    path: &std::path::Path,
+) -> Result<Value, String> {
+    use std::io::Read as _;
+    let file = std::fs::File::open(path)
+        .map_err(|_| "cannot open original Bitcoin public runtime record")?;
+    if !file
+        .metadata()
+        .map_err(|_| "cannot inspect original runtime record")?
+        .is_file()
+    {
+        return Err("original runtime record must be a regular public JSON file".into());
+    }
+    let mut bytes = Vec::new();
+    file.take(65_537)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "cannot read original Bitcoin public runtime record")?;
+    if bytes.len() > 65_536 {
+        return Err("original runtime record exceeds its bound".into());
+    }
+    let original: Value = serde_json::from_slice(&bytes)
+        .map_err(|_| "original runtime record is not valid public JSON")?;
+    let mut value = request(node, network, "migrate-original")?;
+    let fields = [
+        "schema",
+        "contract",
+        "machine_sha256",
+        "layout",
+        "account",
+        "highest_source",
+        "daemon_sha256",
+        "client_sha256",
+    ];
+    if original.as_object().is_none_or(|map| {
+        map.len() != fields.len() || fields.iter().any(|name| !map.contains_key(*name))
+    }) || original["schema"] != "erpc-bitcoin-original-v1"
+    {
+        return Err("original runtime record does not use the closed public history schema".into());
+    }
+    value["original"] = original;
+    Ok(value)
+}
+
+fn migration_action(
+    verb: &str,
+    args: &ArgMatches,
+    node: &BitcoinRpc,
+    network: Network,
+    mut send: impl FnMut(&Value) -> Result<Value, String>,
+) -> Result<Option<Value>, String> {
+    if verb != "deploy" {
+        return Ok(None);
+    }
+    let Some(path) = args
+        .try_get_one::<std::path::PathBuf>("original-runtime-record")
+        .ok()
+        .flatten()
+    else {
+        return Ok(None);
+    };
+    let request = migration_request(node, network, path)?;
+    node_common::go_ahead(yes(args), "no legacy Bitcoin authority migrated")
+        .map_err(|e| e.to_string())?;
+    send(&request).map(Some)
+}
+
+fn deployment_request(
+    node: &BitcoinRpc,
+    network: Network,
+    before: &Value,
+) -> Result<Value, String> {
+    use sha2::Digest as _;
+    let mut bytes = [0_u8; 16];
+    getrandom::fill(&mut bytes).map_err(|_| "cannot create Bitcoin deployment intent")?;
+    let mut value = request(node, network, "authorize")?;
+    value["intent"] = json!(format!("{:032x}", u128::from_be_bytes(bytes)));
+    value["controller_sha256"] = json!(format!(
+        "{:x}",
+        sha2::Sha256::digest(erpc_chain_bitcoin::CONTROLLER.as_bytes())
+    ));
+    let account = |field: &str| {
+        before[field]
+            .as_u64()
+            .and_then(|value| u32::try_from(value).ok())
+            .ok_or_else(|| "original Bitcoin numeric account is unavailable".to_owned())
+    };
+    if before["authority_valid"] != true {
+        return Err("Bitcoin original authority is unproven; use explicit legacy migration".into());
+    }
+    value["unit"] = json!(erpc_chain_bitcoin::unit(
+        account("service_uid")?,
+        account("service_gid")?
+    )?);
+    value["generation"] = json!(
+        before["generation"]
+            .as_u64()
+            .filter(|value| *value < i64::MAX as u64)
+            .ok_or("missing original Bitcoin operation generation")?
+    );
+    Ok(value)
 }
 fn open(network: Network, args: &ArgMatches) -> Result<(Store<OpCli>, String), String> {
     let vault = node_common::vault_for(
@@ -153,11 +280,14 @@ fn pin_node(node: &mut BitcoinRpc, release: &Authenticated) {
 }
 fn add_templates(dir: &include_dir::Dir<'_>, bundle: &mut Bundle) -> Result<(), String> {
     for file in dir.files() {
+        let path = file.path().to_str().ok_or("invalid carried path")?;
+        let content = if path == "node/control.py" {
+            erpc_chain_bitcoin::CONTROLLER.as_bytes()
+        } else {
+            file.contents()
+        };
         bundle
-            .add(
-                file.path().to_str().ok_or("invalid carried path")?,
-                file.contents().to_vec(),
-            )
+            .add(path, content.to_vec())
             .map_err(|e| e.to_string())?;
     }
     for child in dir.dirs() {
@@ -177,7 +307,15 @@ fn play(
     let retention = storage(node)?;
     let version = &release.pin.version;
     let platform = release.pin.platform;
-    let variables = json!({"ansible_connection":"local","btc_version":version.as_str(),"btc_platform":platform.target(),"btc_archive":platform.archive(version),"btc_archive_url":release::archive_url(version,platform),"btc_sha256":release.pin.sha256,"btc_request":request(node,network,"prepare")?,"btc_config":retention.config(network).map_err(str::to_owned)?,"btc_phase":phase});
+    let request = if phase == "init" {
+        request(node, network, "prepare")?
+    } else {
+        let before = control(session, node, network, "status")?;
+        let request = deployment_request(node, network, &before)?;
+        control_request(session, &request)?;
+        request
+    };
+    let variables = json!({"ansible_connection":"local","btc_version":version.as_str(),"btc_platform":platform.target(),"btc_archive":platform.archive(version),"btc_archive_url":release::archive_url(version,platform),"btc_sha256":release.pin.sha256,"btc_request":request,"btc_config":retention.config(network).map_err(str::to_owned)?,"btc_phase":phase});
     let mut bundle = Bundle::new();
     add_templates(&erpc_chain_bitcoin::TEMPLATES, &mut bundle)?;
     bundle
@@ -329,13 +467,30 @@ async fn change(
 ) -> Result<Value, String> {
     let target = target(node, args)?;
     let session = Session::open(&target).map_err(|e| e.to_string())?;
+    if let Some(result) = migration_action(verb, args, node, network, |request| {
+        control_request(&session, request)
+    })? {
+        // Migration terminates the command without entering deployment.
+        return Ok(result);
+    }
+    // Emergency cancellation is authenticated by the carried original-host
+    // controller. It must not depend on RPC health, deployment capacity or a
+    // successful status/facts call before attempting owned shutdown.
+    if matches!(verb, "stop" | "destroy") {
+        node_common::go_ahead(yes(args), "no Bitcoin service changed")
+            .map_err(|e| e.to_string())?;
+        let response = control(&session, node, network, verb)?;
+        node.last_result = format!("{verb} ok; data retained");
+        *node = store.update_bitcoin_rpc(node).map_err(|e| e.to_string())?;
+        return Ok(response);
+    }
     let platform = host_check(&crate::eth_rpc::facts(&session)?)?;
     if Platform::parse(&node.platform) != Some(platform) {
         return Err("host architecture differs from the stored release".into());
     }
     // Verify remote ownership BEFORE updating any desired inventory pin.
     let before = control(&session, node, network, "status")?;
-    if before["phase"] == "installing" && verb != "deploy" {
+    if before["phase"] == "installing" && !["deploy", "stop", "destroy"].contains(&verb) {
         return Err("resume deploy at the stored target before another operation".into());
     }
     match verb {
@@ -377,15 +532,32 @@ async fn change(
             *node = store.update_bitcoin_rpc(node).map_err(|e| e.to_string())?;
             readiness(network, node, control(&session, node, network, "status")?)
         }
-        "start" | "stop" | "restart" | "destroy" => {
+        "start" | "restart" => {
             node_common::go_ahead(yes(args), "no Bitcoin service changed")
                 .map_err(|e| e.to_string())?;
-            let response = control(&session, node, network, verb)?;
+            let mut desired = request(node, network, verb)?;
+            if matches!(verb, "start" | "restart") {
+                desired["generation"] = before["generation"].clone();
+            }
+            let response = control_request(&session, &desired)?;
             node.last_result = format!("{verb} ok; data retained");
             *node = store.update_bitcoin_rpc(node).map_err(|e| e.to_string())?;
             Ok(response)
         }
         _ => Err("unsupported Bitcoin mutation".into()),
+    }
+}
+
+fn emit_log(
+    json_out: bool,
+    line: &str,
+    mut stdout: impl FnMut(&str),
+    mut stderr: impl FnMut(&str),
+) {
+    if json_out {
+        stdout(&json!({"type":"log","chain":"bitcoin","line":line}).to_string());
+    } else {
+        stderr(line);
     }
 }
 
@@ -432,7 +604,9 @@ async fn operation(
                         lines: args.get_one::<u32>("lines").copied().unwrap_or(100),
                         follow: args.get_flag("follow"),
                     },
-                    &mut |_, line| logs.line(line),
+                    &mut |_, line| {
+                        emit_log(say.quiet, line, crate::print_line, |text| logs.line(text));
+                    },
                 )
                 .map_err(|e| e.to_string())?;
             return Ok(json!({"logs":"complete"}));
@@ -440,6 +614,14 @@ async fn operation(
         return readiness(network, &node, response);
     }
     change(verb, network, args, &mut node, &store, say).await
+}
+
+pub(crate) fn report_status(
+    result: Result<Value, String>,
+    json_out: bool,
+    output: &mut dyn FnMut(&str),
+) -> Outcome {
+    crate::node_report::status(result, "/readiness/ready", json_out, output)
 }
 
 pub(crate) async fn run(
@@ -454,20 +636,190 @@ pub(crate) async fn run(
         );
     };
     let say = Say { quiet: json_out };
-    match operation(verb, network, args, &say).await {
+    let result = operation(verb, network, args, &say).await;
+    if verb == "status" {
+        return report_status(result, json_out, &mut crate::print_line);
+    }
+    match result {
         Ok(value) => {
-            let unhealthy = verb == "status" && value["readiness"]["ready"] != true;
             if json_out {
                 crate::print_json(&value);
             } else {
                 say.line(&serde_json::to_string_pretty(&value).unwrap_or_default());
             }
-            if unhealthy {
-                Outcome::Failed("Bitcoin RPC is not ready; see readiness problems".into())
-            } else {
-                Outcome::Done(String::new())
-            }
+            Outcome::Done(String::new())
         }
         Err(error) => Outcome::Failed(error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn actual_rust_bundle_and_generated_unit_reach_pinned_ansible_controller() {
+        use std::io::Write as _;
+        let python = std::env::var("ERPC_TEST_ANSIBLE_PYTHON").unwrap_or_else(|_| "python3".into());
+        let id = |flag| {
+            let out = std::process::Command::new("id").arg(flag).output().unwrap();
+            assert!(out.status.success());
+            String::from_utf8(out.stdout)
+                .unwrap()
+                .trim()
+                .parse::<u32>()
+                .unwrap()
+        };
+        let mut bundle = Bundle::new();
+        add_templates(&erpc_chain_bitcoin::TEMPLATES, &mut bundle).unwrap();
+        let finished = bundle.finish().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("public-bundle.tar.gz");
+        std::fs::write(&archive, finished.bytes).unwrap();
+        let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../erpc-chain-bitcoin/tests/play.py");
+        let mut child = std::process::Command::new(python)
+            .arg(script)
+            .arg(archive)
+            .env("PYTHONDONTWRITEBYTECODE", "1")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(
+                json!({"unit":erpc_chain_bitcoin::unit(id("-u"),id("-g")).unwrap()})
+                    .to_string()
+                    .as_bytes(),
+            )
+            .unwrap();
+        let result = child.wait_with_output().unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        if std::env::var_os("ERPC_TEST_ANSIBLE_PYTHON").is_some() {
+            assert!(!String::from_utf8_lossy(&result.stdout).contains("SKIP"));
+        }
+    }
+
+    #[test]
+    fn parsed_legacy_migration_uses_the_public_request_and_returns_without_deploying() {
+        use erpc_core::chain::{Chain, Role};
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("history.json");
+        let record = json!({"schema":"erpc-bitcoin-original-v1","contract":{},"machine_sha256":"public",
+            "layout":{},"account":{},"highest_source":{},"daemon_sha256":"public","client_sha256":"public"});
+        std::fs::write(&path, record.to_string()).unwrap();
+        let matches = crate::tree::command(Role::Rpc, Chain::Bitcoin)
+            .try_get_matches_from([
+                "rpc",
+                "deploy",
+                "--network",
+                "signet",
+                "--original-runtime-record",
+                path.to_str().unwrap(),
+                "--yes",
+            ])
+            .unwrap();
+        let args = matches.subcommand_matches("deploy").unwrap();
+        let node = BitcoinRpc {
+            id: Some("publicowner".into()),
+            version: "31.1".into(),
+            platform: "x86_64".into(),
+            commit: "a".repeat(40),
+            sha256: "b".repeat(64),
+            storage: "full".into(),
+            ..BitcoinRpc::default()
+        };
+        let mut sent = Vec::new();
+        let result = migration_action("deploy", args, &node, Network::Signet, |request| {
+            sent.push(request.clone());
+            Ok(json!({"migrated":true,"service":"stopped"}))
+        })
+        .unwrap();
+        assert_eq!(result.unwrap()["service"], "stopped");
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0]["action"], "migrate-original");
+        assert_eq!(sent[0]["original"], record);
+        assert!(sent[0].get("intent").is_none());
+        std::fs::write(&path, "{\"unexpected\":\"private-format\"}").unwrap();
+        assert!(
+            migration_action("deploy", args, &node, Network::Signet, |_| panic!(
+                "invalid file must not reach SSH"
+            ))
+            .is_err()
+        );
+        let ordinary = crate::tree::command(Role::Rpc, Chain::Bitcoin)
+            .try_get_matches_from(["rpc", "deploy", "--network", "signet"])
+            .unwrap();
+        assert!(
+            migration_action(
+                "deploy",
+                ordinary.subcommand_matches("deploy").unwrap(),
+                &node,
+                Network::Signet,
+                |_| panic!("ordinary deploy does not send a migration request")
+            )
+            .unwrap()
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn logs_route_compact_json_to_stdout_and_human_lines_to_stderr() {
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        emit_log(
+            true,
+            "public journal\nentry",
+            |s| out.push(s.to_owned()),
+            |s| err.push(s.to_owned()),
+        );
+        assert!(err.is_empty());
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].lines().count(), 1);
+        assert_eq!(
+            serde_json::from_str::<Value>(&out[0]).unwrap()["line"],
+            "public journal\nentry"
+        );
+        out.clear();
+        emit_log(
+            false,
+            "public journal",
+            |s| out.push(s.to_owned()),
+            |s| err.push(s.to_owned()),
+        );
+        assert!(out.is_empty());
+        assert_eq!(err, vec!["public journal"]);
+    }
+
+    #[test]
+    fn actual_carried_controller_fits_windows_ssh_with_quoted_argument_margin() {
+        let command = RemoteCommand::BitcoinControl {
+            program: erpc_chain_bitcoin::CONTROLLER,
+        }
+        .line();
+        assert!(command.starts_with("sudo -n /usr/bin/python3 -I -c 'import sys,hashlib;"));
+        // The generated command is ASCII with no backslashes. Account for the
+        // outer Windows quotes and escapes of every contained double quote.
+        let quoted = command.encode_utf16().count() + command.matches('"').count() + 2;
+        assert!(quoted + 8192 < 32_767, "encoded controller: {quoted}");
+        assert!(
+            erpc_chain_bitcoin::unit(20000, 20000)
+                .unwrap()
+                .contains("ExecStartPre=+/usr/bin/python3 -I -c")
+        );
+        assert!(
+            !erpc_chain_bitcoin::unit(20000, 20000)
+                .unwrap()
+                .contains("@BITCOIN_GUARD@")
+        );
     }
 }

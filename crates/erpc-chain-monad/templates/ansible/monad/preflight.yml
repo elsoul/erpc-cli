@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+- name: Validate native ownership and physical selection before inventory reservation
+  hosts: all
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Check the selected partition and dedicated host without writing native state
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, '{{ playbook_dir }}/../../node/control.py', within-run]
+        stdin: '{{ monad_request | combine({"operation": "preflight"}) | to_json }}'
+      changed_when: false

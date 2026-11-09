@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Prepare the bounded validator firewall confirmation phase
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Qualify pending owner, credentials and helper destinations before publication
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/../node/entry.py", play-before-firewall]
+        stdin: "{{ validator_request | to_json }}"
+      changed_when: false
+    - name: Render this operation's immutable firewall candidate
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/firewall.nft.j2"
+        dest: "{{ playbook_dir }}/../../firewall-candidate.nft"
+        owner: root
+        group: root
+        mode: '0600'
+    - name: Render the original-owner boot firewall unit into sealed staging
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/firewall.service.j2"
+        dest: "{{ playbook_dir }}/firewall.service"
+        owner: root
+        group: root
+        mode: '0644'
+    - name: Publish the checked common helper and guarded boot unit then apply the candidate
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/../node/entry.py", play-firewall]
+        stdin: "{{ validator_request | to_json }}"
+      changed_when: true

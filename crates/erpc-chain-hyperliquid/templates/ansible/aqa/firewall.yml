@@ -1,0 +1,42 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Confirm one original AQA management-filter operation
+  hosts: all
+  gather_facts: false
+  become: true
+  any_errors_fatal: true
+  tasks:
+    - name: Check original prepared intent before any shared mutation
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, -c, '{{ aqa_loader }}', '{{ playbook_dir }}/../../aqa/control.py', within-run]
+        stdin: '{{ {"action":"prepared","contract":aqa_request.contract,"intent":aqa_request.intent} | to_json }}'
+      changed_when: false
+    - name: Publish the qualified standalone firewall controller
+      ansible.builtin.copy:
+        src: '{{ playbook_dir }}/../../rpc-firewall.py'
+        dest: /usr/local/lib/erpc/rpc-firewall.py
+        owner: root
+        group: root
+        mode: '0644'
+    - name: Render the exact management-only candidate
+      ansible.builtin.template:
+        src: '{{ playbook_dir }}/../../aqa/firewall.nft.j2'
+        dest: '{{ playbook_dir }}/../../firewall-candidate.nft'
+        owner: root
+        group: root
+        mode: '0600'
+    - name: Validate candidate without changing host rules
+      ansible.builtin.command:
+        argv: [/usr/sbin/nft, -c, -f, '{{ playbook_dir }}/../../firewall-candidate.nft']
+      changed_when: false
+    - name: Identify this caller's complete archive
+      ansible.builtin.stat:
+        path: '{{ playbook_dir }}/../../../bundle.tar.gz'
+        checksum_algorithm: sha256
+      register: aqa_submission
+    - name: Apply this immutable operation and rollback identity
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, -c, '{{ aqa_loader }}', '{{ playbook_dir }}/../../aqa/control.py', within-run]
+        stdin: '{{ {"action":"firewall-apply","contract":aqa_request.contract,"intent":aqa_request.intent,"run":(playbook_dir ~ "/../../..") | realpath | basename,"bundle":aqa_submission.stat.checksum} | to_json }}'
+      changed_when: true

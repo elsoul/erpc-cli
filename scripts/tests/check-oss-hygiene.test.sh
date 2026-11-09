@@ -51,16 +51,25 @@ $cand
   exit "$rc"
 fi
 
-repo_root="$(git rev-parse --show-toplevel)"
+# Fixtures must not enter the live source tree: pre-push compiles embedded
+# templates concurrently, and some probes intentionally use real scoped paths.
+source_root="$(git rev-parse --show-toplevel)" || exit 1
+repo_root="$(mktemp -d)" || exit 1
+trap 'rm -rf "$repo_root"' EXIT
+mkdir -p "$repo_root/scripts" "$repo_root/crates/erpc-core/src" || exit 1
+cp "$source_root/scripts/check-oss-hygiene.sh" "$repo_root/scripts/" || exit 1
+cp "$source_root/crates/erpc-core/src/endpoints.rs" \
+  "$repo_root/crates/erpc-core/src/endpoints.rs" || exit 1
+# Do not let a caller's Git environment redirect the fixture gate to its repo.
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
+git init -q "$repo_root" || exit 1
+cd "$repo_root" || exit 1
 gate="$repo_root/scripts/check-oss-hygiene.sh"
-
-tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
 
 pass=0
 fail=0
 
-# Runs the gate on one sample file placed at $rel inside the repo working tree.
+# Runs the unchanged gate on one sample at $rel in the isolated fixture repo.
 # expect = "block" or "allow".
 check() {
   local name="$1" expect="$2" rel="$3" content="$4"

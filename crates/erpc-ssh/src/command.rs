@@ -145,6 +145,31 @@ impl RunStart {
     }
 }
 
+/// Immutable hashes for all executable input uploaded for a new run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunPrepare {
+    start: RunStart,
+    runner: String,
+    helper: String,
+}
+
+impl RunPrepare {
+    /// Validate the script digests before constructing a shell command.
+    ///
+    /// # Errors
+    /// Returns [`CommandError::Run`] for an invalid digest.
+    pub fn new(start: &RunStart, runner: &str, helper: &str) -> Result<Self, CommandError> {
+        let start = RunStart::new(start.run.clone(), &start.sha256, &start.play)?;
+        RunStart::new(start.run.clone(), runner, &start.play)?;
+        RunStart::new(start.run.clone(), helper, &start.play)?;
+        Ok(Self {
+            start,
+            runner: runner.to_owned(),
+            helper: helper.to_owned(),
+        })
+    }
+}
+
 /// Hosts to ping from a node, each checked like a connection target.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PingTargets(Vec<String>);
@@ -255,13 +280,38 @@ pub const RESULT_MARKER: &str = "@@erpc-result@@";
 /// A command erpc runs on a node.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RemoteCommand {
+    /// Hash-bound isolated Kaia endpoint-node controller.
+    KaiaControl(crate::kaia::Control),
+    /// Fixed Kaia journal selection.
+    KaiaLogs {
+        /// Maximum requested journal lines.
+        lines: u32,
+        /// Whether to continue streaming new records.
+        follow: bool,
+    },
+    /// Confirm the owned Kaia firewall run and exact bundle.
+    KaiaFirewallConfirm {
+        /// Isolated owner-qualified entrypoint.
+        control: crate::kaia::Control,
+        /// Exact immutable firewall run and bundle receipt.
+        token: crate::firewall::FirewallToken,
+    },
     /// The kernel and machine: `uname -srm`.
     Uname,
+    /// Owned Polygon native lifecycle or read-only journal operation.
+    Polygon(crate::polygon::Command),
     /// The distribution: `/etc/os-release`.
     OsRelease,
-    /// Writes standard input to a file readable by its owner only, making the
-    /// directory first. The directory is made with `sudo` when the user cannot
-    /// make it, and handed to the user.
+    /// Writes standard input to a login-private regular file. An isolated root
+    /// initializer creates traversable, root-owned namespace ancestors and a
+    /// private login-owned leaf without adopting unsafe existing paths. Under
+    /// `/opt/erpc/uploads` it takes two shapes only, streamed without a bound:
+    /// the agent or restic as one file in `agent/` or `restic/`, and a
+    /// worker's release in `<worker>/<release>/…`, nested as shipped, with
+    /// every directory from the release down the login's; any other shape
+    /// there is refused before anything is read or created. A path outside
+    /// `/opt/erpc/uploads` takes a run's rules (`/opt/erpc/runs/<run>/<file>`):
+    /// a bounded file in its one directory.
     WriteFile(RemotePath),
     /// The SHA-256 of a file, to check what was written arrived whole.
     Sha256(RemotePath),
@@ -270,6 +320,9 @@ pub enum RemoteCommand {
     /// Starts a run's `node-run.sh` as a transient systemd unit, as the login
     /// user, so it carries on if the connection drops.
     StartRun(RunStart),
+    /// Seals the SHA-bound upload before systemd opens its log. The isolated
+    /// preparation program is supplied on standard input.
+    PrepareRun(RunPrepare),
     /// Prints a run's log as it grows until the run ends, then
     /// [`RESULT_MARKER`] and its `result.json`. Attaches to a run that is
     /// already going, or reprints one that ended.
@@ -302,16 +355,8 @@ pub enum RemoteCommand {
     /// free space, systemd's version, whether there is a TPM, and the address
     /// erpc's connection comes from.
     NodeFacts,
-    /// An Arc node's state as `key=value` lines, its head compared with the
-    /// public endpoint given.
-    ArcStatus(crate::arc::PublicRpc),
-    /// Starts, stops or restarts an Arc node's layers in dependency order.
-    ArcService {
-        /// What to do.
-        action: crate::arc::Action,
-        /// To which layer.
-        layer: crate::arc::Layer,
-    },
+    /// Original Arc host operations through an externally authenticated helper.
+    ArcControl(crate::arc::Control),
     /// An Arc node's journal.
     ArcLogs {
         /// Which layer.
@@ -321,20 +366,94 @@ pub enum RemoteCommand {
         /// Keep printing new lines.
         follow: bool,
     },
-    /// Encrypts standard input with `systemd-creds` into the Arc consensus
-    /// key's place. Standard input is the secret.
-    ArcWriteCredential,
-    /// Confirms an Arc node's new firewall table from a fresh connection.
-    ArcFirewallConfirm {
-        /// Exact operation and submitted bundle.
-        token: crate::firewall::FirewallToken,
+    /// Dedicated Arc validator preparation runtime journals, separate from RPC.
+    ArcValidatorLogs {
+        /// Original native component to inspect.
+        layer: crate::arc::Layer,
+        /// Bounded journal tail requested by the caller.
+        lines: u32,
+        /// Stream new journal lines.
+        follow: bool,
     },
     /// An Ethereum node's facts as `key=value` lines: the OS, machine,
     /// memory, processors, the x86-64-v3 features, free space, and the
     /// address erpc's connection comes from.
     EthFacts,
+    /// NEAR owner-checked lifecycle operation.
+    NearControl {
+        /// Closed operation.
+        action: crate::near::Action,
+        /// Bounded public ownership contract.
+        contract: crate::near::Contract,
+    },
+    /// NEAR service journal.
+    NearLogs {
+        /// Number of lines.
+        lines: u32,
+        /// Continue following.
+        follow: bool,
+    },
+    /// Confirm the exact NEAR firewall operation over fresh SSH.
+    NearFirewallConfirm {
+        /// Caller-owned operation token.
+        token: crate::firewall::FirewallToken,
+    },
     /// Nitro follower control request, with concealed credentials only on stdin.
     NitroControl,
+    /// Dedicated BSC controller with the public request on stdin.
+    BscControl(super::bsc::Control),
+    /// Read the fixed BSC journal.
+    BscLogs {
+        /// Maximum recent lines.
+        lines: u32,
+        /// Continue following output.
+        follow: bool,
+    },
+    /// Confirm the exact BSC firewall preparation through fresh SSH.
+    BscFirewallConfirm {
+        /// Isolated owner-qualified entrypoint.
+        control: super::bsc::Control,
+        /// Caller-owned run and bundle identity.
+        token: crate::firewall::FirewallToken,
+    },
+    /// Original Arbitrum assertion-validator controller; private input is stdin only.
+    NitroValidatorControl,
+    /// Read a successful sealed run public result without trusting task logs.
+    NitroValidatorResult(RunId),
+    /// Private original-wallet pre-stage through one completed authenticated run.
+    /// Only public source/result hashes are arguments; the secret stays on stdin.
+    NitroValidatorStage {
+        /// Successful original public authorization run.
+        run: RunId,
+        /// Exact compiled bundle digest.
+        bundle: String,
+        /// Complete carried helper profile digest.
+        helpers: String,
+        /// Public authorization request digest.
+        request: String,
+    },
+    /// Original Robinhood Defensive host controller in its fixed network namespace.
+    RobinhoodValidatorControl {
+        /// Testnet selects only the independently qualified testnet namespace.
+        testnet: bool,
+    },
+    /// Read a completed Defensive run; request digest binds its exact network.
+    RobinhoodValidatorResult(RunId),
+    /// Original Robinhood private custody/provider input through a sealed run.
+    RobinhoodValidatorStage {
+        /// Fixed network profile; never inferred from a private request.
+        testnet: bool,
+        /// Completed public authorization run.
+        run: RunId,
+        /// Complete bundle digest.
+        bundle: String,
+        /// Complete helper digest.
+        helpers: String,
+        /// Original public request digest.
+        request: String,
+    },
+    /// Read the exact completed Robinhood admission observation, without native changes.
+    RobinhoodAdmissionResult(RunId),
     /// Logs from dedicated Nitro follower services.
     NitroLogs {
         /// Closed choice of Robinhood or Arbitrum family.
@@ -399,10 +518,25 @@ pub enum RemoteCommand {
     },
     /// TRON operation with immutable public ownership.
     Tron(crate::tron::Command),
+    /// Dedicated native Solana ownership and stdin lifecycle operations.
+    SolanaNative(crate::solana_native::Command),
+
+    /// Monad native controller and bounded journals.
+    Monad(crate::monad::Command),
+
+    /// Authenticated Hyperliquid non-validator controller.
+    Hyperliquid(crate::hyperliquid::Command),
+    /// Authenticated separate AQA publisher controller.
+    HyperliquidAqa(crate::hyperliquid_aqa::Command),
     /// Sui node probe or lifecycle operation.
     Sui(crate::sui::Command),
     /// Owned Bitcoin controller, with all request fields on stdin.
-    BitcoinControl,
+    BitcoinControl {
+        /// Fixed controller source carried by the compiled chain backend. This
+        /// is public program text, never request data or a secret. The SSH
+        /// operation rejects any bytes outside its pinned source digest.
+        program: &'static str,
+    },
     /// Bitcoin's journal after ownership verification.
     BitcoinLogs {
         /// Lines to read.
@@ -416,14 +550,8 @@ pub enum RemoteCommand {
     Worker(crate::worker::Command),
     /// An Ethereum node's state as `key=value` lines, from its own ports.
     EthStatus,
-    /// Starts, stops or restarts an Ethereum node's layers in dependency
-    /// order.
-    EthService {
-        /// What to do.
-        action: crate::arc::Action,
-        /// To which layer.
-        layer: crate::arc::Layer,
-    },
+    /// Original Ethereum RPC authority; closed public request supplied on stdin.
+    EthAuthority,
     /// An Ethereum node's journal.
     EthLogs {
         /// Which layer.
@@ -432,12 +560,6 @@ pub enum RemoteCommand {
         lines: u32,
         /// Keep printing new lines.
         follow: bool,
-    },
-    /// Confirms an Ethereum node's new firewall table from a fresh
-    /// connection.
-    EthFirewallConfirm {
-        /// Exact operation and submitted bundle.
-        token: crate::firewall::FirewallToken,
     },
     /// A Solana RPC node's state as `key=value` lines, its identity read the
     /// way its validator unit makes it.
@@ -487,10 +609,22 @@ impl RemoteCommand {
     #[allow(clippy::too_many_lines)] // Keep the typed command renderer exhaustive as backends are added.
     pub fn line(&self) -> String {
         match self {
+            Self::Polygon(command) => command.line(),
+            Self::KaiaControl(command) => command.shell(),
+            Self::KaiaLogs { lines, follow } => crate::kaia::logs(*lines, *follow),
+            Self::KaiaFirewallConfirm { control, token } => crate::kaia::confirm(control, token),
             Self::Uname => "uname -srm".to_owned(),
             Self::OsRelease => "cat /etc/os-release".to_owned(),
             Self::WriteFile(path) => write_file(path),
             Self::Sha256(path) => format!("sha256sum -- '{}'", path.as_str()),
+            Self::PrepareRun(prepared) => format!(
+                "sudo -n /usr/bin/python3 -I - seal '{}' '{}' \
+                 \"$(id -u)\" \"$(id -g)\" '{}' '{}'",
+                prepared.start.run.dir(),
+                prepared.start.sha256,
+                prepared.runner,
+                prepared.helper,
+            ),
             Self::StartRun(start) => {
                 let dir = start.run.dir();
                 let id = start.run.as_str();
@@ -529,22 +663,51 @@ impl RemoteCommand {
             Self::ReadKeyFile(path) => format!("cat -- '{}'", path.as_str()),
             Self::RestartSolv => "sudo -n systemctl restart solv".to_owned(),
             Self::NodeFacts => crate::arc::NODE_FACTS.to_owned(),
-            Self::ArcStatus(public) => crate::arc::status(public),
-            Self::ArcService { action, layer } => crate::arc::service(*action, *layer),
+            Self::ArcControl(control) => control.command(),
             Self::ArcLogs {
                 layer,
                 lines,
                 follow,
             } => crate::arc::logs(*layer, *lines, *follow),
-            Self::ArcWriteCredential => crate::arc::write_credential(),
-            Self::ArcFirewallConfirm { token } => crate::arc::confirm_firewall(token),
+            Self::ArcValidatorLogs {
+                layer,
+                lines,
+                follow,
+            } => crate::arc::validator_logs(*layer, *lines, *follow),
             Self::VpsAuthorizeKey => crate::vps::AUTHORIZE_KEY.to_owned(),
             Self::VpsHarden => crate::vps::HARDEN.to_owned(),
             Self::VpsAllowSsh(list) => crate::vps::allow(list),
             Self::VpsConfirmAllow => crate::vps::CONFIRM_ALLOW.to_owned(),
             Self::VpsOpenSsh => crate::vps::OPEN.to_owned(),
             Self::VpsController => "printf 'controller=%s\\n' \"${SSH_CLIENT%% *}\"".to_owned(),
-            Self::NitroControl => super::nitro::CONTROL.to_owned(),
+            Self::NearControl { action, contract } => super::near::control(*action, contract),
+            Self::NearLogs { lines, follow } => super::near::logs(*lines, *follow),
+            Self::NearFirewallConfirm { token } => super::near::confirm(token),
+
+            Self::BscControl(control) => control.shell(),
+            Self::BscLogs { lines, follow } => super::bsc::logs(*lines, *follow),
+            Self::BscFirewallConfirm { control, token } => super::bsc::confirm(control, token),
+            Self::NitroControl => super::python::nitro_control(),
+            Self::NitroValidatorControl => super::python::nitro_validator_control(),
+            Self::NitroValidatorResult(run) => super::nitro::public_result(run),
+            Self::NitroValidatorStage {
+                run,
+                bundle,
+                helpers,
+                request,
+            } => super::nitro::private_stage(run, bundle, helpers, request),
+            Self::RobinhoodValidatorControl { testnet } => {
+                super::python::robinhood_validator_control(*testnet)
+            }
+            Self::RobinhoodValidatorResult(run) => super::nitro::robinhood_validator_result(run),
+            Self::RobinhoodValidatorStage {
+                testnet,
+                run,
+                bundle,
+                helpers,
+                request,
+            } => super::nitro::robinhood_private_stage(*testnet, run, bundle, helpers, request),
+            Self::RobinhoodAdmissionResult(run) => super::nitro::robinhood_admission_result(run),
             Self::NitroLogs {
                 robinhood,
                 lines,
@@ -553,7 +716,7 @@ impl RemoteCommand {
             Self::NitroFirewallConfirm { robinhood, token } => {
                 super::nitro::confirm(*robinhood, token)
             }
-            Self::EthValidatorControl => crate::eth_validator::CONTROL.to_owned(),
+            Self::EthValidatorControl => crate::eth_validator::control(),
             Self::EthValidatorLogs { lines, follow } => crate::eth_validator::logs(*lines, *follow),
             Self::AvaxStatus => crate::avax::status(),
             Self::AvaxCheckContract {
@@ -566,19 +729,24 @@ impl RemoteCommand {
             Self::AvaxFirewallConfirm { contract, token } => crate::avax::confirm(*contract, token),
             Self::Sui(command) => command.shell(),
             Self::Tron(command) => command.shell(),
-            Self::BitcoinControl => crate::bitcoin::CONTROL.to_owned(),
+            Self::SolanaNative(command) => command.shell(),
+
+            Self::Monad(command) => command.shell(),
+
+            Self::Hyperliquid(command) => command.shell(),
+            Self::HyperliquidAqa(command) => command.shell(),
+            Self::BitcoinControl { program } => crate::bitcoin::control(program),
             Self::BitcoinLogs { lines, follow } => crate::bitcoin::logs(*lines, *follow),
             Self::Rollup(command) => command.shell(),
             Self::Worker(command) => command.shell(),
             Self::EthFacts => crate::eth::NODE_FACTS.to_owned(),
             Self::EthStatus => crate::eth::status(),
-            Self::EthService { action, layer } => crate::eth::service(*action, *layer),
+            Self::EthAuthority => crate::eth_authority::control(),
             Self::EthLogs {
                 layer,
                 lines,
                 follow,
             } => crate::eth::logs(*layer, *lines, *follow),
-            Self::EthFirewallConfirm { token } => crate::eth::confirm_firewall(token),
             Self::SolanaRpcStatus => crate::solana_rpc::status(),
             Self::SolanaRpcService { action, service } => {
                 crate::solana_rpc::service(*action, *service)
@@ -599,15 +767,10 @@ impl RemoteCommand {
 
 /// Write a validated path using the same private-directory policy as before.
 fn write_file(path: &RemotePath) -> String {
-    let dir = path.parent();
-    let file = path.as_str();
-    // Arguments were checked to need no quoting; the quotes are a
-    // second wall, not the first.
+    let program = include_str!("upload.py").replace('\'', "'\\''");
     format!(
-        "umask 077 && \
-                     {{ mkdir -p -- '{dir}' 2>/dev/null || \
-                     {{ sudo -n mkdir -p -- '{dir}' && sudo -n chown -- \"$(id -u):$(id -g)\" '{dir}'; }}; }} && \
-                     chmod 0700 -- '{dir}' && cat > '{file}' && chmod 0600 -- '{file}'"
+        "sudo -n /usr/bin/python3 -I -c '{program}' '{}' \"$(id -u)\" \"$(id -g)\"",
+        path.as_str(),
     )
 }
 
@@ -618,7 +781,7 @@ fn validator_status(rpc_port: u16, firedancer: bool) -> String {
         format!(
             "printf 'service=%s\\n' \"$(systemctl is-active firedancer 2>/dev/null)\"; \
              printf 'identity_link=%s\\n' \"$(readlink -f \"$HOME/identity.json\" 2>/dev/null)\"; \
-             printf 'identity=%s\\n' \"$(/usr/local/bin/erpc-keypair.py pubkey \"$HOME/identity.json\" 2>/dev/null)\"; \
+             printf 'identity=%s\\n' \"$(/usr/bin/python3 -I /usr/local/bin/erpc-keypair.py pubkey \"$HOME/identity.json\" 2>/dev/null)\"; \
              printf 'health=%s\\n' \"$({})\"; \
              printf 'slot=%s\\n' \"$({})\"; true",
             rpc("getHealth"),
@@ -732,19 +895,52 @@ mod tests {
     fn writing_a_file_keeps_it_private_and_takes_its_content_from_stdin() {
         let path = RemotePath::new("/opt/erpc/runs/r-1/bundle.tar.gz").expect("path");
         let line = RemoteCommand::WriteFile(path).line();
-        assert!(line.starts_with("umask 077 && "), "{line}");
         assert!(
-            line.contains("cat > '/opt/erpc/runs/r-1/bundle.tar.gz'"),
+            line.starts_with("sudo -n /usr/bin/python3 -I -c '"),
             "{line}"
         );
+        assert!(line.contains("sys.stdin.buffer"), "{line}");
+        assert!(line.contains("O_NOFOLLOW"), "{line}");
+        assert!(line.contains("0o755"), "{line}");
         assert!(
-            line.contains("chmod 0700 -- '/opt/erpc/runs/r-1'"),
+            line.ends_with("'/opt/erpc/runs/r-1/bundle.tar.gz' \"$(id -u)\" \"$(id -g)\""),
             "{line}"
         );
-        assert!(
-            line.ends_with("chmod 0600 -- '/opt/erpc/runs/r-1/bundle.tar.gz'"),
-            "{line}"
-        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_upload_line_is_valid_shell() {
+        let path = RemotePath::new(
+            "/opt/erpc/uploads/bot-default/20261029T121314Z-1a2b3c4d/config/settings.json",
+        )
+        .expect("path");
+        let line = RemoteCommand::WriteFile(path).line();
+        let checked = std::process::Command::new("bash")
+            .args(["-n", "-c", &line])
+            .status()
+            .expect("bash");
+        assert!(checked.success(), "{line}");
+    }
+
+    #[test]
+    fn preparing_a_run_binds_archive_and_both_scripts_before_start() {
+        let run = super::RunId::new("r-20261026t120000-abcdef").unwrap();
+        let digest = "a".repeat(64);
+        let start = super::RunStart::new(run, &digest, "play.yml").unwrap();
+        let prepared = super::RunPrepare::new(&start, &"b".repeat(64), &"c".repeat(64)).unwrap();
+        let command = RemoteCommand::PrepareRun(prepared).line();
+        assert!(command.starts_with("sudo -n /usr/bin/python3 -I - seal "));
+        for digest in [&digest, &"b".repeat(64), &"c".repeat(64)] {
+            assert!(command.contains(digest));
+        }
+        for bad in ["", "a' ; command", &"d".repeat(63)] {
+            assert!(super::RunPrepare::new(&start, bad, &digest).is_err());
+            assert!(super::RunPrepare::new(&start, &digest, bad).is_err());
+        }
+        let mut invalid = start;
+        invalid.sha256 = "a' ; command".into();
+        assert!(super::RunPrepare::new(&invalid, &digest, &digest).is_err());
     }
 
     #[test]

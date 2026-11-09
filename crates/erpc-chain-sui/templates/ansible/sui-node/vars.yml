@@ -5,7 +5,7 @@ sui_home: /var/lib/sui
 sui_opt: /opt/sui
 sui_release_dir: "{{ sui_opt }}/{{ sui_version }}"
 sui_jinja: "{{ playbook_dir }}/../../jinja"
-sui_helpers: /usr/local/lib/erpc
+sui_helpers: /usr/local/lib/erpc/sui
 sui_fw_dir: /etc/erpc/sui
 sui_fw_file: "{{ sui_fw_dir }}/firewall.nft"
 sui_fw_marker: /run/erpc-sui-firewall.armed

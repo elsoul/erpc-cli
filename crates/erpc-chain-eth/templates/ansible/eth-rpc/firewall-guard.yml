@@ -1,19 +1,14 @@
 # SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
 # SPDX-License-Identifier: Apache-2.0
 ---
-- name: Require this deployment's confirmed firewall receipt before any mutation
+- name: Require the original Ethereum intent and immutable confirmed policy before mutation
   hosts: all
   become: true
   gather_facts: false
   any_errors_fatal: true
   tasks:
-    - name: Reject superseded or revoked preparation
+    - name: Authenticate original namespace and confirmed preparation
       ansible.builtin.command:
-        argv:
-          - python3
-          - /usr/local/lib/erpc/rpc-firewall.py
-          - eth
-          - require-confirmed
-          - "{{ erpc_fw_confirmed_run }}"
-          - "{{ erpc_fw_confirmed_bundle }}"
+        argv: [/usr/bin/python3, -I, -c, '{{ eth_authority_loader }}', '{{ playbook_dir }}/../../authority/control.py', request]
+        stdin: '{{ eth_authority_request | combine({"action":"firewall-require","intent":eth_authority_intent,"firewall":{"run":erpc_fw_confirmed_run,"bundle":erpc_fw_confirmed_bundle}}) | to_json }}'
       changed_when: false

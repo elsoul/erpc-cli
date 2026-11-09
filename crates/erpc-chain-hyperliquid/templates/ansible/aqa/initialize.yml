@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Initialize the separate original AQA publisher host
+  hosts: all
+  gather_facts: false
+  become: true
+  any_errors_fatal: true
+  tasks:
+    - name: Reserve only a clean original namespace before package or account changes
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, -c, '{{ aqa_loader }}', '{{ playbook_dir }}/../../aqa/control.py', within-run]
+        stdin: '{{ aqa_request | combine({"action":"reserve"}) | to_json }}'
+      changed_when: true
+    - name: Install distribution prerequisites without starting unrelated services
+      ansible.builtin.apt:
+        name: [python3, openssl, gpgv, nftables, chrony, ca-certificates]
+        state: present
+        update_cache: true
+        policy_rc_d: 101
+    - name: Enable original clock synchronization
+      ansible.builtin.systemd_service:
+        name: chrony.service
+        enabled: true
+        state: started
+    - name: Reserve original numeric identity and publish authenticated helper code
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, -c, '{{ aqa_loader }}', '{{ playbook_dir }}/../../aqa/control.py', within-run]
+        stdin: '{{ aqa_request | combine({"action":"initialize"}) | to_json }}'
+      changed_when: true

@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Verify the original separate AQA publisher preflight
+  hosts: all
+  gather_facts: false
+  become: true
+  any_errors_fatal: true
+  tasks:
+    - name: Execute only the original publisher operation through the sealed controller
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, -c, '{{ aqa_loader }}', '{{ playbook_dir }}/../../aqa/control.py', within-run]
+        stdin: '{{ aqa_request | combine({"action":"preflight"}) | to_json }}'
+      changed_when: false

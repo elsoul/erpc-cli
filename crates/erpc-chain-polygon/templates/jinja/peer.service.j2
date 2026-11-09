@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+[Unit]
+Description=Publish original Polygon {{ polygon_component }} Unix peer generation
+After=polygon-{{ polygon_component }}.service erpc-polygon-firewall.service
+
+[Service]
+Type=oneshot
+User=0
+Group=0
+UMask=0077
+ExecStart={{ polygon_service_guard }} peer-publish {{ polygon_component }} '{{ polygon_contract | to_json }}'
+TimeoutStartSec=30
+LimitCORE=0
+NoNewPrivileges=true

@@ -4,21 +4,20 @@
 - name: Remove Avalanche services while preserving all staking identity material
   hosts: all
   become: true
+  environment:
+    PATH: /usr/sbin:/usr/bin:/sbin:/bin
   gather_facts: false
   any_errors_fatal: true
   vars_files: [vars.yml]
   tasks:
     - name: Check immutable remote ownership
       ansible.builtin.import_tasks: tasks/contract.yml
-    - name: Stop services when installed
-      ansible.builtin.shell:
-        cmd: |
-          set -e
-          for service in avalanche-rpc avalanchego; do
-            if systemctl cat "$service" >/dev/null 2>&1; then systemctl disable --now "$service"; fi
-          done
-        executable: /bin/bash
-      changed_when: true
+      vars:
+        avax_allow_new_contract: true
+    - name: Persist cancellation and drain the retained original owner before any teardown
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ avax_jinja }}/control.py"]
+        stdin: "{{ {'action':'destroy','contract':avax_contract_value} | to_json }}"
     - name: Remove service units
       ansible.builtin.file:
         path: /etc/systemd/system/{{ item }}.service
@@ -27,6 +26,12 @@
     - name: Reload systemd
       ansible.builtin.systemd_service:
         daemon_reload: true
+    - name: Require original data ownership and no nested mounts before explicit purge
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ avax_jinja }}/control.py"]
+        stdin: "{{ {'action':'purge-guard','contract':avax_contract_value} | to_json }}"
+      changed_when: false
+      when: avax_purge_data | bool
     - name: Purge only chain database and logs when explicitly requested
       ansible.builtin.file:
         path: /var/lib/avalanchego/{{ item }}

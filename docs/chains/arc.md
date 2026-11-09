@@ -5,7 +5,9 @@ SPDX-License-Identifier: Apache-2.0
 
 # Arc
 
-Researched 2026-10-26 against arc-node v0.8.1. Web documentation was read on that date; release source links are pinned to its commit. The website's v0.8.0 banner and older version tables in the tagged source are not the latest-release record. [S1], [S2], [S3]
+Researched 2026-10-26/27 against arc-node v0.8.1; release metadata and pinned source were rechecked 2026-11-04. Web-documentation claims retain their original read dates. Versioned source links are pinned; website banners and version tables are not the release record. [S1], [S2], [S3]
+
+Latest observed stable release is now **v0.8.2**, commit `0f0be9fad975a2fe16546323b060d7b070617936`, published **2026-11-02**. Its official ledger says no hardfork/database migration is required and earlier v0.8.x nodes remain compatible. This newer source needs separate ERPC qualification; the preparation backend does not silently change pins. [S24], [S25]
 
 ## Networks
 
@@ -14,7 +16,7 @@ Mainnet chain ID **5042**; testnet **5042002**. Both use USDC for gas. The curre
 ## RPC node
 
 - **Client:** Circle's reference `circlefin/arc-node`, Apache-2.0; one release contains Reth-derived execution, Malachite-derived consensus and snapshot tools. Repository, license and release history: [S1], [S5], [S6], [S7].
-- **Latest stable release:** `v0.8.1`, commit `ab09dbfd9553a7ad48f9c134ec5e808c36512c74`, published **2026-10-07**. It fixes the post-quantum precompile's base-gas reservation. [S1], [S8]
+- **Qualified executable release:** `v0.8.1`, commit `ab09dbfd9553a7ad48f9c134ec5e808c36512c74`, published **2026-10-07**. It fixes the post-quantum precompile's base-gas reservation. [S1], [S8]
 - **Verification:** release archives have `.sha256` files and GitHub asset SHA-256 digests. `arcup` checks the checksum. GPG verification: **none** in this release; the installation guide explicitly says it is disabled pending publication of a signing key. Reproducible-build instructions: **not documented** there. [S1], [S3]
 - **Install:** `arcup`, tagged source builds or the documented execution/consensus Docker images. Release targets: Linux x86-64 and ARM64, macOS ARM64. Tagged installation instructions require **glibc 2.39+** for Linux binaries; this is stricter than the website's Ubuntu 22.04+/Debian 12+ OS baseline. Required CPU instruction flags: **not documented** in those sources. [S1], [S3], [S9]
 - **Hardware (read 2026-10-26):** 64 GB+ RAM, 1 TB+ TLC NVMe, stable 24 Mbps+; CPU clock speed is emphasized without a numeric core minimum. [S9]
@@ -28,9 +30,26 @@ Mainnet chain ID **5042**; testnet **5042002**. Both use USDC for gas. The curre
 
 ## Validator
 
-**Permissioned.** A permissionless follower RPC node is not a consensus validator. Public admission procedure, minimum stake, production validator-key custody/remote-signer policy and slashing conditions are **not documented** in the cited public node guide. Do not interpret this as zero stake or no slashing. [S10]
+**Permissioned.** Arc describes its current validator set as Proof-of-Authority institutions, with audited security and availability requirements. A permissionless follower RPC node is not a consensus validator. [S15] Public admission procedure, minimum stake, production validator-key custody/remote-signer policy and slashing conditions are **not documented** in the cited public node guide. Do not interpret this as zero stake or no slashing. [S10]
 
 The breaking-change ledger documents validator mode: CL requires `--validator` and `--suggested-fee-recipient`, in addition to the execution process. These flags alone do not grant admission. Public production validator onboarding guide: **not documented** in the reviewed operator sources. [S10], [S13]
+
+### ERPC preparation and admission boundary
+
+[Dedicated validator preparation](../arc-validator.md) now connects the twelve
+lifecycle verbs, original local peer-key custody, isolated observer runtime,
+read-only official Remote `PublicKey`, and exact unsigned governance preparation
+and native `eth_call` validation. External controller, consensus public key,
+CA/image/PCR evidence and approved peers are explicit operator inputs. No AWS
+resources or external consensus/private EVM keys are created or imported.
+
+Production signing remains **held**, rather than being classified as N/A or
+completed. The official source recommends Remote for production, but the public
+protocol does not establish the required durable signing-history contract for
+opaque proposal hashes. Institutional approval, TLS/public-key verification and
+observed membership alone cannot authorize activation. `erpc v --chain arc
+activate` refuses before external access. See the preparation guide for the
+precise source evidence and acceptance boundary. [S26], [S27]
 
 ## Pitfalls
 
@@ -41,7 +60,28 @@ The breaking-change ledger documents validator mode: CL requires `--validator` a
 
 ## ERPC today
 
-**Implemented for RPC**, including mainnet/testnet full, archive and onboarded provider roles; validator deployment is not supplied by this RPC path. Existing playbooks, templates, release pins and operational plans are linked below. This research adds no deploy behavior. [R1], [R2], [R3], [R4]
+**Implemented for RPC**, including mainnet/testnet full, archive and onboarded provider roles; validator deployment is not supplied by this RPC path. Existing playbooks, templates, release pins and operational plans are linked below. The RPC reporting path checks the served full source commit, chain/genesis,
+local synchronization state, latest header, required runtime artifacts and
+firewall observation. The full commit field and synchronization response shapes
+are derived from the pinned native source; genesis hashes match its chainspec
+tests. [S21], [S22], [S23]
+
+ERPC's health policy accepts a latest header at most 300 seconds old and at most
+120 seconds ahead of the observation clock; these are ERPC monitoring tolerances,
+not Arc consensus limits. A missing public comparison is reported as
+`ready: null` / `catchup: unknown`, without inventing a local node failure.
+Uncertain acceptance returns a non-success observation outcome. A completed play
+is reported separately from confirmed readiness. `start` and `restart` report
+the applied action/layer separately and retain all readiness observations,
+including lag and an inactive consensus layer after execution-only startup.
+An update does not change the inventory pin until the expected running source/network is observed.
+`logs --json` emits compact stdout journal records and a compact completion/error
+record; ordinary log streams retain their existing routing.
+
+All twelve RPC routes and the permissioned validator boundary have offline CLI,
+formatter and observation regressions. The [original runtime](../arc-runtime.md) adds numeric identity, credential-recipient,
+process/socket, source-floor and explicit migration controls with offline failure
+coverage. Final real-host acceptance remains required. [R1], [R2]
 
 ## Sources
 
@@ -61,5 +101,13 @@ The breaking-change ledger documents validator mode: CL requires `--validator` a
 [S14]: https://docs.arc.io/arc/tutorials/monitor-a-node "Health checks and metrics paths; read 2026-10-26"
 [R1]: ../../crates/erpc-skills/skills/arc-rpc/SKILL.md "Existing ERPC Arc RPC behavior"
 [R2]: ../../crates/erpc-chain-arc/templates/ "Existing Arc playbooks and systemd templates"
-[R3]: ../plans/2026-10-23-arc-rpc.md "Existing Arc RPC implementation plan"
-[R4]: ../plans/2026-10-24-arc-a12-runbook.md "Existing Arc operational runbook"
+
+[S15]: https://docs.arc.io/arc/concepts/consensus-layer "Current permissioned PoA model; rechecked 2026-10-27"
+[S21]: https://github.com/circlefin/arc-node/blob/ab09dbfd9553a7ad48f9c134ec5e808c36512c74/crates/evm-node/src/rpc/get_version.rs "Native full git_commit and cargo_version RPC fields"
+[S22]: https://github.com/circlefin/arc-node/blob/ab09dbfd9553a7ad48f9c134ec5e808c36512c74/crates/quake/src/rpc/mod.rs "Native test tool interprets eth_syncing false/object responses"
+[S23]: https://github.com/circlefin/arc-node/blob/ab09dbfd9553a7ad48f9c134ec5e808c36512c74/crates/execution-config/src/chainspec.rs "Mainnet and testnet genesis hash regression pins"
+
+[S24]: https://github.com/circlefin/arc-node/releases/tag/v0.8.2 "Stable release observed 2026-11-04"
+[S25]: https://github.com/circlefin/arc-node/blob/0f0be9fad975a2fe16546323b060d7b070617936/BREAKING_CHANGES.md "Pinned v0.8.2 compatibility and API changes"
+[S26]: https://github.com/circlefin/arc-node/blob/ab09dbfd9553a7ad48f9c134ec5e808c36512c74/crates/signer/src/lib.rs "Local versus Remote production scope"
+[S27]: https://github.com/circlefin/arc-node/blob/ab09dbfd9553a7ad48f9c134ec5e808c36512c74/crates/malachite-app/src/proposal_parts.rs "Opaque proposal hash signing path"

@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Activate only the original publisher under its confirmed filter
+  hosts: all
+  gather_facts: false
+  become: true
+  any_errors_fatal: true
+  tasks:
+    - name: Require exact confirmation before publishing units or startup authority
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, -c, '{{ aqa_loader }}', '{{ playbook_dir }}/../../aqa/control.py', within-run]
+        stdin: '{{ aqa_request | combine({"action":"configure","run":erpc_fw_confirmed_run,"bundle":erpc_fw_confirmed_bundle}) | to_json }}'
+      changed_when: true
+    - name: Start and prove the exact original native process
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, -c, '{{ aqa_loader }}', '{{ playbook_dir }}/../../aqa/control.py', within-run]
+        stdin: '{{ {"action":"activate","contract":aqa_request.contract,"intent":aqa_request.intent} | to_json }}'
+      changed_when: true

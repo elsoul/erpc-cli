@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Apply one original public Solv migration stage
+  hosts: all
+  gather_facts: false
+  become: true
+  any_errors_fatal: true
+  tasks:
+    - name: Require an explicit public migration stage with no credential fields
+      ansible.builtin.assert:
+        that:
+          - solana_native_request.keys() | list | sort == (['action', 'contract', 'cutover', 'intent', 'legacy', 'ssh_port'] if solana_native_request.action in ['migration-prepare-cutover', 'migration-finalize'] else ['action', 'contract', 'intent', 'legacy', 'ssh_port'])
+          - solana_native_request.action in ['migration-reserve', 'migration-retire', 'migration-copy', 'migration-promote-data', 'migration-custody', 'migration-prepare-cutover', 'migration-finalize']
+        quiet: true
+        fail_msg: Original public migration request differs from the sealed stage
+    - name: Apply the original source operation through the protected carried controller
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, -c, '{{ solana_native_loader }}', '{{ playbook_dir }}/../../node/native_runtime_control.py', play]
+        stdin: '{{ solana_native_request | to_json }}'
+      changed_when: true

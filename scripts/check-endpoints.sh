@@ -230,13 +230,14 @@ extract_hosts() { grep -v '("' | grep -oE '"[^"]+"' | tr -d '"' | sort -u; }
 doc_hosts=$(read_consts DOCUMENTATION_HOSTS | extract_hosts)
 # Hosts the node reaches, accepted only in the templates erpc carries for it.
 node_hosts=$(read_consts NODE_HOSTS | extract_hosts)
+eth_validator_hosts=$(read_consts ETH_VALIDATOR_LOCAL_HOSTS | extract_hosts)
 all_consts=$(read_consts ALL)
-# Service hosts are everything declared except the documentation-only list.
+# Service hosts exclude documentation and the separately scoped node lists.
 # No `|| <fallback>`: grep exits 1 when it selects nothing, and a fallback
 # here would quietly make every declared host, documentation hosts included,
 # allowed in code. An empty result is caught by the tripwire below instead.
 service_hosts=$(printf '%s\n' "$all_consts" | extract_hosts \
-  | grep -vxF "$(printf '%s\n%s\n' "$doc_hosts" "$node_hosts")")
+  | grep -vxF "$(printf '%s\n%s\n%s\n' "$doc_hosts" "$node_hosts" "$eth_validator_hosts")")
 patterns=$(printf '%s\n' "$all_consts" | grep -oE '\("[A-Za-z0-9.-]+",[[:space:]]*"[A-Za-z0-9.-]+"\)' \
   | sed -E 's/^\("([^"]+)",[[:space:]]*"([^"]+)"\)$/\1	\2/')
 
@@ -284,7 +285,7 @@ fi
 prose_re='(\.(md|txt)$|^(NOTICE|CHANGELOG|AUTHORS)$)'
 # The playbooks and templates a node runs, and the Jito region table whose
 # endpoints go into them. Their URLs are the node's.
-node_re='^crates/erpc-chain-(solana/(templates|regions)|arc/(templates|networks)|eth/templates|sui/templates|tron/templates|op/templates|nitro/(templates|networks))/'
+node_re='^crates/erpc-chain-(solana/(templates|regions)|solana-native/templates|arc/(templates|networks)|eth/templates|sui/templates|tron/templates|monad/templates|kaia/templates|hyperliquid/templates|op/templates|near/templates|nitro/(templates|networks)|bsc/(templates|networks)|polygon/(templates|networks))/'
 
 status=0
 report() { printf '%s:%s: %s\n' "$1" "$2" "$3" >&2; status=1; }
@@ -350,7 +351,7 @@ EOF
 
 is_loopback_host() {
   case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
-    127.0.0.1|localhost|'[::1]') return 0;;
+    127.0.0.1|127.0.0.10|127.0.0.11|127.0.0.12|127.0.0.13|127.0.0.14|localhost|'[::1]') return 0;;
   esac
   return 1
 }
@@ -807,6 +808,35 @@ check_occurrence() {
     report "$f" "$ln" "non-ASCII or unexpected character in host: $scheme://$host"
     return 0
   fi
+  # Dedicated validator TLS audiences are not a general loopback exception.
+  # A plaintext or unrelated-chain use must fail even though these IPs are local.
+  if printf '%s\n' "$eth_validator_hosts" | grep -qxF "$host"; then
+    case "$f" in
+      crates/erpc-chain-eth/templates/authority/eth_validator_*.py|crates/erpc-chain-eth/templates/validator/*|crates/erpc-chain-eth/tests/authority_validator_*.py|crates/erpc-chain-eth/tests/authority_validator_*.rs)
+        [ "$scheme" = https ] && return 0;;
+    esac
+    report "$f" "$ln" "dedicated validator TLS audience outside its HTTPS helper scope: $scheme://$host"
+    return 0
+  fi
+  # Polygon artifacts and signature trust material are HTTPS-only; its native
+  # parent transport is loopback. Other clients retain their protocol schemes.
+  if [[ "$f" =~ ^crates/erpc-chain-polygon/(templates|networks)/ ]] &&
+      ! is_loopback_host "$host" && [ "$scheme" = http -o "$scheme" = ws ]; then
+    report "$f" "$ln" "Polygon artifact or trust material requires HTTPS: $host"
+  fi
+  if [[ "$f" =~ ^crates/erpc-chain-kaia/templates/ ]] &&
+      ! is_loopback_host "$host" && [ "$scheme" = http -o "$scheme" = ws ]; then
+    report "$f" "$ln" "Kaia artifact transport requires HTTPS: $host"
+    return 0
+  fi
+  # These exact offline historical inputs retain Polygon's original genesis
+  # URL/guard. They do not grant a runtime or general test-tree destination.
+  case "$f" in
+    crates/erpc-chain-polygon/tests/fixtures/pre-karwar-mainnet.json|crates/erpc-chain-polygon/tests/fixtures/pre-karwar-amoy.json|crates/erpc-chain-polygon/tests/fixtures/pre-karwar-state.py)
+      if [ "$host" = storage.googleapis.com ] && [ "$scheme" = https ] && is_node_host "$host"; then
+        return 0
+      fi;;
+  esac
   # A node host in the node's templates keeps the scheme its client uses.
   if [ "$kind" = node ] && is_node_host "$host"; then
     return 0

@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Fence and prepare Avalanche ingress before the long deployment
+  hosts: all
+  become: true
+  environment:
+    PATH: /usr/sbin:/usr/bin:/sbin:/bin
+  gather_facts: false
+  any_errors_fatal: true
+  vars_files: [vars.yml]
+  tasks:
+    - name: Authenticate the original scope
+      ansible.builtin.import_tasks: tasks/contract.yml
+    - name: Persist caller intent and drain the original account before any artifact replacement
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ avax_jinja }}/control.py"]
+        stdin: "{{ {'action':'begin','contract':avax_contract_value,'intent':avax_intent,'target':{'version':avax_version,'commit':avax_commit,'archive_sha256':avax_sha256}} | to_json }}"
+    - name: Publish the checked control boundary
+      ansible.builtin.import_tasks: tasks/publication.yml
+    - name: Prepare operation-bound ingress
+      ansible.builtin.import_tasks: tasks/firewall.yml

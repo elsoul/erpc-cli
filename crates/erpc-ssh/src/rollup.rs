@@ -35,16 +35,17 @@ impl Family {
     }
 }
 
-pub(crate) const CONTROL: &str = "sudo -n python3 /usr/local/lib/erpc/rollup_control.py";
+pub(crate) const CONTROL: &str =
+    "sudo -n /usr/bin/python3 -I /usr/local/lib/erpc/rollup_control.py";
 
 pub(crate) fn preflight() -> String {
     let script = include_str!("rollup_contract.py").replace('\'', "'\\''");
-    format!("sudo -n python3 -c '{script}'")
+    format!("sudo -n /usr/bin/python3 -I -c '{script}'")
 }
 
 pub(crate) fn confirm(family: Family, token: &crate::firewall::FirewallToken) -> String {
     format!(
-        "sudo -n python3 /usr/local/lib/erpc/rpc-firewall.py {} confirm {} {}",
+        "sudo -n /usr/bin/python3 -I /usr/local/lib/erpc/rpc-firewall.py {} confirm {} {}",
         family.name(),
         token.run.as_str(),
         token.bundle

@@ -1,0 +1,62 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+[Unit]
+Description=Polygon {{ polygon_network }} {{ polygon_component }}
+RequiresMountsFor=/var/lib/polygon /opt/polygon
+Wants=network-online.target {{ 'polygon-heimdall.service' if polygon_component == 'bor' else 'polygon-l1-proxy.service' }}
+After=network-online.target erpc-polygon-firewall.service {{ 'polygon-heimdall.service' if polygon_component == 'bor' else 'polygon-l1-proxy.service' }}
+Requires=erpc-polygon-firewall.service
+{% if polygon_contract.role == 'validator' %}Wants=polygon-broker.service
+After=polygon-broker.service
+{% endif %}StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User={{ polygon_runtime_accounts[polygon_component].uid }}
+Group={{ polygon_runtime_accounts[polygon_component].gid }}
+SupplementaryGroups=
+DynamicUser=no
+UMask=0077
+ExecCondition=+{{ polygon_credential_condition }} credential-condition {{ polygon_component }} '{{ polygon_contract | to_json }}'
+ExecStartPre=+{{ polygon_service_guard }} runtime {{ polygon_component }} '{{ polygon_contract | to_json }}'
+ExecStart=/usr/bin/python3 -I /usr/local/lib/erpc/polygon/releases/{{ polygon_helpers }}/launch.py {{ polygon_component }}
+{% if polygon_component == 'bor' %}LoadCredentialEncrypted=bor-nodekey:/etc/credstore.encrypted/polygon/original/bor-nodekey
+{% if polygon_contract.role == 'validator' and polygon_profile.validator.phase == 'active' %}LoadCredentialEncrypted=bor-password:/etc/credstore.encrypted/polygon/original/bor-password
+{% endif %}{% else %}LoadCredentialEncrypted=heimdall-node-key.json:/etc/credstore.encrypted/polygon/original/heimdall-node-key.json
+{% if polygon_contract.role == 'validator' %}LoadCredentialEncrypted=heimdall-validator-key.json:/etc/credstore.encrypted/polygon/heimdall-runtime-key.json
+LoadCredentialEncrypted=comet-certificate:/etc/credstore.encrypted/polygon/local-tls/comet-certificate
+LoadCredentialEncrypted=comet-private-key:/etc/credstore.encrypted/polygon/local-tls/comet-private-key
+LoadCredentialEncrypted=native-app.toml:/etc/credstore.encrypted/polygon/native-app.toml
+{% else %}LoadCredentialEncrypted=heimdall-validator-key.json:/etc/credstore.encrypted/polygon/original/heimdall-validator-key.json
+{% endif %}{% endif %}RuntimeDirectory=polygon-{{ polygon_component }}
+RuntimeDirectoryMode=0700
+WorkingDirectory=/var/lib/polygon/{{ polygon_component }}
+ReadWritePaths=/var/lib/polygon/{{ polygon_component }}/data /run/polygon-{{ polygon_component }}
+Restart=on-failure
+RestartSec=60
+TimeoutStartSec=180
+TimeoutStopSec=300
+KillMode=control-group
+SendSIGKILL=no
+LimitCORE=0
+LimitNOFILE=1048576
+TasksMax=8192
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

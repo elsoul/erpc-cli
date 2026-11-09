@@ -8,9 +8,9 @@
 //! 1. Before a commit, `scripts/check-endpoints.sh` extracts these literals and
 //!    refuses any other URL in a tracked text file, so a new destination cannot
 //!    enter the repository without a reviewer seeing this file change.
-//! 2. [`ensure_service_url`] accepts a URL on any host declared here, of
-//!    any kind -- not only the service hosts. Every request URL `erpc`
-//!    builds is a constant, and a test runs each one through it. At runtime
+//! 2. [`ensure_service_url`] accepts the application hosts returned by
+//!    [`all_hosts`], excluding documentation and scoped node destinations.
+//!    Every request URL `erpc` builds is a constant, and tests check each one. At runtime
 //!    it is called before a page is opened in a browser. Which hosts may
 //!    receive the access token, and which the refresh token, is much
 //!    narrower, and lives in `erpc-auth`'s allowlist.
@@ -34,6 +34,7 @@ pub const SERVICE_HOSTS: &[&str] = &[
     "mcp-user-api.erpc.global",
     "x402.erpc.global",
     "edge.erpc.global",
+    "eth.erpc.global",
 ];
 
 /// Hosts opened in the operator's browser. No credential is ever sent by `erpc`.
@@ -66,10 +67,10 @@ pub const TOOLING_HOSTS: &[&str] = &[
     "docs.jito.wtf",
 ];
 
-/// Solana clusters' public RPC. erpc hands these to the Solana CLI on the
-/// operator's machine, which reads accounts and sends transactions there. No
-/// ERPC credential is sent.
-pub const CLUSTER_HOSTS: &[&str] = &["api.testnet.solana.com"];
+/// Solana public observations. The legacy native transaction helper uses only
+/// testnet; the registration observer reads both clusters without signing.
+/// No ERPC credential is sent.
+pub const CLUSTER_HOSTS: &[&str] = &["api.testnet.solana.com", "api.mainnet-beta.solana.com"];
 
 /// Services that answer with the address a request came from, and nothing
 /// else. `erpc ai` may run `curl` on one of them on the operator's machine
@@ -101,6 +102,17 @@ pub const HOST_PATTERNS: &[(&str, &str)] = &[("solana-snapshot-", ".erpc.global"
 /// Keep this list to hosts something actually links today. A grant held "in
 /// case" is a standing permission nobody is reviewing.
 pub const DOCUMENTATION_HOSTS: &[&str] = &[
+    "nginx.org",
+    "www.rfc-editor.org",
+    "www.1password.dev",
+    "docs.sigstore.dev",
+    "docs.kernel.org",
+    "docs.docker.com",
+    "www.rabbitmq.com",
+    "storage.googleapis.com",
+    "docs.rs",
+    "www.iana.org",
+    "www.apache.org",
     "www.contributor-covenant.org",
     "keepachangelog.com",
     "semver.org",
@@ -124,12 +136,16 @@ pub const DOCUMENTATION_HOSTS: &[&str] = &[
     "docs.soneium.org",
     "snapshot-explorer.arbitrum.io",
     "docs.bnbchain.org",
+    "www.bnbchain.org",
+    "testnet-staking.bnbchain.org",
     "docs.kaia.io",
     "docs.monad.xyz",
+    // Also allowed in Monad node templates below; never controller HTTP destinations.
+    "pkg.category.xyz",
+    "bucket.monadinfra.com",
     "docs.polygon.technology",
     "forum.polygon.technology",
     "hyperliquid.gitbook.io",
-    "pkg.category.xyz",
     "bitcoin.org",
     "developer.bitcoin.org",
     "developers.tron.network",
@@ -143,21 +159,47 @@ pub const DOCUMENTATION_HOSTS: &[&str] = &[
     "www.freedesktop.org",
 ];
 
-/// Hosts a node contacts while it sets itself up and runs, named in the
-/// playbooks and templates erpc carries for it
-/// (`crates/erpc-chain-solana/templates/`, `crates/erpc-chain-arc/templates/`,
-/// `crates/erpc-chain-eth/templates/`, `crates/erpc-chain-sui/templates/`,
-/// `crates/erpc-chain-tron/templates/`, `crates/erpc-chain-op/templates/`,
-/// `crates/erpc-chain-nitro/templates/`),
-/// in the Jito region table (`crates/erpc-chain-solana/regions/`) and in the
-/// Arc/Nitro network tables (`crates/erpc-chain-arc/networks/`,
-/// `crates/erpc-chain-nitro/networks/`).
+/// Destinations used by carried chain templates, network catalogs and the
+/// Solana region table. `scripts/check-endpoints.sh` defines their exact source
+/// paths and chain-specific transport restrictions.
 ///
-/// erpc never contacts them: they are written into the node's startup script
-/// and service, and the node reaches them. The endpoints gate accepts them in
-/// that tree only, plaintext included where the client's protocol is
-/// plaintext, and [`all_hosts`] leaves them out.
+/// Node declarations do not grant ERPC service access or session credentials;
+/// [`all_hosts`] excludes this list. A host used by a controller must be
+/// separately declared for its controller purpose.
 pub const NODE_HOSTS: &[&str] = &[
+    // Official native Solana gossip rendezvous; no controller credentials.
+    "entrypoint.mainnet-beta.solana.com",
+    "entrypoint2.mainnet-beta.solana.com",
+    "entrypoint3.mainnet-beta.solana.com",
+    "entrypoint4.mainnet-beta.solana.com",
+    "entrypoint5.mainnet-beta.solana.com",
+    "entrypoint.testnet.solana.com",
+    "entrypoint2.testnet.solana.com",
+    "entrypoint3.testnet.solana.com",
+    // Exact dated compiler components for isolated Agave source builds.
+    "static.rust-lang.org",
+    // Monad signed APT package and Foundation bootstrap/configuration artifacts.
+    "pkg.category.xyz",
+    "bucket.monadinfra.com",
+    // Polygon migrated genesis and keyless package-verification material.
+    "storage.googleapis.com",
+    "tuf-repo-cdn.sigstore.dev",
+    "rekor.sigstore.dev",
+    // Literal certificate issuer identity; verification does not authenticate to it.
+    "token.actions.githubusercontent.com",
+    // Exact official Kaia live-pruned snapshot object host.
+    "kaia-chaindata-r2-logging.kaia-foundation.workers.dev",
+    // Hyperliquid's public, network-specific supervisor artifacts and observations.
+    "binaries.hyperliquid.xyz",
+    "binaries.hyperliquid-testnet.xyz",
+    "api.hyperliquid.xyz",
+    "api.hyperliquid-testnet.xyz",
+    "rpc.hyperliquid.xyz",
+    "rpc.hyperliquid-testnet.xyz",
+    // Fixed public reference-rate feeds used by the qualified AQA native publisher.
+    "fred.stlouisfed.org",
+    "markets.newyorkfed.org",
+    "data.financialresearch.gov",
     // Read-only TRON membership, permission, genesis and synchronization checks.
     "api.trongrid.io",
     "nile.trongrid.io",
@@ -169,6 +211,8 @@ pub const NODE_HOSTS: &[&str] = &[
     "sepolia-sequencer.base.org",
     "rpc.soneium.org",
     "rpc.minato.soneium.org",
+    // Public BSC snapshot bucket linked by the official pinned catalog.
+    "pub-c0627345c16f47ab858c9469133073a8.r2.dev",
     // Sui bootstrap tools and public state-sync peers, selected by network.
     "fullnode.mainnet.sui.io",
     "fullnode.testnet.sui.io",
@@ -180,6 +224,10 @@ pub const NODE_HOSTS: &[&str] = &[
     "ewr-00.mainnet.sui.io",
     "yto-tnt-ssfn-01.testnet.sui.io",
     "yto-tnt-ssfn-00.testnet.sui.io",
+    "rpc.mainnet.near.org",
+    "rpc.testnet.near.org",
+    // NEAR public configuration and Testnet genesis archives.
+    "s3-us-west-1.amazonaws.com",
     // Nitro's fixed official metadata, image registry and follower endpoints.
     "raw.githubusercontent.com",
     "cdn.robinhood.com",
@@ -214,10 +262,9 @@ pub const NODE_HOSTS: &[&str] = &[
     "ny.testnet.relayer.jito.wtf",
     "dallas.testnet.bam.jito.wtf",
     // Old Faithful: the archive a Solana Index RPC node's faithful-cli
-    // reads epochs from, and the public RPC it asks for the current epoch
-    // and proxies what it cannot answer to.
+    // reads epochs from. Its public RPC is also a CLI observation destination
+    // and is declared in CLUSTER_HOSTS above.
     "files.old-faithful.net",
-    "api.mainnet-beta.solana.com",
     // A public snapshot mirror (Cloudflare R2, run by Avorio Network) a
     // Solana RPC node may fetch its first snapshot from, beside the ERPC
     // mirrors.
@@ -240,12 +287,28 @@ pub const NODE_HOSTS: &[&str] = &[
 ];
 
 /// Loopback hosts, where plaintext `http`/`ws` is allowed: the OAuth redirect
-/// listener and `erpc mcp serve --http`.
+/// listener, `erpc mcp serve --http`, and closed native loopback profiles.
+/// Polygon validator financial dependencies still require TLS in their native
+/// configuration; distinct fixed IP SANs separate each server authority.
 ///
 /// An IPv6 literal must be bracketed in a URL, so `[::1]` is the form that
 /// reaches this list; a bare `::1` is rejected as malformed before the list is
 /// consulted.
-pub const LOOPBACK_HOSTS: &[&str] = &["127.0.0.1", "localhost", "[::1]"];
+pub const LOOPBACK_HOSTS: &[&str] = &[
+    "127.0.0.1",
+    "127.0.0.10",
+    "127.0.0.11",
+    "127.0.0.12",
+    "127.0.0.13",
+    "127.0.0.14",
+    "localhost",
+    "[::1]",
+];
+
+/// Dedicated Ethereum validator TLS audiences. These are accepted only in its
+/// carried validator helpers and dedicated regressions, over HTTPS; they are
+/// not general ERPC endpoints.
+pub const ETH_VALIDATOR_LOCAL_HOSTS: &[&str] = &["127.0.0.2", "127.0.0.3"];
 
 /// Why a URL was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -281,7 +344,7 @@ impl std::error::Error for EndpointError {}
 
 /// Hosts `erpc` may contact, for the pre-commit gate and diagnostics.
 ///
-/// Excludes [`DOCUMENTATION_HOSTS`], which are link targets, not destinations.
+/// Excludes documentation links and the separately scoped node/validator lists.
 #[must_use]
 pub fn all_hosts() -> Vec<&'static str> {
     let mut v: Vec<&'static str> = SERVICE_HOSTS
@@ -323,14 +386,22 @@ pub fn is_allowed_host(host: &str) -> bool {
 /// ERPC's shared RPC; an API key goes after it as `?api-key=…`.
 pub const SHARED_RPC_URL: &str = "https://edge.erpc.global";
 
+/// Ethereum mainnet shared RPC with the operator's ERPC API key.
+pub const ETH_RPC_URL: &str = "https://eth.erpc.global";
+
+/// Fixed x402 RPC resources. Account credentials must never accompany payment.
+pub const X402_SOLANA_URL: &str = "https://x402.erpc.global/v1/solana-mainnet";
+/// Ethereum mainnet RPC paid per request.
+pub const X402_ETH_URL: &str = "https://x402.erpc.global/v1/eth-mainnet";
+
 /// Refuse any URL that `erpc` must not contact on its own initiative.
 ///
 /// Accepts `https`/`wss` to an allowlisted host with no explicit port and no
 /// userinfo, or `http`/`ws`/`https`/`wss` to loopback with any port.
 ///
-/// "Allowlisted" here means declared anywhere in this module, whatever
-/// the kind of host. A caller that needs a narrower set -- where a token
-/// may go, or which page may be opened -- checks for it itself.
+/// "Allowlisted" here means returned by [`all_hosts`] or matched by an
+/// application host pattern. Documentation and scoped node destinations are
+/// excluded. Token recipients and browser targets have further caller checks.
 ///
 /// # Errors
 ///
@@ -452,11 +523,53 @@ impl Parsed {
     }
 }
 
+/// Official read-only network observer used to qualify current NEAR bootstrap peers.
+#[must_use]
+pub fn near_bootstrap(network: &str) -> Option<&'static str> {
+    match network {
+        "mainnet" => Some("https://rpc.mainnet.near.org"),
+        "testnet" => Some("https://rpc.testnet.near.org"),
+        _ => None,
+    }
+}
+
+/// Exact public NEAR configuration and network genesis sources.
+/// Returns no URL for unknown networks or malformed source revisions.
+#[must_use]
+pub fn near_artifacts(network: &str, commit: &str) -> Option<(String, String)> {
+    if !matches!(network, "mainnet" | "testnet")
+        || commit.len() != 40
+        || !commit
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return None;
+    }
+    let config = format!(
+        "https://s3-us-west-1.amazonaws.com/build.nearprotocol.com/nearcore-deploy/{network}/rpc/config.json"
+    );
+    let genesis = if network == "mainnet" {
+        format!(
+            "https://raw.githubusercontent.com/near/nearcore/{commit}/utils/mainnet-res/res/mainnet_genesis.json"
+        )
+    } else {
+        "https://s3-us-west-1.amazonaws.com/build.nearprotocol.com/nearcore-deploy/testnet/genesis.json.xz".into()
+    };
+    Some((config, genesis))
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
     fn the_shared_rpc_is_a_service_url() {
-        assert!(super::ensure_service_url(super::SHARED_RPC_URL).is_ok());
+        for url in [
+            super::SHARED_RPC_URL,
+            super::ETH_RPC_URL,
+            super::X402_SOLANA_URL,
+            super::X402_ETH_URL,
+        ] {
+            assert!(super::ensure_service_url(url).is_ok());
+        }
     }
 
     use super::{
@@ -476,6 +589,29 @@ mod tests {
             "ws://localhost:20026/v1/session/ws",
         ] {
             assert_eq!(ensure_service_url(u), Ok(()), "should be allowed: {u}");
+        }
+    }
+
+    #[test]
+    fn validator_loopback_authorities_are_explicit_without_an_ip_range_exception() {
+        for host in [
+            "127.0.0.10",
+            "127.0.0.11",
+            "127.0.0.12",
+            "127.0.0.13",
+            "127.0.0.14",
+        ] {
+            assert!(super::is_loopback(host));
+            assert_eq!(ensure_service_url(&format!("https://{host}:9545/")), Ok(()));
+        }
+        for host in [
+            "127.0.0.9",
+            "127.0.0.15",
+            "127.1.0.10",
+            "127.0.0.10.example.com",
+        ] {
+            assert!(!super::is_loopback(host));
+            assert!(ensure_service_url(&format!("https://{host}:9545/")).is_err());
         }
     }
 
@@ -562,6 +698,7 @@ mod tests {
             .into_iter()
             .chain(super::DOCUMENTATION_HOSTS.iter().copied())
             .chain(super::NODE_HOSTS.iter().copied())
+            .chain(super::ETH_VALIDATOR_LOCAL_HOSTS.iter().copied())
             .chain(super::ADDRESS_ECHO_HOSTS.iter().copied())
             .filter(|h| !doc.contains(&format!("`{h}`")))
             .collect();
@@ -579,7 +716,10 @@ mod tests {
     /// Node hosts are reached by the node, never by erpc.
     #[test]
     fn node_hosts_are_not_erpc_destinations() {
-        for h in super::NODE_HOSTS {
+        for h in super::NODE_HOSTS
+            .iter()
+            .chain(super::ETH_VALIDATOR_LOCAL_HOSTS)
+        {
             assert!(
                 !all_hosts().contains(h),
                 "{h} is both a node host and an erpc destination"
@@ -637,5 +777,16 @@ mod tests {
             !doc.contains("is the one exception") && !doc.contains("are the exception"),
             "docs/public-hosts.md must not claim a single exception; the gate has several"
         );
+    }
+    #[test]
+    fn near_artifact_destinations_are_network_specific_and_revision_bounded() {
+        let revision = "a".repeat(40);
+        let main = super::near_artifacts("mainnet", &revision).expect("mainnet");
+        let test = super::near_artifacts("testnet", &revision).expect("testnet");
+        assert!(main.1.contains(&revision));
+        assert!(test.1.ends_with("testnet/genesis.json.xz"));
+        assert_ne!(main.0, test.0);
+        assert!(super::near_artifacts("../mainnet", &revision).is_none());
+        assert!(super::near_artifacts("mainnet", "../unreviewed").is_none());
     }
 }

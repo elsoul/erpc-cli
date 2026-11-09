@@ -87,7 +87,7 @@ The shared upstream setup index links each client's full installation guide. [S1
 
 **RPC implemented; validator backend implemented with live acceptance deferred.** The RPC path still runs mainnet Reth plus Lighthouse BN. The separate `erpc v --chain eth` path owns a dedicated EL/BN/VC host on Hoodi or mainnet, imports a new encrypted keystore with matching history, fences managed migrations, and reviews public deposit data without broadcasting. Alternate-client backends and testnet RPC remain outside the RPC path. [R1], [R2], [R3], [R5], [R6], [R8]
 
-Offline validation and the deferred Hoodi/mainnet real-host checklist are recorded in the [implementation roadmap][R7]. The earlier [Ethereum RPC plan][R4] remains scoped to RPC. [R4], [R7], [R8]
+Real-host acceptance on Hoodi and mainnet is deferred. [R8]
 
 ## Sources
 
@@ -168,12 +168,10 @@ Offline validation and the deferred Hoodi/mainnet real-host checklist are record
 [R1]: ../../crates/erpc-skills/skills/ethereum-node/SKILL.md "Existing ERPC mainnet RPC scope and host checks"
 [R2]: ../../crates/erpc-chain-eth/templates/ "Existing Reth and Lighthouse systemd units and plays"
 [R3]: ../../crates/erpc-chain-eth/src/ "Existing release pinning and both-layer status checks"
-[R4]: ../plans/2026-10-24-eth-rpc.md "Existing Ethereum implementation plan"
 
 [S27]: https://github.com/OffchainLabs/prysm/blob/96d418cd964b083e37519a9df274030a1beac7db/prysm.sh "Pinned Prysm signing fingerprint and verification procedure"
 
 [R5]: ../../crates/erpc-core/src/chain.rs "Current Ethereum RPC and validator role registry"
 [R6]: ../../crates/erpc/src/tree.rs "Current role-specific dispatch"
-[R7]: ../plans/2026-10-26-chain-implementation.md "Ordered implementation plan; ETH validator steps EV1-EV7"
 
 [R8]: ../ethereum-validator.md "Dedicated Ethereum validator lifecycle and deferred live acceptance"

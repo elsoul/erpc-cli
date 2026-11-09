@@ -9,8 +9,8 @@
   tasks:
     - name: Verify host ownership before touching any firewall
       ansible.builtin.command:
-        argv: [python3, /usr/local/lib/erpc/nitro-control, play]
-        stdin: "{{ nitro_request | combine({'action':'status'}) | to_json }}"
+        argv: [/usr/bin/python3, -I, /usr/local/lib/erpc/nitro-control, play]
+        stdin: "{{ nitro_request | combine({'action':'check-deploy'}) | to_json }}"
       changed_when: false
     - name: Install nftables
       ansible.builtin.apt:
@@ -55,7 +55,7 @@
       register: firewall_submission
     - name: Apply under the common rollback timer
       ansible.builtin.command:
-        argv: [python3, /usr/local/lib/erpc/rpc-firewall.py, "{{ nitro_family }}", apply, "{{ (playbook_dir ~ '/../..') | realpath | basename }}", "{{ firewall_submission.stat.checksum }}"]
+        argv: [/usr/bin/python3, -I, /usr/local/lib/erpc/rpc-firewall.py, "{{ nitro_family }}", apply, "{{ (playbook_dir ~ '/../..') | realpath | basename }}", "{{ firewall_submission.stat.checksum }}"]
       changed_when: true
     - name: Enable confirmed policy at boot
       ansible.builtin.systemd_service:

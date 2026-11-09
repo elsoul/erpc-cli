@@ -4,16 +4,31 @@
 - name: Deploy the pinned AvalancheGo service without registering stake
   hosts: all
   become: true
+  environment:
+    PATH: /usr/sbin:/usr/bin:/sbin:/bin
   gather_facts: false
   any_errors_fatal: true
   vars_files: [vars.yml]
   tasks:
-    - name: Check immutable remote ownership
-      ansible.builtin.import_tasks: tasks/contract.yml
+    - name: Require this exact confirmed preparation and uncanceled caller intent before the long run
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ avax_jinja }}/control.py"]
+        stdin: "{{ {'action':'deploy-check','contract':avax_contract_value,'intent':avax_intent,'run':erpc_fw_confirmed_run,'bundle':erpc_fw_confirmed_bundle} | to_json }}"
+      changed_when: false
+    - name: Read original numeric recipients for the new service units
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ avax_jinja }}/control.py"]
+        stdin: "{{ {'action':'account','contract':avax_contract_value} | to_json }}"
+      register: avax_original_account
+      changed_when: false
+    - name: Use only original numeric recipients
+      ansible.builtin.set_fact:
+        avax_runtime_account: "{{ avax_original_account.stdout | from_json }}"
     - name: Require initial database free space or existing database operating headroom
       ansible.builtin.command:
         argv:
-          - python3
+          - /usr/bin/python3
+          - -I
           - "{{ playbook_dir }}/../../jinja/capacity.py"
           - "{{ avax_type }}"
           - "{{ avax_network }}"
@@ -35,21 +50,11 @@
         path: "{{ avax_release_dir }}/avalanchego"
       register: avax_installed
       failed_when: not avax_installed.stat.exists
-    - name: Install identity guard and recovery helper
-      ansible.builtin.copy:
-        src: "{{ playbook_dir }}/../../jinja/identity.py"
-        dest: /usr/local/lib/erpc/avax-identity.py
-        owner: root
-        group: root
-        mode: '0755'
-    - name: Authorize initial identity generation only on an empty uninitialized host
-      ansible.builtin.command: python3 /usr/local/lib/erpc/avax-identity.py authorize
+    - name: Authorize only initial identity creation or verify original custody
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ avax_jinja }}/control.py"]
+        stdin: "{{ {'action':'authorize','contract':avax_contract_value} | to_json }}"
       changed_when: false
-      when: avax_new_identity | bool
-    - name: Verify the already pinned identity before changing a running node
-      ansible.builtin.command: python3 /usr/local/lib/erpc/avax-identity.py verify
-      changed_when: false
-      when: not (avax_new_identity | bool)
     - name: Write client and restricted gateway configuration
       ansible.builtin.template:
         src: "{{ avax_jinja }}/{{ item.src }}"
@@ -71,27 +76,14 @@
         state: link
         force: true
       register: avax_link
-    - name: Apply firewall before enabling any external gateway
-      ansible.builtin.include_tasks: tasks/firewall.yml
-    - name: Start or restart client only on configuration/release change
+    - name: Reload the qualified original recipient units
       ansible.builtin.systemd_service:
-        name: avalanchego
-        enabled: true
         daemon_reload: true
-        state: "{{ 'restarted' if avax_configuration.changed or avax_link.changed else 'started' }}"
-    - name: Check local API liveness (bootstrap readiness is checked separately)
-      ansible.builtin.uri:
-        url: http://127.0.0.1:9650/ext/info
-        method: POST
-        body_format: json
-        body: {jsonrpc: '2.0', id: 1, method: info.getNodeID, params: {}}
-      register: avax_alive
-      until: avax_alive.status == 200 and avax_alive.json.result.nodeID is defined
-      retries: 30
-      delay: 2
-    - name: Start restricted RPC gateway
-      ansible.builtin.systemd_service:
-        name: avalanche-rpc
-        enabled: true
-        daemon_reload: true
-        state: "{{ 'restarted' if avax_configuration.changed else 'started' }}"
+    - name: Publish completed artifacts under the original caller intent
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ avax_jinja }}/control.py"]
+        stdin: "{{ {'action':'installed','contract':avax_contract_value,'intent':avax_intent} | to_json }}"
+    - name: Start only the completed uncanceled confirmed deployment
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ avax_jinja }}/control.py"]
+        stdin: "{{ {'action':'activate','contract':avax_contract_value,'intent':avax_intent} | to_json }}"

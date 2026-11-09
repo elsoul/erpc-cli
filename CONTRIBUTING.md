@@ -77,6 +77,30 @@ cargo build
 cargo test --workspace
 ```
 
+The tests run the Python scripts a node receives, so they need Python 3 on
+`PATH`, and a JDK (`javac` and `java`) for the TRON adapter. Most of those
+scripts refuse to trust a file or directory of theirs that its group or others
+can write to, and on Linux and macOS the tests run them from your checkout: the
+checkout, every directory above it and the files the tests create are held to
+that rule, and some of the scripts also refuse a directory above the checkout
+that an account other than root or you owns. So keep the checkout below
+directories that are owned by root or by you and that neither their group nor
+others can write to (not under `/tmp`), and clone, pull and test from a shell
+whose umask is `022`, whatever your default is. Under Ubuntu's `002` the files
+and directories Git writes are group-writable; under `027` or `077` some tests
+fail because they expect what `022` creates. A checkout made under another
+umask needs `chmod -R go-w .`, and again whenever Git has rewritten files under
+that umask (Git does not record these bits). The pre-push hook runs its tests
+under `umask 022`, but it does not change files already on disk.
+
+Each package that embeds its `templates/` directory declares that directory in
+`build.rs` with `cargo::rerun-if-changed=templates`. Existing-file dependencies
+alone do not detect newly added templates during incremental builds. Keep this
+directory declaration when adding or moving embedded resources. The
+`erpc-ops` `template_invalidation` test runs every template package's actual build
+script in an offline Cargo fixture and checks nested additions, edits and
+deletions without cleaning the build cache.
+
 Optional local tools: `cargo install cargo-deny cargo-dist`,
 `cargo install cargo-about --features cli`, `pipx install reuse`,
 `brew install lefthook gitleaks` (or the equivalents for your platform), then

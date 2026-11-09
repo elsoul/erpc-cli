@@ -1,0 +1,99 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+- name: Prepare an owned native Monad installation
+  hosts: all
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Reserve only a clean physical-device ownership contract
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, '{{ playbook_dir }}/../../node/control.py', within-run]
+        stdin: '{{ monad_request | combine({"operation": "reserve"}) | to_json }}'
+      when: monad_initial | bool
+      changed_when: true
+    - name: Bind the reviewed replacement target and stop every native writer
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, '{{ playbook_dir }}/../../node/control.py', within-run]
+        stdin: '{{ monad_request | combine({"operation": "begin"}) | to_json }}'
+      when: not (monad_initial | bool)
+      changed_when: true
+    - name: Install Ubuntu dependencies without starting distribution services
+      ansible.builtin.apt:
+        name: [python3, nftables, nginx, gpgv, zstd, util-linux, libboost-context1.83.0, libboost-fiber1.83.0, libboost-fiber1.83-dev, libboost-stacktrace1.83.0, libtbb12, liburing2, libarchive-dev, libbrotli-dev, libcrypto++-dev, libhugetlbfs-dev, libhugetlbfs-bin, libmagicenum-dev, whiptail]
+        state: present
+        update_cache: true
+        policy_rc_d: 101
+    - name: Reserve and create only the original numeric native identities
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, '{{ playbook_dir }}/../../node/control.py', within-run]
+        stdin: '{{ monad_request | combine({"operation": "provision-accounts"}) | to_json }}'
+      when: monad_initial | bool
+      changed_when: true
+    - name: Verify original numeric accounts before directory and device permissions
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, '{{ playbook_dir }}/../../node/control.py', within-run]
+        stdin: '{{ monad_request | combine({"operation": "verified-accounts"}) | to_json }}'
+      register: monad_original_accounts
+      changed_when: false
+    - name: Disable the unused distribution nginx service
+      ansible.builtin.systemd_service:
+        name: nginx
+        enabled: false
+        state: stopped
+    - name: Root-owned controller and receipt directories
+      ansible.builtin.file:
+        path: '{{ item }}'
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+      loop: [/var/lib/erpc-monad, /etc/erpc/monad, /opt/erpc/monad, /usr/local/lib/erpc/monad]
+    - name: Prepare original native directories without following node-controlled paths
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, '{{ playbook_dir }}/../../node/control.py', within-run]
+        stdin: '{{ monad_request | combine({"operation": "prepare-data", "initial": monad_initial | bool}) | to_json }}'
+      changed_when: true
+    - name: Extract the authenticated package without running maintainer scripts
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, '{{ playbook_dir }}/../../node/control.py', within-run]
+        stdin: '{{ monad_request | combine({"operation": "install-package", "initial": monad_initial | bool}) | to_json }}'
+      changed_when: true
+    - name: Publish exact controller modules from the sealed carried source
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, '{{ playbook_dir }}/../../node/control.py', within-run]
+        stdin: '{{ monad_request | combine({"operation": "publish-helpers"}) | to_json }}'
+      changed_when: true
+    - name: Persist access to the one reserved physical partition
+      ansible.builtin.copy:
+        dest: /etc/udev/rules.d/99-zz-erpc-monad.rules
+        owner: root
+        group: root
+        mode: '0644'
+        content: >-
+          ENV{ID_PART_ENTRY_UUID}=="{{ monad_request.contract.partuuid }}", OWNER="root", GROUP="{{ (monad_original_accounts.stdout | from_json).accounts['erpc-monad'].gid }}", MODE="0660"
+    - name: Reload persistent device permissions
+      ansible.builtin.command:
+        argv: [/usr/bin/udevadm, control, --reload-rules]
+      changed_when: true
+    - name: Apply permissions only to the verified device and qualify dedicated account
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, '{{ playbook_dir }}/../../node/control.py', within-run]
+        stdin: '{{ monad_request | combine({"operation": "device-access"}) | to_json }}'
+      changed_when: true
+    - name: Install the qualified native network-buffer recommendations
+      ansible.builtin.copy:
+        dest: /etc/sysctl.d/80-erpc-monad.conf
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          net.core.rmem_default=62500000
+          net.core.rmem_max=62500000
+          net.core.wmem_default=62500000
+          net.core.wmem_max=62500000
+          net.ipv4.tcp_rmem=4096 12582912 12582912
+          net.ipv4.tcp_wmem=4096 12582912 12582912
+    - name: Apply only the owned Monad network-buffer profile
+      ansible.builtin.command:
+        argv: [/usr/sbin/sysctl, -p, /etc/sysctl.d/80-erpc-monad.conf]
+      changed_when: true

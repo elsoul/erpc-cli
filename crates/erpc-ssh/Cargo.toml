@@ -14,6 +14,8 @@ authors.workspace = true
 publish = true
 
 [dependencies]
+base64.workspace = true
+flate2.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 tempfile.workspace = true

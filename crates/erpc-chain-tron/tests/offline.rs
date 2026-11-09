@@ -5,7 +5,13 @@
 
 #[test]
 fn custody_and_native_adapter_failures() {
-    for script in ["offline.py", "control_paths.py"] {
+    for script in [
+        "offline.py",
+        "control_paths.py",
+        "authority.py",
+        "transport.py",
+        "trust.py",
+    ] {
         let result = std::process::Command::new(if cfg!(windows) { "python" } else { "python3" })
             .arg(
                 std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

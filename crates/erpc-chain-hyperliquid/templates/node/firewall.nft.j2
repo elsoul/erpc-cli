@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+# Both transports on the documented peer ports are an explicit ERPC policy.
+table inet erpc_hyperliquid
+delete table inet erpc_hyperliquid
+table inet erpc_hyperliquid {
+ chain input {
+  type filter hook input priority -10; policy drop;
+  iifname "lo" accept
+  ct state established,related accept
+  ct state invalid drop
+  ip protocol icmp accept
+  ip6 nexthdr ipv6-icmp accept
+{% for address in hyperliquid_management_v4 %}
+  ip saddr {{ address }} tcp dport {{ hyperliquid_ssh_port }} accept
+{% endfor %}
+{% for address in hyperliquid_management_v6 %}
+  ip6 saddr {{ address }} tcp dport {{ hyperliquid_ssh_port }} accept
+{% endfor %}
+{% if hyperliquid_request.contract.role == "validator" %}
+  tcp dport 4000-4010 accept
+  udp dport 4000-4010 accept
+{% else %}
+  tcp dport { 4001, 4002 } accept
+  udp dport { 4001, 4002 } accept
+{% endif %}
+{% for address in hyperliquid_request.policy.rpc_allow %}
+  {{ 'ip6' if ':' in address else 'ip' }} saddr {{ address }} tcp dport 8545 accept
+{% endfor %}
+ }
+}

@@ -12,6 +12,6 @@
       vars: {tron_guard: guard-phase}
     - name: Verify the exact firewall receipt, artifacts and signing permission before startup
       ansible.builtin.command:
-        argv: "{{ ['python3', tron_control, 'activate'] + tron_contract_args + [tron_intent, erpc_fw_confirmed_run, erpc_fw_confirmed_bundle, tron_release_target | to_json] }}"
+        argv: "{{ ['/usr/bin/python3', '-I', tron_control, 'activate'] + tron_contract_args + [tron_intent, erpc_fw_confirmed_run, erpc_fw_confirmed_bundle, tron_release_target | to_json] }}"
       changed_when: true
 

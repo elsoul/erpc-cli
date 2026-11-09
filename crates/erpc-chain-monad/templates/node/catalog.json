@@ -1,0 +1,60 @@
+{
+  "schema": 1,
+  "version": "0.16.5",
+  "consensus_commit": "33d9d5c0314eff8c6409a810b9dbf1b6381c6b5c",
+  "execution_commit": "a3b16af1ac3637a262b8b1872798bccc746e81cb",
+  "package": {
+    "url": "https://pkg.category.xyz/pool/main/monad_0.16.5_amd64.deb",
+    "sha256": "0b27486fc85fefedfdb44637e1ee52a1f59e0287594562f5260fa86abf62acc8",
+    "size": 739508498,
+    "architecture": "amd64"
+  },
+  "apt_primary": "D9FA4D9BB7CD9328005E26980802DFD2634AE7F0",
+  "apt_inrelease_sha256": "366c44a74e9033545dbe30a9a693f5c9ab26f1bb25d9f92156089b1bc0c07b82",
+  "apt_packages_sha256": "c534ac6e461b9f955886c67720d71b6542e3cef2efa874fd4dff3739fcaaf47a",
+  "mainnet_approval": {
+    "commit": "6c94e756cf64b6d5eae01e820db49d73a3571bea",
+    "announcement": 6,
+    "sha256": "42af8e277a8090b405ac0f7e55861352dd3db518441a5fc72bf4790e4084910a",
+    "authorized_signers": [
+      "B26F10A7157EA66528FD21381CD1328B3352B251",
+      "EE7A445EC4643BCEC07E76982E22B777D5136DBD"
+    ]
+  },
+  "networks": {
+    "mainnet": {
+      "chain_id": 143,
+      "execution_chain": "monad_mainnet",
+      "config": {
+        "rpc": {
+          "url": "https://bucket.monadinfra.com/config/mainnet/latest/full-node-node.toml",
+          "sha256": "0b996c7a75bacd11a92fe689cf9595849aeb4c9e7cebc5fad5801fcd50ee2e4b"
+        },
+        "validator": {
+          "url": "https://bucket.monadinfra.com/config/mainnet/latest/node.toml",
+          "sha256": "01635dfab394a909ac9a7a29b87ca0d736e56ef5aea51ed603ea1951c9353d23"
+        }
+      },
+      "forkpoint_url": "https://bucket.monadinfra.com/forkpoint/mainnet/forkpoint.toml",
+      "validators_url": "https://bucket.monadinfra.com/validators/mainnet/validators.toml",
+      "legacy_name_record": true
+    },
+    "testnet": {
+      "chain_id": 10143,
+      "execution_chain": "monad_testnet",
+      "config": {
+        "rpc": {
+          "url": "https://bucket.monadinfra.com/config/testnet/latest/full-node-node.toml",
+          "sha256": "67d026a811226a4e6d1377b61650ddd01eb3b9ce58fd4f8107d5fc55cee49f59"
+        },
+        "validator": {
+          "url": "https://bucket.monadinfra.com/config/testnet/latest/node.toml",
+          "sha256": "7613f32932fd46fd61718df8017fc03bc6cb8758f816eff73bde63d9a44dd019"
+        }
+      },
+      "forkpoint_url": "https://bucket.monadinfra.com/forkpoint/testnet/forkpoint.toml",
+      "validators_url": "https://bucket.monadinfra.com/validators/testnet/validators.toml",
+      "legacy_name_record": false
+    }
+  }
+}

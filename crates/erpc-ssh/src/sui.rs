@@ -37,8 +37,11 @@ impl Contract {
     }
     fn command(self, operation: &str) -> String {
         format!(
-            "sudo -n /usr/local/lib/erpc/erpc-sui-control.py {operation} {} {} {}",
-            self.network, self.role, self.genesis
+            "sudo -n {} {operation} {} {} {}",
+            crate::python::sui_control(),
+            self.network,
+            self.role,
+            self.genesis
         )
     }
 }
@@ -100,7 +103,9 @@ impl Command {
     pub(crate) fn shell(self) -> String {
         match self {
             Self::Facts => crate::eth::NODE_FACTS.replace("/var/lib/ethereum", "/var/lib/sui"),
-            Self::Status => "sudo -n /usr/local/lib/erpc/erpc-sui-status.py".to_owned(),
+            Self::Status => {
+                format!("sudo -n {}", crate::python::sui_status())
+            }
             Self::Service(action, contract) => contract.command(match action {
                 Action::Start => "start",
                 Action::Stop => "stop",

@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+[Unit]
+Description=ERPC Kaia managed node
+Requires=docker.service erpc-kaia-firewall.service
+After=docker.service erpc-kaia-firewall.service network-online.target
+Wants=network-online.target
+RequiresMountsFor=/var/lib/erpc-kaia
+
+[Service]
+Type=exec
+UMask=0077
+LimitCORE=0
+RuntimeDirectory=erpc-kaia-corecell
+RuntimeDirectoryMode=0750
+LimitNOFILE=65536
+ExecStartPre=@ERPC_KAIA_CONTROL@ guard
+ExecStart=@ERPC_KAIA_CONTROL@ execute
+ExecStop=@ERPC_KAIA_CONTROL@ stop-container
+KillMode=process
+KillSignal=SIGTERM
+TimeoutStopSec=1860
+SendSIGKILL=no
+Restart=on-failure
+RestartSec=30
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

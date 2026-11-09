@@ -11,6 +11,10 @@ source commit corresponding to the distributed node binary are **not documented*
 the repository publishes instructions and signed rolling binaries, not a tagged
 node source release. Documentation below was read on that date. [S1], [S2]
 
+The implemented CLI profiles are documented in the [RPC guide](../hyperliquid-rpc.md)
+and [dedicated consensus validator guide](../hyperliquid-validator.md). Their operational
+controls are distinct from the upstream research facts below.
+
 ## Networks
 
 HyperEVM mainnet uses chain ID **999**; testnet uses **998**. HyperCore and

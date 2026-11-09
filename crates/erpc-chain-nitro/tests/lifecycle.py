@@ -5,6 +5,7 @@ import copy
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -23,6 +24,10 @@ class Lifecycle(unittest.TestCase):
         self.addCleanup(folder.cleanup)
         self.addCleanup(patch.stopall)
         root = Path(folder.name)
+        patch.object(c, 'TRUST_ANCHOR', root).start()
+        patch.object(c, 'ROOT_UID', os.getuid()).start()
+        namespace=root/'lib/erpc';namespace.parent.mkdir()
+        patch.object(c, 'NAMESPACE', namespace).start()
         patch.object(c, 'ROOT', root / 'state').start()
         patch.object(c, 'CONF', root / 'config').start()
         patch.object(c, 'LOCK', root / 'lock').start()
@@ -32,6 +37,7 @@ class Lifecycle(unittest.TestCase):
                       'version':c.VERSION,'commit':c.COMMIT,'config_id':'a'*64,'phase':'installed',
                       'service_uid':995,'service_gid':996,'firewall':{'run':'r-fixture','bundle':'b'*64}}
         self.state['installed'] = c.pin(self.state)
+        self.state.update(generation=0, deploy_intent='c'*32, deploy_target=c.pin(self.state))
         c.save(self.state)
         (c.ROOT / 'data/chain-fixture').write_text('retained chain state')
         (c.CONF / 'l1-upstreams.cred').write_bytes(b'encrypted fixture')
@@ -56,10 +62,12 @@ class Lifecycle(unittest.TestCase):
         patch.object(c, 'run', side_effect=run).start()
 
     def request(self, action):
-        result=copy.deepcopy(self.state);result['action']=action;return result
+        result=copy.deepcopy(self.state);result.update(action=action,intent='c'*32)
+        if action in ('start','restart','operator-start','operator-restart'):result.pop('intent')
+        return result
 
     def test_every_mutator_rejects_other_owners_networks_and_families_before_commands(self):
-        for action in ('prepare','begin-install','pull-image','finish-install','start','stop','restart','destroy','install-upstreams'):
+        for action in ('prepare','authorize-deploy','begin-install','pull-image','finish-install','start','operator-start','stop','restart','operator-restart','destroy','install-upstreams'):
             for change in ({'owner':'foreign'}, {'network':'mainnet'}, {'family':'robinhood','network':'testnet'}):
                 request=self.request(action);request.update(change)
                 with self.assertRaises(c.Refused): c.locked(request)
@@ -88,6 +96,7 @@ class Lifecycle(unittest.TestCase):
 
     def test_interrupted_update_binds_the_desired_configuration_and_retains_data(self):
         request=self.request('begin-install');request['config_id']='c'*64
+        c.locked(dict(request,action='authorize-deploy',generation=0))
         c.locked(request)
         self.assertEqual(c.state_read()['phase'],'installing')
         with self.assertRaises(c.Refused): c.guard(c.state_read())
@@ -103,6 +112,7 @@ class Lifecycle(unittest.TestCase):
         requested=self.request('begin-install');requested.update(version='4.0.0',commit='d'*40,config_id='e'*64)
         future={'commit':'d'*40,'images':c.IMAGES}
         with patch.dict(c.RELEASES,{'4.0.0':future}):
+            c.locked(dict(requested,action='authorize-deploy',generation=0))
             c.locked(requested)
         old_helper=dict(requested,action='status')
         observed=c.locked(old_helper)
@@ -174,7 +184,7 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(c.state_read()['phase'],'installing')
 
     def test_changed_configuration_cannot_start_the_previous_installation(self):
-        request=self.request('start');request['config_id']='d'*64
+        request=self.request('operator-start');request['config_id']='d'*64
         with self.assertRaises(c.Refused):c.locked(request)
         self.assertEqual(self.calls,[])
 
@@ -189,7 +199,7 @@ class Lifecycle(unittest.TestCase):
 
     def test_capacity_failure_precedes_stopping_and_cannot_be_bypassed_by_resume(self):
         self.free=1
-        for action in ('prepare','begin-install','start','restart'):
+        for action in ('prepare','begin-install','operator-start','operator-restart'):
             with self.assertRaises(c.Refused):c.locked(self.request(action))
         self.assertTrue(self.running)
         self.assertFalse(any(argv[:2]==['systemctl','stop'] for argv,_ in self.calls))
@@ -201,7 +211,7 @@ class Lifecycle(unittest.TestCase):
         with self.assertRaises(c.Refused):c.guard(state)
         c.save(self.state)
         with patch.object(c,'firewall',side_effect=c.Refused('revoked')):
-            with self.assertRaises(c.Refused):c.locked(self.request('start'))
+            with self.assertRaises(c.Refused):c.locked(self.request('operator-start'))
         self.assertFalse(any(argv[:2]==['systemctl','start'] for argv,_ in self.calls))
 
     def test_retirement_keeps_database_credentials_and_owner(self):
@@ -236,6 +246,150 @@ class Lifecycle(unittest.TestCase):
             with self.assertRaises(c.Refused):c.wait_upstreams(self.state)
         with patch.object(c,'upstream_pid',return_value=456),patch.object(c,'owned_ports',return_value=True),patch.object(c,'rpc',return_value='0xaa36a7'):
             c.wait_upstreams(self.state)
+
+    def test_failed_install_can_stop_or_retire_without_reviving_old_deploy_stages(self):
+        for terminal in ('stop','destroy'):
+            c.save(self.state);self.running=True
+            with patch.object(c,'stop',side_effect=c.Refused('inert stop failure')):
+                with self.assertRaises(c.Refused):c.locked(self.request('begin-install'))
+            c.locked(self.request(terminal))
+            self.assertFalse(self.running)
+            observed=c.state_read();self.assertTrue(observed['startup_revoked'])
+            self.assertEqual(observed['generation'],1)
+            with self.assertRaises(c.Refused):c.guard(observed)
+            for action in ('begin-install','pull-image','install-upstreams','finish-install','check-deploy','start'):
+                stale=dict(self.request(action),intent='c'*32)
+                with self.assertRaises(c.Refused):c.locked(stale)
+            self.assertFalse(self.running)
+            self.assertEqual((c.ROOT/'data/chain-fixture').read_text(),'retained chain state')
+            self.assertEqual((c.CONF/'l1-upstreams.cred').read_bytes(),b'encrypted fixture')
+
+    def test_stop_after_finish_cancels_delayed_activation_but_explicit_start_is_allowed(self):
+        c.locked(self.request('stop'))
+        with self.assertRaises(c.Refused):c.locked(dict(self.request('start'),intent='c'*32))
+        self.assertFalse(self.running)
+        # A queued legacy start has no intent; a queued explicit v2 start has
+        # the old generation. Neither is fresh operator authorization.
+        with self.assertRaises(c.Refused):c.locked(self.request('start'))
+        with self.assertRaises(c.Refused):c.locked(self.request('operator-start'))
+        c.locked(dict(self.request('operator-start'),generation=1))
+        self.assertTrue(self.running)
+        self.assertFalse(c.state_read()['startup_revoked'])
+        self.assertEqual(c.state_read()['generation'],2)
+        self.assertIsNone(c.state_read()['deploy_intent'])
+
+    def test_stale_authorization_cannot_cross_stop_and_competing_intents_are_serialized(self):
+        c.locked(self.request('stop'))
+        with self.assertRaises(c.Refused):c.locked(dict(self.request('authorize-deploy'),generation=0))
+        first=dict(self.request('authorize-deploy'),generation=1,intent='d'*32)
+        c.locked(first)
+        second=dict(first,intent='e'*32);c.locked(second)
+        with self.assertRaises(c.Refused):c.locked(dict(first,action='begin-install'))
+        c.locked(dict(second,action='begin-install'))
+        self.assertEqual(c.state_read()['phase'],'installing')
+        self.assertEqual(c.state_read()['deploy_intent'],'e'*32)
+
+    def test_v2_owner_phase_migrates_legacy_state_and_old_helpers_cannot_accept_it(self):
+        legacy=dict(self.state)
+        legacy.pop('generation');legacy.pop('deploy_intent');legacy.pop('deploy_target')
+        (c.ROOT/'owner.json').write_text(json.dumps(legacy))
+        self.assertEqual(c.state_read()['phase'],'installed')
+        c.locked(self.request('stop'))
+        wire=json.loads((c.ROOT/'owner.json').read_text())
+        self.assertEqual(wire['phase'],'v2:installed')
+        self.assertEqual(wire['lifecycle_schema'],2)
+        self.assertNotIn(wire['phase'],('prepared','installing','installed','retired'))
+        wire.pop('lifecycle_schema');(c.ROOT/'owner.json').write_text(json.dumps(wire))
+        with self.assertRaises(c.Refused):c.state_read()
+
+    def test_cancellation_requires_protected_owner_directory_and_checks_permission_drift(self):
+        for path in (c.TRUST_ANCHOR,c.ROOT):
+            mode=path.stat().st_mode & 0o777
+            path.chmod(0o777)
+            try:
+                with self.assertRaises(c.Refused):c.locked(self.request('stop'))
+                with self.assertRaises(c.Refused):c.save(self.state)
+            finally:path.chmod(mode)
+        with patch.object(c,'ROOT_UID',os.getuid()+1):
+            with self.assertRaises(c.Refused):c.state_read()
+        (c.ROOT/'owner.json').chmod(0o644)
+        with self.assertRaises(c.Refused):c.state_read()
+        self.assertTrue(self.running)
+
+    def test_fence_io_failure_still_attempts_owned_stop_and_reports_no_durable_success(self):
+        with patch.object(c,'save',side_effect=OSError('inert fsync failure')):
+            with self.assertRaisesRegex(c.Refused,'cancellation could not be persisted'):
+                c.locked(self.request('stop'))
+        self.assertFalse(self.running)
+        self.assertTrue(any(argv[:2]==['systemctl','disable'] for argv,_ in self.calls))
+        self.assertEqual(c.state_read()['generation'],0)
+
+    def test_post_rename_directory_sync_failure_keeps_fence_and_intent_cancellation_together(self):
+        original=c.os.fsync
+        def fail_directory(fd):
+            if c.stat.S_ISDIR(os.fstat(fd).st_mode):raise OSError('inert directory sync failure')
+            original(fd)
+        with patch.object(c.os,'fsync',side_effect=fail_directory):
+            with self.assertRaisesRegex(c.Refused,'cancellation could not be persisted'):
+                c.locked(self.request('stop'))
+        observed=c.state_read()
+        self.assertTrue(observed['startup_revoked'])
+        self.assertIsNone(observed['deploy_intent'])
+        for action in ('begin-install','finish-install','start'):
+            with self.assertRaises(c.Refused):c.locked(dict(self.request(action),intent='c'*32))
+        self.assertFalse(self.running)
+
+    def test_failed_finish_cannot_publish_an_installed_unfenced_owner(self):
+        c.locked(self.request('begin-install'))
+        with patch.object(c,'firewall',side_effect=c.Refused('inert lost receipt')):
+            with self.assertRaises(c.Refused):c.locked(self.request('finish-install'))
+        self.assertEqual(c.state_read()['phase'],'installing')
+        self.assertTrue(c.state_read()['startup_revoked'])
+        c.locked(self.request('stop'))
+        with self.assertRaises(c.Refused):c.locked(self.request('finish-install'))
+
+    def test_control_destination_never_repairs_unsafe_namespaces_or_ancestors(self):
+        c.control_destination()  # Missing final namespace under trusted parents.
+        c.NAMESPACE.mkdir();target=c.NAMESPACE/'nitro-control';target.write_text('inert old helper')
+        expected=hashlib.sha256(target.read_bytes()).hexdigest();c.control_destination(expected)
+        for path in (c.NAMESPACE.parent,c.NAMESPACE,target):
+            original=path.stat().st_mode & 0o777;path.chmod(0o777)
+            try:
+                with self.assertRaises(c.Refused):c.control_destination()
+                self.assertEqual(path.stat().st_mode & 0o777,0o777)
+            finally:path.chmod(original)
+        sibling=c.NAMESPACE/'rpc-firewall.py';sibling.write_text('inert sibling');sibling.chmod(0o666)
+        with self.assertRaises(c.Refused):c.control_destination()
+        sibling.unlink()
+        target.unlink();target.symlink_to(c.ROOT/'owner.json')
+        with self.assertRaises(c.Refused):c.control_destination()
+        target.unlink();c.NAMESPACE.rmdir();c.NAMESPACE.symlink_to(c.ROOT,target_is_directory=True)
+        with self.assertRaises(c.Refused):c.control_destination()
+        c.NAMESPACE.unlink();c.NAMESPACE.mkdir();target.write_text('substituted inert helper')
+        with self.assertRaises(c.Refused):c.control_destination(expected)
+        original_stat=Path.lstat
+        def foreign(path,*args,**kwargs):
+            value=original_stat(path,*args,**kwargs)
+            if path==c.NAMESPACE:
+                fields=list(value);fields[4]+=1;return os.stat_result(fields)
+            return value
+        with patch.object(Path,'lstat',foreign):
+            with self.assertRaises(c.Refused):c.control_destination()
+
+    def test_initial_retry_and_begin_install_refuse_unsafe_helper_publication_before_state_change(self):
+        c.NAMESPACE.mkdir();c.NAMESPACE.chmod(0o777)
+        before=(c.ROOT/'owner.json').read_bytes()
+        with self.assertRaisesRegex(c.Refused,'protected real root-owned'):
+            c.prepare(self.request('prepare'))
+        with self.assertRaisesRegex(c.Refused,'protected real root-owned'):
+            c.locked(self.request('begin-install'))
+        self.assertEqual((c.ROOT/'owner.json').read_bytes(),before)
+        self.assertFalse(any(args[:2]==['systemctl','stop'] for args,_ in self.calls))
+        (c.ROOT/'owner.json').unlink();(c.ROOT/'data/chain-fixture').unlink();(c.ROOT/'data').rmdir()
+        with self.assertRaisesRegex(c.Refused,'protected real root-owned'):
+            c.prepare(self.request('prepare'))
+        self.assertFalse((c.ROOT/'owner.json').exists())
+        self.assertEqual(c.NAMESPACE.stat().st_mode&0o777,0o777)
 
     def test_client_arguments_are_network_qualified_private_and_non_signing(self):
         for family,network in c.NETWORKS:
@@ -331,6 +485,18 @@ class ContainerAndArtifactTests(unittest.TestCase):
             with self.assertRaises(c.Refused):c.file_hash(path,digest)
             alias=path.with_name('alias');alias.symlink_to(path)
             with self.assertRaises(c.Refused):c.file_hash(alias,hashlib.sha256(path.read_bytes()).hexdigest())
+
+    def test_carried_recovery_publishes_current_helper_only_after_owner_check(self):
+        text=(SOURCE.parent/'control.yml').read_text()
+        self.assertLess(text.index('nitro_control_check'),text.index('ansible.builtin.copy'))
+        self.assertLess(text.index('ansible.builtin.copy'),text.index('stdin: "{{ nitro_request | to_json }}"'))
+        self.assertNotIn('ansible.builtin.apt',text)
+        self.assertIn('"{{ playbook_dir }}/control.py", published-play',text)
+        ordinary=(SOURCE.parent/'prepare.yml').read_text()
+        self.assertIn("{'action':'verify-helpers'}",ordinary)
+        self.assertIn('published-play',ordinary)
+        firewall=(SOURCE.parent/'firewall.yml').read_text()
+        self.assertIn("{'action':'check-deploy'}",firewall)
 
     def test_reboot_units_require_filtering_and_do_not_put_credentials_in_arguments(self):
         root=SOURCE.parent

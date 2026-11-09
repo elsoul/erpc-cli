@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Upgrade owned lifecycle control before authorizing or recovering a deployment
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Check immutable ownership and any observed cancellation generation first
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/control.py", play]
+        stdin: "{{ nitro_request | combine({'action':nitro_control_check}) | to_json }}"
+      changed_when: false
+    - name: Create the protected controller namespace
+      ansible.builtin.file:
+        path: /usr/local/lib/erpc
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+    - name: Publish the compatible controller before writing the new owner format
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/control.py"
+        dest: /usr/local/lib/erpc/nitro-control
+        owner: root
+        group: root
+        mode: '0755'
+    - name: Apply the generation-checked intent or explicit owned recovery action
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/control.py", published-play]
+        stdin: "{{ nitro_request | to_json }}"

@@ -1,0 +1,42 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Prepare precisely one Hyperliquid firewall operation
+  hosts: all
+  gather_facts: false
+  become: true
+  any_errors_fatal: true
+  tasks:
+    - name: Verify immutable owner and still-authorized target before shared writes
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, '{{ playbook_dir }}/../../node/control.py', play]
+        stdin: '{{ hyperliquid_request | combine({"action":"check-deploy"}) | to_json }}'
+      changed_when: false
+    - name: Publish the reviewed common firewall controller
+      ansible.builtin.copy:
+        src: '{{ playbook_dir }}/../../rpc-firewall.py'
+        dest: /usr/local/lib/erpc/rpc-firewall.py
+        owner: root
+        group: root
+        mode: '0644'
+    - name: Render this operation candidate into the immutable run
+      ansible.builtin.template:
+        src: '{{ playbook_dir }}/../../node/firewall.nft.j2'
+        dest: '{{ playbook_dir }}/../../firewall-candidate.nft'
+        owner: root
+        group: root
+        mode: '0600'
+    - name: Validate candidate syntax without applying it
+      ansible.builtin.command:
+        argv: [/usr/sbin/nft, -c, -f, '{{ playbook_dir }}/../../firewall-candidate.nft']
+      changed_when: false
+    - name: Identify the archive submitted by this caller
+      ansible.builtin.stat:
+        path: '{{ playbook_dir }}/../../../bundle.tar.gz'
+        checksum_algorithm: sha256
+      register: hyperliquid_submission
+    - name: Apply with exact operation-bound confirmation and rollback
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, '{{ playbook_dir }}/../../node/control.py', play]
+        stdin: '{{ hyperliquid_request | combine({"action":"firewall-apply", "firewall":{"run":(playbook_dir ~ "/../../..") | realpath | basename,"bundle":hyperliquid_submission.stat.checksum}}) | to_json }}'
+      changed_when: true

@@ -16,11 +16,12 @@
         state: present
         update_cache: true
         cache_valid_time: 3600
+        policy_rc_d: 101
     - name: Discover existing clock synchronization
       ansible.builtin.service_facts:
     - name: Preserve an existing clock daemon
       ansible.builtin.command:
-        argv: [python3, "{{ tron_templates }}/time_service.py"]
+        argv: [/usr/bin/python3, -I, "{{ tron_templates }}/time_service.py"]
         stdin: "{{ ansible_facts.services | to_json }}"
       register: tron_clock
       changed_when: false
@@ -34,13 +35,9 @@
         name: "{{ (tron_clock.stdout | from_json).service }}"
         enabled: true
         state: started
-    - name: Create the unprivileged node account
-      ansible.builtin.user:
-        name: tron
-        system: true
-        home: /var/lib/tron
-        create_home: false
-        shell: /usr/sbin/nologin
+    - name: Establish only the durably reserved dedicated runtime account
+      ansible.builtin.command:
+        argv: "{{ ['/usr/bin/python3', '-I', tron_control, 'provision-account'] + tron_contract_args }}"
     - name: Prepare fixed directories
       ansible.builtin.file:
         path: "{{ item.path }}"
@@ -64,6 +61,13 @@
         group: tron
         mode: '0640'
         force: false
+    - name: Apply public ownership-file permissions independently of immutable content
+      ansible.builtin.file:
+        path: /etc/tron/contract.json
+        state: file
+        owner: root
+        group: tron
+        mode: '0640'
     - ansible.builtin.import_tasks: tasks/guard.yml
       vars: {tron_guard: guard}
 

@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+[Unit]
+Description=Refresh original Polygon {{ polygon_component }} peer proof after asynchronous native startup
+
+[Timer]
+OnBootSec=15s
+OnUnitActiveSec=15s
+AccuracySec=1s
+Persistent=false
+Unit=polygon-peer-{{ polygon_component }}.service
+
+[Install]
+WantedBy=timers.target

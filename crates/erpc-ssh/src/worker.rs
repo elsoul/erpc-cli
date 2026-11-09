@@ -198,7 +198,11 @@ pub enum Verb {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     /// Installs the agent staged at `staged` when its digest is `sha256`;
-    /// prints `agent=installed` or `agent=unchanged`.
+    /// prints `agent=installed` or `agent=unchanged`. Whether the check and
+    /// the install succeed or fail, it then removes the staged file and any
+    /// temporary an interrupted upload left beside it, and their directory
+    /// too when it is empty and sudo allows, keeping its exit status and
+    /// output.
     InstallAgent {
         /// The staged upload, under `/opt/erpc/uploads/`.
         staged: crate::RemotePath,
@@ -206,7 +210,8 @@ pub enum Command {
         sha256: Digest,
     },
     /// Installs the restic staged at `staged` when its digest is `sha256`;
-    /// prints `restic=installed` or `restic=unchanged`.
+    /// prints `restic=installed` or `restic=unchanged`. Cleans up as
+    /// [`Command::InstallAgent`] does.
     InstallRestic {
         /// The staged upload, under `/opt/erpc/uploads/`.
         staged: crate::RemotePath,
@@ -244,12 +249,20 @@ pub enum Command {
 impl Command {
     pub(crate) fn shell(&self) -> String {
         match self {
+            // In both install lines the trap cleans up when the line exits,
+            // after a success or a failure. It is quiet and cannot fail, so
+            // the line keeps its own exit status and output. The `rm` at the
+            // end stays, so that a staged file which cannot be removed still
+            // fails the line. A line that a signal ends runs no trap in every
+            // shell (dash's does not), and leaves the staging as it was.
             Self::InstallAgent { staged, sha256 } => {
                 let dir = staged.parent();
                 let staged = staged.as_str();
                 let sha = &sha256.0;
                 format!(
                     "set -eu; \
+                     trap 'rm -f -- \"{staged}\" \"{dir}\"/.upload-* 2>/dev/null || true; \
+                       sudo -n rmdir -- \"{dir}\" 2>/dev/null || true' EXIT; \
                      printf '%s  %s\\n' '{sha}' '{staged}' | sha256sum -c --quiet - >/dev/null; \
                      if sudo -n test -x '{AGENT}' && \
                         [ \"$(sudo -n sha256sum '{AGENT}' | cut -d' ' -f1)\" = '{sha}' ]; then \
@@ -258,8 +271,7 @@ impl Command {
                        sudo -n install -D -o root -g root -m 0755 -- '{staged}' '{AGENT}'; \
                        echo agent=installed; \
                      fi; \
-                     rm -f -- '{staged}'; \
-                     rmdir -- '{dir}' 2>/dev/null || true"
+                     rm -f -- '{staged}'"
                 )
             }
             Self::InstallRestic { staged, sha256 } => {
@@ -268,6 +280,8 @@ impl Command {
                 let sha = &sha256.0;
                 format!(
                     "set -eu; \
+                     trap 'rm -f -- \"{staged}\" \"{dir}\"/.upload-* 2>/dev/null || true; \
+                       sudo -n rmdir -- \"{dir}\" 2>/dev/null || true' EXIT; \
                      printf '%s  %s\\n' '{sha}' '{staged}' | sha256sum -c --quiet - >/dev/null; \
                      if sudo -n test -x '{RESTIC}' && \
                         [ \"$(sudo -n sha256sum '{RESTIC}' | cut -d' ' -f1)\" = '{sha}' ]; then \
@@ -276,8 +290,7 @@ impl Command {
                        sudo -n install -D -o root -g root -m 0755 -- '{staged}' '{RESTIC}'; \
                        echo restic=installed; \
                      fi; \
-                     rm -f -- '{staged}'; \
-                     rmdir -- '{dir}' 2>/dev/null || true"
+                     rm -f -- '{staged}'"
                 )
             }
             Self::Ctl { id, verb } => {
@@ -426,6 +439,232 @@ mod tests {
                 .write_all(line.as_bytes())
                 .expect("write");
             assert!(child.wait().expect("wait").success(), "{line}");
+        }
+    }
+
+    /// The install lines run as erpc sends them, on Linux as the servers
+    /// are: their `sha256sum` and `install -D` are GNU coreutils'.
+    #[cfg(target_os = "linux")]
+    mod install_lines {
+        use std::os::unix::fs::PermissionsExt as _;
+        use std::path::Path;
+
+        use sha2::Digest as _;
+
+        use super::super::{AGENT, Command, Digest, RESTIC};
+
+        /// `sudo -n` for the tests: runs its command as this test's user, or
+        /// answers for the command named in `REFUSE` as sudo does when it
+        /// would need a password.
+        const STUB_SUDO: &str = "#!/bin/sh\n\
+            [ \"$1\" = -n ] || { echo \"stub sudo: not -n: $*\" >&2; exit 2; }\n\
+            shift\n\
+            if [ \"$1\" = \"$REFUSE\" ]; then echo 'sudo: a password is required' >&2; exit 1; fi\n\
+            exec \"$@\"\n";
+        const BINARY: &[u8] = b"the binary";
+        /// A temporary that an interrupted upload left beside the staged file.
+        const STALE: &str = ".upload-5dac0e3b9f1a4c2e8d7b6a5f4e3d2c1b";
+
+        /// What the install finds where it installs to.
+        #[derive(Clone, Copy)]
+        enum Lib {
+            /// The staged binary, installed before: nothing to install.
+            Current,
+            /// A plain file where its directory goes: the install fails.
+            Blocked,
+        }
+
+        /// What a run of the line left.
+        #[derive(Debug)]
+        struct Ran {
+            output: std::process::Output,
+            /// The names left in the staging directory; `None` once it is gone.
+            left: Option<Vec<String>>,
+        }
+
+        /// One install line, run by `shell` with its paths moved under a
+        /// temporary root and the stub sudo in `bin` first on `PATH`.
+        struct Install<'a> {
+            command: Command,
+            dir: &'a str,
+            file: &'a str,
+            target: &'a str,
+            bin: &'a Path,
+            shell: &'a str,
+        }
+
+        impl Install<'_> {
+            /// Runs the line on a root as an upload leaves it: `content`
+            /// staged, `beside` in the same directory (a directory for a name
+            /// ending in `/`), and `lib`. With `locked`, nothing can be
+            /// removed from the staging directory while the line runs.
+            fn run(
+                &self,
+                content: &[u8],
+                beside: &[&str],
+                lib: Lib,
+                refuse: &str,
+                locked: bool,
+            ) -> Ran {
+                let root = tempfile::tempdir().expect("tempdir");
+                let staging = root.path().join("uploads").join(self.dir);
+                std::fs::create_dir_all(&staging).expect("staging");
+                std::fs::write(staging.join(self.file), content).expect("staged");
+                for name in beside {
+                    match name.strip_suffix('/') {
+                        Some(name) => std::fs::create_dir(staging.join(name)).expect("beside"),
+                        None => std::fs::write(staging.join(name), b"left").expect("beside"),
+                    }
+                }
+                let installed = root
+                    .path()
+                    .join("lib")
+                    .join(self.target.rsplit_once('/').expect("a name").1);
+                match lib {
+                    Lib::Current => {
+                        std::fs::create_dir(root.path().join("lib")).expect("lib");
+                        std::fs::write(&installed, BINARY).expect("installed");
+                        let mode = std::fs::Permissions::from_mode(0o755);
+                        std::fs::set_permissions(&installed, mode).expect("mode");
+                    }
+                    Lib::Blocked => std::fs::write(root.path().join("lib"), b"").expect("lib"),
+                }
+                if locked {
+                    let mode = std::fs::Permissions::from_mode(0o555);
+                    std::fs::set_permissions(&staging, mode).expect("lock");
+                }
+                let moved = root.path().to_str().expect("a plain temporary path");
+                let line = self
+                    .command
+                    .shell()
+                    .replace("/opt/erpc/uploads", &format!("{moved}/uploads"))
+                    .replace("/usr/local/lib/erpc", &format!("{moved}/lib"));
+                // Nothing on the line may reach this machine's own paths.
+                assert!(!line.contains("/opt/") && !line.contains("/usr/"), "{line}");
+                let path = std::env::var("PATH").unwrap_or_default();
+                let output = std::process::Command::new(self.shell)
+                    .args(["-c", &line])
+                    .env("PATH", format!("{}:{path}", self.bin.display()))
+                    .env("REFUSE", refuse)
+                    .output()
+                    .expect(self.shell);
+                // Nothing but the staged file, the temporary and their
+                // directory is removed.
+                assert!(root.path().join("uploads").is_dir());
+                if let Lib::Current = lib {
+                    assert_eq!(std::fs::read(&installed).expect("installed"), BINARY);
+                }
+                let left = std::fs::read_dir(&staging).ok().map(|entries| {
+                    let mut names: Vec<String> = entries
+                        .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+                        .collect();
+                    names.sort();
+                    names
+                });
+                if locked {
+                    // So that the temporary root can be removed.
+                    let mode = std::fs::Permissions::from_mode(0o755);
+                    std::fs::set_permissions(&staging, mode).expect("unlock");
+                }
+                Ran { output, left }
+            }
+        }
+
+        /// Whether every line of `stderr` is one `tool` wrote, and there is one.
+        fn said_only_by(stderr: &[u8], tool: &str) -> bool {
+            let text = String::from_utf8_lossy(stderr);
+            !text.is_empty() && text.lines().all(|line| line.starts_with(tool))
+        }
+
+        #[test]
+        fn installing_removes_what_was_staged_after_success_or_failure() {
+            let bin = tempfile::tempdir().expect("tempdir");
+            let sudo = bin.path().join("sudo");
+            std::fs::write(&sudo, STUB_SUDO).expect("stub");
+            std::fs::set_permissions(&sudo, std::fs::Permissions::from_mode(0o755)).expect("mode");
+            let sha256 = Digest::new(&format!("{:x}", sha2::Sha256::digest(BINARY))).expect("sha");
+            // `/proc/self` belongs to the user the test runs as.
+            let as_root = std::os::unix::fs::MetadataExt::uid(
+                &std::fs::metadata("/proc/self").expect("proc"),
+            ) == 0;
+            for (dir, file, target) in [
+                ("agent", "erpc-worker-agent", AGENT),
+                ("restic", "restic", RESTIC),
+            ] {
+                let staged = crate::RemotePath::new(&format!("/opt/erpc/uploads/{dir}/{file}"))
+                    .expect("path");
+                let sha256 = sha256.clone();
+                let command = if dir == "agent" {
+                    Command::InstallAgent { staged, sha256 }
+                } else {
+                    Command::InstallRestic { staged, sha256 }
+                };
+                for shell in ["sh", "bash"] {
+                    let command = command.clone();
+                    let line = Install {
+                        command,
+                        dir,
+                        file,
+                        target,
+                        bin: bin.path(),
+                        shell,
+                    };
+                    let done = line.run(BINARY, &[STALE], Lib::Current, "", false);
+                    assert!(done.output.status.success(), "{done:?}");
+                    assert_eq!(
+                        done.output.stdout,
+                        format!("{dir}=unchanged\n").into_bytes()
+                    );
+                    assert!(done.output.stderr.is_empty(), "{done:?}");
+                    assert_eq!(done.left, None, "{done:?}");
+                    // A refused rmdir leaves the directory, emptied, and the
+                    // status and the output as they were.
+                    let refused = line.run(BINARY, &[STALE], Lib::Current, "rmdir", false);
+                    assert_eq!(refused.output, done.output, "{refused:?}");
+                    assert_eq!(refused.left, Some(vec![]), "{refused:?}");
+                    // Anything else in the directory stays, even a directory
+                    // named as a temporary, and so does the directory.
+                    let beside = [STALE, "other", ".upload-held/"];
+                    let kept = line.run(BINARY, &beside, Lib::Current, "", false);
+                    assert_eq!(kept.output, done.output, "{kept:?}");
+                    let left = [".upload-held", "other"].map(str::to_owned).to_vec();
+                    assert_eq!(kept.left, Some(left), "{kept:?}");
+                    // A digest that differs fails as it did, and cleans up.
+                    let wrong = line.run(b"another binary", &[STALE], Lib::Current, "", false);
+                    assert_eq!(wrong.output.status.code(), Some(1), "{wrong:?}");
+                    assert!(wrong.output.stdout.is_empty(), "{wrong:?}");
+                    assert!(
+                        said_only_by(&wrong.output.stderr, "sha256sum: "),
+                        "{wrong:?}"
+                    );
+                    assert_eq!(wrong.left, None, "{wrong:?}");
+                    // So does an install that fails.
+                    let failed = line.run(BINARY, &[STALE], Lib::Blocked, "", false);
+                    assert!(!failed.output.status.success(), "{failed:?}");
+                    assert!(failed.output.stdout.is_empty(), "{failed:?}");
+                    assert!(
+                        said_only_by(&failed.output.stderr, "install: "),
+                        "{failed:?}"
+                    );
+                    assert_eq!(failed.left, None, "{failed:?}");
+                    // The login removes the staged file and the temporary
+                    // itself: a sudo that refuses `rm` changes nothing.
+                    let no_sudo_rm = line.run(BINARY, &[STALE], Lib::Current, "rm", false);
+                    assert_eq!(no_sudo_rm.output, done.output, "{no_sudo_rm:?}");
+                    assert_eq!(no_sudo_rm.left, None, "{no_sudo_rm:?}");
+                    // A staged file that cannot be removed fails the line,
+                    // after the install, with rm's own message. Root removes
+                    // it all the same, so this is shown only as a user.
+                    if !as_root {
+                        let stuck = line.run(BINARY, &[STALE], Lib::Current, "", true);
+                        assert_eq!(stuck.output.status.code(), Some(1), "{stuck:?}");
+                        assert_eq!(stuck.output.stdout, done.output.stdout, "{stuck:?}");
+                        assert!(said_only_by(&stuck.output.stderr, "rm: "), "{stuck:?}");
+                        let left = [STALE, file].map(str::to_owned).to_vec();
+                        assert_eq!(stuck.left, Some(left), "{stuck:?}");
+                    }
+                }
+            }
         }
     }
 }

@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Apply one short native Solana ingress operation
+  hosts: all
+  gather_facts: false
+  become: true
+  any_errors_fatal: true
+  tasks:
+    - name: Bind and apply the requested policy before fresh SSH confirmation
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, -c, '{{ solana_native_loader }}', '{{ playbook_dir }}/../../node/native_runtime_control.py', play]
+        stdin: '{{ solana_native_request | to_json }}'
+      changed_when: true

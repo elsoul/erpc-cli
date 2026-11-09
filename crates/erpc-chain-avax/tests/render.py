@@ -12,7 +12,7 @@ for path in root.rglob('*.yml'):
 for network in ['mainnet','fuji']:
  for kind in ['full','archive']:
   for allow in [[],['192.0.2.0/24']]:
-   context=dict(avax_network=network,avax_type=kind,avax_rpc_allow=allow,avax_monitoring_allow=allow,avax_fw_management_v4=['192.0.2.10'],avax_fw_management_v6=[],avax_ssh_port=22,avax_fw_file='/etc/erpc/avax/firewall.nft',avax_fw_dir='/etc/erpc/avax',avax_fw_marker='/run/erpc-avax-firewall.armed',avax_helpers='/usr/local/lib/erpc')
+   context=dict(avax_network=network,avax_type=kind,avax_rpc_allow=allow,avax_monitoring_allow=allow,avax_fw_management_v4=['192.0.2.10'],avax_fw_management_v6=[],avax_ssh_port=22,avax_fw_file='/etc/erpc/avax/firewall.nft',avax_fw_dir='/etc/erpc/avax',avax_fw_marker='/run/erpc-avax-firewall.armed',avax_helpers='/usr/local/lib/erpc',avax_runtime_account={'uid':999,'gid':999},avax_control_unit='/usr/bin/python3 -I checked.py',avax_control_condition='/usr/bin/python3 -I checked.py')
    for path in (root/'jinja').glob('*.j2'):
     text=env.from_string(path.read_text()).render(**context)
     if '.json' in path.name:
@@ -23,24 +23,31 @@ for network in ['mainnet','fuji']:
     if path.name=='proxy.conf.j2': assert text.count('deny all;')==2 and 'location / { return 403; }' in text
 print('All play/task YAML and 8 network/history/exposure template combinations passed')
 
-# Execute the real ownership task file against temporary local fixtures only.
-# The sentinel stands in for destroy --purge-data; no service/host/node is touched.
-import tempfile, shutil, sys
+# Actual command/stdin and guarded source composition with only root/NSS identity
+# modeled in a temporary fixture. The sentinel is never real chain data.
+import tempfile,shutil,sys,importlib.util,os
 if shutil.which('ansible-playbook'):
- with tempfile.TemporaryDirectory() as directory:
-  tmp=pathlib.Path(directory)
-  contract=tmp/'contract.json'
-  contract.write_text(json.dumps({'network':'mainnet','type':'full','validator':False}))
-  guard=tmp/'guard.yml'
-  guard.write_text((root/'ansible/avax/tasks/contract.yml').read_text().replace('/etc/avalanchego/contract.json',str(contract)))
-  for network,history,validator,expected in [('fuji','full',False,False),('mainnet','archive',False,False),('mainnet','full',True,False),('mainnet','full',False,True)]:
-   sentinel=tmp/'database-sentinel'
-   sentinel.write_text('inert database fixture')
-   play=[{'hosts':'all','connection':'local','gather_facts':False,
-          'vars':{'ansible_python_interpreter':sys.executable,'avax_network':network,'avax_type':history,'avax_validator':validator},
-          'tasks':[{'ansible.builtin.import_tasks':str(guard)},{'ansible.builtin.file':{'path':str(sentinel),'state':'absent'}}]}]
-   playfile=tmp/'play.yml';playfile.write_text(yaml.safe_dump(play))
-   result=subprocess.run(['ansible-playbook','-i','localhost,',str(playfile)],capture_output=True,text=True)
-   assert result.returncode==0 if expected else result.returncode!=0,result.stdout+result.stderr
-   assert sentinel.exists()!=expected,'a mismatched ownership contract allowed deletion'
- print('Ansible contract fixtures reject failed cross-network initialization, role/history mismatch before deletion')
+ spec=importlib.util.spec_from_file_location('avax_render_authority',root.parent/'tests/authority.py')
+ module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+ test=module.Authority();test.setUp()
+ try:
+  test.c.prepare(test.expected)
+  with tempfile.TemporaryDirectory() as directory:
+   tmp=pathlib.Path(directory)
+   code=(root/'jinja/control.py').read_text()
+   code=code.replace("root=pathlib.Path('/')",'root=pathlib.Path('+repr(str(test.root))+')').replace('owner=0):','owner='+str(os.getuid())+'):')
+   code=code.replace("if __name__=='__main__':trusted_imports(pathlib.Path(__file__).absolute().parent)","# fixture-owned carried source; production external loader tested separately")
+   code=code.replace('if os.geteuid()!=0:', 'if os.geteuid()!='+str(os.getuid())+':')
+   (tmp/'control.py').write_text(code);shutil.copyfile(root/'jinja/account.py',tmp/'account.py')
+   guard=tmp/'guard.yml';guard.write_text((root/'ansible/avax/tasks/contract.yml').read_text())
+   for network,history,validator,allowed in [('mainnet','full',True,False),('fuji','archive',True,False),('fuji','full',False,False),('fuji','full',True,True)]:
+    sentinel=tmp/'database-sentinel';sentinel.write_text('inert data')
+    variables={'ansible_python_interpreter':sys.executable,'avax_jinja':str(tmp),'avax_contract_value':{'network':network,'type':history,'validator':validator,'owner':test.expected['owner']}}
+    play=[{'hosts':'all','connection':'local','gather_facts':False,'vars':variables,
+           'tasks':[{'ansible.builtin.import_tasks':str(guard)},{'ansible.builtin.file':{'path':str(sentinel),'state':'absent'}}]}]
+    path=tmp/'play.yml';path.write_text(yaml.safe_dump(play))
+    result=subprocess.run(['ansible-playbook','-i','localhost,',str(path)],capture_output=True,text=True)
+    assert (result.returncode==0)==allowed,result.stdout+result.stderr
+    assert sentinel.exists()!=allowed,'wrong scope crossed the carried authority boundary'
+ finally:test.doCleanups()
+ print('Actual carried contract command rejects foreign network/role/history before the inert mutation')

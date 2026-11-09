@@ -5,8 +5,8 @@
 //!
 //! The chain is read from the arguments before they are parsed, and the
 //! tree is built for that chain, so `--help` shows only what the chain
-//! has. The verbs are a skeleton: they resolve the chain and the network,
-//! apply the mainnet rule, and say what they would run on.
+//! has. Verbs resolve the chain/network and apply the mainnet rule before
+//! routing to a backend; unavailable operations return explicit failures.
 
 use clap::{Arg, ArgMatches, Command};
 use erpc_core::chain::{COMMON_VERBS, Chain, Role, Source, Verb, guard_mainnet, resolve};
@@ -59,6 +59,9 @@ fn overview_text(role: Role, chains: &[Chain]) -> String {
         "erpc {role}: commands on {}. Pick the chain with --chain:\n\n",
         names.join(", ")
     );
+    if role == Role::Rpc {
+        text.push_str("  erpc rpc call <METHOD> [PARAMS]\n  erpc rpc list-networks\n\n");
+    }
     for chain in chains {
         let _ = writeln!(text, "  erpc {role} --chain {chain} --help");
     }
@@ -126,49 +129,34 @@ pub(crate) fn command(role: Role, chain: Chain) -> Command {
                 .global(true)
                 .help("The host, by its inventory name"),
         );
+    if role == Role::Rpc {
+        command = command.after_help(
+            "Send a request with erpc rpc call <METHOD> [PARAMS]. See erpc rpc call --help.",
+        );
+    }
+    if role == Role::Validator && chain == Chain::Arc {
+        command = command.about("Dedicated Arc validator preparation; production activation requires qualified signing history")
+            .after_help("Preparation runs an observer with separate peer custody. Remote consensus signer keys remain external; use plan for the unresolved production history prerequisite.");
+    }
+    if role == Role::Validator && chain == Chain::Robinhood {
+        command = command.about("Admitted Robinhood Defensive validators; original observing mode is the default")
+            .after_help("Use plan and external administrator admission before explicit active deployment. RPC followers remain a separate role.");
+    }
     for verb in COMMON_VERBS {
-        let mut sub = Command::new(verb.name).about(verb.about);
-        if role == Role::Validator && chain == Chain::Solana {
-            match verb.name {
-                "init" => sub = init_args(sub),
-                "deploy" | "status" => sub = deploy_args(sub, verb.name == "deploy"),
-                _ => {}
-            }
-        }
-        if role == Role::Rpc && chain == Chain::Arc {
-            sub = arc_args(sub, verb);
-        }
-        if role == Role::Rpc && chain == Chain::Solana {
-            sub = solana_rpc_args(sub, verb);
-        }
-        if role == Role::Rpc && chain == Chain::Eth {
-            sub = crate::eth_tree::args(sub, verb);
-        }
-        if role == Role::Validator && chain == Chain::Eth {
-            sub = crate::eth_validator_tree::common(sub, verb);
-        }
-        if chain == Chain::Avax {
-            sub = crate::avax_tree::args(sub, verb);
-        }
-        if chain == Chain::Sui && matches!(role, Role::Rpc | Role::Node | Role::Validator) {
-            sub = crate::sui_tree::args(sub, verb, role == Role::Validator);
-        }
-        if role == Role::Rpc && matches!(chain, Chain::Optimism | Chain::Base | Chain::Soneium) {
-            sub = crate::rollup_tree::args(sub, verb);
-        }
-        if role == Role::Rpc && chain == Chain::Bitcoin {
-            sub = crate::bitcoin_tree::args(sub, verb);
-        }
-        if role == Role::Rpc && matches!(chain, Chain::Arbitrum | Chain::Robinhood) {
-            sub = crate::nitro_tree::args(sub, verb);
-        }
-        if chain == Chain::Tron {
-            sub = crate::tron_tree::args(sub, verb, role == Role::Validator);
-        }
-        command = command.subcommand(sub);
+        let sub = Command::new(verb.name).about(verb.about);
+        command = command.subcommand(common_args(sub, verb, role, chain));
+    }
+    if role == Role::Validator && chain == Chain::Arbitrum {
+        command = crate::arbitrum_tree::extras(command);
+    }
+    if role == Role::Validator && chain == Chain::Robinhood {
+        command = crate::robinhood_tree::extras(command);
     }
     if role == Role::Validator && chain == Chain::Eth {
         command = crate::eth_validator_tree::extras(command);
+    }
+    if role == Role::Validator && chain == Chain::Hyperliquid {
+        command = command.subcommand(crate::hyperliquid_aqa::command());
     }
     if role == Role::Validator && chain == Chain::Solana {
         command = command.subcommand(keys_command()).subcommand(
@@ -191,16 +179,121 @@ pub(crate) fn command(role: Role, chain: Chain) -> Command {
             ));
         }
     }
+    if chain == Chain::Monad {
+        command = crate::monad_tree::add_extras(command, role == Role::Validator);
+    }
+    command = arc_validator_extras(command, role, chain);
+    if chain == Chain::Solana && matches!(role, Role::Rpc | Role::Validator) {
+        command = command.subcommand(crate::solana_migration::command());
+    }
     registration_command(command, role, chain)
+}
+
+fn arc_validator_extras(mut command: Command, role: Role, chain: Chain) -> Command {
+    if role == Role::Validator && chain == Chain::Arc {
+        for verb in crate::arc_validator_tree::EXTRA {
+            command = command.subcommand(crate::arc_validator_tree::args(
+                Command::new(verb.name).about(verb.about),
+                verb,
+            ));
+        }
+    }
+    command
+}
+
+fn common_args(mut sub: Command, verb: &Verb, role: Role, chain: Chain) -> Command {
+    if role == Role::Validator && chain == Chain::Arc {
+        sub = crate::arc_validator_tree::args(sub, verb);
+    }
+    if role == Role::Validator && chain == Chain::Solana {
+        match verb.name {
+            "init" => sub = init_args(sub),
+            "deploy" | "status" => sub = deploy_args(sub, verb.name == "deploy"),
+            _ => {}
+        }
+    }
+    if role == Role::Rpc && chain == Chain::Arc {
+        sub = arc_args(sub, verb);
+    }
+    if role == Role::Rpc && chain == Chain::Solana {
+        sub = solana_rpc_args(sub, verb);
+    }
+    if chain == Chain::Solana && matches!(role, Role::Rpc | Role::Validator) {
+        sub = crate::solana_native::args(sub, verb);
+    }
+    if role == Role::Rpc && chain == Chain::Eth {
+        sub = crate::eth_tree::args(sub, verb);
+    }
+    if role == Role::Validator && chain == Chain::Eth {
+        sub = crate::eth_validator_tree::common(sub, verb);
+    }
+    if chain == Chain::Avax {
+        sub = crate::avax_tree::args(sub, verb);
+    }
+    if chain == Chain::Sui && matches!(role, Role::Rpc | Role::Node | Role::Validator) {
+        sub = crate::sui_tree::args(sub, verb, role == Role::Validator);
+    }
+    if role == Role::Rpc && matches!(chain, Chain::Optimism | Chain::Base | Chain::Soneium) {
+        sub = crate::rollup_tree::args(sub, verb);
+    }
+    if role == Role::Rpc && chain == Chain::Bitcoin {
+        sub = crate::bitcoin_tree::args(sub, verb);
+    }
+    if matches!(role, Role::Rpc | Role::Validator) && chain == Chain::Near {
+        sub = crate::near_tree::args(sub, verb, role == Role::Validator);
+    }
+    if matches!(role, Role::Rpc | Role::Validator) && chain == Chain::Bsc {
+        sub = crate::bsc_tree::args(sub, verb, role == Role::Validator);
+    }
+    if chain == Chain::Kaia {
+        sub = crate::kaia_tree::args(sub, verb, role == Role::Validator);
+    }
+    if role == Role::Validator && chain == Chain::Arbitrum {
+        sub = crate::arbitrum_tree::args(sub, verb);
+    }
+    if role == Role::Validator && chain == Chain::Robinhood {
+        sub = crate::robinhood_tree::args(sub, verb);
+    }
+    if role == Role::Rpc && matches!(chain, Chain::Arbitrum | Chain::Robinhood) {
+        sub = crate::nitro_tree::args(sub, verb);
+    }
+    if chain == Chain::Monad {
+        sub = crate::monad_tree::args(sub, verb, role == Role::Validator);
+    }
+    if matches!(role, Role::Rpc | Role::Validator) && chain == Chain::Polygon {
+        sub = crate::polygon_tree::args(sub, verb, role == Role::Validator);
+    }
+    if chain == Chain::Hyperliquid {
+        sub = crate::hyperliquid_tree::args(sub, verb);
+        if role == Role::Validator {
+            sub = crate::hyperliquid_validator::args(sub, verb);
+        }
+    }
+    if chain == Chain::Tron {
+        sub = crate::tron_tree::args(sub, verb, role == Role::Validator);
+    }
+    sub
 }
 
 fn registration_command(mut command: Command, role: Role, chain: Chain) -> Command {
     if role == Role::Validator {
         let registration = Command::new("registration");
         command = match chain {
+            Chain::Solana => command.subcommand(crate::solana_registration::command()),
+            Chain::Robinhood => command.subcommand(crate::robinhood_admission::args(registration)),
             Chain::Sui => command.subcommand(crate::sui_tree::args(
                 registration,
                 &crate::sui_tree::REGISTRATION,
+                true,
+            )),
+            Chain::Polygon => command.subcommand(crate::polygon_tree::args(
+                registration,
+                &crate::polygon_tree::REGISTRATION,
+                true,
+            )),
+            Chain::Near => command.subcommand(crate::near_tree::args(
+                registration,
+                &crate::near_tree::REGISTRATION,
                 true,
             )),
             Chain::Tron => command.subcommand(crate::tron_tree::args(
@@ -351,12 +444,12 @@ fn arc_about(verb: &Verb) -> &'static str {
         "start" => "Start the execution layer, then the consensus layer",
         "stop" => "Stop the consensus layer, then the execution layer",
         "restart" => "Restart both layers in order, then check the head moves",
-        "update" => "Move to another release, rolling back when it does not come up",
-        "update-config" => {
-            "Re-render the units and firewall from the inventory, restarting only on a change"
+        "update" => {
+            "Move to a carried qualified release while preserving the highest opened source floor"
         }
+        "update-config" => "Apply configuration through a fenced original-runtime deployment",
         "plan" => "Show what deploy, update or update-config would change, without changing it",
-        "destroy" => "Stop and remove the services and firewall; data only with --purge-data",
+        "destroy" => "Retire original services while retaining data, key, receipts and filtering",
         _ => verb.about,
     }
 }
@@ -427,19 +520,40 @@ fn arc_kind_args() -> [Arg; 3] {
 fn arc_destroy_args() -> Vec<Arg> {
     use clap::ArgAction;
     vec![
-    Arg::new("purge-data")
-        .long("purge-data")
-        .action(ArgAction::SetTrue)
-        .help("Also delete the chain data (the 1Password items are kept)"),
-    Arg::new("forget")
-        .long("forget")
-        .action(ArgAction::SetTrue)
-        .requires("purge-data")
-        .help("With --purge-data: then remove the node's 1Password item, so init can set the server up again as any type (the consensus key's item stays)"),
+        Arg::new("purge-data")
+            .long("purge-data")
+            .action(ArgAction::SetTrue)
+            .help("Unsupported: original Arc chain history is retained"),
+        Arg::new("forget")
+            .long("forget")
+            .action(ArgAction::SetTrue)
+            .requires("purge-data")
+            .help("Unsupported: retain the original inventory item and its consensus-key binding"),
     ]
 }
 
 /// The flags only one Arc verb, or a few, take.
+fn arc_migration_args() -> Vec<Arg> {
+    use clap::{ArgAction, value_parser};
+    let mut args = Vec::new();
+    args.push(Arg::new("migrate-authority").long("migrate-authority").action(ArgAction::SetTrue).help("Explicitly qualify a supported existing managed Arc host from independent original account/source records; leaves it retired"));
+    for id in [
+        "original-passwd",
+        "original-group",
+        "original-machine-id",
+        "original-client-record",
+    ] {
+        args.push(
+            Arg::new(id)
+                .long(id)
+                .value_parser(value_parser!(std::path::PathBuf))
+                .requires("migrate-authority")
+                .required_if_eq("migrate-authority", "true"),
+        );
+    }
+    args
+}
+
 fn arc_verb_args(verb: &str) -> Vec<Arg> {
     use clap::ArgAction;
     use clap::value_parser;
@@ -467,9 +581,9 @@ fn arc_verb_args(verb: &str) -> Vec<Arg> {
             .help("Which layer: the execution layer, the consensus layer, or both in order")
     };
     let version = || {
-        Arg::new("version").long("version").help(
-            "The arc-node release tag, such as v0.8.1 (default: the newest at or above the floor)",
-        )
+        Arg::new("version")
+            .long("version")
+            .help("The source-qualified native tag in the carried execution catalog (v0.8.1)")
     };
     match verb {
         "init" => {
@@ -496,10 +610,15 @@ fn arc_verb_args(verb: &str) -> Vec<Arg> {
                     .value_parser(erpc_chain_arc::kind::RpcType::NAMES)
                     .help("full: follows the public relays, keeps recent history (default); archive: keeps all history; provider: an RPC provider node Arc onboarded, peering with its sentries. Fixed once stored"),
             ];
+            args.extend(arc_migration_args());
             args.extend(allow_lists());
             args.extend(arc_kind_args());
             args
         }
+        "deploy" => vec![
+            Arg::new("restore-custody").long("restore-custody").action(ArgAction::SetTrue).help("Restore the same original key after fenced shutdown, retaining old ciphertext, then continue deployment"),
+            Arg::new("reset-bootstrap").long("reset-bootstrap").action(ArgAction::SetTrue).help("Quarantine an interrupted initial snapshot and retry; refuses active or promoted history"),
+        ],
         "update" => vec![version()],
         "update-config" => {
             let mut args: Vec<Arg> = allow_lists().into();
@@ -543,25 +662,27 @@ fn arc_verb_args(verb: &str) -> Vec<Arg> {
 fn solana_rpc_about(verb: &Verb) -> &'static str {
     match verb.name {
         "init" => {
-            "Check the server, pin the client and its plugins, store the node in 1Password and make the solv user"
+            "Prepare isolated native accounts and original node ownership; resume existing solv nodes in place"
         }
         "deploy" => {
-            "Build the client, make the node's identity, fetch a snapshot, start it and apply the firewall"
+            "Build the qualified client, confirm ingress and start the original node identity"
         }
         "list" => "List the Solana RPC nodes in the inventory",
         "status" => {
-            "Show the validator's health and slot, Old Faithful, the identity and the firewall"
+            "Verify the selected backend's process, network synchronization and RPC ingress"
         }
         "logs" => "Show the validator's log, or a service's journal",
-        "start" => "Start the validator, or Old Faithful",
-        "stop" => "Stop the validator, or Old Faithful",
-        "restart" => "Restart the validator, or Old Faithful",
+        "start" => "Start the original node through its recorded backend",
+        "stop" => "Stop the original node through its recorded backend",
+        "restart" => "Restart the original node through its recorded backend",
         "update" => "Build another client release and restart the validator on it",
         "update-config" => {
-            "Write the startup and firewall again from the inventory, restarting only on a change"
+            "Apply startup and access settings through the recorded backend's guarded deployment"
         }
         "plan" => "Show what deploy, update or update-config would change, without changing it",
-        "destroy" => "Stop and remove the services and firewall; the ledger only with --purge-data",
+        "destroy" => {
+            "Retire the node; native ownership retains data, encrypted custody and filtering"
+        }
         _ => verb.about,
     }
 }
@@ -578,7 +699,7 @@ fn solana_rpc_args(sub: Command, verb: &Verb) -> Command {
                 Arg::new("ssh-key")
                     .long("ssh-key")
                     .value_parser(value_parser!(std::path::PathBuf))
-                    .help("The .pub file of the key that logs in; init authorizes it for solv too"),
+                    .help("The management SSH public key file; new native nodes keep management separate"),
             )
             .arg(
                 Arg::new("ssh-agent")
@@ -652,7 +773,7 @@ fn solana_rpc_verb_args(verb: &str) -> Vec<Arg> {
                 Arg::new("user")
                     .long("user")
                     .default_value("ubuntu")
-                    .help("The user that logs in before solv exists"),
+                    .help("The management SSH user (existing solv initialization keeps its original workflow)"),
                 Arg::new("port")
                     .long("port")
                     .default_value("22")
@@ -667,7 +788,7 @@ fn solana_rpc_verb_args(verb: &str) -> Vec<Arg> {
                 Arg::new("client")
                     .long("client")
                     .value_parser(["jito", "agave"])
-                    .help("The client (default for a new node: jito)"),
+                    .help("Native uses qualified Agave; existing solv profiles retain their client"),
                 Arg::new("type")
                     .long("type")
                     .value_parser(["send-tx", "index", "grpc", "index-grpc"])
@@ -788,14 +909,7 @@ pub async fn run(role: Role, args: &[String], json: bool) -> Outcome {
     let full = std::iter::once(format!("erpc {role}")).chain(args.iter().cloned());
     let matches = match command(role, chain).try_get_matches_from(full) {
         Ok(matches) => matches,
-        Err(e) => {
-            let _ = e.print();
-            return if e.use_stderr() {
-                Outcome::Usage(String::new())
-            } else {
-                Outcome::Done(String::new())
-            };
-        }
+        Err(error) => return parse_outcome(&error, json),
     };
     let Some((name, sub)) = matches.subcommand() else {
         // No verb: what the verbs are, as --help shows them; a script
@@ -810,6 +924,36 @@ pub async fn run(role: Role, args: &[String], json: bool) -> Outcome {
     if role == Role::Validator && chain == Chain::Eth {
         return crate::eth_validator_tree::run(name, sub, source, json).await;
     }
+    if chain == Chain::Solana && matches!(role, Role::Rpc | Role::Validator) && name == "migration"
+    {
+        return crate::solana_migration::run(sub, role == Role::Rpc, json, source);
+    }
+    if role == Role::Validator && chain == Chain::Solana && name == "registration" {
+        return crate::solana_registration::run(sub, json).await;
+    }
+    if role == Role::Validator && chain == Chain::Hyperliquid && name == "aqa" {
+        return crate::hyperliquid_aqa::run(sub, source, json);
+    }
+    // `keys` and `vote-account` do not go through respond(), but both can
+    // write a mainnet validator's keys to 1Password (`keys` fills in missing
+    // ones even without its flags), so they take the same guard as every
+    // verb that changes a node.
+    if role == Role::Validator && chain == Chain::Solana && matches!(name, "keys" | "vote-account")
+    {
+        let verb = Verb {
+            name: if name == "keys" {
+                "keys"
+            } else {
+                "vote-account"
+            },
+            about: "",
+            read_only: false,
+        };
+        let network = sub.get_one::<String>("network").map(String::as_str);
+        if let Err(e) = guard_mainnet(&verb, chain, source, network) {
+            return Outcome::Usage(e);
+        }
+    }
     if role == Role::Validator && chain == Chain::Solana && name == "vote-account" {
         let (Some(network), Some(vname)) = (
             sub.get_one::<String>("network"),
@@ -817,6 +961,9 @@ pub async fn run(role: Role, args: &[String], json: bool) -> Outcome {
         ) else {
             return Outcome::Usage("`erpc v vote-account` needs --network and --name".to_owned());
         };
+        if let Err(error) = crate::solana_backend::legacy_key_preflight(network, vname, true) {
+            return Outcome::from(error);
+        }
         let args = crate::validator_vote::Args {
             network: network.clone(),
             name: vname.clone(),
@@ -825,23 +972,7 @@ pub async fn run(role: Role, args: &[String], json: bool) -> Outcome {
         return crate::validator_vote::run(&args, json);
     }
     if role == Role::Validator && chain == Chain::Solana && name == "keys" {
-        let (Some(network), Some(vname)) = (
-            sub.get_one::<String>("network"),
-            sub.get_one::<String>("name"),
-        ) else {
-            return Outcome::Usage("`erpc v keys` needs --network and --name".to_owned());
-        };
-        let args = crate::validator_keys::Args {
-            network: network.clone(),
-            name: vname.clone(),
-            vote: sub.get_one::<String>("vote-account").cloned(),
-            authority: sub.get_one::<String>("authority").cloned(),
-            ssh_key: sub.get_one::<std::path::PathBuf>("ssh-key").cloned(),
-            ssh_agent: sub.get_one::<std::path::PathBuf>("ssh-agent").cloned(),
-            source_fingerprint: sub.get_one::<String>("source-fingerprint").cloned(),
-            yes: sub.get_flag("yes"),
-        };
-        return crate::validator_keys::run(&args, json);
+        return crate::solana_backend::keys(sub, json);
     }
     let Some(verb) = COMMON_VERBS
         .iter()
@@ -853,11 +984,49 @@ pub async fn run(role: Role, args: &[String], json: bool) -> Outcome {
     respond(role, chain, source, verb, sub, json).await
 }
 
+fn parse_outcome(error: &clap::Error, json: bool) -> Outcome {
+    if !json {
+        let _ = error.print();
+        return if error.use_stderr() {
+            Outcome::Usage(String::new())
+        } else {
+            Outcome::Done(String::new())
+        };
+    }
+    if !error.use_stderr() {
+        // --help and --version: clap's text is the output, whole.
+        return Outcome::Done(error.to_string().trim_end().to_owned());
+    }
+    // clap's first paragraph is the error and what it lists (the missing
+    // arguments, the possible values); the usage block and the pointer to
+    // --help after it are what the `usage` hint already says.
+    let text = error.render().to_string();
+    let message = text
+        .lines()
+        .take_while(|line| !line.trim().is_empty())
+        .map(str::trim)
+        .collect::<Vec<_>>()
+        .join(" ");
+    Outcome::Usage(message.trim_start_matches("error: ").to_owned())
+}
+
 fn extra_verbs(role: Role, chain: Chain) -> &'static [Verb] {
-    if chain == Chain::Avax {
+    if chain == Chain::Arc && role == Role::Validator {
+        crate::arc_validator_tree::EXTRA
+    } else if chain == Chain::Monad {
+        crate::monad_tree::extras(role == Role::Validator)
+    } else if chain == Chain::Arbitrum && role == Role::Validator {
+        crate::arbitrum_tree::EXTRA
+    } else if chain == Chain::Avax {
         crate::avax_tree::EXTRA
+    } else if chain == Chain::Robinhood && role == Role::Validator {
+        crate::robinhood_tree::EXTRA
     } else if chain == Chain::Sui && role == Role::Validator {
         std::slice::from_ref(&crate::sui_tree::REGISTRATION)
+    } else if chain == Chain::Polygon && role == Role::Validator {
+        std::slice::from_ref(&crate::polygon_tree::REGISTRATION)
+    } else if chain == Chain::Near && role == Role::Validator {
+        std::slice::from_ref(&crate::near_tree::REGISTRATION)
     } else if chain == Chain::Tron && role == Role::Validator {
         std::slice::from_ref(&crate::tron_tree::REGISTRATION)
     } else {
@@ -873,6 +1042,12 @@ async fn respond(
     sub: &ArgMatches,
     json: bool,
 ) -> Outcome {
+    let effective = if role == Role::Validator && chain == Chain::Near {
+        crate::near_tree::effective_verb(verb, sub)
+    } else {
+        *verb
+    };
+    let verb = &effective;
     let network = sub.get_one::<String>("network").map(String::as_str);
     let host = sub.get_one::<String>("name").map(String::as_str);
     if !verb.read_only && network.is_none() {
@@ -885,32 +1060,38 @@ async fn respond(
     if let Err(e) = guard_mainnet(verb, chain, source, network) {
         return Outcome::Usage(e);
     }
-    if role == Role::Rpc && chain == Chain::Arc {
-        return arc(verb, sub, network, host, json).await;
+    if role == Role::Validator && chain == Chain::Robinhood && verb.name == "registration" {
+        return crate::robinhood_admission::run(sub, network, json);
     }
-    if role == Role::Rpc && chain == Chain::Solana {
-        return solana_rpc(verb, sub, network, host, json).await;
+    if role == Role::Validator && chain == Chain::Robinhood {
+        return crate::robinhood_validator::run(verb.name, sub, network, json);
     }
-    if role == Role::Rpc && chain == Chain::Eth {
-        return crate::eth_tree::run(verb, sub, network, host, json).await;
+    if role == Role::Validator && chain == Chain::Arc {
+        return crate::arc_validator_ops::run(verb.name, sub, network, json);
     }
-    if role == Role::Rpc && matches!(chain, Chain::Arbitrum | Chain::Robinhood) {
-        return crate::nitro_rpc::run(verb.name, chain.as_str(), sub, network, json);
+    if chain == Chain::Solana && matches!(role, Role::Rpc | Role::Validator) {
+        if verb.name == "list" {
+            return crate::solana_backend::list_nodes(sub, network, role == Role::Rpc, json);
+        }
+        match crate::solana_backend::native_selected(
+            sub,
+            network,
+            role == Role::Rpc,
+            verb.name == "init",
+        ) {
+            Ok(true) => {
+                return crate::solana_native::run(verb.name, sub, network, role == Role::Rpc, json);
+            }
+            Ok(false) => {
+                if let Err(error) = crate::solana_backend::legacy_options(sub) {
+                    return Outcome::Usage(error);
+                }
+            }
+            Err(error) => return Outcome::from(error),
+        }
     }
-    if chain == Chain::Avax {
-        return crate::avax_tree::run(role, verb, sub, network, host, json).await;
-    }
-    if chain == Chain::Sui && matches!(role, Role::Rpc | Role::Node | Role::Validator) {
-        return crate::sui_tree::run(verb, sub, network, host, json, role == Role::Validator);
-    }
-    if role == Role::Rpc && matches!(chain, Chain::Optimism | Chain::Base | Chain::Soneium) {
-        return crate::rollup_ops::run(chain, verb.name, sub, network, json).await;
-    }
-    if role == Role::Rpc && chain == Chain::Bitcoin {
-        return crate::bitcoin_rpc::run(verb.name, sub, network, json).await;
-    }
-    if chain == Chain::Tron {
-        return crate::tron_tree::run(verb, sub, network, host, json, role == Role::Validator);
+    if let Some(result) = dispatch_backend(role, chain, verb, sub, network, host, json).await {
+        return result;
     }
     // The verbs that are implemented so far.
     if role == Role::Validator && chain == Chain::Solana && verb.name == "list" {
@@ -949,6 +1130,130 @@ async fn respond(
         network.map_or_else(String::new, |n| format!(", network {n}")),
         host.map_or_else(String::new, |h| format!(", host {h}")),
     ))
+}
+
+async fn dispatch_backend(
+    role: Role,
+    chain: Chain,
+    verb: &Verb,
+    sub: &ArgMatches,
+    network: Option<&str>,
+    host: Option<&str>,
+    json: bool,
+) -> Option<Outcome> {
+    if role == Role::Rpc && chain == Chain::Arc {
+        return Some(arc(verb, sub, network, host, json).await);
+    }
+    if role == Role::Rpc && chain == Chain::Solana {
+        return Some(solana_rpc(verb, sub, network, host, json).await);
+    }
+    if role == Role::Rpc && chain == Chain::Eth {
+        return Some(crate::eth_tree::run(verb, sub, network, host, json).await);
+    }
+    if matches!(role, Role::Rpc | Role::Validator) && chain == Chain::Near {
+        return Some(crate::near_rpc::run(
+            verb.name,
+            sub,
+            network,
+            json,
+            role == Role::Validator,
+        ));
+    }
+    if matches!(role, Role::Rpc | Role::Validator) && chain == Chain::Bsc {
+        return Some(crate::bsc_rpc::run_role(
+            verb.name,
+            sub,
+            network,
+            json,
+            role == Role::Validator,
+        ));
+    }
+    if role == Role::Validator && chain == Chain::Arbitrum {
+        return Some(crate::arbitrum_validator::run(
+            verb.name, sub, network, json,
+        ));
+    }
+    if role == Role::Rpc && matches!(chain, Chain::Arbitrum | Chain::Robinhood) {
+        return Some(crate::nitro_rpc::run(
+            verb.name,
+            chain.as_str(),
+            sub,
+            network,
+            json,
+        ));
+    }
+    if chain == Chain::Avax {
+        return Some(crate::avax_tree::run(role, verb, sub, network, host, json).await);
+    }
+    if chain == Chain::Sui && matches!(role, Role::Rpc | Role::Node | Role::Validator) {
+        return Some(crate::sui_tree::run(
+            verb,
+            sub,
+            network,
+            host,
+            json,
+            role == Role::Validator,
+        ));
+    }
+    if role == Role::Rpc && matches!(chain, Chain::Optimism | Chain::Base | Chain::Soneium) {
+        return Some(crate::rollup_ops::run(chain, verb.name, sub, network, json).await);
+    }
+    if chain == Chain::Kaia {
+        return Some(crate::kaia_rpc::run(
+            verb.name,
+            sub,
+            network,
+            json,
+            role == Role::Validator,
+        ));
+    }
+    if role == Role::Rpc && chain == Chain::Bitcoin {
+        return Some(crate::bitcoin_rpc::run(verb.name, sub, network, json).await);
+    }
+    if chain == Chain::Monad {
+        return Some(crate::monad_ops::run(role, verb.name, sub, network, json));
+    }
+    if matches!(role, Role::Rpc | Role::Validator) && chain == Chain::Polygon {
+        return Some(polygon_backend(role, verb, sub, network, json));
+    }
+    if chain == Chain::Hyperliquid {
+        return Some(if role == Role::Validator {
+            crate::hyperliquid_validator::run(verb.name, sub, network, json)
+        } else {
+            crate::hyperliquid_ops::run(verb.name, sub, network, json)
+        });
+    }
+    if chain == Chain::Tron {
+        return Some(crate::tron_tree::run(
+            verb,
+            sub,
+            network,
+            host,
+            json,
+            role == Role::Validator,
+        ));
+    }
+    None
+}
+
+fn polygon_backend(
+    role: Role,
+    verb: &Verb,
+    sub: &ArgMatches,
+    network: Option<&str>,
+    json: bool,
+) -> Outcome {
+    crate::polygon_rpc::run_role(
+        if role == Role::Validator {
+            "validator"
+        } else {
+            "fullnode"
+        },
+        verb.name,
+        sub,
+        network,
+        json,
+    )
 }
 
 async fn solana_validator_init(
@@ -993,6 +1298,22 @@ fn many(sub: &ArgMatches, id: &str) -> Option<Vec<String>> {
 }
 
 /// Runs an `erpc r --chain arc` verb.
+fn arc_migration_inputs(sub: &ArgMatches) -> crate::arc_migration::Inputs {
+    crate::arc_migration::Inputs {
+        enabled: sub.get_flag("migrate-authority"),
+        passwd: sub
+            .get_one::<std::path::PathBuf>("original-passwd")
+            .cloned(),
+        group: sub.get_one::<std::path::PathBuf>("original-group").cloned(),
+        machine: sub
+            .get_one::<std::path::PathBuf>("original-machine-id")
+            .cloned(),
+        source: sub
+            .get_one::<std::path::PathBuf>("original-client-record")
+            .cloned(),
+    }
+}
+
 async fn arc(
     verb: &Verb,
     sub: &ArgMatches,
@@ -1000,18 +1321,7 @@ async fn arc(
     name: Option<&str>,
     json: bool,
 ) -> Outcome {
-    let login = crate::arc_rpc::Login {
-        ssh_key: sub
-            .try_get_one::<std::path::PathBuf>("ssh-key")
-            .ok()
-            .flatten()
-            .cloned(),
-        ssh_agent: sub
-            .try_get_one::<std::path::PathBuf>("ssh-agent")
-            .ok()
-            .flatten()
-            .cloned(),
-    };
+    let login = login(sub);
     let yes = sub
         .try_get_one::<bool>("yes")
         .ok()
@@ -1044,6 +1354,7 @@ async fn arc(
                 kind: arc_kind(sub),
                 login,
                 yes,
+                migration: arc_migration_inputs(sub),
             };
             crate::arc_init::run(args, json).await
         }
@@ -1074,6 +1385,18 @@ async fn arc(
                     .unwrap_or(false),
                 forget: sub
                     .try_get_one::<bool>("forget")
+                    .ok()
+                    .flatten()
+                    .copied()
+                    .unwrap_or(false),
+                restore_custody: sub
+                    .try_get_one::<bool>("restore-custody")
+                    .ok()
+                    .flatten()
+                    .copied()
+                    .unwrap_or(false),
+                reset_bootstrap: sub
+                    .try_get_one::<bool>("reset-bootstrap")
                     .ok()
                     .flatten()
                     .copied()
@@ -1247,6 +1570,7 @@ fn arc_ops(
             layer,
             sub.get_one::<u32>("lines").copied().unwrap_or(100),
             sub.get_flag("follow"),
+            json,
         ),
         "start" => crate::arc_ops::service(args, Action::Start, layer, yes, json),
         "stop" => crate::arc_ops::service(args, Action::Stop, layer, yes, json),
@@ -1383,11 +1707,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn registering_a_namespace_does_not_report_a_deployment_as_successful() {
-        let matches = command(Role::Rpc, Chain::Kaia)
-            .try_get_matches_from([
-                "erpc rpc", "deploy", "--chain", "kaia", "-n", "kairos", "--name", "btc1",
-            ])
+    async fn robinhood_namespace_refuses_missing_host_authority_before_inventory_access() {
+        let matches = command(Role::Validator, Chain::Robinhood)
+            .try_get_matches_from(["erpc v", "deploy", "--chain", "robinhood", "-n", "testnet"])
             .expect("recognized command namespace");
         let (_, sub) = matches.subcommand().expect("verb");
         let verb = erpc_core::chain::COMMON_VERBS
@@ -1395,8 +1717,8 @@ mod tests {
             .find(|v| v.name == "deploy")
             .expect("deploy");
         let result = super::respond(
-            Role::Rpc,
-            Chain::Kaia,
+            Role::Validator,
+            Chain::Robinhood,
             erpc_core::chain::Source::Flag,
             verb,
             sub,
@@ -1404,7 +1726,53 @@ mod tests {
         )
         .await;
         assert!(
-            matches!(result, crate::commands::Outcome::Failed(ref reason) if reason.contains("not implemented"))
+            matches!(result, crate::commands::Outcome::Usage(ref reason) if reason.contains("--name") && reason.contains("before inventory access"))
+        );
+    }
+
+    #[test]
+    fn polygon_exposes_twelve_owned_rpc_operations_without_validator_flags() {
+        for verb in erpc_core::chain::COMMON_VERBS {
+            let parsed = command(Role::Rpc, Chain::Polygon)
+                .try_get_matches_from(["erpc rpc", verb.name, "-n", "amoy", "--name", "polygon1"]);
+            assert!(parsed.is_ok(), "{}", verb.name);
+        }
+        let init = command(Role::Rpc, Chain::Polygon)
+            .try_get_matches_from([
+                "erpc rpc",
+                "init",
+                "-n",
+                "amoy",
+                "--name",
+                "polygon1",
+                "--host",
+                "192.0.2.1",
+                "--advertise-ip",
+                "8.8.8.8",
+                "--rpc-allow",
+                "198.51.100.0/24,2001:db8::/32",
+                "--l1-execution",
+                "op://fixture",
+                "--yes",
+            ])
+            .expect("public inputs parse");
+        assert!(init.subcommand().unwrap().1.get_flag("yes"));
+        for args in [
+            vec!["erpc rpc", "status", "--yes"],
+            vec!["erpc rpc", "update", "--version", "v0.0.1"],
+            vec!["erpc rpc", "init", "--validator-key", "fixture"],
+            vec!["erpc rpc", "deploy", "-n", "mumbai"],
+        ] {
+            assert!(
+                command(Role::Rpc, Chain::Polygon)
+                    .try_get_matches_from(args)
+                    .is_err()
+            );
+        }
+        assert!(
+            command(Role::Rpc, Chain::Polygon)
+                .try_get_matches_from(["erpc rpc", "deploy", "--restore-keys"])
+                .is_ok()
         );
     }
 

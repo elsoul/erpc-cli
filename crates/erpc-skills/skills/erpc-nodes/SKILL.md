@@ -10,9 +10,9 @@ The chain skills (`arc-rpc`, `solana-rpc-mainnet`, `solana-validator-testnet`,
 
 ## Which command
 
-- `erpc validator` (`erpc v`): validators on Solana, Ethereum, Avalanche, Sui and TRON.
-- `erpc rpc` (`erpc r`): RPC nodes on Solana, Ethereum, Base, Optimism, Soneium, Arbitrum,
-  Robinhood Chain, Avalanche, Bitcoin, Sui, TRON and Arc.
+- `erpc validator` (`erpc v`): validators on Solana, Ethereum, Avalanche, Sui, TRON, Polygon,
+  BNB Chain, Kaia, Monad, Hyperliquid, NEAR, Arbitrum One and Robinhood Chain.
+- `erpc rpc` (`erpc r`): RPC nodes on all 18 chains.
 - `erpc node` (`erpc n`): Avalanche and Sui.
 
 The chain comes from `--chain`, then `ERPC_CHAIN`, then `default_chain` in the config
@@ -36,11 +36,13 @@ for a service account: it reads whatever vault the account is granted, with nobo
 mainnet keys in a vault a service account cannot read.
 
 Keys differ by chain, and `docs/nodes.md` has the table. A Solana validator's staked identity is in
-1Password, and so is its withdraw authority unless only a public key was given; a deploy never
-copies either to the node. A Solana RPC
-node's identity and an Ethereum validator's keystores and unlock password stay on the host, so
-those hosts need backups (`erpc backup` skips files named like `*identity*.json` in a home
-directory, so it will not cover a Solana RPC identity, which holds no stake). An Ethereum backup's
+1Password, and so is its withdraw authority unless only a public key was given. On the solv backend
+a deploy never copies either to the node. On the native backend the withdraw authority is never
+imported, and the identity reaches the host, encrypted to it, only with `--activate-validator`. A
+solv Solana RPC node's identity and an Ethereum validator's keystores and unlock password stay on
+the host, so those hosts need backups (`erpc backup` skips files named like `*identity*.json` in a
+home directory, so it will not cover a solv Solana RPC identity, which holds no stake). A native
+Solana RPC identity is the one you made, and it stays in 1Password too. An Ethereum backup's
 slashing history stops at its snapshot, and restoring a key that signed after it can get it slashed:
 move a signer with `erpc v --chain eth migrate`, not from a backup, and for a lost signer see
 `docs/ethereum-validator.md`. Keys sent to a node go over SSH standard input, never on a command
@@ -59,16 +61,18 @@ line; some hosts then store them.
 
 ## The firewall
 
-erpc applies no firewall to Solana validators, Ethereum validators or Bitcoin nodes: filtering
-those hosts is the operator's job, so say so. Every other node gets an nftables firewall. On Solana,
-Arc and Ethereum RPC nodes it is a table of its own with policy drop: SSH from `--management-allow`
-and the address erpc connects from, the RPC ports from `--rpc-allow`, metrics from
-`--monitoring-allow`, the chain's peer-to-peer ports as the chain needs, nothing else. A new
-table rolls itself back after two minutes unless erpc reaches the node again over a fresh SSH
-connection, so a mistake cannot lock the operator out for good; an established session survives
-either way. Without `--management-allow` the only SSH source is the address erpc runs from: if
-that changes, only the provider's console gets in, so suggest a stable range. `update-config`
-replaces each list it is given and keeps the others.
+Arc and Ethereum RPC nodes, and Solana RPC nodes on the solv backend, get an nftables table of
+their own with policy drop: SSH from `--management-allow` and the address erpc connects from,
+the RPC ports from `--rpc-allow`, metrics from `--monitoring-allow`, the chain's peer-to-peer
+ports as the chain needs, nothing else. A new Solana node (the native backend, validator or RPC)
+gets a table that covers only its own ports and leaves every other port to the server's own
+rules: SSH as above, 7211 and 7212 from `--rpc-allow` (from nobody on a validator), 8899 and
+8900 from nobody, and 8000 to 8032 from anyone. Each new table rolls itself back after two
+minutes unless erpc reaches the node again over a fresh SSH connection, so a mistake cannot lock
+the operator out for good; an established session survives either way. Without
+`--management-allow` the only SSH source is the address erpc runs from: if that changes, only
+the provider's console gets in, so suggest a stable range. `update-config` replaces each list it
+is given and keeps the others.
 
 ## Asking first, seeing first, scripts
 
@@ -81,13 +85,16 @@ replaces each list it is given and keeps the others.
 
 ## Repeating, and reading a failure
 
-- Every verb is safe to run again: `init` resumes, `deploy` changes nothing when nothing changed
-  and restarts a service only when its unit changed.
+- Follow the selected chain's original operation state when repeating a verb. Ethereum
+  resumes a still-current deployment; a canceled one requires explicit recovery before
+  a fresh intent. Its guarded cutover restarts the pair even for a configuration update.
 - The plays run on the node itself; a failed one names its run (`r-<time>-<id>`), the task that
   failed and the node's message. Fix the cause and run the same command again.
-- An update that fails leaves the node on the release that ran (Arc and Ethereum put it back
-  when the new release does not come up; Solana RPC builds the new one beside it first), and the
-  pin in 1Password stays on the old release.
+- Update failure behavior is chain-specific. Ethereum retains a fenced state instead of
+  starting an older binary over possibly changed data; its inventory pins remain unchanged
+  until successful activation. Arc also retains its highest opened source floor, stops
+  original writers during deployment, and never automatically downgrades a database.
+  Solana RPC builds a candidate beside the original release.
 - `status` exits 5 (`problems_found`) and names each problem; `logs` shows the services' journal
   (`-f` follows).
 

@@ -17,16 +17,30 @@
 pub mod arc;
 pub mod avax;
 pub mod bitcoin;
+pub mod bsc;
 pub mod command;
 pub mod config;
 pub mod eth;
+pub mod eth_authority;
 pub mod eth_validator;
 pub mod exec;
 pub mod firewall;
 pub mod first_login;
 pub mod hostkey;
+pub mod near;
+
+pub mod kaia;
+pub mod monad;
+
+pub mod hyperliquid;
+pub mod hyperliquid_aqa;
 mod nitro;
+pub mod polygon;
+mod private_output;
+pub use private_output::PrivateOutput;
+pub mod python;
 pub mod rollup;
+pub mod solana_native;
 pub mod solana_rpc;
 pub mod sui;
 pub mod tron;
@@ -35,7 +49,7 @@ pub mod worker;
 
 pub use command::{
     FREE_DISKS_SCRIPT, KeyFilePath, PING_PREFIX, PingTargets, RESULT_MARKER, RemoteCommand,
-    RemotePath, RunId, RunStart,
+    RemotePath, RunId, RunPrepare, RunStart,
 };
 pub use config::{Identity, Target};
 pub use exec::{Output, Session, SshError, Stream, agent_holds, keyscan};

@@ -14,7 +14,7 @@ RequiresMountsFor=/opt/erpc /etc/erpc/solana-rpc
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/bin/python3 /usr/local/lib/erpc/rpc-firewall.py solana-rpc load
+ExecStart=/usr/bin/python3 -I /usr/local/lib/erpc/rpc-firewall.py solana-rpc load
 
 [Install]
 WantedBy=multi-user.target

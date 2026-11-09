@@ -7,15 +7,19 @@ Wants=network-online.target
 
 [Service]
 Type=exec
-User=bitcoin
-Group=bitcoin
+User=@BITCOIN_UID@
+Group=@BITCOIN_GID@
+SupplementaryGroups=
 UMask=0077
-ExecStartPre=+/usr/local/lib/erpc/bitcoin-control guard
+ExecStartPre=+@BITCOIN_GUARD@ guard
 ExecStart=/opt/erpc-bitcoin/current/bin/bitcoind -nosettings -conf=/etc/erpc/bitcoin.conf -datadir=/var/lib/erpc-bitcoin/data
 Restart=on-failure
 RestartSec=30
 TimeoutStopSec=600
 KillSignal=SIGTERM
+KillMode=control-group
+SendSIGKILL=no
+LimitCORE=0
 LimitNOFILE=65536
 ReadWritePaths=/var/lib/erpc-bitcoin/data
 NoNewPrivileges=yes

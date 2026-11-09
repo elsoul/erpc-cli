@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "contracts_source_commit": "4341b132cfbdcc980ead03765ca5224ff6cb5d97",
+  "external_review_notice": "For external governance review only. Verify the deployed implementation and current administrator/executor route and authority before signing. This is not self-registration or activation authorization.",
+  "profiles": {
+    "mainnet": {
+      "child": 4663,
+      "parent": 1,
+      "genesis": "0xd4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3",
+      "bridge": "0xdf8755334ce7a73ccf6b581c02ea649ae3e864b3",
+      "rollup": "0x23a19d23e89166adedbdcb432518ab01e4272d94",
+      "stake_asset_address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+      "chain_info_sha256": "cf6c0aa2bc520a28fe8983f783676bc43de94cc25a57a1cdc9b1f0afc5208f0a"
+    },
+    "testnet": {
+      "child": 46630,
+      "parent": 11155111,
+      "genesis": "0x25a5cc106eea7138acab33231d7160d69cb777ee0c2c553fcddf5138993e6dd9",
+      "bridge": "0x96295bdad104ead97cc08797b3dc68eff59ccf30",
+      "rollup": "0xdc5f8e399dbd8a9f5f87aec4c23beb12431b386d",
+      "stake_asset_address": "0x7b79995e5f793a07bc00c21412e50ecae098e7f9",
+      "chain_info_sha256": "0ad167c746c2aa9169c84a252f8c863140cdbd4fc23b571fa1041f94cabaf745"
+    }
+  }
+}

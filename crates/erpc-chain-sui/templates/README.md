@@ -40,13 +40,106 @@ History is retained for 14 epochs after bootstrap, not backfilled as an archive.
 
 `start`, `stop`, `restart`, `update-config`, `update` and `destroy` use the same
 saved host contract. Update adopts only this CLI version's reviewed network
-release; arbitrary tags and automatic binary/database downgrade are unsupported.
+release; arbitrary tags and database downgrade are refused by original source-opening history.
 An incomplete bootstrap must be finished or explicitly recovered before update.
 If a database exists but the completion marker is missing, bootstrap fails closed.
 After inspecting the journal, use `deploy --recover-bootstrap` to stop the services,
 retain the interrupted database as `db.quarantine.<timestamp>`, and retry a strict
 verified restore. Recovery requires 3.5 TB additional free space and refuses a
-completed bootstrap. It never deletes the quarantine or identities.
+completed bootstrap or any prior native-node/consensus use. It never deletes the
+quarantine or identities. If the original incomplete bootstrap used an older
+protocol-incompatible release, first migrate its independent source history as
+described below, then use `update --recover-bootstrap`. This explicitly selects
+the newer qualified source while retaining the original incomplete database.
+The source check, recovery and deployment run under the same operation lock.
+Ordinary `update` still refuses an incomplete bootstrap. Repeated recovery after
+a visible rename replays the directory barriers before any new restore.
+
+### Testnet protocol 140 and original source history
+
+Testnet selects `testnet-v1.83.1`, source `0e0ede4cbf48c6d7654b613f62fdca71542ace03`.
+The November 4, 2026 official gRPC observation reported Testnet epoch 1273 at
+protocol 140; the previous qualified 1.82.2 client supports only up to 139.
+Mainnet remains `mainnet-v1.82.3` and its separately observed protocol 139.
+The release archives are qualified by the official asset metadata SHA-256, not
+by a claimed detached signature. See the [Testnet release](https://github.com/MystenLabs/sui/releases/tag/testnet-v1.83.1),
+[protocol limit](https://github.com/MystenLabs/sui/blob/0e0ede4cbf48c6d7654b613f62fdca71542ace03/crates/sui-protocol-config/src/lib.rs),
+and [compiled network pins](../src/network.rs).
+
+Acquisition verifies the archive and the three extracted executable bytes, but
+does not record a database opening. Both the native node and formal-bootstrap
+units retain the qualified source in `/etc/sui/release-history` immediately
+before native execution. Every opening replays file and ancestor durability
+barriers under a private lock. A partial entry still reserves its named source;
+an older source cannot bypass it. The exact same source can complete an
+interrupted entry without erasing earlier history. This prevents managed
+downgrades; it does not guarantee forward database compatibility or replace
+validator consensus history. Retain this directory with the original data,
+account receipts and encrypted identities.
+
+Verified bootstrap completion and native-node opening also retain a root-owned
+`native-opened.json` no-reset fence. Completion is published through an original
+directory descriptor and file/ancestor durability barriers before the node is
+scheduled; native opening rechecks those barriers. Any partial fence, consensus
+database, or completed-bootstrap marker prevents fresh bootstrap recovery.
+Deleting or losing the node-owned completion marker therefore does not authorize
+resnapshotting a used validator or full node. This marker records an opening
+attempt, not successful synchronization or proof that a validator signed.
+
+Existing installations without this history cannot infer it from
+`/opt/sui/current`. Before updating, prepare a bounded public JSON record from
+the original retained numeric account receipt and independently retained upgrade
+records, including every client that previously opened this database. Do not use
+the current NSS account name or current binary alone as historical evidence.
+The object has exactly these fields:
+
+- `format`: `1`.
+- `contract`: the original `network`, `role` and genesis SHA-256 from
+  `/etc/sui/contract.json`.
+- `service_uid` and `service_gid`: the original numeric values retained in
+  `/etc/sui/original-account.json` (or its atomic contract copy).
+- `highest_opened`: an object with the independently established `version`,
+  `commit`, `architecture` (`x86_64` or `aarch64`) and `archive_sha256`. The source
+  must be in the reviewed catalog. Include attempts that could have opened the
+  database. Only an installation that has never attempted an opening may use
+  `null`; the controller additionally requires an empty original data home.
+- `database_state`: `never-opened`, `bootstrap-only`, `bootstrap-complete`, or `native-opened`, based
+  on independent original run/upgrade records. Only the first permits a null
+  highest source. `bootstrap-only` means unfinished bootstrap publication and no
+  native node execution; `bootstrap-complete` means independently verified
+  completed restore, and `native-opened` includes node execution attempts.
+  Retained established-use evidence contradicting an incomplete claim causes refusal. Do not
+  infer this state from an absent completion marker. A downloaded/selected
+  current archive is qualified independently and does not prove a past opening.
+
+If those original records or historical evidence are unavailable, retain the
+host stopped and obtain them before migration. ERPC checks their consistency,
+not the truth of an operator's claimed earlier upgrade history.
+
+```sh
+erpc rpc --chain sui update --network testnet --name sui1 \
+  --migrate-source-history original-source-history.json --ssh-key <operator.pub> --yes
+erpc rpc --chain sui update --network testnet --name sui1 --ssh-key <operator.pub> --yes
+```
+
+Use `v` in place of `rpc` for the existing validator. The first command is
+**migration only**: it authenticates original scope/account, stops and verifies
+quiescence, checks the retained current archive against installed executables,
+and durably records the independent history. It does not change the inventory
+pin, update the client, import any key or restart. Original data, consensus
+history and ciphertext stay in place. Explicit completed/native-use evidence
+can also repair the completion marker after checking the original real, nonempty
+database directories; it does not verify or repair native database contents.
+Use independently verified original records and backups, never an inferred
+completion state. Failed publication is retried with the
+same evidence; a higher retained claim cannot be replaced with lower evidence.
+The second explicit operation selects this CLI's qualified release. An unused
+original installation uses `deploy` after migration instead. Old helpers refuse
+the new authority protocol; use this CLI's carried `stop`/`destroy` during
+interrupted deployment. Do not remove source records to make an old CLI run.
+For a verified bootstrap-only original stopped on the old Testnet protocol, the
+second command is `update --recover-bootstrap` instead. It does not import or
+replace validator keys; repair original custody separately if necessary.
 
 Destroy removes service definitions, retaining inventory, genesis/role contract,
 chain data, firewall and the host-bound encrypted network credential. Re-deploy
@@ -155,7 +248,7 @@ observations, without equating process liveness to active consensus duties.
 
 The observer uses fixed HTTPS gRPC endpoints, checks network identity and a
 recent checkpoint, and rejects epoch changes during observation. For reviewed
-protocol 139 it reads `VotingPowerAdmissionStartEpochKey` from the validator
+Mainnet protocol 139 and Testnet protocols 139/140 it reads `VotingPowerAdmissionStartEpochKey` from the validator
 set's dynamic fields and computes the pinned 14-epoch phases (joining voting
 power 12, then 6, then 3). On 2026-10-26 read-only observations returned Mainnet
 epoch 1292/start epoch 743 and Testnet epoch 1264/start epoch 707: both were in
@@ -171,7 +264,7 @@ The following source commits define the implemented formats and policy:
 - [Mainnet metadata and proof format](https://github.com/MystenLabs/sui/blob/bf4073918ed33cfa0b09c500658fa116a774bcfd/crates/sui-genesis-builder/src/validator_info.rs).
 - [Official validator commands](https://github.com/MystenLabs/sui/blob/bf4073918ed33cfa0b09c500658fa116a774bcfd/crates/sui/src/validator_commands.rs) and [client simulation command](https://github.com/MystenLabs/sui/blob/bf4073918ed33cfa0b09c500658fa116a774bcfd/crates/sui/src/client_commands.rs).
 - [Keytool output](https://github.com/MystenLabs/sui/blob/bf4073918ed33cfa0b09c500658fa116a774bcfd/crates/sui/src/keytool.rs) and [scheme-prefixed public keys](https://github.com/MystenLabs/sui/blob/bf4073918ed33cfa0b09c500658fa116a774bcfd/crates/sui-types/src/crypto.rs).
-- [Mainnet admission policy](https://github.com/MystenLabs/sui/blob/bf4073918ed33cfa0b09c500658fa116a774bcfd/crates/sui-framework/packages/sui-system/sources/validator_set.move) and [matching Testnet policy](https://github.com/MystenLabs/sui/blob/e10772f4fafef31c46f598835fe66648caf6e005/crates/sui-framework/packages/sui-system/sources/validator_set.move).
+- [Mainnet admission policy](https://github.com/MystenLabs/sui/blob/bf4073918ed33cfa0b09c500658fa116a774bcfd/crates/sui-framework/packages/sui-system/sources/validator_set.move) and [matching Testnet policy](https://github.com/MystenLabs/sui/blob/0e0ede4cbf48c6d7654b613f62fdca71542ace03/crates/sui-framework/packages/sui-system/sources/validator_set.move). Testnet's policy is unchanged from the earlier qualified source. The used [SystemState protobuf fields](https://github.com/MystenLabs/sui-rust-sdk/blob/8c356d65b1c324590a3fd25990c382af308ea545/crates/sui-rpc/vendored/proto/sui/rpc/v2/system_state.proto) and GetServiceInfo/GetEpoch/StateService fields retain their reviewed numbers. The actual read-only observer returned protocol 140, matching public keys and the 3-voting-power phase on November 4; that observation is not a future admission guarantee.
 - [Consensus TCP transport](https://github.com/MystenLabs/sui/blob/bf4073918ed33cfa0b09c500658fa116a774bcfd/consensus/core/src/network/tonic_network.rs) and [per-epoch role selection](https://github.com/MystenLabs/sui/blob/bf4073918ed33cfa0b09c500658fa116a774bcfd/crates/sui-types/src/node_role.rs).
 - [Pinned gRPC schemas](https://github.com/MystenLabs/sui-rust-sdk/tree/1313d5112464ecc25d7407f42442adea08589fc5/crates/sui-rpc/vendored/proto/sui/rpc/v2): `ledger_service.proto`, `epoch.proto`, `system_state.proto`, `state_service.proto` and `bcs.proto`.
 
@@ -182,3 +275,77 @@ binary execution, systemd credential loading, snapshot bootstrap, active-epoch
 transition, consensus duty, restart/update and recovery on a real Linux host are
 explicitly deferred. No host, signer, stake transaction or node was created during
 implementation verification.
+
+When cancellation storage fails after ownership was verified, stop still attempts
+shutdown of the managed services and reports failure. The same ordering applies
+to rollback, bootstrap recovery, validator preparation and carried destroy.
+Unknown or mismatched ownership never authorizes shutdown. Failed persistence
+never permits subsequent filter removal, data quarantine or service-definition
+removal in that operation. If shutdown also fails, both failures are reported;
+no durable reboot protection is claimed under persistent storage failure.
+Repair storage and retry the failed operation before relying on cancellation.
+
+Carried destroy checks the load state of both managed units and stops only those
+that exist. A host initialized before deployment, a partial unit installation,
+or a repeated destroy after unit removal remains recoverable. An unknown load
+state or failure to stop an existing unit aborts removal rather than reporting
+success.
+
+## Original runtime accounts and credential delivery
+
+New hosts durably reserve a dedicated numeric Sui UID and GID before changing
+NSS. The original account has a non-login shell, no supplementary groups and its
+original private data directory. A fresh root-owned nonwritable volume may be
+empty or contain only a verified empty, root-owned `lost+found`; initialization
+preserves that recovery directory and uses the qualified open directory
+descriptor to set the data root to the reserved UID/GID and mode0700. Unknown
+contents, links, foreign ownership and already-established permission drift
+are refused. Every startup compares enumeration and direct
+name/numeric NSS lookups against the protected receipt. Missing or changed
+established accounts and data-directory ownership are refused, never repaired by
+silently assigning another identity.
+
+The node unit uses those original numeric recipients and a first externally
+verified `ExecCondition`. For the qualified Ubuntu 24.04/systemd 255 profile,
+this condition runs before encrypted credentials are materialized; the later
+prestart guard still checks the native release, scope and confirmed firewall.
+Loader/condition failures exit 255, and observed skipped or failed conditions are
+not accepted as successful startup. Core dumps are disabled. Stop the service
+before administratively reassigning its numeric IDs; authentication cannot
+prevent an administrator from changing an ID after the check.
+
+Installed helpers live in the root-owned real `/usr/local/lib/erpc/sui`
+namespace. SSH, systemd and rollback callbacks authenticate helper ancestry and
+files before Python interprets them. Carried publication verifies the installed
+helper bytes against the sealed source. The original root-owned configuration,
+receipt, helper and service/drop-in namespaces refuse writable, redirected or
+unknown state before mutation.
+
+An existing inventory record can explicitly use `init --migrate-account` to
+verify and bind its observed same-host legacy service UID/GID. The legacy format
+did not record historical numeric IDs; explicit migration authorizes this
+currently verified dedicated account and makes that reservation immutable. Migration requires the
+protected matching network/role/genesis contract, dedicated NSS profile, private
+original data root, qualified native release namespace when present, matching
+validator custody hashes or a decryptable original fullnode credential, and no
+remaining process under the original UID after stopping/disabling old units.
+It neither generates replacement keys nor moves a signer to another host.
+Migration publishes a protocol-2 contract containing the original numeric
+reservation atomically, so a failed secondary receipt write cannot choose a new
+account on retry. Old managed helpers reject that contract. Redeploy the reviewed
+numeric-recipient units before starting the migrated node.
+
+Stop and destroy use a sealed carried helper even if installed helpers are
+missing or initialization failed. They verify scope, persist cancellation and
+attempt owned stop/disable even when storage fails. Original UIDs are used to
+refuse surviving writers independently of current NSS names; an unidentified
+writer is never killed automatically. Failure retains data, custody and filtering
+and is reported as failure. If all storage persistence fails, a successful
+shutdown alone does not promise durable reboot cancellation.
+
+Credential ordering is qualified from systemd 255's
+[condition/prestart flags](https://github.com/systemd/systemd/blob/v255/src/core/service.c),
+[identity setup order](https://github.com/systemd/systemd/blob/v255/src/core/exec-invoke.c)
+and [credential ACL setup](https://github.com/systemd/systemd/blob/v255/src/core/exec-credential.c).
+The operating-system tests remain offline; real Linux credential delivery,
+NSS, mounts, native execution and recovery acceptance are deferred.

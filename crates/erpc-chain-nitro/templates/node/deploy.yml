@@ -9,12 +9,12 @@
   tasks:
     - name: Require this caller's confirmed firewall receipt before deployment changes
       ansible.builtin.command:
-        argv: [python3, /usr/local/lib/erpc/rpc-firewall.py, "{{ nitro_family }}", require-confirmed, "{{ erpc_fw_confirmed_run }}", "{{ erpc_fw_confirmed_bundle }}"]
+        argv: [/usr/bin/python3, -I, /usr/local/lib/erpc/rpc-firewall.py, "{{ nitro_family }}", require-confirmed, "{{ erpc_fw_confirmed_run }}", "{{ erpc_fw_confirmed_bundle }}"]
       changed_when: false
 
     - name: Persist the installation fence and stop the owned services
       ansible.builtin.command:
-        argv: [python3, /usr/local/lib/erpc/nitro-control, play]
+        argv: [/usr/bin/python3, -I, /usr/local/lib/erpc/nitro-control, play]
         stdin: "{{ nitro_request | combine({'action':'begin-install'}) | to_json }}"
       changed_when: true
 
@@ -45,7 +45,7 @@
 
     - name: Pull the reviewed architecture-specific content digest
       ansible.builtin.command:
-        argv: [python3, /usr/local/lib/erpc/nitro-control, play]
+        argv: [/usr/bin/python3, -I, /usr/local/lib/erpc/nitro-control, play]
         stdin: "{{ nitro_request | combine({'action':'pull-image'}) | to_json }}"
       changed_when: true
 
@@ -65,7 +65,7 @@
 
     - name: Finish only with matching artifacts, image, credentials and firewall receipt
       ansible.builtin.command:
-        argv: [python3, /usr/local/lib/erpc/nitro-control, play]
+        argv: [/usr/bin/python3, -I, /usr/local/lib/erpc/nitro-control, play]
         stdin: "{{ nitro_request | combine({'action':'finish-install','service_uid':getent_passwd['erpc-nitro'][1] | int,'service_gid':getent_passwd['erpc-nitro'][2] | int,'firewall':{'run':erpc_fw_confirmed_run,'bundle':erpc_fw_confirmed_bundle}}) | to_json }}"
       changed_when: true
 
@@ -75,6 +75,6 @@
 
     - name: Start through the owner and firewall guarded lifecycle
       ansible.builtin.command:
-        argv: [python3, /usr/local/lib/erpc/nitro-control, play]
+        argv: [/usr/bin/python3, -I, /usr/local/lib/erpc/nitro-control, play]
         stdin: "{{ nitro_request | combine({'action':'start'}) | to_json }}"
       changed_when: true

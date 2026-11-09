@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+[Unit]
+Description=ERPC original Robinhood mainnet Defensive validator bounded parent transport
+Requires=erpc-robinhood-firewall.service
+After=network-online.target erpc-robinhood-firewall.service
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=0
+Group=0
+UMask=0077
+LimitCORE=0
+LoadCredentialEncrypted=robinhood-mainnet-defensive-upstreams:/etc/credstore.encrypted/robinhood-mainnet-validator-l1/upstreams.cred
+LoadCredentialEncrypted=robinhood-mainnet-defensive-parent-tls:/etc/credstore.encrypted/robinhood-mainnet-validator-tls/parent-tls.cred
+ExecCondition={{ validator_condition_command }} runtime-condition transport
+ExecStartPre={{ validator_runtime_command }} runtime-prepare transport
+ExecStart={{ validator_runtime_command }} runtime-run transport
+ExecStartPost={{ validator_runtime_command }} runtime-ready transport
+ExecStop={{ validator_runtime_command }} runtime-stop transport
+TimeoutStartSec=120
+TimeoutStopSec=120
+Restart=no
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/erpc-robinhood-mainnet-validator /run/erpc-robinhood-mainnet-validator
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

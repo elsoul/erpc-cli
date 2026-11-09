@@ -9,15 +9,16 @@
   vars_files: [vars.yml]
   tasks:
     - ansible.builtin.import_tasks: tasks/guard.yml
-      vars: {tron_guard: guard}
+      vars: {tron_guard: guard-stop}
     - name: Revoke startup and verify that the managed producer stopped
       ansible.builtin.command:
-        argv: "{{ ['python3', tron_control, 'destroy'] + tron_contract_args }}"
+        argv: "{{ ['/usr/bin/python3', '-I', tron_control, ('stop-play' if tron_shutdown | default('destroy') == 'stop' else 'destroy')] + tron_contract_args }}"
       changed_when: true
     - name: Remove only the node service definition
       ansible.builtin.file:
         path: /etc/systemd/system/tron-node.service
         state: absent
+      when: tron_shutdown | default('destroy') == 'destroy'
     - name: Reload systemd while retaining the deny-by-default firewall
       ansible.builtin.systemd_service:
         daemon_reload: true

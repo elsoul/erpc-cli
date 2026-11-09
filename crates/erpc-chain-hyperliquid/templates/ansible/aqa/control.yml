@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Recover only an original publisher's public control path
+  hosts: all
+  gather_facts: false
+  become: true
+  any_errors_fatal: true
+  tasks:
+    - name: Refuse any concealed payload or arbitrary action in a retained bundle
+      ansible.builtin.assert:
+        that:
+          - aqa_request.keys() | list | sort == ['action', 'contract']
+          - aqa_request.action in ['stop', 'destroy']
+    - name: Attempt original owned shutdown using current sealed code
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, -c, '{{ aqa_loader }}', '{{ playbook_dir }}/../../aqa/control.py', within-run]
+        stdin: '{{ aqa_request | to_json }}'
+      changed_when: true
