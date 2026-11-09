@@ -1,0 +1,85 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Reserve a dedicated Polygon RPC host before provisioning
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars_files: [vars.yml]
+  tasks:
+    - name: Establish or verify immutable ownership before host changes
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ polygon_scripts }}/control.py", within-run]
+        stdin: "{{ polygon_request | combine({'action':'reserve'}) | to_json }}"
+      changed_when: false
+    - name: Install distribution-maintained runtime dependencies
+      ansible.builtin.apt:
+        name: [ca-certificates, python3, python3-cryptography, nftables, dpkg]
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+        policy_rc_d: 101
+    - name: Install distribution-maintained private validator dependencies
+      ansible.builtin.apt:
+        name: [docker.io, python3-pycryptodome, libsecp256k1-1]
+        state: present
+        policy_rc_d: 101
+      when: polygon_contract.role == 'validator'
+    - name: Discover clock synchronization
+      ansible.builtin.service_facts:
+    - name: Preserve a working distribution clock service
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/../../setup/time_service.py"]
+        stdin: "{{ ansible_facts.services | to_json }}"
+      register: polygon_clock
+      changed_when: false
+    - name: Install clock synchronization only when missing
+      ansible.builtin.apt:
+        name: systemd-timesyncd
+        state: present
+      when: (polygon_clock.stdout | from_json).install_fallback | bool
+    - name: Enable the selected clock service
+      ansible.builtin.systemd_service:
+        name: "{{ (polygon_clock.stdout | from_json).service }}"
+        state: started
+        enabled: true
+    - name: Establish only the durably reserved runtime identities
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ polygon_scripts }}/control.py", within-run]
+        stdin: "{{ polygon_request | combine({'action':'provision-accounts'}) | to_json }}"
+    - name: Create protected management and artifact directories
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "{{ item.mode }}"
+      loop:
+        - {path: /etc/polygon, mode: '0755'}
+        - {path: /etc/erpc/polygon, mode: '0700'}
+        - {path: /etc/credstore.encrypted, mode: '0700'}
+        - {path: /etc/credstore.encrypted/polygon, mode: '0700'}
+        - {path: /opt/polygon, mode: '0755'}
+        - {path: /opt/polygon/downloads, mode: '0700'}
+        - {path: /opt/polygon/releases, mode: '0755'}
+        - {path: /var/lib/polygon, mode: '0755'}
+        - {path: /usr/local/lib/erpc, mode: '0755'}
+        - {path: /usr/local/lib/erpc/polygon, mode: '0755'}
+        - {path: /usr/local/lib/erpc/polygon/releases, mode: '0755'}
+    - name: Refuse implicit startup of a foreign stopped Docker installation
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ polygon_scripts }}/control.py", within-run]
+        stdin: "{{ polygon_request | combine({'action':'broker-daemon-guard'}) | to_json }}"
+      changed_when: false
+      when: polygon_contract.role == 'validator'
+    - name: Start the qualified local broker daemon
+      ansible.builtin.systemd_service:
+        name: docker.service
+        state: started
+      when: polygon_contract.role == 'validator'
+    - name: Publish the checked public controller before explicit active update authorization
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ polygon_scripts }}/control.py", within-run]
+        stdin: "{{ polygon_request | combine({'action':'publish-controller'}) | to_json }}"
+      changed_when: true

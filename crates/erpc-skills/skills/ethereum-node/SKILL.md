@@ -35,9 +35,17 @@ Sigma Prime's server), on one Ubuntu 24.04+ host.
   from `--monitoring-allow`, peer-to-peer open) under a rollback timer.
 - `status` (both layers, Reth's head against Lighthouse's, sync, peers, disk; exits 5 on a
   problem), `logs [--layer execution|consensus|both] [--lines N] [-f]`, `start`, `stop`,
-  `restart [--layer …]`, `update [--reth-version …] [--lighthouse-version …]` (rolls back when
-  the new pair does not come up), `update-config` (allow lists), `plan`, `destroy [--purge-data
-  [--forget]]`, `list`.
+  `restart [--layer …]`, `update [--reth-version …] [--lighthouse-version …]` (a failed
+  upgrade remains fenced; no automatic database rollback), `update-config` (allow lists),
+  `plan`, `destroy` (retire while retaining original data/JWT/inventory), `list`.
+- Original numeric accounts, host binding, private material, native directories and
+  guarded units are checked before lifecycle changes. `--purge-data` and `--forget` are
+  refused for original-authority retirement. JSON journals use compact stdout records.
+- A canceled deployment needs explicit `--recover-cutover ORIGINAL_INTENT`; recovery
+  retains native material and does not restart. `plan` shows the original intent.
+- Legacy hosts without numeric receipts require `init --migrate-authority` and the
+  original backup passwd/group/machine-id files. Never substitute a fresh NSS export
+  for historical identity evidence. See `docs/ethereum-rpc.md` for the complete flow.
 - Mainnet changes need `--chain eth` on the command line itself. the RPC backend runs on
   mainnet only; the separately owned validator backend supports Hoodi and mainnet.
 
@@ -62,11 +70,13 @@ Measured on mainnet in October 2026 (32 cpus, 128 GB, a 1.7 TB NVMe), type `full
 
 ## When something fails
 
-- `update` that does not come up puts the node back on the pair that ran, and 1Password keeps
-  the old pins. `logs --layer execution` or `--layer consensus` says why.
+- A failed `update` retains the fenced original state and does not run old code over
+  possibly changed native data. Inspect `plan` and the selected journal, then resume the
+  same current operation or explicitly recover its original intent.
 - Reth's head not moving for hours right after deploy is the lookup rebuild above; restarting
   it only starts it over.
-- After a reboot both layers and the firewall come back on their own.
+- Reboot starts only the original authorized layers. Explicit stop/retirement and
+  incomplete cutover remain fenced; the original confirmed firewall can still load.
 
 For RPC access without a node, ERPC's shared RPC covers Ethereum (skill `erpc-services`).
 
@@ -97,6 +107,30 @@ EIP-3076 history and a synced network check. Existing managed keys move with
 the target, leave it stopped. Never recreate missing history, bypass a fence or use
 withdrawal recovery material online. Original key/password files and host custody
 need backups; the metadata inventory does not store signing secrets.
+
+The original numeric accounts and filesystem UUID/inodes are retained. The
+validator reaches Beacon over its dedicated HTTPS identity; Beacon reaches a
+separate HTTPS Engine adapter that verifies the original Unix peer before sending
+requests. Native Lighthouse TLS remains experimental, and its compiled public CA
+roots remain enabled. Signing custody is host-encrypted; runtime plaintext is
+limited to original-user private tmpfs files, not inventory, arguments or unit
+text. This does not claim unswappable memory or protect an out-of-band key copy.
+
+`keys-backup --output <new-file>` saves the original encrypted capsule;
+`keys-restore --backup <file>` stops and restores that exact capsule on its original
+host without resetting signing history or clearing retirement. Retain the
+original systemd host encryption key in the host backup. `--renew-transport` on
+deploy/update/update-config renews both private TLS purposes during stopped
+cutover. `--recover-cutover <original-intent>` is recovery-only, without restart.
+Every startup exports the retained slashing DB and checks observed signing bounds
+before granting the runtime password. A destroyed signer remains fenced and can
+move through managed migration; deployment alone does not revive its key lease.
+
+For a supported stock legacy validator, use `init --migrate-authority` with the
+independent original passwd/group/machine-id and highest-opened client record
+files described in the operator guide. Independently stop it first. Conversion
+preserves its numeric users, original homes and live slashing DB, masks old units,
+and leaves signing stopped. Unknown/custom legacy settings are refused and kept.
 
 `deposit-review --deposit-data <file> --withdrawal-address <address>` validates
 network, amount, withdrawals, SSZ and BLS for one initial 32 ETH deposit. It never

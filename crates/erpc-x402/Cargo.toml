@@ -14,6 +14,10 @@ authors.workspace = true
 publish = true
 
 [dependencies]
+base64.workspace = true
+erpc-wallet.workspace = true
+getrandom.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+# No public publisher or consensus listener is enabled by this profile.
+table inet erpc_hyperliquid_aqa
+delete table inet erpc_hyperliquid_aqa
+table inet erpc_hyperliquid_aqa {
+ chain input {
+  type filter hook input priority -10; policy drop;
+  iifname "lo" accept
+  ct state established,related accept
+  ct state invalid drop
+  ip protocol icmp accept
+  ip6 nexthdr ipv6-icmp accept
+{% for address in aqa_management_v4 %}
+  ip saddr {{ address }} tcp dport {{ aqa_ssh_port }} accept
+{% endfor %}
+{% for address in aqa_management_v6 %}
+  ip6 saddr {{ address }} tcp dport {{ aqa_ssh_port }} accept
+{% endfor %}
+ }
+}

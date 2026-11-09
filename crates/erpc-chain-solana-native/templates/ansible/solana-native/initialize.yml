@@ -1,0 +1,74 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Prepare the original dedicated native Solana host
+  hosts: all
+  gather_facts: false
+  become: true
+  any_errors_fatal: true
+  tasks:
+    - name: Reserve original identities and volumes before package installation
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, -c, '{{ solana_native_loader }}', '{{ playbook_dir }}/../../node/native_runtime_control.py', play]
+        stdin: '{{ solana_native_request | combine({"action":"prepare"}) | to_json }}'
+      register: solana_native_prepared
+      changed_when: true
+    - name: Install qualified distribution build and operational prerequisites
+      ansible.builtin.apt:
+        name:
+          - build-essential
+          - ca-certificates
+          - git
+          - curl
+          - pkg-config
+          - libssl-dev
+          - libudev-dev
+          - zlib1g-dev
+          - llvm
+          - clang
+          - libclang-dev
+          - cmake
+          - libprotobuf-dev
+          - protobuf-compiler
+          - python3
+          - openssl
+          - nftables
+          - chrony
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+        policy_rc_d: 101
+    - name: Refuse an active or unmanaged distribution nginx service
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, -c, '{{ solana_native_loader }}', '{{ playbook_dir }}/../../node/native_runtime_control.py', play]
+        stdin: '{{ solana_native_request | combine({"action":"gateway-package-prepare"}) | to_json }}'
+      when: solana_native_request.contract.profile == 'agave-native-rpc'
+    - name: Prevent the distribution default HTTP server from starting on reboot
+      ansible.builtin.systemd_service:
+        name: nginx.service
+        masked: true
+        daemon_reload: true
+      when: solana_native_request.contract.profile == 'agave-native-rpc'
+    - name: Verify persistent default-service suppression before package installation
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, -c, '{{ solana_native_loader }}', '{{ playbook_dir }}/../../node/native_runtime_control.py', play]
+        stdin: '{{ solana_native_request | combine({"action":"gateway-package-check"}) | to_json }}'
+      changed_when: false
+      when: solana_native_request.contract.profile == 'agave-native-rpc'
+    - name: Install the distribution ingress only for an RPC host
+      ansible.builtin.apt:
+        name: [nginx, util-linux]
+        state: present
+        policy_rc_d: 101
+      when: solana_native_request.contract.profile == 'agave-native-rpc'
+    - name: Verify package hooks did not activate or unmask the distribution service
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, -c, '{{ solana_native_loader }}', '{{ playbook_dir }}/../../node/native_runtime_control.py', play]
+        stdin: '{{ solana_native_request | combine({"action":"gateway-package-check"}) | to_json }}'
+      changed_when: false
+      when: solana_native_request.contract.profile == 'agave-native-rpc'
+    - name: Enable the distribution clock synchronization service
+      ansible.builtin.systemd_service:
+        name: chrony.service
+        enabled: true
+        state: started

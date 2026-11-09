@@ -8,6 +8,18 @@ SPDX-License-Identifier: Apache-2.0
 Researched 2026-10-26 against Kaia **v2.2.2**. Documentation was read on that
 date; explicit page update dates are preserved in Sources where available. [S1]
 
+## erpc implementation
+
+The [endpoint-node backend](../kaia-rpc.md) implements all twelve RPC lifecycle
+verbs with a pinned official AMD64 OCI image, immutable network/genesis and
+bootstrap ownership, original peer identity, staged official snapshots and
+separate firewall confirmation. Full genesis synchronization is an explicit
+alternative to the live-pruned default. The [core-cell backend](../kaia-core-cell.md)
+adds separate CN/PN hosts, original sealed secp256k1/BLS custody, verified concealed
+backups and native qualified-membership observations. CN uses the full-retention
+profile; optional native financial transaction generation is disabled. Team
+admission, registration and funding remain external; live acceptance is deferred.
+
 ## Networks
 
 Mainnet (legacy name Cypress) uses ID **8217**; Kairos testnet (legacy Baobab)

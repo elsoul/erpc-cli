@@ -10,7 +10,7 @@
   tasks:
     - name: Reserve only an unowned or identically owned chain and history scope
       ansible.builtin.command:
-        argv: [python3, "{{ op_scripts }}/control.py", within-run]
+        argv: [/usr/bin/python3, -I, "{{ op_scripts }}/control.py", within-run]
         stdin: "{{ op_request | combine({'action': 'prepare'}) | to_json }}"
       changed_when: false
       register: op_preparation
@@ -101,6 +101,6 @@
 
     - name: Validate account isolation before any provider credential can be installed
       ansible.builtin.command:
-        argv: [python3, /usr/local/lib/erpc/rollup_control.py, within-run]
+        argv: [/usr/bin/python3, -I, /usr/local/lib/erpc/rollup_control.py, within-run]
         stdin: "{{ op_request | combine({'action': 'validate-accounts'}) | to_json }}"
       changed_when: false

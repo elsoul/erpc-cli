@@ -46,7 +46,7 @@ change without this table changing in the same commit.
 | `ansible/mainnet-rpc/create-start-validator-sh.yml` | `6178e7b2424aead9b7a9517226c0e6af2381ddc35394e991e1e3230b779d898e` | R4: versions from the bundle's `vars/versions.yml`; the startup template from the carried `jinja/mainnet-rpc/` |
 | `ansible/mainnet-rpc/geyser_build.yml` | `7f4961286a3d182bf87e2b23c82530d38837a35d463cf24ac0e4cc1a6c269512` | R4: versions from the bundle's `vars/versions.yml`; `geyser.json` from the carried `jinja/mainnet-rpc/`; stops before building unless the tag still points at the pinned commit |
 | `ansible/mainnet-rpc/install_of1.yml` | `5057d135b56db9c3208f9582be5d579d17c448683a87f8c721ee566c6b26c9ae` | R4: the release and the SHA-256 of its binary from the node's pins, checked on download; no default version |
-| `ansible/mainnet-rpc/install_of1_service.yml` | `61f0f1280d3ce789c95083f64f7cf180a8eb8b8f29b2f44689af3202a3c4c5fc` | R4: carried config generator and idempotent start; RPC startup requires the operation-bound firewall service and a matching live-rule guard |
+| `ansible/mainnet-rpc/install_of1_service.yml` | `5b7c1554b55d65db7341bc603fa2da6ed12e8efcbe9eaa6fed65a3ee08a3f37e` | R4: carried config generator and idempotent start; RPC startup requires the operation-bound firewall service and a matching live-rule guard; root Python guards use isolated startup |
 | `ansible/mainnet-rpc/setup-solv-service.yml` | `8dc433e981348e3f831b0aa9528b97a5488eb85d08ea72a6d9708f936ee9d49e` | R4: the unit from the carried `jinja/mainnet-rpc/`, not `~/.slv/` |
 | `ansible/mainnet-rpc/start_solv.yml` | `36bcd583105e9ae410b43158f5796a9c3d7e597f27746d3abb34e5af099b4ff2` | unchanged |
 | `ansible/mainnet-validator/create-start-validator-sh.yml` | `b3f96448caca7bb67194eee7a3585947849627047095e73b6cee09ac8ac66998` | erpc: versions from the bundle's `vars/versions.yml`; the startup template always from the carried `jinja/` |
@@ -59,7 +59,7 @@ change without this table changing in the same commit.
 | `jinja/cmn/restart.sh.j2` | `52c6f09d74537f0720da613d8713e6670928e1ee7d6f4f588b4d2c5f44fefb63` | unchanged |
 | `jinja/mainnet-rpc/generate_configs.sh.j2` | `149ffb2d31c82820707ec0742fb6bbd36edd9e797eaa64c8ba587620bf09c157` | unchanged |
 | `jinja/mainnet-rpc/geyser.json.j2` | `858714c30dc172c410c04d848be693e6ca8c228c93c355cbec8032705316ae0f` | unchanged |
-| `jinja/mainnet-rpc/solv.service.j2` | `a5a40fa28e59e5fdf19aa10c977599ce69e7c9ada5815f983848a6594d0309b4` | RPC startup requires the operation-bound firewall service and a matching live-rule guard |
+| `jinja/mainnet-rpc/solv.service.j2` | `edbd590357c4b64ef431e59b795e67c67832f8ed2ad5077686bb50f5d25d5988` | RPC startup requires the operation-bound firewall service and a matching live-rule guard; root Python guards use isolated startup |
 | `jinja/mainnet-rpc/start-validator.sh.j2` | `1b79272464b866674d92a324c322df67dfa542fdce91787b839de1c49559fca1` | erpc: SendTx RPC keeps `--limit-ledger-size 50000000`, agave 4.3's minimum; SLV's 30000000 is refused at start |
 | `jinja/mainnet-validator/overrides.yml.j2` | `1801ea151d5739af9503c0af6e4b9c98ae3c22198f3b6bcb39c5d56fd61b101c` | unchanged |
 | `jinja/mainnet-validator/solv.service.j2` | `e412807646f0e5e48372e8c54503bedb46064cc30ee6defd445471bb31c0da9b` | unchanged |

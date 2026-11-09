@@ -1,0 +1,27 @@
+#!/usr/sbin/nft -f
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+# SSH is limited to management addresses. BSC P2P is public; RPC/WS/metrics
+# remain loopback-only. Outbound peer and artifact traffic is permitted.
+table inet erpc_bsc
+delete table inet erpc_bsc
+table inet erpc_bsc {
+  chain input {
+    type filter hook input priority 0
+    policy drop
+    ct state invalid drop
+    ct state established,related accept
+    iifname "lo" accept
+    ip protocol icmp accept
+    ip6 nexthdr ipv6-icmp accept
+{% for address in bsc_management_v4 %}
+    tcp dport {{ bsc_ssh_port }} ip saddr {{ address }} accept
+{% endfor %}
+{% for address in bsc_management_v6 %}
+    tcp dport {{ bsc_ssh_port }} ip6 saddr {{ address }} accept
+{% endfor %}
+    tcp dport 30311 accept
+    udp dport 30311 accept
+    counter drop
+  }
+}

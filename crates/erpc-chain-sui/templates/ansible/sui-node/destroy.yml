@@ -11,24 +11,25 @@
     - name: Verify the expected host contract before any mutation
       ansible.builtin.command:
         argv:
-          - python3
+          - /usr/bin/python3
+          - -I
           - "{{ sui_jinja }}/erpc-sui-control.py.j2"
           - guard
           - "{{ sui_network }}"
           - "{{ sui_role }}"
           - "{{ sui_genesis_sha256 }}"
       changed_when: false
-    - name: Bind this mutation to its caller before changing any deployment files
+    - name: Cancel pending startup and stop the owned services even if cancellation storage fails
       ansible.builtin.command:
         argv:
-          - python3
+          - /usr/bin/python3
+          - -I
           - "{{ sui_jinja }}/erpc-sui-control.py.j2"
-          - begin-intent
+          - stop-owned
           - "{{ sui_network }}"
           - "{{ sui_role }}"
           - "{{ sui_genesis_sha256 }}"
-          - "{{ sui_confirmation_id }}"
-      changed_when: false
+      changed_when: true
     - name: Stop and disable any installed services
       ansible.builtin.shell:
         cmd: |

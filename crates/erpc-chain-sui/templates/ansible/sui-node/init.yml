@@ -11,7 +11,8 @@
     - name: Verify the expected host contract before any mutation
       ansible.builtin.command:
         argv:
-          - python3
+          - /usr/bin/python3
+          - -I
           - "{{ sui_jinja }}/erpc-sui-control.py.j2"
           - guard-init
           - "{{ sui_network }}"
@@ -21,7 +22,8 @@
     - name: Reject changed validator metadata before mutating this host
       ansible.builtin.command:
         argv:
-          - python3
+          - /usr/bin/python3
+          - -I
           - "{{ sui_jinja }}/erpc-sui-control.py.j2"
           - guard-metadata
           - "{{ sui_network }}"
@@ -44,18 +46,19 @@
         that: not sui_existing_service.stat.exists or sui_existing_contract.stat.exists
         fail_msg: An unmanaged Sui service exists; migration needs an explicit ownership and key-recovery workflow.
         quiet: true
+    - name: Reserve and establish the original numeric service account before package installation
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ sui_jinja }}/erpc-sui-control.py.j2", "{{ 'migrate-account' if sui_migrate_account else 'prepare-account' }}", "{{ sui_network }}", "{{ sui_role }}", "{{ sui_genesis_sha256 }}"]
+      register: sui_original_account
+    - name: Use only the authenticated original numeric identity
+      ansible.builtin.set_fact:
+        sui_runtime_account: "{{ sui_original_account.stdout | from_json }}"
     - name: Install host runtime packages
       ansible.builtin.apt:
         name: [ca-certificates, curl, python3, nftables, libpq5, libssl3t64]
         state: present
         update_cache: true
-    - name: Create the unprivileged service identity
-      ansible.builtin.user:
-        name: sui
-        system: true
-        home: /var/lib/sui
-        create_home: false
-        shell: /usr/sbin/nologin
+        policy_rc_d: 101
     - name: Create fixed service directories
       ansible.builtin.file:
         path: "{{ item.path }}"
@@ -64,20 +67,11 @@
         state: directory
         mode: "{{ item.mode }}"
       loop:
-        - {path: /var/lib/sui, owner: sui, group: sui, mode: "0700"}
-        - {path: /etc/sui, owner: root, group: sui, mode: "0750"}
+        - {path: /etc/sui, owner: root, group: "{{ sui_runtime_account.gid }}", mode: "0750"}
         - {path: /opt/sui, owner: root, group: root, mode: "0755"}
         - {path: /etc/credstore.encrypted, owner: root, group: root, mode: "0700"}
         - {path: /etc/erpc/sui, owner: root, group: root, mode: "0700"}
-        - {path: /usr/local/lib/erpc, owner: root, group: root, mode: "0755"}
-    - name: Preserve network and role ownership of this host
-      ansible.builtin.copy:
-        content: "{{ {'network': sui_network, 'role': sui_role, 'genesis': sui_genesis_sha256} | to_json }}\n"
-        dest: /etc/sui/contract.json
-        owner: root
-        group: sui
-        mode: "0640"
-        force: false
+        - {path: /usr/local/lib/erpc/sui, owner: root, group: root, mode: "0755"}
     - name: Check the persisted contract before any data or identity work
       ansible.builtin.slurp:
         src: /etc/sui/contract.json
@@ -94,7 +88,7 @@
         content: "{{ sui_validator_metadata | to_json }}\n"
         dest: /etc/sui/validator.json
         owner: root
-        group: sui
+        group: "{{ sui_runtime_account.gid }}"
         mode: "0640"
         force: false
       when: sui_role == 'validator'

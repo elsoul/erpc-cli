@@ -7,3 +7,4 @@ avax_release_dir: "{{ avax_opt }}/{{ avax_version }}"
 avax_jinja: "{{ playbook_dir }}/../../jinja"
 avax_fw_dir: /etc/erpc/avax
 avax_helpers: /usr/local/lib/erpc
+avax_contract_value: "{{ {'network': avax_network, 'type': avax_type, 'validator': avax_validator, 'owner': avax_owner} }}"

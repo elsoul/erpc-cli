@@ -6,6 +6,6 @@ Before=erpc-{{ op_family }}-execution.service erpc-{{ op_family }}-consensus.ser
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/bin/python3 /usr/local/lib/erpc/rpc-firewall.py {{ op_family }} load
+ExecStart=/usr/bin/python3 -I /usr/local/lib/erpc/rpc-firewall.py {{ op_family }} load
 [Install]
 WantedBy=multi-user.target

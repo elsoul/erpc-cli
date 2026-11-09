@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Recover only one original interrupted Ethereum deployment
+  hosts: all
+  gather_facts: false
+  become: true
+  any_errors_fatal: true
+  tasks:
+    - name: Require the exact original recovery request
+      ansible.builtin.assert:
+        that:
+          - eth_authority_request.action == 'recover'
+          - eth_authority_request.keys() | list | sort == ['action', 'contract', 'intent']
+    - name: Stop and archive original operation metadata while retaining all native material
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, -c, '{{ eth_authority_loader }}', '{{ playbook_dir }}/../../authority/control.py', request]
+        stdin: '{{ eth_authority_request | to_json }}'
+      changed_when: true

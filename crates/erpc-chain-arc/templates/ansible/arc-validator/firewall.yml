@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Prepare dedicated validator ingress for confirmation over a fresh SSH connection
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Authenticate current intent and destinations before publishing ingress helpers
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, -c, "{{ arc_validator_loader }}", "{{ playbook_dir }}/../../validator/control.py"]
+        stdin: "{{ {'action':'prepare-firewall','contract':arc_validator_contract,'intent':arc_validator_intent,'helper_hash':arc_validator_helpers} | to_json }}"
+      changed_when: true
+    - name: Write the caller-validated candidate into this sealed operation only
+      ansible.builtin.copy:
+        content: "{{ arc_validator_firewall }}"
+        dest: "{{ playbook_dir }}/../../firewall-candidate.nft"
+        owner: root
+        group: root
+        mode: '0600'
+    - name: Validate candidate syntax before any live policy replacement
+      ansible.builtin.command:
+        argv: [nft, -c, -f, "{{ playbook_dir }}/../../firewall-candidate.nft"]
+      changed_when: false
+    - name: Identify the immutable submitted archive
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/../../../bundle.tar.gz"
+        checksum_algorithm: sha256
+      register: arc_submitted
+    - name: Apply only the uncancelled original operation with bounded rollback
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, -c, "{{ arc_validator_loader }}", "{{ playbook_dir }}/../../validator/control.py"]
+        stdin: "{{ {'action':'apply-firewall','contract':arc_validator_contract,'intent':arc_validator_intent,'firewall_run':(playbook_dir ~ '/../../..') | realpath | basename,'firewall_bundle':arc_submitted.stat.checksum} | to_json }}"
+      changed_when: true
+    - name: Enable the externally authenticated boot ingress loader
+      ansible.builtin.systemd_service:
+        name: erpc-arc-validator-firewall.service
+        enabled: true
+        daemon_reload: true

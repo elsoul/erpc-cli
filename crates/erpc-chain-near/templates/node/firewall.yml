@@ -1,0 +1,68 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Prepare a firewall-only run for fresh SSH confirmation
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Match prepared owner and policy before firewall mutation
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/control.py", prepared, "{{ near_contract }}"]
+        stdin: "{{ {'policy_sha256':near_prepare.policy_sha256,'intent':near_prepare.intent} | to_json }}"
+      changed_when: false
+    - name: Install nftables
+      ansible.builtin.apt:
+        name: nftables
+        state: present
+    - name: Create root-controlled policy directory
+      ansible.builtin.file:
+        path: "/etc/erpc/near"
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+    - name: Install the common operation-bound firewall controller
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../rpc-firewall.py"
+        dest: /usr/local/lib/erpc/rpc-firewall.py
+        owner: root
+        group: root
+        mode: '0700'
+    - name: Verify installed common helper against carried source
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/control.py", firewall-publication, "{{ near_contract }}"]
+      changed_when: false
+    - name: Install boot policy loader
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/firewall.service.j2"
+        dest: "/etc/systemd/system/erpc-near-firewall.service"
+        owner: root
+        group: root
+        mode: '0644'
+    - name: Render this operation's immutable candidate
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/firewall.nft.j2"
+        dest: "{{ playbook_dir }}/../firewall-candidate.nft"
+        owner: root
+        group: root
+        mode: '0600'
+    - name: Check policy syntax
+      ansible.builtin.command:
+        argv: [nft, -c, -f, "{{ playbook_dir }}/../firewall-candidate.nft"]
+      changed_when: false
+    - name: Identify the submitted bundle
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/../../bundle.tar.gz"
+        checksum_algorithm: sha256
+      register: firewall_submission
+    - name: Apply under the common rollback timer
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/../rpc-firewall.py", "near", apply, "{{ (playbook_dir ~ '/../..') | realpath | basename }}", "{{ firewall_submission.stat.checksum }}"]
+      changed_when: true
+    - name: Enable confirmed policy at boot
+      ansible.builtin.systemd_service:
+        name: "erpc-near-firewall"
+        enabled: true
+        daemon_reload: true

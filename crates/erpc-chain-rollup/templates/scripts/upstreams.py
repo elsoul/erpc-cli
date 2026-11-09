@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3 -I
 # SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
 # SPDX-License-Identifier: Apache-2.0
 """Read-only L1 transport. Credentials enter through systemd's credential file.
@@ -97,17 +97,40 @@ def printable(value):
     return isinstance(value, str) and all(32 <= ord(c) < 127 for c in value)
 
 
+# Explicit conservative policy from the IANA special-purpose registries read
+# 2026-10-26. Do not use is_global/is_private: their registry tables vary by
+# Python release/backport (notably 192.0.0.8 and 192.88.99.2 on older hosts).
+# All special-use assignments are excluded, including globally reachable
+# service anycasts. IPv6 is additionally restricted to the 2000::/3 envelope.
+SPECIAL_V4 = tuple(ipaddress.IPv4Network(value) for value in (
+    "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8",
+    "169.254.0.0/16", "172.16.0.0/12", "192.0.0.0/24", "192.0.2.0/24",
+    "192.31.196.0/24", "192.52.193.0/24", "192.88.99.0/24", "192.168.0.0/16",
+    "192.175.48.0/24", "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24",
+    "224.0.0.0/4", "240.0.0.0/4",
+))
+GLOBAL_UNICAST_V6 = ipaddress.IPv6Network("2000::/3")
+SPECIAL_GLOBAL_V6 = tuple(ipaddress.IPv6Network(value) for value in (
+    "2001::/23", "2001:db8::/32", "2002::/16", "2620:4f:8000::/48",
+    "3ffe::/16", "3fff::/20",
+))
+LOOPBACK_V4 = ipaddress.IPv4Network("127.0.0.0/8")
+LOOPBACK_V6 = ipaddress.IPv6Network("::1/128")
+
+
 def address_allowed(value, loopback):
+    if not isinstance(value, str) or type(loopback) is not bool or "%" in value:
+        return False
     try:
         ip = ipaddress.ip_address(value)
-        # Do not let mapped IPv4, scoped IPv6, or transition mechanisms bypass
-        # the IPv4 policy or reach a different address than the checked one.
-        if isinstance(ip, ipaddress.IPv6Address):
-            if (ip.ipv4_mapped or ip.sixtofour or ip.teredo or ip.scope_id
-                    or ip in ipaddress.IPv6Network("64:ff9b::/96")
-                    or ip in ipaddress.IPv6Network("64:ff9b:1::/48")):
-                return False
-        return ip.is_loopback if loopback else ip.is_global and not ip.is_multicast
+        if ip.version == 4:
+            return ip in LOOPBACK_V4 if loopback else not any(ip in block for block in SPECIAL_V4)
+        if loopback:
+            return ip in LOOPBACK_V6
+        # Mapped/compatible IPv4, NAT64, Teredo, 6to4, scoped/site/link-local,
+        # unique-local, multicast and unallocated non-GUA space cannot bypass
+        # the selected numeric destination boundary.
+        return ip in GLOBAL_UNICAST_V6 and not any(ip in block for block in SPECIAL_GLOBAL_V6)
     except ValueError:
         return False
 
@@ -142,6 +165,14 @@ class Endpoint:
                 if not address_allowed(self.host, True):
                     fail()
             elif parsed.scheme != "https":
+                fail()
+            # Reject prohibited numeric literals before any resolver call. Named
+            # destinations still revalidate every answer before each connection.
+            try:
+                literal = ipaddress.ip_address(self.host)
+            except ValueError:
+                literal = None
+            if literal is not None and not address_allowed(self.host, self.loopback):
                 fail()
             self.tls = parsed.scheme == "https"
             self.port = parsed.port if parsed.port is not None else (443 if self.tls else 80)
@@ -236,7 +267,7 @@ class Endpoint:
                 raw_socket.close()
 
 
-def rpc_request(body):
+def rpc_request(body, methods=METHODS):
     parsed = strict_json(body)
     batch = isinstance(parsed, list)
     items = parsed if batch else [parsed]
@@ -246,7 +277,7 @@ def rpc_request(body):
     for item in items:
         if (not isinstance(item, dict) or set(item) - {"jsonrpc", "id", "method", "params"}
                 or item.get("jsonrpc") != "2.0" or not isinstance(item.get("method"), str)
-                or item.get("method") not in METHODS
+                or item.get("method") not in methods
                 or not isinstance(item.get("params", []), list)):
             fail()
         identity = item.get("id")

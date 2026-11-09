@@ -20,7 +20,7 @@ use std::fmt::Write as _;
 
 use erpc_chain::inventory::RpcNode;
 use erpc_chain_arc::{key, plays, releases};
-use erpc_ssh::{RemoteCommand, Session};
+use erpc_ssh::Session;
 use serde_json::{Map, Value, json};
 
 use crate::arc_ops::{CAUGHT_UP_BLOCKS, Status, read_status};
@@ -34,6 +34,7 @@ use crate::node_common::{Say, go_ahead};
 
 /// What a change to a node was asked to do.
 #[derive(Debug, Clone, Default)]
+#[allow(clippy::struct_excessive_bools)] // Independent CLI switches, not persisted lifecycle state.
 pub struct Args {
     /// The network.
     pub network: String,
@@ -62,6 +63,10 @@ pub struct Args {
     pub forget: bool,
     /// `plan`: `deploy`, `update` or `update-config`.
     pub change: String,
+    /// Explicitly rewrap the same original key, then continue deployment.
+    pub restore_custody: bool,
+    /// Quarantine an incomplete initial bootstrap; active history is never reset.
+    pub reset_bootstrap: bool,
 }
 
 /// A node opened for a change: its vault, the node, a session to it, its
@@ -92,7 +97,7 @@ fn reach(args: &Args, say: &Say) -> Result<Reached, String> {
     if !refusals.is_empty() {
         return Err(format!("{}: {}", node.name, refusals.join("; ")));
     }
-    let status = read_status(&session, &opened.network.public_rpc)?;
+    let status = read_status(&session, &node, &opened.network)?;
     Ok(Reached {
         opened,
         node,
@@ -105,29 +110,34 @@ fn reach(args: &Args, say: &Say) -> Result<Reached, String> {
 
 /// Puts the consensus key in place when the node has none: read from
 /// 1Password into memory, sent on standard input to `systemd-creds`.
-fn put_key(r: &Reached, say: &Say) -> Result<(), String> {
-    if r.status.credential {
+fn put_key(r: &Reached, node: &RpcNode, say: &Say, restore: bool) -> Result<(), String> {
+    if r.status.credential && !restore {
         return Ok(());
     }
     let stored = key::StoredKey {
-        public_key: r.node.consensus_public_key.clone(),
-        reference: r.node.consensus_key_ref.clone(),
+        public_key: node.consensus_public_key.clone(),
+        reference: r
+            .opened
+            .store
+            .arc_key_reference(node)
+            .map_err(|e| e.to_string())?
+            .ok_or("original Arc key reservation is incomplete; resume init")?
+            .to_string(),
     };
-    let consensus = key::read(&r.opened.runner, &stored).map_err(|e| e.to_string())?;
-    let file = consensus.node_json();
-    let out = r
-        .session
-        .run(&RemoteCommand::ArcWriteCredential, Some(file.as_bytes()))
-        .map_err(|e| format!("could not put the consensus key in place: {e}"))?;
-    drop(file);
-    if !String::from_utf8_lossy(&out.stdout).contains("credential=written") {
-        return Err("the node did not confirm the consensus key was written".to_owned());
-    }
-    say.line(&format!(
-        "key        {} encrypted on the node with systemd-creds{}",
-        consensus.public_key(),
-        if r.facts.tpm { " (TPM)" } else { "" }
-    ));
+    let owner = key::Owner {
+        vault: &r.opened.vault,
+        network: r
+            .opened
+            .network
+            .chain
+            .strip_prefix("arc-")
+            .ok_or("unknown Arc network")?,
+        name: &node.name,
+        item: node.id.as_deref().ok_or("original Arc item is missing")?,
+    };
+    let consensus = key::read(&r.opened.runner, &owner, &stored).map_err(|e| e.to_string())?;
+    crate::arc_authority::import_key(&r.session, node, &r.opened.network, &consensus, restore)?;
+    say.line("key        original encrypted identity verified");
     Ok(())
 }
 
@@ -174,13 +184,74 @@ fn done(text: String, json_out: bool, body: &Value) -> Outcome {
     }
 }
 
+/// A completed play and an observed healthy node are separate results.
+fn observed_done(
+    node: &RpcNode,
+    network: &str,
+    state: &Status,
+    action: &str,
+    json_out: bool,
+    mut body: Value,
+) -> Outcome {
+    let Some(network) = erpc_chain_arc::network::get(network) else {
+        return Outcome::Usage("unsupported Arc network".to_owned());
+    };
+    let problems = state.problems(node, network.chain_id);
+    let readiness = state.readiness(&problems);
+    body["status"] = json!(match readiness {
+        Some(true) => "ready",
+        Some(false) => "not_ready",
+        None => "unknown",
+    });
+    body["ready"] = json!(readiness);
+    body["catchup"] = json!(if state.public_head.is_none() {
+        "unknown"
+    } else if state.lag().is_some_and(|lag| lag <= CAUGHT_UP_BLOCKS) {
+        "within_reference_threshold"
+    } else {
+        "behind"
+    });
+    body["genesis_hash"] = json!(state.genesis_hash);
+    body["head_timestamp"] = json!(state.head_timestamp);
+    body["problems"] = json!(problems);
+    body["head"] = json!(state.head);
+    body["public_head"] = json!(state.public_head);
+    body["behind"] = json!(state.lag());
+    body["running"] = json!(state.running);
+    body["running_commit"] = json!(state.running_commit);
+    let message = if json_out {
+        crate::print_json(&body);
+        String::new()
+    } else {
+        format!(
+            "{}: {action} finished; {}",
+            node.name,
+            if problems.is_empty() {
+                if readiness.is_some() {
+                    "observed node checks passed".to_owned()
+                } else {
+                    "local checks passed, network catch-up unknown (public reference unavailable)"
+                        .to_owned()
+                }
+            } else {
+                format!("readiness problems: {}", problems.join("; "))
+            }
+        )
+    };
+    if readiness == Some(true) {
+        Outcome::Done(message)
+    } else {
+        Outcome::Problems(message)
+    }
+}
+
 /// What a failed update left: the play rolls back to the release the node
 /// ran, so when the node serves that release again, say so instead of the
 /// generic advice to run the same command again.
 fn failed_update(old: &RpcNode, next: &RpcNode, now: Option<&Status>, error: String) -> String {
     match now {
         Some(s) if s.running.starts_with(&format!("{} ", old.version)) => format!(
-            "{} did not come up and was rolled back: {} runs {} again, {}. 1Password still pins {}; \
+            "{} did not complete: the previous release is still observed on {} ({}, {}). No automatic database rollback was attempted. 1Password still pins {}; \
              the logs are in `erpc r --chain arc logs`",
             next.version,
             old.name,
@@ -235,7 +306,27 @@ pub fn deploy(args: &Args, json_out: bool) -> Outcome {
             say.line(&warning);
         }
         go_ahead(args.yes, "nothing was changed")?;
-        put_key(&r, &say)?;
+        if args.reset_bootstrap {
+            let observed = crate::arc_authority::invoke(
+                &r.session,
+                &r.node,
+                &r.opened.network,
+                "status",
+                json!({}),
+            )?;
+            let intent = observed
+                .get("bootstrap_intent")
+                .and_then(Value::as_str)
+                .ok_or("no incomplete original Arc bootstrap is recorded")?;
+            crate::arc_authority::invoke(
+                &r.session,
+                &r.node,
+                &r.opened.network,
+                "reset-bootstrap",
+                json!({"intent":intent}),
+            )?;
+        }
+        put_key(&r, &r.node, &say, args.restore_custody)?;
         let run = run_play(
             &r.session,
             &r.target,
@@ -245,24 +336,25 @@ pub fn deploy(args: &Args, json_out: bool) -> Outcome {
             &say,
         )?;
         let fresh = Session::open(&r.target).map_err(|e| e.to_string())?;
-        let status = read_status(&fresh, &r.opened.network.public_rpc)?;
-        let node = record(&r, r.node.clone(), &run, "deploy ok", &say);
+        let status = read_status(&fresh, &r.node, &r.opened.network)?;
+        let node = record(
+            &r,
+            r.node.clone(),
+            &run,
+            "deploy applied; readiness observed separately",
+            &say,
+        );
         Ok::<_, CliError>((node, run, status))
     })();
     match result {
         Err(e) => Outcome::from(e),
-        Ok((node, run, s)) => done(
-            format!(
-                "{} runs arc-node {}: {}.\nNext: erpc r --chain arc status -n {} --name {}",
-                node.name,
-                node.version,
-                head_line(&s),
-                args.network,
-                node.name
-            ),
+        Ok((node, run, s)) => observed_done(
+            &node,
+            &args.network,
+            &s,
+            "deploy",
             json_out,
-            &json!({ "status": "ok", "name": node.name, "version": node.version, "run": run,
-                    "head": s.head, "public_head": s.public_head, "behind": s.lag() }),
+            json!({ "name": node.name, "version": node.version, "run": run }),
         ),
     }
 }
@@ -340,40 +432,41 @@ pub fn update_config(args: &Args, json_out: bool) -> Outcome {
             say.line(&warning);
         }
         go_ahead(args.yes, "nothing was changed")?;
-        let node = if changes.is_empty() {
-            next
-        } else {
-            r.opened
-                .store
-                .update_rpc_node(&next)
-                .map_err(|e| e.to_string())?
-        };
-        put_key(&r, &say)?;
-        let run = run_play(
-            &r.session,
-            &r.target,
-            &vars(&r, &node, "config", Map::new()),
-            plays::DEPLOY,
-            "Run update-config again to see how it ended",
-            &say,
+        let (node, run) = crate::arc_custody::configure(
+            &r.opened.store,
+            &r.node,
+            &next,
+            |saved| put_key(&r, saved, &say, false),
+            |saved| {
+                run_play(
+                    &r.session,
+                    &r.target,
+                    &vars(&r, saved, "config", Map::new()),
+                    plays::DEPLOY,
+                    "Run update-config again to see how it ended",
+                    &say,
+                )
+            },
         )?;
-        let node = record(&r, node, &run, "deploy ok (config)", &say);
-        Ok::<_, CliError>((node, run, changes))
+        let status = read_status(&r.session, &r.node, &r.opened.network)?;
+        let node = record(
+            &r,
+            node,
+            &run,
+            "configuration applied; readiness observed separately",
+            &say,
+        );
+        Ok::<_, CliError>((node, run, changes, status))
     })();
     match result {
         Err(e) => Outcome::from(e),
-        Ok((node, run, changes)) => done(
-            format!(
-                "{} is configured as stored{}.",
-                node.name,
-                if changes.is_empty() {
-                    ""
-                } else {
-                    ", with the changes"
-                }
-            ),
+        Ok((node, run, changes, s)) => observed_done(
+            &node,
+            &args.network,
+            &s,
+            "update-config",
             json_out,
-            &json!({ "status": "ok", "name": node.name, "run": run, "changes": changes }),
+            json!({ "name": node.name, "run": run, "changes": changes }),
         ),
     }
 }
@@ -386,9 +479,21 @@ async fn next_release(
 ) -> Result<(releases::Release, Vec<releases::Migration>), String> {
     let platform = facts.platform()?;
     let github = releases::Github::new().map_err(|e| e.to_string())?;
-    let (release, _) = releases::pin(&github, wanted, platform)
-        .await
-        .map_err(|e| e.to_string())?;
+    let (release, _) = releases::pin(
+        &github,
+        Some(wanted.unwrap_or(erpc_chain_arc::authority::VERSION)),
+        platform,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    erpc_chain_arc::authority::qualify_source(
+        &release.tag,
+        &release.commit,
+        release
+            .digest(platform)
+            .ok_or("qualified Arc archive is unavailable")?,
+        platform,
+    )?;
     let migrations = releases::migrations_between(&node.version, &release.tag);
     Ok((release, migrations))
 }
@@ -400,7 +505,7 @@ pub async fn update(args: &Args, json_out: bool) -> Outcome {
         let r = reach(args, &say)?;
         let (release, migrations) = next_release(&r.node, &r.facts, args.version.as_deref()).await?;
         if release.tag == r.node.version {
-            return Ok::<_, CliError>((r.node.clone(), String::new(), None));
+            return Ok::<_, CliError>((r.node.clone(), String::new(), r.status));
         }
         if !migrations.is_empty() {
             return Err(format!(
@@ -423,13 +528,12 @@ pub async fn update(args: &Args, json_out: bool) -> Outcome {
         };
         say.line(&format!(
             "plan       {} on {}: arc-node {} -> {} @ {}; installed beside the running release, \
-             then both layers restart on it (RPC is down meanwhile); back to {} if it does not come up",
+             then both layers restart on it (RPC is down meanwhile); failures remain fenced without a database downgrade",
             r.node.name,
             args.network,
             r.node.version,
             next.version,
-            &next.commit[..12],
-            r.node.version
+            &next.commit[..12]
         ));
         go_ahead(args.yes, "nothing was changed")?;
         let run = run_play(
@@ -444,40 +548,33 @@ pub async fn update(args: &Args, json_out: bool) -> Outcome {
             Ok(run) => run,
             Err(e) => {
                 record(&r, r.node.clone(), "", &format!("update to {} failed", next.version), &say);
-                let now = read_status(&r.session, &r.opened.network.public_rpc).ok();
+                let now = read_status(&r.session, &r.node, &r.opened.network).ok();
                 return Err(failed_update(&r.node, &next, now.as_ref(), e).into());
             }
         };
-        // The node runs the new release: only now is it the pin.
+        let status = read_status(&r.session, &r.node, &r.opened.network)?;
+        if !status.release_matches(&next, &r.opened.network) {
+            return Err("update play completed but the expected running release/source/network was not observed; inventory pin was retained".into());
+        }
+        // Only the observed source-qualified release becomes the inventory pin.
         let mut stored = r
             .opened
             .store
             .update_rpc_node(&next)
             .map_err(|e| format!("the node runs {} but 1Password still pins {}: {e}", next.version, r.node.version))?;
-        stored = record(&r, stored, &run, &format!("update to {} ok", next.version), &say);
-        let status = read_status(&r.session, &r.opened.network.public_rpc)?;
-        Ok((stored, run, Some(status)))
+        stored = record(&r, stored, &run, &format!("update to {} applied; readiness observed separately", next.version), &say);
+        Ok((stored, run, status))
     }
     .await;
     match result {
         Err(e) => Outcome::from(e),
-        Ok((node, _, None)) => done(
-            format!(
-                "{} runs {} already; nothing to do.",
-                node.name, node.version
-            ),
+        Ok((node, run, s)) => observed_done(
+            &node,
+            &args.network,
+            &s,
+            "update",
             json_out,
-            &json!({ "status": "ok", "name": node.name, "version": node.version, "changed": false }),
-        ),
-        Ok((node, run, Some(s))) => done(
-            format!(
-                "{} runs arc-node {}: {}.",
-                node.name,
-                node.version,
-                head_line(&s)
-            ),
-            json_out,
-            &json!({ "status": "ok", "name": node.name, "version": node.version, "changed": true, "run": run }),
+            json!({ "name": node.name, "version": node.version, "changed": !run.is_empty(), "run": run }),
         ),
     }
 }
@@ -494,7 +591,7 @@ pub async fn plan(args: &Args, json_out: bool) -> Outcome {
                     next_release(&r.node, &r.facts, args.version.as_deref()).await?;
                 if release.tag == r.node.version {
                     lines.push(format!(
-                        "update: {} is the newest release; nothing to do",
+                        "update: {} is the qualified release; nothing to do",
                         r.node.version
                     ));
                 } else {
@@ -526,7 +623,7 @@ pub async fn plan(args: &Args, json_out: bool) -> Outcome {
                 let s = &r.status;
                 lines.push(format!(
                     "deploy: release {}",
-                    if s.current.ends_with(&format!("/{}", r.node.version)) {
+                    if s.release_matches(&r.node, &r.opened.network) {
                         format!("{} in place", r.node.version)
                     } else {
                         format!("{} installed", r.node.version)
@@ -557,7 +654,7 @@ pub async fn plan(args: &Args, json_out: bool) -> Outcome {
                 lines.push(format!(
                     "deploy: layers {}",
                     if s.execution == "active" && s.consensus == "active" {
-                        "restarted only if their units change"
+                        "fenced and restarted through the original authority"
                     } else {
                         "started"
                     }
@@ -586,105 +683,83 @@ pub async fn plan(args: &Args, json_out: bool) -> Outcome {
 
 /// Runs `erpc r --chain arc destroy`.
 pub fn destroy(args: &Args, json_out: bool) -> Outcome {
+    if args.forget || args.purge_data {
+        return Outcome::Usage("Arc original inventory, key and data history must be retained; --forget and --purge-data are not supported".into());
+    }
     let say = Say { quiet: json_out };
     let result = (|| -> Result<_, CliError> {
-        // Data left behind would be taken for the next node's, whatever its type.
-        if args.forget && !args.purge_data {
-            return Err(
-                "--forget needs --purge-data: the next node set up on this server must not \
-                        start from this one's data"
-                    .to_owned()
-                    .into(),
-            );
-        }
         let opened = open(&args.network, None, &say)?;
         let node = find(&opened.nodes, &args.name, &args.network)?.clone();
-        let target = target(&node, &args.login)?;
-        let session = Session::open(&target).map_err(|e| e.to_string())?;
-        let facts = facts(&session)?;
-        say.line(&format!(
-            "plan       {} on {}: stop both layers and remove units, releases, firewall and the encrypted key{}; {}",
-            node.name,
-            args.network,
-            if args.purge_data { ", AND DELETE THE CHAIN DATA" } else { "; the chain data stays" },
-            if args.forget {
-                "then remove the node's 1Password item (the consensus key's stays)"
-            } else {
-                "the 1Password items stay"
-            }
-        ));
+        let session = Session::open(&target(&node, &args.login)?).map_err(|e| e.to_string())?;
+        say.line("plan       stop and durably retire original Arc services; preserve identity, data and filtering");
         go_ahead(args.yes, "nothing was changed")?;
-        let mut extra = Map::new();
-        extra.insert("arc_phase".to_owned(), json!("destroy"));
-        extra.insert("arc_purge_data".to_owned(), json!(args.purge_data));
-        let run = run_play(
+        crate::arc_authority::invoke(
             &session,
-            &target,
-            &RunVars {
-                node: &node,
-                network: &opened.network,
-                facts: &facts,
-                extra,
-            },
-            plays::DESTROY,
-            "Run destroy again to see how it ended",
-            &say,
+            &node,
+            &opened.network,
+            "destroy",
+            json!({"layer":"both"}),
         )?;
-        let result = if args.purge_data {
-            "destroyed (data deleted)"
-        } else {
-            "destroyed"
-        };
-        if args.forget {
-            let id = node.id.clone().ok_or("the node's item has no id")?;
-            opened.store.remove(&id).map_err(|e| {
-                format!(
-                    "{} is destroyed, but its item is still in 1Password: {e}",
-                    node.name
-                )
-            })?;
-            return Ok::<_, CliError>((node, run));
-        }
-        if let Err(e) = opened.store.update_rpc_node(&RpcNode {
-            last_run: run.clone(),
-            last_result: result.to_owned(),
-            ..node.clone()
-        }) {
-            say.line(&format!(
-                "warning    the run is not recorded in 1Password: {e}"
-            ));
-        }
-        Ok::<_, CliError>((node, run))
+        let recorded = opened
+            .store
+            .update_rpc_node(&RpcNode {
+                last_result: "retired; original data and custody retained".into(),
+                ..node.clone()
+            })
+            .is_ok();
+        Ok((node, recorded))
     })();
     match result {
-        Err(e) => Outcome::from(e),
-        Ok((node, run)) => done(
-            if args.forget {
-                format!(
-                    "{} no longer runs Arc and is out of the inventory; `erpc r --chain arc init` sets the server up again, as any type (the consensus key is reused).",
-                    node.name
-                )
-            } else {
-                format!(
-                    "{} no longer runs Arc. Its 1Password items stay; `erpc r --chain arc deploy` sets it up again.",
-                    node.name
-                )
-            },
+        Err(error) => Outcome::from(error),
+        Ok((node, recorded)) => done(
+            format!(
+                "{} is retired and fenced at boot. Original identity and chain data remain. Inventory receipt: {}.",
+                node.name,
+                if recorded {
+                    "saved"
+                } else {
+                    "not saved; reload inventory before retrying"
+                }
+            ),
             json_out,
-            &json!({ "status": "ok", "name": node.name, "run": run, "purged": args.purge_data, "forgotten": args.forget }),
+            &json!({"retired":true,"name":node.name,"data_preserved":true,"key_preserved":true,"inventory_recorded":recorded}),
         ),
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn completed_play_cannot_be_reported_as_healthy_without_native_evidence() {
+        let node = erpc_chain::inventory::RpcNode {
+            name: "fixture".into(),
+            version: "v0.8.1".into(),
+            commit: "ab09dbfd9553a7ad48f9c134ec5e808c36512c74".into(),
+            ..Default::default()
+        };
+        let missing = crate::arc_ops::Status::default();
+        for operation in ["deploy", "update-config", "update"] {
+            assert!(matches!(
+                super::observed_done(
+                    &node,
+                    "testnet",
+                    &missing,
+                    operation,
+                    false,
+                    serde_json::json!({})
+                ),
+                crate::commands::Outcome::Problems(_)
+            ));
+        }
+    }
+
     use erpc_chain::inventory::RpcNode;
 
     use super::{Args, KindFlags, failed_update, with_lists};
     use crate::arc_ops::Status;
 
     #[test]
-    fn a_failed_update_says_when_the_node_was_rolled_back() {
+    fn a_failed_update_does_not_invent_an_automatic_database_rollback() {
         let old = RpcNode {
             name: "arc1".to_owned(),
             version: "v0.8.0".to_owned(),
@@ -697,7 +772,9 @@ mod tests {
         let back = Status::parse("running=v0.8.0 (66ad2d5a)\nhead=0x10\npublic_head=0x10\n");
         let said = failed_update(&old, &next, Some(&back), "play failed".to_owned());
         assert!(
-            said.starts_with("v0.8.1 did not come up and was rolled back: arc1 runs v0.8.0 again"),
+            said.starts_with(
+                "v0.8.1 did not complete: the previous release is still observed on arc1"
+            ),
             "{said}"
         );
         let stuck = Status::parse("running=\n");

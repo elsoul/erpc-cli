@@ -138,8 +138,9 @@ impl Chain {
             Self::Solana | Self::Eth => &[Role::Validator, Role::Rpc],
             Self::Avax => &[Role::Rpc, Role::Validator, Role::Node],
             Self::Sui => &[Role::Rpc, Role::Node, Role::Validator],
-            Self::Arc | Self::Bitcoin | Self::Base | Self::Optimism | Self::Soneium => &[Role::Rpc],
-            Self::Arbitrum
+            Self::Bitcoin | Self::Base | Self::Optimism | Self::Soneium => &[Role::Rpc],
+            Self::Arc
+            | Self::Arbitrum
             | Self::Polygon
             | Self::Bsc
             | Self::Kaia
@@ -256,7 +257,7 @@ pub struct Verb {
 pub const COMMON_VERBS: &[Verb] = &[
     Verb {
         name: "init",
-        about: "Set up the inventory, 1Password and the server user",
+        about: "Record the node in the 1Password inventory and prepare the server",
         read_only: false,
     },
     Verb {
@@ -311,7 +312,7 @@ pub const COMMON_VERBS: &[Verb] = &[
     },
     Verb {
         name: "destroy",
-        about: "Stop the service and remove its configuration (keys are untouched)",
+        about: "Stop the service and retire the node (keys are untouched)",
         read_only: false,
     },
 ];
@@ -494,6 +495,7 @@ mod tests {
             assert!(chain.roles().contains(&Role::Validator));
         }
         assert!(Chain::Arc.validator_na_reason().is_none());
+        assert!(Chain::Arc.roles().contains(&Role::Validator));
     }
 
     #[test]
@@ -528,7 +530,7 @@ mod tests {
     #[test]
     fn solana_has_validators_and_rpc_nodes_arc_rpc_nodes_and_the_rest_nodes() {
         assert_eq!(Chain::Solana.roles(), &[Role::Validator, Role::Rpc]);
-        assert_eq!(Chain::Arc.roles(), &[Role::Rpc]);
+        assert_eq!(Chain::Arc.roles(), &[Role::Rpc, Role::Validator]);
         assert_eq!(Chain::parse("ARC"), Some(Chain::Arc));
         assert_eq!(Chain::Arc.networks(), &["mainnet", "testnet"]);
         assert_eq!(Chain::Eth.roles(), &[Role::Validator, Role::Rpc]);

@@ -23,10 +23,23 @@ use erpc_auth::store::{StoreError, StoreKind};
 mod i18n;
 mod account_secret;
 mod ai;
+mod arbitrum_bundle;
+mod arbitrum_custody;
+mod arbitrum_tree;
+mod arbitrum_validator;
+mod arbitrum_volume;
+mod arc_authority;
+mod arc_custody;
 mod arc_deploy;
 mod arc_init;
+mod arc_migration;
 mod arc_ops;
 mod arc_rpc;
+mod arc_validator_custody;
+mod arc_validator_host;
+mod arc_validator_init;
+mod arc_validator_ops;
+mod arc_validator_tree;
 mod avax_ops;
 mod avax_tree;
 mod backup;
@@ -34,12 +47,19 @@ mod backup_schedule;
 mod bitcoin_rpc;
 mod bitcoin_tree;
 mod browser;
+mod bsc_backup;
+mod bsc_owned;
+mod bsc_rpc;
+mod bsc_signer;
+mod bsc_tree;
 mod commands;
 mod config;
 mod conversations;
 mod credit_wallet;
 mod doctor;
 mod error;
+mod eth_authority;
+mod eth_authority_evidence;
 mod eth_deploy;
 mod eth_init;
 mod eth_ops;
@@ -47,31 +67,66 @@ mod eth_rpc;
 mod eth_tree;
 mod eth_validator;
 mod eth_validator_tree;
+mod hyperliquid_aqa;
+mod hyperliquid_ops;
+mod hyperliquid_tree;
+mod hyperliquid_validator;
 mod interrupt;
+mod kaia_backup;
+mod kaia_owned;
+mod kaia_rpc;
+mod kaia_signer;
+mod kaia_tree;
 mod keyless;
 mod memory;
+mod near_rpc;
+mod near_tree;
+
+mod monad_ops;
+mod monad_tree;
 mod nitro_rpc;
 mod nitro_tree;
 mod node_common;
+mod node_report;
 mod nodes;
+mod polygon_custody;
+mod polygon_rpc;
+mod polygon_tree;
 mod prompt;
 mod restic;
+mod robinhood_admission;
+mod robinhood_admission_input;
+mod robinhood_bundle;
+mod robinhood_custody;
+mod robinhood_tree;
+mod robinhood_validator;
 mod rollup_bundle;
 mod rollup_credentials;
 mod rollup_ops;
 mod rollup_tree;
+mod rpc_call;
 mod session;
 #[cfg(test)]
 mod skill_check;
 mod skills;
+mod solana_backend;
+mod solana_migration;
+mod solana_migration_execute;
+mod solana_migration_settings;
+mod solana_native;
+mod solana_native_deploy;
+mod solana_native_plan;
+mod solana_registration;
 mod solana_rpc;
 mod solana_rpc_deploy;
 mod solana_rpc_init;
 mod solana_rpc_ops;
+mod solana_source_upgrade;
 mod storage;
 mod storage_crypt;
 mod storage_key;
 mod sui_node;
+mod sui_source;
 mod sui_tree;
 mod tree;
 mod tron_node;
@@ -83,6 +138,8 @@ mod validator_init;
 mod validator_keys;
 mod validator_vote;
 mod vps_access;
+mod webhook;
+mod webhook_delivery;
 mod worker;
 mod worker_backup;
 mod worker_bench;
@@ -193,17 +250,29 @@ enum Command {
         #[arg(long, value_enum)]
         store: Option<StoreChoice>,
     },
-    /// Validator commands (Solana, Ethereum, Avalanche, Sui and TRON).
+    /// Validator operations and availability; select the chain with --chain.
     #[command(visible_alias = "v", disable_help_flag = true)]
     Validator {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// RPC node commands (Solana, Arc, Ethereum, Avalanche, Sui, Bitcoin, Arbitrum, Robinhood, TRON, Optimism, Base, Soneium; pick one with --chain).
+    /// Send JSON-RPC requests or manage RPC nodes with --chain.
     #[command(visible_alias = "r", disable_help_flag = true)]
     Rpc {
+        #[command(subcommand)]
+        action: Option<RpcAction>,
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
+    },
+    /// Manage local RPC subscriptions and deliver events to an HTTP callback.
+    Webhook {
+        #[command(subcommand)]
+        action: webhook::Action,
+    },
+    /// Generate a shell completion script on stdout.
+    Completions {
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
     },
     /// Node commands (Avalanche and Sui RPC compatibility aliases).
     #[command(visible_alias = "n", disable_help_flag = true)]
@@ -276,6 +345,25 @@ enum Command {
         #[arg(long, value_enum)]
         store: Option<StoreChoice>,
     },
+}
+
+#[derive(Subcommand)]
+enum RpcAction {
+    /// Send one JSON-RPC request to a shared, custom or x402 endpoint.
+    #[command(arg(rpc_help_arg()))]
+    Call(rpc_call::Call),
+    /// List the networks with ERPC shared and x402 RPC.
+    #[command(arg(rpc_help_arg()))]
+    ListNetworks,
+}
+
+// The parent rpc command passes help through to its dynamic node tree.
+fn rpc_help_arg() -> clap::Arg {
+    clap::Arg::new("help")
+        .long("help")
+        .short('h')
+        .action(clap::ArgAction::Help)
+        .help("Print help")
 }
 
 /// Every command and option, one line each, for the assistant's system
@@ -546,6 +634,10 @@ async fn run() -> ExitCode {
         }
         Err(e) => e.exit(),
     };
+    dispatch(cli).await
+}
+
+async fn dispatch(cli: Cli) -> ExitCode {
     let Some(command) = cli.command else {
         let outcome = ai::run(cli.json, None, ai::Start::Fresh).await;
         return finish(outcome);
@@ -577,7 +669,31 @@ async fn run() -> ExitCode {
         Command::Validator { args } => {
             tree::run(erpc_core::chain::Role::Validator, &args, cli.json).await
         }
-        Command::Rpc { args } => tree::run(erpc_core::chain::Role::Rpc, &args, cli.json).await,
+        Command::Rpc {
+            action: Some(RpcAction::Call(call)),
+            ..
+        } => rpc_call::run(&call, cli.json).await,
+        Command::Rpc {
+            action: Some(RpcAction::ListNetworks),
+            ..
+        } => rpc_call::output(
+            &serde_json::json!(["solana-mainnet", "ethereum-mainnet"]),
+            cli.json,
+        ),
+        Command::Rpc { action: None, args } => {
+            tree::run(erpc_core::chain::Role::Rpc, &args, cli.json).await
+        }
+        Command::Webhook { action } => webhook::run(action, cli.json).await,
+        Command::Completions { shell } => {
+            let mut buffer = Vec::new();
+            clap_complete::generate(
+                shell,
+                &mut <Cli as clap::CommandFactory>::command(),
+                "erpc",
+                &mut buffer,
+            );
+            commands::Outcome::Done(String::from_utf8_lossy(&buffer).into_owned())
+        }
         Command::Node { args } => tree::run(erpc_core::chain::Role::Node, &args, cli.json).await,
         Command::Worker { action } => worker::run(cli.json, *action).await,
         Command::Config { action } => commands::config(cli.json, action.into()),
@@ -649,12 +765,21 @@ fn version(json: bool) {
     }
 }
 
-/// Prints a JSON body, or fails loudly if it cannot be rendered.
+/// Prints one compact JSON record, or fails loudly if it cannot be rendered.
+/// Embedded line breaks are escaped so streaming logs and their final outcome
+/// can be consumed one stdout line at a time.
 pub fn print_json(body: &serde_json::Value) {
-    match serde_json::to_string_pretty(body) {
-        Ok(text) => print_line(&text),
-        Err(e) => interrupt::say(&format!("could not render JSON: {e}")),
+    if let Err(e) = emit_json_record(body, print_line) {
+        interrupt::say(&format!("could not render JSON: {e}"));
     }
+}
+
+fn emit_json_record(
+    body: &serde_json::Value,
+    mut line: impl FnMut(&str),
+) -> Result<(), serde_json::Error> {
+    line(&serde_json::to_string(body)?);
+    Ok(())
 }
 
 /// The first write to stdout that failed, if one did. `main` then fails.
@@ -747,6 +872,37 @@ mod tests {
     #[test]
     fn cli_definition_is_valid() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn machine_log_completion_and_errors_are_independent_json_lines() {
+        let mut records = vec![
+            serde_json::json!({"log": {"message": "line one\nline two\r\n\t\"quoted\"\\path", "nested": [1, {"ok": true}]}}),
+            serde_json::json!({"ok": true, "action": "logs", "result": {"lines": 1}}),
+        ];
+        records.extend(super::error::Code::ALL.into_iter().map(|code| {
+            super::error::CliError::new(code, "operation failed\nwith details")
+                .hint("retry\nafter inspection")
+                .json()
+        }));
+        let mut stdout = String::new();
+        for record in &records {
+            super::emit_json_record(record, |line| {
+                stdout.push_str(line);
+                stdout.push('\n');
+            })
+            .expect("JSON record");
+        }
+        let decoded: Vec<serde_json::Value> = stdout
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("each line is a complete JSON record"))
+            .collect();
+        assert_eq!(decoded, records);
+        assert_eq!(
+            stdout.bytes().filter(|byte| *byte == b'\n').count(),
+            records.len()
+        );
+        assert!(!stdout.contains('\r'));
     }
 
     #[test]

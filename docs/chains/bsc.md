@@ -117,6 +117,20 @@ are BSC networks, not opBNB or the retired Beacon Chain. [S4]
   section disagree with newer material. Keep those limitations visible when
   implementing deployment support. [S10], [S7], [S6], [S3]
 
+## ERPC implementation
+
+The [RPC backend](../bsc-rpc.md) implements all twelve lifecycle verbs for
+mainnet/Chapel, with separate release pins, fixed official full/pruned snapshot
+catalogs, bounded extraction and immutable host/retention ownership. P2P identity
+persists; mining/voting are disabled in RPC mode. The separate
+[validator backend](../bsc-validator.md) creates fresh consensus/BLS identities,
+verifies concealed backups, preserves native vote history and prepares public
+inputs for external StakeHub registration. Same-host key recovery is supported;
+arbitrary used-key imports and cross-host key-only restores are refused. The v1.7.8 network ZIP hashes in its release prose are stale: downloaded
+small ZIPs match asset API metadata and the current v1.8.1 table instead, as recorded
+in the implementation catalog. No binary or snapshot payload was executed during
+qualification; real-host acceptance remains deferred. [S1], [S2], [S11]
+
 ## Sources
 
 [S1]: https://github.com/bnb-chain/bsc/releases/tag/v1.8.1 "Geth release, 2026-10-16; Chapel deadline, checksums and API changes"

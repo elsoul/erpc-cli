@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Stop the original Avalanche owner with retained data and ingress
+  hosts: all
+  become: true
+  environment:
+    PATH: /usr/sbin:/usr/bin:/sbin:/bin
+  gather_facts: false
+  any_errors_fatal: true
+  vars_files: [vars.yml]
+  tasks:
+    - name: Authenticate ownership, cancel queued deployment and attempt every owned shutdown
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ avax_jinja }}/control.py"]
+        stdin: "{{ {'action':'stop','contract':avax_contract_value} | to_json }}"

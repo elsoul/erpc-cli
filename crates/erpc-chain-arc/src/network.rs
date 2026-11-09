@@ -38,6 +38,8 @@ pub struct Network {
     pub chain: String,
     /// What `eth_chainId` answers on it.
     pub chain_id: u64,
+    /// The genesis block hash pinned by upstream chainspec regression tests.
+    pub genesis_hash: String,
     /// Where the execution layer forwards transactions it is sent.
     pub forwarder: String,
     /// A public endpoint to compare the node's head with.
@@ -91,7 +93,7 @@ mod tests {
         assert_eq!(mainnet.chain_id, 5042);
         assert_eq!(mainnet.follow.len(), 4);
         assert!(get("devnet").is_none());
-        assert_eq!(source().1, "2026-10-23");
+        assert_eq!(source().1, "2026-10-27");
     }
 
     #[test]

@@ -1,14 +1,14 @@
 ---
 name: arc-rpc
-description: Running an Arc RPC node (mainnet or testnet) with erpc r --chain arc -- its types (full, archive, provider), the server and disk it needs, how long and how big, init, deploy, status, logs, start/stop/restart, update and its rollback, update-config, plan, destroy -- its firewall, and reading what went wrong.
+description: Running an Arc RPC node (mainnet or testnet) with erpc r --chain arc -- its types (full, archive, provider), the server and disk it needs, how long and how big, init, deploy, status, logs, start/stop/restart, qualified updates, update-config, plan, destroy -- its firewall, and reading what went wrong.
 ---
 
 # Arc RPC node
 
-All verbs are implemented, on mainnet and testnet alike, and were run on a real testnet
-server (full and archive). A node is the execution layer (`arc-node-execution`, a Reth;
+All twelve RPC verbs are connected on mainnet and testnet. The original-authority
+profile has offline verification; its real-host acceptance remains deferred. A node is the execution layer (`arc-node-execution`, a Reth;
 JSON-RPC on 8545 and WebSocket on 8546) and the consensus layer (`arc-node-consensus`),
-joined over IPC sockets in /run/arc and run by systemd as the `arc` user.
+joined over IPC sockets in /run/arc and run by systemd with the original numeric `arc` UID/GID.
 
 ## Types
 
@@ -23,31 +23,47 @@ joined over IPC sockets in /run/arc and run by systemd as the `arc` user.
   30303 to everyone and 27000 to the sentries, and serves only `eth,net,web3,rpc`. Without
   onboarding there is nothing to peer with; suggest `full`.
 
+`status` and deployment results distinguish applied changes from observed readiness.
+`start` and `restart` include the applied action/layer separately; node readiness
+still includes all service and synchronization problems, even for execution-only
+startup. JSON `ready: null` means the public comparison is unavailable, not a proven local
+failure or an accepted healthy deployment; it returns a non-success observation
+outcome. Local checks require the full served commit, network genesis, non-syncing
+response and a recent latest header. The 300-second age / 120-second future-clock
+bounds are ERPC monitoring policy. `logs --json` produces one compact stdout JSON
+record per native/diagnostic line and a compact completion or error record.
+The host and reporting controls are tested offline; final live acceptance remains
+required. See [original runtime](../../../../docs/arc-runtime.md) for exact guarantees.
+
+Arc's validator role is permissioned. `erpc v --chain arc` has a dedicated
+preparation lifecycle with separate local peer custody, public Remote signer
+qualification and unsigned governance intents. Production signing remains held;
+`activate` refuses until the Circle signing-history contract is qualified.
+See [validator preparation](../../../../docs/arc-validator.md). Do not substitute
+the RPC profile for an admitted validator or infer activation from membership.
+
 `--debug-api` adds `debug` and `trace` (useful mostly on `archive`); refused on `provider`.
 Keep `--rpc-allow` to your own proxies when it is on. `update-config --debug-api false` turns
 it off, and `update-config` also replaces a provider's peers.
 
-To change the type: `destroy --purge-data --forget`, then `init --type …` (the consensus key is
-reused).
+The history type stays bound to the original inventory item. `--forget` is refused;
+do not unlink that item to adopt its consensus key as a new node. A separately named
+fresh reservation has a new identity. See [Arc custody](../../../../docs/arc-custody.md)
+for original-key reservation and recovery semantics.
 
 ## The server
 
-Ubuntu 24.04 or later (systemd 250+, for the encrypted consensus key; a TPM is used when there
-is one), 64 GB of memory, an SSH user with passwordless sudo (`ubuntu` by default), and a data
-disk: init takes a free NVMe of 800 GB or more for /var/lib/arc (mounted by UUID, so a change
-of device names at boot does not matter). A disk with a file system on it is not free; a disk
-with only empty partitions is, and init says it will remove them before it does. Without a
-free disk the data goes on the root disk.
+Ubuntu 24.04 with systemd 255, 64 GB RAM and a passwordless sudo login. Prepare
+an ext4/XFS UUID-addressed filesystem at `/var/lib/arc`; init does not format disks.
+The root must be empty and root-owned, or contain only a verified empty root-owned
+`lost+found`. Existing original volumes retain their inodes and recorded identity.
+Nested/stacked mounts are refused. ERPC's initial capacity estimates are 1 TB for
+full/provider or 2 TB for archive, less allocated original data, with at least
+100 GB remaining. These estimates are not guarantees about upstream snapshots.
 
-Sizes and times on testnet (October 2026):
-
-| type | snapshot restore | execution | consensus |
-|---|---|---|---|
-| full | about 30 min | about 150 GB | about 105 GB |
-| archive | about 50 min | about 730 GB | about 105 GB |
-
-After the restore the node catches up from the snapshot's block at about 80 blocks a second,
-a few minutes. Memory in use settles at 5 to 10 GB for the execution layer and well under 1 GB for the consensus layer.
+Only the carried v0.8.1 exact source/archive catalog can execute. Future releases
+need an explicit catalog addition. Current version strings alone do not authorize
+an existing host or a downgrade.
 
 ## Commands
 
@@ -68,13 +84,14 @@ with systemd-creds.
 1. `init --host <ip> [--type full|archive|provider] --rpc-allow <proxy ips>
    --management-allow <stable ssh range> [--monitoring-allow <ips>] [--version vX.Y.Z]`: shows
    the server's host key to check against its console (or takes `--fingerprint SHA256:…`),
-   checks the server, pins the newest arc-node release (or `--version`) with its commit and
-   archive digest, makes the consensus key in 1Password, and prepares the host. Running it
-   again resumes and changes nothing.
+   checks the server, pins the carried qualified arc-node release with its commit and
+   archive digest, reserves the public host and consensus identity, stores and verifies that
+   original key in 1Password, then prepares the host. Retrying an ambiguous creation only
+   recovers a matching original item; it never regenerates a key.
 2. `deploy`: installs the pinned release, restores the snapshot for the type, puts the
    consensus key in place encrypted with systemd-creds, starts both layers, applies the
-   firewall, and confirms it from a fresh connection. Running it again changes nothing and
-   restarts nothing; it restarts a layer only when its unit changed.
+   firewall in a separate preparation confirmed through a fresh SSH connection. It
+   fences/stops original writers and preserves the same key and active data on retry.
 3. Operate:
    - `status`: both layers, the release that is actually serving, head and lag behind the
      public endpoint, data used and free, firewall and key. Exits 1 on a problem. Right after a
@@ -83,31 +100,36 @@ with systemd-creds.
    - `start|stop|restart [--layer execution|consensus]`: always in dependency order (the
      consensus layer needs the execution layer, so restarting execution restarts both).
    - `update [--version vX.Y.Z]`: installs beside the running release and restarts on it;
-     going back to an older tag works the same way.
+     the highest opened database source forbids downgrades and same-version substitution.
    - `update-config --rpc-allow … --management-allow … --monitoring-allow … --debug-api`:
      each list given replaces the stored one; ones not given stay. Opening monitoring also
      moves the metrics (9001, 29000) off loopback, so the layers restart once.
    - `plan --change deploy|update|update-config` (same flags): says what would change, changes
      nothing.
-   - `destroy`: removes units, releases, firewall and the encrypted key; the data and the
-     1Password items stay, and `deploy` brings the node back without a new snapshot (in under
-     a minute). `--purge-data` deletes the chain data too; `--forget` (only with
-     `--purge-data`) also removes the node's item and its pinned host key, so the next `init`
-     asks for the host key again. The consensus key's item always stays. The `arc` user, the
-     data disk's mount and the kernel and journald settings stay as well.
+   - `destroy`: retires services while retaining filtering, original key, data and
+     authority receipts. `deploy` resumes that same identity/history. Both
+     `--purge-data` and `--forget` are refused.
+   - `deploy --restore-custody`: fences/stops originals, restores only the same key,
+     retains prior ciphertext, then continues deployment.
+   - `deploy --reset-bootstrap`: quarantines an interrupted initial snapshot;
+     never clears active or already-promoted history.
+   - `init --migrate-authority` plus all four independent historical record flags:
+     qualifies a supported previous managed host and leaves first migration retired.
+     See the migration command and refusal boundaries in the original-runtime guide.
 
 ## The firewall
 
 The table is `inet erpc_arc` (the rules and the two-minute rollback are in `erpc-nodes`): SSH from
 `--management-allow` and erpc's own address, 8545 and 8546 from `--rpc-allow`, 9001 and 29000 from
 `--monitoring-allow`; a provider node also opens 30303 to everyone and 27000 to its sentries.
-After a reboot the table, the key and both layers come back on their own.
+After reboot, confirmed filtering and eligible original units can return. Stopped or
+retired services retain their fences; a changed original account or helper prevents
+startup before credential delivery.
 
 ## When something fails
 
-- `update` that does not come up rolls back by itself: erpc says "vX did not come up and was
-  rolled back: arc1 runs vY again", and 1Password keeps the old pin. Read `logs` for why;
-  running the same `update` again only repeats it.
+- A failed `update` retains the source floor and original data. There is no automatic
+  database rollback. Read `logs`, repair the cause and retry the qualified source.
 - `start` that waits for "the execution layer made no IPC sockets": the execution layer did not
   come up; its `logs --layer execution` say why.
 - A snapshot restore that stops: `logs` shows `arc-snapshots`; deploy again starts the fetch

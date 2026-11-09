@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Authenticate and prepare the owned Bor and Heimdall pair while stopped
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars_files: [vars.yml]
+  tasks:
+    - name: Fence, drain, authenticate packages and prepare the original identities
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ polygon_scripts }}/control.py", within-run]
+        stdin: "{{ polygon_request | combine({'action':'prepare'}) | to_json }}"
+      register: polygon_prepared
+    - name: Use only the verified original numeric service accounts
+      ansible.builtin.set_fact:
+        polygon_runtime_accounts: "{{ (polygon_prepared.stdout | from_json).runtime_accounts }}"
+    - name: Install pinned native service definitions without starting them
+      when: polygon_contract.role != 'validator'
+      ansible.builtin.template:
+        src: "{{ polygon_templates }}/native.service.j2"
+        dest: "/etc/systemd/system/polygon-{{ item }}.service"
+        owner: root
+        group: root
+        mode: '0644'
+      vars:
+        polygon_component: "{{ item }}"
+      loop: [bor, heimdall]
+    - name: Install the private parent transport definition
+      when: polygon_contract.role != 'validator'
+      ansible.builtin.template:
+        src: "{{ polygon_templates }}/parent.service.j2"
+        dest: /etc/systemd/system/polygon-l1-proxy.service
+        owner: root
+        group: root
+        mode: '0644'
+    - name: Reload stopped service definitions
+      when: polygon_contract.role != 'validator'
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+    - name: Seal the exact native launchers and release pair
+      when: polygon_contract.role != 'validator'
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ polygon_scripts }}/control.py", within-run]
+        stdin: "{{ polygon_request | combine({'action':'seal'}) | to_json }}"

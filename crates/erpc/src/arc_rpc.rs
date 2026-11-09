@@ -24,10 +24,8 @@ pub(crate) const CHAIN: &str = "arc";
 /// Memory below which a node is refused: Arc asks for 64 GB, and a 64 GB
 /// machine reports a little less.
 pub(crate) const MIN_MEMORY_KB: u64 = 60_000_000;
-/// systemd from which `systemd-creds` and `LoadCredentialEncrypted=` exist.
-pub(crate) const MIN_SYSTEMD: u32 = 250;
-/// Free space below which erpc warns: Arc asks for 1 TB.
-pub(crate) const WANT_DATA_KB: u64 = 900_000_000;
+/// The source-qualified credential-recipient ordering used by this profile.
+pub(crate) const SUPPORTED_SYSTEMD: u32 = 255;
 
 /// How to log in: the operator's key in its agent.
 #[derive(Debug, Clone, Default)]
@@ -160,9 +158,9 @@ impl Facts {
         if !self.sudo {
             out.push("the login user cannot run sudo without a password".to_owned());
         }
-        if self.systemd < MIN_SYSTEMD {
+        if self.systemd != SUPPORTED_SYSTEMD {
             out.push(format!(
-                "systemd {} cannot keep the consensus key encrypted (systemd-creds needs {MIN_SYSTEMD}; Ubuntu 24.04 has 255)",
+                "systemd {} is outside the qualified original Arc profile (Ubuntu 24.04 / systemd {SUPPORTED_SYSTEMD})",
                 self.systemd
             ));
         }
@@ -387,6 +385,9 @@ impl RunVars<'_> {
     pub(crate) fn host_vars(&self) -> Result<Map<String, Value>, String> {
         let platform = self.facts.platform()?;
         let controller = self.facts.controller_ip()?;
+        if self.facts.ssh_port == 0 {
+            return Err("the server-observed SSH destination port is missing".into());
+        }
         let (v4, v6) = management(self.node, controller);
         let mut vars = Map::new();
         let mut set = |k: &str, v: Value| {
@@ -440,7 +441,23 @@ impl RunVars<'_> {
         set("arc_monitoring_allow", json!(self.node.monitoring_allow));
         set("arc_fw_management_v4", json!(v4));
         set("arc_fw_management_v6", json!(v6));
-        set("arc_ssh_port", json!(self.node.ssh_port));
+        set("arc_ssh_port", json!(self.facts.ssh_port));
+        set(
+            "arc_authority_loader",
+            json!(erpc_chain_arc::authority::carried_loader()?),
+        );
+        set(
+            "arc_authority_contract",
+            crate::arc_authority::contract(self.node, self.network)?,
+        );
+        set(
+            "arc_authority_helpers",
+            json!(erpc_chain_arc::authority::helper_hash()?),
+        );
+        set(
+            "arc_authority_request",
+            crate::arc_authority::prepare(self.node, self.network)?,
+        );
         vars.extend(self.extra.clone());
         Ok(vars)
     }
@@ -455,8 +472,7 @@ impl RunVars<'_> {
     }
 }
 
-/// A run's bundle: every carried Arc template, the inventory, and the
-/// free-disk rule the init play checks again before it wipes a disk.
+/// A sealed run carries the complete helper profile, templates and public inventory.
 pub(crate) fn bundle(inventory_json: &str) -> Result<Built, String> {
     let mut bundle = Bundle::new();
     for path in erpc_chain_arc::files() {
@@ -467,12 +483,6 @@ pub(crate) fn bundle(inventory_json: &str) -> Result<Built, String> {
     }
     bundle
         .add("inventory.yml", inventory_json.as_bytes().to_vec())
-        .map_err(|e| e.to_string())?;
-    bundle
-        .add(
-            erpc_chain_arc::bundle::FREE_DISKS,
-            erpc_ssh::FREE_DISKS_SCRIPT.as_bytes().to_vec(),
-        )
         .map_err(|e| e.to_string())?;
     bundle
         .add("rpc-firewall.py", erpc_ops::RPC_FIREWALL.to_vec())
@@ -490,8 +500,48 @@ pub(crate) fn run_play(
     again: &str,
     say: &Say,
 ) -> Result<String, String> {
+    erpc_chain_arc::authority::qualify_source(
+        &vars.node.version,
+        &vars.node.commit,
+        &vars.node.archive_sha256,
+        vars.facts.platform()?,
+    )?;
     let mut inventory = vars.inventory_json()?;
     if [erpc_chain_arc::plays::DEPLOY, erpc_chain_arc::plays::UPDATE].contains(&play) {
+        let mut nonce = [0_u8; 16];
+        getrandom::fill(&mut nonce).map_err(|_| "could not reserve an Arc deployment intent")?;
+        let intent = nonce
+            .iter()
+            .fold(String::with_capacity(32), |mut value, byte| {
+                use std::fmt::Write as _;
+                let _ = write!(value, "{byte:02x}");
+                value
+            });
+        crate::arc_authority::invoke(
+            session,
+            vars.node,
+            vars.network,
+            "reserve",
+            json!({
+                "intent":intent,"target":crate::arc_authority::source(vars.node,vars.facts)?,
+                "policy":crate::arc_authority::policy(vars.node,vars.facts)?
+            }),
+        )?;
+        let mut document: Value =
+            serde_json::from_str(&inventory).map_err(|_| "invalid Arc inventory")?;
+        let host = document["all"]["hosts"][&vars.node.name]
+            .as_object_mut()
+            .ok_or("missing original Arc host")?;
+        host.insert("arc_authority_intent".into(), json!(intent));
+        host.insert(
+            "arc_authority_contract".into(),
+            crate::arc_authority::contract(vars.node, vars.network)?,
+        );
+        host.insert(
+            "arc_authority_helpers".into(),
+            json!(erpc_chain_arc::authority::helper_hash()?),
+        );
+        inventory = document.to_string();
         let preparation = bundle(&inventory)?;
         let prepared = erpc_ops::run::start(session, &preparation, erpc_chain_arc::plays::FIREWALL)
             .map_err(|e| e.to_string())?;
@@ -504,11 +554,17 @@ pub(crate) fn run_play(
         if !result.ok() {
             return Err("firewall preparation failed; deployment was not started".into());
         }
-        confirm_firewall(
-            target,
-            erpc_ssh::firewall::FirewallToken::new(prepared.clone(), &preparation.sha256)?,
-            say,
+        let fresh = Session::open(target).map_err(|e| e.to_string())?;
+        crate::arc_authority::invoke(
+            &fresh,
+            vars.node,
+            vars.network,
+            "firewall-confirm",
+            json!({
+                "intent":intent,"operation":prepared.as_str(),"bundle":preparation.sha256
+            }),
         )?;
+        say.line("firewall   original operation confirmed over fresh SSH");
         inventory = erpc_ops::firewall_inventory(&inventory, &prepared, &preparation.sha256)?;
     }
     let built = bundle(&inventory)?;
@@ -536,30 +592,6 @@ pub(crate) fn run_play(
     }
 }
 
-/// After a play that may have changed the firewall: connects afresh and
-/// confirms the table, which proves the new table admits erpc. If erpc
-/// cannot get in, the node puts the previous table back by itself.
-fn confirm_firewall(
-    target: &Target,
-    token: erpc_ssh::firewall::FirewallToken,
-    say: &Say,
-) -> Result<(), String> {
-    let fresh = Session::open(target).map_err(|e| e.to_string())?;
-    match fresh.run(&RemoteCommand::ArcFirewallConfirm { token }, None) {
-        Ok(out) => {
-            let text = String::from_utf8_lossy(&out.stdout);
-            if text.contains("firewall=confirmed") {
-                say.line("firewall   confirmed from a fresh connection");
-            }
-            Ok(())
-        }
-        Err(e) => Err(format!(
-            "could not reach the node again after the firewall changed ({e}); it restores the \
-             previous table after its rollback timer and active operation finish. If no policy can be restored, node services are stopped and disabled. Check --management-allow and run the same command again"
-        )),
-    }
-}
-
 /// Short form of a byte count in kilobytes.
 pub(crate) fn gb(kb: u64) -> String {
     format!("{} GB", kb / 1_000_000)
@@ -573,6 +605,38 @@ mod tests {
     use serde_json::Value;
 
     use super::{Facts, KindFlags, RunVars, allow_list, management, with_kind};
+
+    #[cfg(unix)]
+    #[test]
+    fn actual_original_entrypoints_reject_unsafe_bytes_before_interpretation() {
+        use std::io::Write as _;
+        let command = erpc_ssh::RemoteCommand::ArcControl(
+            erpc_ssh::arc::Control::new(&erpc_chain_arc::authority::profile()).unwrap(),
+        )
+        .line();
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../erpc-chain-arc/tests/authority_entrypoints.py");
+        let mut child = std::process::Command::new("python3")
+            .args(["-B"])
+            .arg(path)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(serde_json::json!({"ssh":command}).to_string().as_bytes())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
     #[test]
     fn a_type_is_checked_and_fixed_once_stored() {
@@ -652,6 +716,10 @@ mod tests {
 
     fn node() -> RpcNode {
         RpcNode {
+            id: Some("iiiiiiiiiiiiiiiiiiiiiiiiii".into()),
+            host_key: "inert-original-host-key".into(),
+            consensus_public_key: "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=".into(),
+            rpc_type: "full".into(),
             name: "arc1".to_owned(),
             address: "192.0.2.10".to_owned(),
             ssh_user: "ubuntu".to_owned(),
@@ -714,6 +782,48 @@ mod tests {
         let (four, six) = management(&node(), v6);
         assert_eq!(four, ["192.0.2.50"]);
         assert_eq!(six, ["2001:db8::7"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn actual_ansible_request_and_register_fields_match_the_original_controller() {
+        use std::io::Write as _;
+        let network = erpc_chain_arc::network::get("testnet").unwrap();
+        let node = node();
+        let facts = facts();
+        let variables = RunVars {
+            node: &node,
+            network: &network,
+            facts: &facts,
+            extra: serde_json::Map::new(),
+        }
+        .host_vars()
+        .unwrap();
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../erpc-chain-arc/tests/authority_play.py");
+        let mut child = std::process::Command::new("python3")
+            .arg("-B")
+            .arg(path)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(serde_json::to_string(&variables).unwrap().as_bytes())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if let Some(path) = std::env::var_os("ERPC_ARC_PUBLIC_TEST_VARS") {
+            std::fs::write(path, serde_json::to_vec(&variables).unwrap()).unwrap();
+        }
     }
 
     #[test]

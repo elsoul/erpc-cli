@@ -1,22 +1,17 @@
 # SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
 # SPDX-License-Identifier: Apache-2.0
 ---
-- name: Prepare the firewall for confirmation before long deployment work
+- name: Prepare the original Ethereum policy before deployment
   hosts: all
   become: true
   gather_facts: false
   any_errors_fatal: true
   vars_files: [vars.yml]
   tasks:
-    - name: Ensure controller and policy directories exist
-      ansible.builtin.file:
-        path: "{{ item.path }}"
-        state: directory
-        owner: root
-        group: root
-        mode: "{{ item.mode }}"
-      loop:
-        - {path: /usr/local/lib/erpc, mode: '0755'}
-        - {path: /etc/erpc/eth, mode: '0700'}
-    - name: Apply the candidate with its bounded confirmation window
+    - name: Authenticate original namespace and still-current deployment before writes
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, -c, '{{ eth_authority_loader }}', '{{ playbook_dir }}/../../authority/control.py', request]
+        stdin: '{{ eth_authority_request | combine({"action":"check-deploy","intent":eth_authority_intent,"target":eth_authority_source}) | to_json }}'
+      changed_when: false
+    - name: Prepare the original operation-bound firewall
       ansible.builtin.import_tasks: tasks/firewall.yml

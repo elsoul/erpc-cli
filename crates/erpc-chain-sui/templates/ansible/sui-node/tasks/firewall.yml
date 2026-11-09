@@ -64,7 +64,7 @@
 
     - name: Arm a callback bound to this immutable deployment intent
       ansible.builtin.command: >-
-        /usr/local/lib/erpc/erpc-sui-control.py arm
+        {{ sui_service_guard }} arm
         {{ sui_network }} {{ sui_role }} {{ sui_genesis_sha256 }} {{ sui_confirmation_id }}
       changed_when: true
 
@@ -74,7 +74,7 @@
 
     - name: Capture the applied candidate while this play still holds the run lock
       ansible.builtin.command: >-
-        /usr/local/lib/erpc/erpc-sui-control.py capture
+        {{ sui_service_guard }} capture
         {{ sui_network }} {{ sui_role }} {{ sui_genesis_sha256 }} {{ sui_confirmation_id }}
       changed_when: true
 

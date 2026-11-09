@@ -1,0 +1,67 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Prepare original Arc observer data while production signing remains unqualified
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Bind the exact freshly confirmed ingress before any installation mutation
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, -c, "{{ arc_validator_loader }}", "{{ playbook_dir }}/../../validator/control.py"]
+        stdin: "{{ {'action':'require-firewall','contract':arc_validator_contract,'intent':arc_validator_intent,'firewall_run':erpc_fw_confirmed_run,'firewall_bundle':erpc_fw_confirmed_bundle} | to_json }}"
+      changed_when: true
+    - name: Quiesce original writers and retain the current installation intent
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, -c, "{{ arc_validator_loader }}", "{{ playbook_dir }}/../../validator/control.py"]
+        stdin: "{{ {'action':'begin','contract':arc_validator_contract,'intent':arc_validator_intent} | to_json }}"
+      register: arc_install
+      changed_when: true
+    - name: Fetch only the qualified immutable native release
+      ansible.builtin.get_url:
+        url: "{{ arc_validator_archive_url }}"
+        dest: "{{ (arc_install.stdout | from_json).archive }}"
+        checksum: "sha256:{{ arc_validator_archive_sha256 }}"
+        owner: root
+        group: root
+        mode: '0600'
+    - name: Qualify the native images and publish original numeric units
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, -c, "{{ arc_validator_loader }}", "{{ playbook_dir }}/../../validator/control.py"]
+        stdin: "{{ {'action':'install','contract':arc_validator_contract,'intent':arc_validator_intent,'helper_hash':arc_validator_helpers} | to_json }}"
+      changed_when: true
+    - name: Request the original initial snapshot only while no signer has been used
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, -c, "{{ arc_validator_loader }}", "{{ playbook_dir }}/../../validator/control.py"]
+        stdin: "{{ {'action':'bootstrap','contract':arc_validator_contract,'intent':arc_validator_intent} | to_json }}"
+      register: arc_bootstrap
+      changed_when: true
+    - name: Wait for the matching native snapshot completion receipt
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, -c, "{{ arc_validator_loader }}", "{{ playbook_dir }}/../../validator/control.py"]
+        stdin: "{{ {'action':'status','contract':arc_validator_contract} | to_json }}"
+      register: arc_status
+      until: (arc_status.stdout | from_json).phase in ['bootstrap-complete', 'promoting'] or (arc_status.stdout | from_json).operation_cancelled or (arc_status.stdout | from_json).bootstrap_failed
+      retries: 1080
+      delay: 10
+      changed_when: false
+      when: (arc_bootstrap.stdout | from_json).bootstrap != 'original-complete'
+    - name: End cancelled or failed bootstrap polling without holding the run lock indefinitely
+      ansible.builtin.assert:
+        that:
+          - not (arc_status.stdout | from_json).operation_cancelled
+          - (arc_status.stdout | from_json).phase in ['bootstrap-complete', 'promoting']
+        quiet: true
+      when: (arc_bootstrap.stdout | from_json).bootstrap != 'original-complete'
+    - name: Promote only the original completed pair while every writer is stopped
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, -c, "{{ arc_validator_loader }}", "{{ playbook_dir }}/../../validator/control.py"]
+        stdin: "{{ {'action':'promote','contract':arc_validator_contract,'intent':arc_validator_intent} | to_json }}"
+      changed_when: true
+      when: (arc_bootstrap.stdout | from_json).bootstrap != 'original-complete'
+    - name: Request original observer startup without claiming consensus activation
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, -c, "{{ arc_validator_loader }}", "{{ playbook_dir }}/../../validator/control.py"]
+        stdin: "{{ {'action':'activate','contract':arc_validator_contract,'intent':arc_validator_intent} | to_json }}"
+      changed_when: true

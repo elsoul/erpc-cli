@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Read-only Arc host qualification before original key reservation
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Refuse unsupported or unowned native state before custody creation
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, -c, "{{ arc_authority_loader }}", "{{ playbook_dir }}/../../authority/control.py"]
+        stdin: "{{ arc_preflight_request | to_json }}"
+      changed_when: false

@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+[Unit]
+Description=ERPC original Robinhood testnet Defensive validator
+Requires=docker.service erpc-robinhood-upstreams.service erpc-robinhood-firewall.service
+BindsTo=erpc-robinhood-upstreams.service
+After=network-online.target docker.service erpc-robinhood-upstreams.service erpc-robinhood-firewall.service
+Wants=network-online.target
+RequiresMountsFor=/var/lib/erpc-robinhood-testnet-validator/data /etc/erpc/robinhood-testnet-validator
+
+[Service]
+Type=exec
+User=0
+Group=0
+UMask=0077
+LimitCORE=0
+{% if validator_request.target.phase == 'active' %}
+LoadCredentialEncrypted=robinhood-testnet-defensive-wallet:/etc/credstore.encrypted/robinhood-testnet-validator/wallet.cred
+{% endif %}
+ExecCondition={{ validator_condition_command }} runtime-condition node
+ExecStartPre={{ validator_runtime_command }} runtime-prepare node
+ExecStart={{ validator_runtime_command }} runtime-run node
+ExecStop={{ validator_runtime_command }} runtime-stop node
+TimeoutStartSec=180
+TimeoutStopSec=240
+Restart=no
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/erpc-robinhood-testnet-validator /run/erpc-robinhood-testnet-validator
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

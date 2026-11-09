@@ -178,11 +178,13 @@ class Validator(unittest.TestCase):
         entry = b(5, name) + b(6, b(2, (100).to_bytes(8, 'little'))) + b(7, b'u64')
         with patch.object(self.m, 'rpc', return_value={1: [entry]}):
             for epoch, expected in [(99, 12), (113, 12), (114, 6), (127, 6), (128, 3)]:
-                self.assertEqual(self.m.admission('testnet', table, epoch, 139)['minimum_joining_voting_power'], expected)
+                for protocol in (139, 140):
+                    self.assertEqual(self.m.admission('testnet', table, epoch, protocol)['minimum_joining_voting_power'], expected)
         with patch.object(self.m, 'rpc', return_value={2: [b'next']}):
             self.assertEqual(self.m.admission('testnet', table, 128, 139)['status'], 'unknown')
         with patch.object(self.m, 'rpc', side_effect=AssertionError('unknown policy must not infer')):
-            self.assertEqual(self.m.admission('testnet', table, 128, 140)['status'], 'unknown')
+            self.assertEqual(self.m.admission('testnet', table, 128, 141)['status'], 'unknown')
+            self.assertEqual(self.m.admission('mainnet', table, 128, 140)['status'], 'unknown')
 
     def test_grpc_failed_trailer_or_compressed_response_refused(self):
         def native(trailer, frame):

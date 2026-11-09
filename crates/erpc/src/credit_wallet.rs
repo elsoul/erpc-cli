@@ -37,11 +37,19 @@ fn setting(key: &str) -> Option<String> {
 pub(crate) struct ConfigWallet;
 
 /// The gate's answer for this wallet, here.
-fn gate(allow_ai: bool, has_tty: bool) -> Result<(), String> {
-    let context = Context {
-        ai_tool_path: true,
-        ..Context::from_env(has_tty, false, std::env::vars())
-    };
+fn gate(allow_ai: bool, has_tty: bool, ai_tool: bool) -> Result<(), String> {
+    gate_with(allow_ai, has_tty, ai_tool, std::env::vars())
+}
+
+/// [`gate`], in the given environment.
+fn gate_with(
+    allow_ai: bool,
+    has_tty: bool,
+    ai_tool: bool,
+    vars: impl IntoIterator<Item = (String, String)>,
+) -> Result<(), String> {
+    let mut context = Context::from_env(has_tty, false, vars);
+    context.ai_tool_path |= ai_tool;
     match evaluate(
         Profile::HumanWallet { allow_ai },
         Operation::Resolve,
@@ -80,29 +88,7 @@ impl CreditWallet for ConfigWallet {
     }
 
     fn key(&self) -> Result<EvmKey, String> {
-        use std::io::IsTerminal as _;
-        let reference = setting("credit_wallet").ok_or(NO_WALLET)?;
-        let allow_ai = setting("credit_wallet_ai").as_deref() == Some("on");
-        gate(allow_ai, std::io::stdin().is_terminal())?;
-        let runner = crate::node_common::op_runner()?;
-        let mut out = runner
-            .run(&["read", "--no-newline", &reference], None)
-            .map_err(|e| format!("1Password did not give the wallet key: {e}"))?;
-        let key = if out.success {
-            EvmKey::from_hex(&out.stdout).map_err(|e| e.to_string())
-        } else {
-            Err("1Password did not give the wallet key (is `credit_wallet` right, and 1Password unlocked?)".to_owned())
-        };
-        out.stdout.zeroize();
-        let key = key?;
-        let configured = self.address()?;
-        if key.address() != configured {
-            return Err(format!(
-                "the key in 1Password is for {}, not the configured wallet {configured}; nothing was signed",
-                key.address()
-            ));
-        }
-        Ok(key)
+        read_wallet_key(true)
     }
 
     fn vault(&self) -> Option<String> {
@@ -136,6 +122,33 @@ impl CreditWallet for ConfigWallet {
         let vault = vault.to_owned();
         Box::pin(off_thread(move || create(&vault, allow_ai)))
     }
+}
+
+/// Reads the configured key after the caller confirmed a concrete payment.
+pub(crate) fn read_wallet_key(ai_tool: bool) -> Result<EvmKey, String> {
+    use std::io::IsTerminal as _;
+    let reference = setting("credit_wallet").ok_or(NO_WALLET)?;
+    let allow_ai = setting("credit_wallet_ai").as_deref() == Some("on");
+    gate(allow_ai, std::io::stdin().is_terminal(), ai_tool)?;
+    let runner = crate::node_common::op_runner()?;
+    let mut out = runner
+        .run(&["read", "--no-newline", &reference], None)
+        .map_err(|e| format!("1Password did not give the wallet key: {e}"))?;
+    let key = if out.success {
+        EvmKey::from_hex(&out.stdout).map_err(|e| e.to_string())
+    } else {
+        Err("1Password did not give the wallet key (is `credit_wallet` right, and 1Password unlocked?)".to_owned())
+    };
+    out.stdout.zeroize();
+    let key = key?;
+    let configured = ConfigWallet.address()?;
+    if key.address() != configured {
+        return Err(format!(
+            "the key in 1Password is for {}, not the configured wallet {configured}; nothing was signed",
+            key.address()
+        ));
+    }
+    Ok(key)
 }
 
 /// Runs 1Password work, which may wait for an unlock, off the async
@@ -509,7 +522,7 @@ pub(crate) fn show_command(json_out: bool) -> Outcome {
 
 #[cfg(test)]
 mod tests {
-    use super::{find, gate, store};
+    use super::{find, gate, gate_with, store};
     use erpc_auth::store::StoreError;
     use erpc_auth::store::one_password::{OpOutput, OpRunner};
     use std::cell::RefCell;
@@ -647,12 +660,22 @@ mod tests {
         if std::env::var_os("OP_SERVICE_ACCOUNT_TOKEN").is_some() {
             return;
         }
-        assert!(gate(true, true).is_ok());
+        assert!(gate(true, true, true).is_ok());
         assert!(
-            gate(false, true)
+            gate(false, true, true)
                 .unwrap_err()
                 .contains("credit_wallet_ai on")
         );
-        assert!(gate(true, false).is_err());
+        assert!(gate(true, false, true).is_err());
+    }
+
+    #[test]
+    fn a_payment_outside_erpc_ai_needs_a_person_at_a_terminal() {
+        let person = Vec::<(String, String)>::new;
+        // `erpc rpc call --x402`: the ai setting has no say here.
+        assert!(gate_with(false, true, false, person()).is_ok());
+        assert!(gate_with(false, false, false, person()).is_err());
+        let automation = vec![("OP_SERVICE_ACCOUNT_TOKEN".to_owned(), "inert".to_owned())];
+        assert!(gate_with(false, true, false, automation).is_err());
     }
 }

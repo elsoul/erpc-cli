@@ -35,6 +35,34 @@ redirects and environment proxies are refused. Explicit numeric loopback may use
 HTTP for an operator-owned local Ethereum pair. ERPC account/service hosts cannot
 be selected through this separate upstream transport.
 
+Address classification uses explicit CIDRs rather than Python's version-dependent
+`is_global` / `is_private` tables. The policy excludes every IPv4 special-purpose
+registry block, multicast and reserved space. It conservatively also excludes
+special service anycasts, even entries marked globally reachable by IANA. This
+includes all of `192.0.0.0/24` and `192.88.99.0/24`, covering the dummy/relay
+addresses that older Python releases may otherwise classify as global.
+
+IPv6 must be within `2000::/3`, with the IETF protocol-assignment block,
+documentation blocks, AS112 service prefix, 6to4 and returned 6bone/legacy Teredo
+space excluded. IPv4-mapped/compatible addresses, NAT64, Teredo, scoped addresses,
+local ranges and multicast remain refused. The sole opt-in exception is a numeric
+address in `127.0.0.0/8` or `::1/128` with `allow_loopback: true`; a hostname cannot
+obtain that exception. Numeric prohibited destinations fail during configuration
+validation, and every DNS answer is checked again before each connection. One
+prohibited answer rejects the entire set before any socket or credential header
+is sent.
+
+These conservative exclusions follow IANA registries read on 2026-10-26:
+[IPv4 special-purpose](https://www.iana.org/assignments/iana-ipv4-special-registry/),
+[IPv6 special-purpose](https://www.iana.org/assignments/iana-ipv6-special-registry/),
+[IPv6 address space](https://www.iana.org/assignments/ipv6-address-space/), and
+[IPv6 global-unicast assignments](https://www.iana.org/assignments/ipv6-unicast-address-assignments/).
+The fixed routing policy requires code review when those registries change.
+It does not establish reachability of an allowed address. Offline regressions
+cover reserved literal URLs, mixed/rebinding DNS results, public destinations,
+loopback opt-in and standard-library property independence across Python versions.
+No actual provider credential disclosure is asserted by this hardening change.
+
 The execution listener accepts a bounded set of read-only JSON-RPC methods; it
 cannot submit transactions or invoke engine/admin/debug methods. The beacon
 listener accepts GET requests beneath beacon/config/node APIs, with indices

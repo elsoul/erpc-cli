@@ -20,19 +20,40 @@ implementation batch is ready. A deployment submission is not proof of sync.
 
 | Family | Networks and L2 IDs | Execution / derivation |
 | --- | --- | --- |
-| Optimism | mainnet 10; sepolia 11155420 | op-reth 2.6.1 / op-node 1.19.11 |
+| Optimism | mainnet 10; sepolia 11155420 | op-reth 2.8.0 / op-node 1.19.11 |
 | Base | mainnet 8453; sepolia 84532 | base-reth-node / base-consensus 1.5.1 |
-| Soneium | mainnet 1868; minato 1946 | op-reth 2.6.1 / op-node 1.19.11 |
+| Soneium | mainnet 1868; minato 1946 | op-reth 2.8.0 / op-node 1.19.11 |
 
-OP releases resolve to `e16bffa18420c86dbab693097bc33117f74a5f7d` (op-reth)
+OP releases resolve to `d6620202d4e563957830e688007a0cab29bd80f3` (op-reth)
 and `43c071cbff8ad7512581561aa2d43c990544b650` (op-node). Linux AMD64 and
 ARM64 OCI platform manifests are individually pinned in the
 [release catalog](../crates/erpc-chain-op/src/release.rs). The host pulls that digest
 and checks the resulting platform, repository digest and entrypoint/environment.
 No GPG signature, attestation or reproducible-build claim is made for these images.
 The initial trust is the official registry and release metadata over TLS.
-[op-reth release](https://github.com/ethereum-optimism/optimism/releases/tag/op-reth/v2.6.1),
+[op-reth release](https://github.com/ethereum-optimism/optimism/releases/tag/op-reth/v2.8.0),
 [op-node release](https://github.com/ethereum-optimism/optimism/releases/tag/op-node/v1.19.11).
+
+The November 4 qualification selects op-reth 2.8.0 for its derived-block
+validation and crash-recovery corrections. The existing op-node pair handles
+the invalid-payload-attributes response; this profile does not use kona-node.
+Base retains its own client pair. No existing chain's fork schedule changes in
+the op-reth release. The generated commands request Storage V2 for new databases; native clients
+retain the layout recorded in existing databases. They do not enable
+historical-proofs storage, state masking or the removed block-access-list flags.
+No database deletion or proofs-store recreation is part of this update.
+
+Review the release's RPC changes before upgrading consumers: missing/pruned log
+ranges can return errors instead of empty arrays, and the default persistence
+threshold increases from 7 to 50 blocks. ERPC retains the native recommended
+default; actual memory and crash recovery still need workload acceptance.
+
+The exact previous op-reth 2.6.1 / op-node 1.19.11 pairs remain recognized for
+resuming an original incomplete installation. Finish that retained target before
+an explicit `update` selects 2.8.0. The qualified old digest is not a replacement
+default, and host/controller downgrade checks still prevent returning from an
+installed newer pair. Original database, peer identities, JWT and provider
+credentials are retained through the update and its retries.
 
 Base uses its own native 1.5.1 binaries from commit
 `5476069f1eb74a56bccb56fdefd4b4bb0e3cda42`. Both archives must match the

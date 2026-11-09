@@ -7,7 +7,7 @@ Before=avalanchego.service avalanche-rpc.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/bin/python3 /usr/local/lib/erpc/avax-firewall.py load
+ExecStart={{ avax_control_unit }} firewall-load
 # Keep filtering on stop; rollback has its own operation-checked controller.
 [Install]
 WantedBy=multi-user.target

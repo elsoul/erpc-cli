@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Retire the original Arc validator host without erasing identity data or ingress
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Revoke pending work and stop only original retained native writers
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, -c, "{{ arc_validator_loader }}", "{{ playbook_dir }}/../../validator/control.py"]
+        stdin: "{{ {'action':'destroy','contract':arc_validator_contract} | to_json }}"
+      changed_when: true

@@ -1,0 +1,25 @@
+#!/usr/sbin/nft -f
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+# Dedicated follower: SSH only from management addresses. RPC, WS, metrics and
+# credentialed upstream transport are loopback-only. Outbound traffic is allowed.
+table inet erpc_{{ validator_family }}
+delete table inet erpc_{{ validator_family }}
+table inet erpc_{{ validator_family }} {
+  chain input {
+    type filter hook input priority 0
+    policy drop
+    ct state invalid drop
+    ct state established,related accept
+    iifname "lo" accept
+    ip protocol icmp accept
+    ip6 nexthdr ipv6-icmp accept
+{% for address in validator_management_v4 %}
+    tcp dport {{ validator_ssh_port }} ip saddr {{ address }} accept
+{% endfor %}
+{% for address in validator_management_v6 %}
+    tcp dport {{ validator_ssh_port }} ip6 saddr {{ address }} accept
+{% endfor %}
+    counter drop
+  }
+}

@@ -1,0 +1,51 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Prepare verified NEAR artifacts and preserve original peer identity
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Verify original owner and runtime account before any mutation
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/control.py", account, "{{ near_contract }}"]
+      changed_when: false
+    - name: Start the distribution container runtime
+      ansible.builtin.systemd_service:
+        name: docker
+        state: started
+        enabled: true
+    - name: Verify image and public artifacts then fence and prepare the node
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/setup.py", "{{ near_contract }}"]
+        stdin: "{{ near_prepare | to_json }}"
+      changed_when: true
+    - name: Install validator custody and observer after preparation
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/near_validator.py"
+        dest: /usr/local/lib/erpc/near/near_validator.py
+        owner: root
+        group: root
+        mode: '0644'
+    - name: Install controller only after the durable fence and graceful stop
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/control.py"
+        dest: /usr/local/lib/erpc/near/control.py
+        owner: root
+        group: root
+        mode: '0755'
+    - name: Install guarded node service
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/near.service.j2"
+        dest: /etc/systemd/system/near-node.service
+        owner: root
+        group: root
+        mode: '0644'
+    - name: Reload service definitions while installation remains fenced
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+    - name: Verify installed namespace and controller against carried source
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/control.py", publication, "{{ near_contract }}"]
+      changed_when: false

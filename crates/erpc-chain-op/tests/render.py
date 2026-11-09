@@ -40,6 +40,12 @@ def matrix():
                     el, cl = argv(rendered['execution.service.j2']), argv(rendered['consensus.service.j2'])
                     assert el[el.index('--chain')+1] == execution
                     assert ('--full' in el) == (history == 'full')
+                    assert '--storage.v2=true' in el
+                    assert not any(value.split('=')[0] in {'--minimal', '--proofs-history',
+                        '--engine.num-state-masking-blocks', '--engine.disable-bal-parallel-execution',
+                        '--engine.disable-bal-parallel-state-root', '--engine.disable-bal-batch-io',
+                        '--rpc-cache.max-bals', '--rpc-cache.cache-computed-bals',
+                        '--rpc-cache.prewarm-bals', '--db.balstore-cache-size'} for value in el)
                     for flag in ('--http.addr', '--ws.addr', '--authrpc.addr'):
                         assert el[el.index(flag)+1] == '127.0.0.1'
                     assert cl[cl.index('--rpc.addr')+1] == '127.0.0.1'

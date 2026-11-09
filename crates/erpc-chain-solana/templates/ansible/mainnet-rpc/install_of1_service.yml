@@ -88,7 +88,7 @@
           After=erpc-solana-rpc-firewall.service
 
           [Service]
-          ExecStartPre=+/usr/bin/python3 /usr/local/lib/erpc/rpc-firewall.py solana-rpc guard
+          ExecStartPre=+/usr/bin/python3 -I /usr/local/lib/erpc/rpc-firewall.py solana-rpc guard
           User=solv
           WorkingDirectory={{ faithful_workdir }}
           ExecStart={{ faithful_binary_path }} rpc --proxy={{ faithful_proxy_path }} --listen={{ faithful_listen }} --epoch-search-concurrency {{ faithful_epoch_search_concurrency }} --epoch-load-concurrency {{ faithful_epoch_load_concurrency }} {{ faithful_config_glob }}

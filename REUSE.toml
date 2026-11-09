@@ -20,6 +20,12 @@ precedence = "closest"
 SPDX-FileCopyrightText = "2021 ELSOUL LABO B.V."
 SPDX-License-Identifier = "Apache-2.0"
 
+# Public Ethereum transaction-test vector; no private key or signing fixture.
+[[annotations]]
+path = ["crates/erpc-chain-nitro/tests/fixtures/bold-public-transaction.json"]
+precedence = "closest"
+SPDX-FileCopyrightText = "2014-2025 Ethereum Foundation"
+SPDX-License-Identifier = "MIT"
 # Chain logos from @web3icons/core 4.0.58 (github.com/0xa3k5/web3icons), with
 # rounded tile corners and Base redrawn as its solid square. Each mark is a
 # trademark of its own project.

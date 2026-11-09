@@ -7,7 +7,7 @@ Requires=erpc-solana-rpc-firewall.service
 After=erpc-solana-rpc-firewall.service
 
 [Service]
-ExecStartPre=+/usr/bin/python3 /usr/local/lib/erpc/rpc-firewall.py solana-rpc guard
+ExecStartPre=+/usr/bin/python3 -I /usr/local/lib/erpc/rpc-firewall.py solana-rpc guard
 Type=simple
 Restart=always
 RestartSec=1

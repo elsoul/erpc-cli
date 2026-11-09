@@ -19,7 +19,7 @@
 
 - name: Validate the fetched image identity, platform and runtime contract
   ansible.builtin.command:
-    argv: [python3, "{{ op_scripts }}/install.py", image, "{{ op_conf }}/docker", "{{ item.reference }}", "{{ op_pair.architecture }}", "{{ item.program }}"]
+    argv: [/usr/bin/python3, -I, "{{ op_scripts }}/install.py", image, "{{ op_conf }}/docker", "{{ item.reference }}", "{{ op_pair.architecture }}", "{{ item.program }}"]
   loop:
     - { reference: "{{ op_execution_image }}", program: op-reth }
     - { reference: "{{ op_consensus_image }}", program: op-node }
@@ -60,7 +60,8 @@
 - name: Require pinned digest and public signer before extracting a native binary
   ansible.builtin.command:
     argv:
-      - python3
+      - /usr/bin/python3
+      - -I
       - "{{ op_scripts }}/install.py"
       - base
       - "{{ op_opt }}/{{ item.program }}.tar.gz"

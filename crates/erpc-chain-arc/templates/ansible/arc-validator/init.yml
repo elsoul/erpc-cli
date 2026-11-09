@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Reserve the dedicated Arc validator preparation host without signing activation
+  hosts: all
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  tasks:
+    - name: Require the qualified host platform before any reservation
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.distribution == 'Ubuntu'
+          - ansible_facts.distribution_version is version('24.04', '==')
+          - ansible_facts.architecture in ['x86_64', 'aarch64']
+          - ansible_facts.memtotal_mb >= 60000
+        quiet: true
+    - name: Reserve original numeric authority and external signer public inputs
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, -c, "{{ arc_validator_loader }}", "{{ playbook_dir }}/../../validator/control.py"]
+        stdin: "{{ {'action':'reserve','contract':arc_validator_contract,'remote_signer':arc_validator_remote,'ca':arc_validator_ca} | to_json }}"
+      changed_when: true
+    - name: Prepare only the reserved native accounts and original mounted data root
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, -c, "{{ arc_validator_loader }}", "{{ playbook_dir }}/../../validator/control.py"]
+        stdin: "{{ {'action':'provision','contract':arc_validator_contract} | to_json }}"
+      changed_when: true
+    - name: Install qualified prerequisites without starting package listeners
+      ansible.builtin.apt:
+        name: [ca-certificates, curl, jq, nftables, tar, openssl]
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+        policy_rc_d: 101
+    - name: Publish the exact immutable externally authenticated helper release
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, -c, "{{ arc_validator_loader }}", "{{ playbook_dir }}/../../validator/control.py"]
+        stdin: "{{ {'action':'publish-helpers','contract':arc_validator_contract,'helper_hash':arc_validator_helpers} | to_json }}"
+      changed_when: true

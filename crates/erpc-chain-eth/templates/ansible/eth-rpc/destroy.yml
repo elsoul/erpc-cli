@@ -1,97 +1,18 @@
 # SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
 # SPDX-License-Identifier: Apache-2.0
-#
-# erpc's Ethereum RPC node destroy: stops both layers and removes what deploy
-# put on the host: units, releases, the firewall table and its helpers, and
-# the JWT. The chain data stays unless `eth_purge_data`. The users, the data
-# disk's mount and the kernel and journal settings stay; init's other changes
-# are harmless to keep.
 ---
-- name: Destroy an Ethereum RPC node
+- name: Retire the original Ethereum host while preserving its identity and data
   hosts: all
   become: true
   gather_facts: false
   any_errors_fatal: true
-  vars_files:
-    - vars.yml
   tasks:
-    - name: Require legacy firewall operations to settle before teardown
-      ansible.builtin.stat:
-        path: /run/erpc-eth-firewall.armed
-      register: legacy_firewall
-    - name: Refuse an unsettled legacy rollback
+    - name: Refuse deletion or inventory detachment through an original-authority retirement
       ansible.builtin.assert:
-        that: not legacy_firewall.stat.exists
-        fail_msg: Wait for the previous legacy firewall operation to settle before retrying destroy.
-    - name: Create guarded teardown directories
-      ansible.builtin.file:
-        path: "{{ item.path }}"
-        state: directory
-        owner: root
-        group: root
-        mode: "{{ item.mode }}"
-      loop:
-        - {path: /usr/local/lib/erpc, mode: '0755'}
-        - {path: /etc/erpc/eth, mode: '0700'}
-    - name: Install the carried teardown controller
-      ansible.builtin.copy:
-        src: "{{ playbook_dir }}/../../rpc-firewall.py"
-        dest: /usr/local/lib/erpc/rpc-firewall.py
-        owner: root
-        group: root
-        mode: '0700'
-    - name: Fence and stop listeners before removing filtering
-      ansible.builtin.command: python3 /usr/local/lib/erpc/rpc-firewall.py eth teardown
+        that:
+          - not (eth_purge_data | default(false) | bool)
+    - name: Persist cancellation and attempt every original owned shutdown
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, -c, '{{ eth_authority_loader }}', '{{ playbook_dir }}/../../authority/control.py', request]
+        stdin: '{{ eth_authority_request | combine({"action":"destroy"}) | to_json }}'
       changed_when: true
-
-    - name: Stop and disable the services
-      ansible.builtin.systemd_service:
-        name: "{{ item }}"
-        state: stopped
-        enabled: false
-      loop:
-        - lighthouse
-        - reth
-        - reth-snapshot
-        - erpc-eth-firewall
-      failed_when: false
-
-    - name: Stop a firewall rollback still armed
-      ansible.builtin.command: systemctl stop erpc-eth-firewall-rollback.timer
-      changed_when: false
-      failed_when: false
-
-    - name: Remove the firewall table
-      ansible.builtin.command: nft delete table inet erpc_eth
-      register: eth_fw_delete
-      changed_when: eth_fw_delete.rc == 0
-      failed_when: false
-
-    - name: Remove what deploy put in place
-      ansible.builtin.file:
-        path: "{{ item }}"
-        state: absent
-      loop:
-        - /etc/systemd/system/reth.service
-        - /etc/systemd/system/lighthouse.service
-        - /etc/systemd/system/reth-snapshot.service
-        - /etc/systemd/system/erpc-eth-firewall.service
-        - "{{ eth_fw_dir }}"
-        - "{{ eth_fw_marker }}"
-        - "{{ eth_helpers }}/erpc-eth-firewall-rollback.sh"
-        - "{{ eth_helpers }}/erpc-eth-firewall-confirm.sh"
-        - "{{ eth_jwt }}"
-        - "{{ eth_opt }}"
-
-    - name: Forget the removed units
-      ansible.builtin.systemd_service:
-        daemon_reload: true
-
-    - name: Delete the chain data
-      ansible.builtin.file:
-        path: "{{ item }}"
-        state: absent
-      loop:
-        - "{{ eth_reth_dir }}"
-        - "{{ eth_lighthouse_dir }}"
-      when: eth_purge_data | default(false) | bool

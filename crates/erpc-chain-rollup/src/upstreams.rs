@@ -114,6 +114,38 @@ impl Credential {
     }
 }
 
+/// A concealed execution-only parent-chain transport for clients such as Heimdall.
+/// It deliberately grants no beacon route or transaction-submission authority.
+pub struct ExecutionCredential(SecretString);
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExecutionSchema {
+    execution: Endpoint,
+}
+
+impl ExecutionCredential {
+    /// Validate the single explicitly selected parent execution endpoint.
+    /// # Errors
+    /// Applies the same URL/header/loopback policy as the two-endpoint profile,
+    /// and rejects beacon fields or any additional destination.
+    pub fn parse(raw: SecretString) -> Result<Self, InvalidCredential> {
+        if raw.expose_secret().len() > 65_536 {
+            return Err(InvalidCredential);
+        }
+        let schema: ExecutionSchema =
+            serde_json::from_str(raw.expose_secret()).map_err(|_| InvalidCredential)?;
+        schema.execution.validate()?;
+        Ok(Self(raw))
+    }
+
+    /// Borrow only for private credential transport, never logs or arguments.
+    #[must_use]
+    pub const fn secret(&self) -> &SecretString {
+        &self.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Credential, InvalidCredential};
@@ -165,6 +197,31 @@ mod tests {
             InvalidCredential.to_string(),
             "invalid concealed L1 upstream configuration"
         );
+    }
+
+    #[test]
+    fn execution_only_profile_preserves_shared_policy_without_weakening_two_endpoint_schema() {
+        use super::ExecutionCredential;
+        let raw = json!({"execution":{"url":"https://github.com","headers":{"Authorization":"unit-test-provider-placeholder"}}}).to_string();
+        assert!(Credential::parse(raw.clone().into()).is_err());
+        assert_eq!(
+            ExecutionCredential::parse(raw.clone().into())
+                .unwrap_or_else(|_| panic!("valid execution-only credential"))
+                .secret()
+                .expose_secret(),
+            &raw
+        );
+        assert!(ExecutionCredential::parse(config("https://github.com", false)).is_err());
+        for endpoint in [
+            json!({"url":"https://edge.erpc.global"}),
+            json!({"url":"http://127.0.0.1"}),
+            json!({"url":"https://github.com","headers":{"Host":"github.com"}}),
+        ] {
+            assert!(
+                ExecutionCredential::parse(json!({"execution":endpoint}).to_string().into())
+                    .is_err()
+            );
+        }
     }
 
     #[test]

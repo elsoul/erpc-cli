@@ -108,11 +108,11 @@ first of the set is the one `init` suggests.
 2. `--vps <id>`, an ERPC VPS of the account;
 3. `--new-vps`, the cheapest hourly VPS in the region nearest this machine (by
    its time zone; `--region` and `--plan` choose otherwise);
-4. `--host <address>`, a server of your own: Ubuntu or Debian with systemd
-   and nftables, reached as root or a user with passwordless sudo; the
-   worker's firewall then drops every inbound connection to that server but
-   SSH and the app's port, so a server that serves anything else is not the
-   one to use;
+4. `--host <address>`, a server of your own: Ubuntu or Debian with systemd,
+   nftables, `sudo` and Python 3 at `/usr/bin/python3`, reached as root or a
+   user with passwordless sudo; the worker's firewall then drops every inbound
+   connection to that server but SSH and the app's port, so a server that
+   serves anything else is not the one to use;
 5. otherwise, at a terminal, a list of the account's running VPSs, with "start
    a new one" at the end.
 

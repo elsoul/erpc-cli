@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+[Unit]
+Description=ERPC NEAR {{ near_network }} {{ "validator" if near_validator | default(false) else "follower" }}
+Requires=docker.service erpc-near-firewall.service
+After=network-online.target docker.service erpc-near-firewall.service
+Wants=network-online.target
+RequiresMountsFor=/var/lib/near /etc/near /etc/erpc/near
+
+[Service]
+Type=exec
+UMask=0077
+LimitCORE=0
+LoadCredentialEncrypted=node-key.json:/etc/credstore.encrypted/near-node.key
+{% if near_validator | default(false) %}
+LoadCredentialEncrypted=validator-key.json:/etc/credstore.encrypted/near-validator.key
+{% endif %}
+RuntimeDirectory=erpc-near
+RuntimeDirectoryMode=0700
+ExecStartPre={{ near_systemd_control }} guard {{ near_contract }}
+ExecStart={{ near_systemd_control }} run {{ near_contract }}
+ExecStop={{ near_systemd_control }} stop-container {{ near_contract }}
+TimeoutStartSec=300
+TimeoutStopSec=240
+Restart=on-failure
+RestartSec=30
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/run/erpc-near
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

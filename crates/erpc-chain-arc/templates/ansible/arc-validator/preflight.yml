@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Qualify dedicated original Arc validator host before public inventory or peer-key creation
+  hosts: all
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  tasks:
+    - name: Require qualified native platform and memory
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.distribution == 'Ubuntu'
+          - ansible_facts.distribution_version is version('24.04', '==')
+          - ansible_facts.architecture in ['x86_64', 'aarch64']
+          - ansible_facts.memtotal_mb >= 60000
+        quiet: true
+    - name: Refuse foreign original authority accounts data or helper namespaces
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, -c, "{{ arc_validator_loader }}", "{{ playbook_dir }}/../../validator/control.py"]
+        stdin: "{{ arc_validator_request | to_json }}"
+      changed_when: false

@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+[Unit]
+Description=ERPC original Arbitrum One assertion validator
+Requires=docker.service erpc-arbitrum-upstreams.service erpc-arbitrum-firewall.service
+BindsTo=erpc-arbitrum-upstreams.service
+After=network-online.target docker.service erpc-arbitrum-upstreams.service erpc-arbitrum-firewall.service
+Wants=network-online.target
+RequiresMountsFor=/var/lib/erpc-nitro/data /etc/erpc/arbitrum-validator
+
+[Service]
+Type=exec
+User=0
+Group=0
+UMask=0077
+LimitCORE=0
+{% if validator_request.target.phase == 'active' %}
+LoadCredentialEncrypted=arbitrum-wallet:/etc/credstore.encrypted/arbitrum-validator/wallet.cred
+{% endif %}
+ExecCondition={{ validator_condition_command }} runtime-condition node
+ExecStartPre={{ validator_runtime_command }} runtime-prepare node
+ExecStart={{ validator_runtime_command }} runtime-run node
+ExecStop={{ validator_runtime_command }} runtime-stop node
+TimeoutStartSec=180
+TimeoutStopSec=240
+Restart=no
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/erpc-nitro /run/erpc-arbitrum-validator
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

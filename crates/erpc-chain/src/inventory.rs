@@ -24,17 +24,41 @@
 //!   pinned, the node's identity once it has one, who may reach it, and the
 //!   `solv` password as a concealed field, as a validator host has it.
 //!
-//! Items are found by tag, `erpc` and `erpc/<chain>/<network>/<kind>`, in two
-//! `op` calls for the whole inventory: one listing, piped into one `item get`.
+//! Legacy item readers use a tag listing piped into one `item get`. Arc uses
+//! selected public fields instead: listings never request key references or
+//! concealed values. Its explicit writes use typed snapshots and readback.
 //! A write rereads the item, refuses if it changed since it was read, edits
 //! it, and reads it back. 1Password has no compare-and-swap, so this narrows
 //! a race between two writers rather than closing it; a local lock keeps one
 //! erpc from racing itself.
 
+#[path = "arc_inventory.rs"]
+mod arc_inventory;
+/// Dedicated Arc validator inventory, isolated from RPC metadata and key references.
+#[path = "arc_validator_inventory.rs"]
+pub mod arc_validator;
+
 #[path = "avax_inventory.rs"]
 pub mod avax;
+pub mod monad;
+pub mod polygon;
+
+/// Public ownership for Hyperliquid non-validator hosts.
+pub mod hyperliquid;
+/// Separate original AQA agent publisher host metadata.
+pub mod hyperliquid_aqa;
+/// Dedicated Hyperliquid consensus-hot ownership, separate from RPC records.
+pub mod hyperliquid_validator;
 /// OP-family follower ownership records.
 pub mod rollup;
+pub mod solana_listing;
+pub mod solana_migration;
+mod solana_migration_item;
+pub mod solana_migration_pending;
+pub mod solana_migration_reference;
+/// Separate native Solana host ownership.
+pub mod solana_native;
+pub mod solana_public;
 pub mod sui;
 pub mod tron;
 
@@ -50,11 +74,22 @@ use serde_json::{Value, json};
 /// rather than guessing at its fields.
 pub const FORMAT: &str = "1";
 
+/// Original Arbitrum assertion-validator public ownership records.
+pub mod arbitrum_validator;
 /// Bitcoin host ownership records.
 pub mod bitcoin;
+/// BSC host ownership and bootstrap records.
+pub mod bsc;
+/// BSC validator ownership, separate from RPC inventory.
+pub mod bsc_validator;
 /// Ethereum validator ownership inventory.
 pub mod eth_validator;
+pub mod kaia;
+pub mod kaia_corecell;
+/// Dedicated NEAR RPC ownership.
+pub mod near;
 pub mod nitro;
+pub mod robinhood_validator;
 /// The tag every inventory item carries.
 pub const TAG: &str = "erpc";
 
@@ -63,18 +98,27 @@ pub const TAG: &str = "erpc";
 pub enum Kind {
     /// A logical validator.
     Validator,
+    /// A dedicated native Solana host, separate from legacy Solv credentials.
+    NativeHost,
+    /// Original public intent while an explicit Solv copy migration is pending.
+    NativeMigration,
     /// A machine running one.
     Host,
     /// A machine serving RPC, on a chain whose RPC nodes stand alone.
     Rpc,
+    /// A separately owned validator-side publisher with dedicated agent custody.
+    Publisher,
 }
 
 impl Kind {
     const fn as_str(self) -> &'static str {
         match self {
             Self::Validator => "validator",
+            Self::NativeHost => "native-host",
+            Self::NativeMigration => "native-migration",
             Self::Host => "host",
             Self::Rpc => "rpc",
+            Self::Publisher => "publisher",
         }
     }
 }
@@ -232,7 +276,8 @@ pub struct RpcNode {
     pub commit: String,
     /// The SHA-256 of the release archive for the node's platform.
     pub archive_sha256: String,
-    /// The `op://` reference of the consensus key.
+    /// Legacy stored `op://` reference, left empty by public projection.
+    /// Explicit custody operations use [`Store::arc_key_reference`].
     pub consensus_key_ref: String,
     /// The consensus key's public half, to check what the node runs with.
     pub consensus_public_key: String,
@@ -467,6 +512,26 @@ impl OpItem {
     }
 }
 
+/// The selected `fields` in the shape `op item get --fields … --format json`
+/// prints them, for the test doubles: `op` leaves `value` out of a field whose
+/// value is empty, and prints one object, not an array, when exactly one
+/// field is selected.
+#[cfg(test)]
+fn fields_as_op_prints(mut fields: Vec<Value>) -> Value {
+    for field in &mut fields {
+        if let Some(field) = field.as_object_mut()
+            && field.get("value").and_then(Value::as_str) == Some("")
+        {
+            field.remove("value");
+        }
+    }
+    if fields.len() == 1 {
+        fields.remove(0)
+    } else {
+        Value::Array(fields)
+    }
+}
+
 /// The fields of a validator, in a fixed order.
 fn validator_fields(v: &Validator) -> Vec<(&'static str, String)> {
     vec![
@@ -626,7 +691,13 @@ impl<R: OpRunner> Store<R> {
     fn title(&self, kind: Kind, name: &str) -> String {
         match kind {
             Kind::Validator => format!("erpc {} {name} validator", self.scope.network),
+            Kind::NativeHost => format!("erpc {} {name} native-host", self.scope.network),
+            Kind::NativeMigration => format!("erpc {} {name} native-migration", self.scope.network),
             Kind::Host => format!("erpc {} {name} host", self.scope.network),
+            Kind::Publisher => format!(
+                "erpc {} {name} {}-publisher",
+                self.scope.network, self.scope.chain
+            ),
             Kind::Rpc => format!(
                 "erpc {} {name} {}-rpc",
                 self.scope.network, self.scope.chain
@@ -708,56 +779,6 @@ impl<R: OpRunner> Store<R> {
             .map(read_host)
             .collect::<Result<_, _>>()?;
         Ok(Inventory { validators, hosts })
-    }
-
-    /// The RPC nodes of the scope, in two `op` calls.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`InventoryError`] when `op` fails or an item is not in this
-    /// version's format.
-    pub fn rpc_nodes(&self) -> Result<Vec<RpcNode>, InventoryError> {
-        self.items(Kind::Rpc)?.iter().map(read_rpc_node).collect()
-    }
-
-    /// Stores a new RPC node.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`InventoryError::Refused`] when the name or the address is
-    /// taken or the name is not acceptable, and other errors when `op` fails.
-    pub fn add_rpc_node(&self, node: &RpcNode) -> Result<RpcNode, InventoryError> {
-        check_name(&node.name)?;
-        let _lock = self.lock()?;
-        if let Some(other) = self
-            .rpc_nodes()?
-            .into_iter()
-            .find(|n| n.name == node.name || n.address == node.address)
-        {
-            return Err(InventoryError::Refused(format!(
-                "RPC node {:?} at {} is already in the inventory",
-                other.name, other.address
-            )));
-        }
-        let item = self.create(Kind::Rpc, &node.name, &rpc_node_fields(node), None)?;
-        read_rpc_node(&item)
-    }
-
-    /// Writes the fields of a stored RPC node, as [`Store::update_host`] does.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`InventoryError::Changed`] when the item changed meanwhile.
-    pub fn update_rpc_node(&self, node: &RpcNode) -> Result<RpcNode, InventoryError> {
-        let _lock = self.lock()?;
-        let item = self.update(
-            Kind::Rpc,
-            (node.id.as_deref(), node.item_version),
-            &node.name,
-            &rpc_node_fields(node),
-            None,
-        )?;
-        read_rpc_node(&item)
     }
 
     /// The Solana RPC nodes of the scope, in two `op` calls.
@@ -1401,9 +1422,8 @@ mod tests {
     use secrecy::{ExposeSecret as _, SecretString};
     use serde_json::{Value, json};
 
-    use super::{
-        EthRpc, Host, InventoryError, Jito, Role, RpcNode, Scope, SolanaRpc, Store, Validator,
-    };
+    use super::solana_native::{NativeConfig, NativeHost};
+    use super::{EthRpc, Host, InventoryError, Jito, Role, Scope, SolanaRpc, Store, Validator};
 
     /// `op`, in memory: enough of `item list/get/create/edit` and `read` to
     /// exercise the store, and a record of every argv it was given.
@@ -1700,125 +1720,6 @@ mod tests {
         assert!(matches!(s.load(), Err(InventoryError::Item { .. })));
     }
 
-    fn arc_store(op: &FakeOp) -> Store<&FakeOp> {
-        let dir = std::env::temp_dir().join(format!("erpc-inventory-arc-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("dir");
-        Store::new(
-            op,
-            "vaultid",
-            Scope {
-                chain: "arc".to_owned(),
-                network: "testnet".to_owned(),
-            },
-            dir.join("inventory.lock"),
-        )
-    }
-
-    fn rpc_node(name: &str, address: &str) -> RpcNode {
-        RpcNode {
-            name: name.to_owned(),
-            address: address.to_owned(),
-            ssh_user: "ubuntu".to_owned(),
-            ssh_port: 22,
-            host_key:
-                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINUFbvp9NNSqiS0AfqlG4aRt4PZ125MdCaIRGfMurzG/"
-                    .to_owned(),
-            version: "v0.8.1".to_owned(),
-            commit: "ab09dbf0123456789abcdef0123456789abcdef0".to_owned(),
-            archive_sha256: "a".repeat(64),
-            consensus_key_ref: "op://vaultid/keyitem/private_key".to_owned(),
-            consensus_public_key: "pubkey".to_owned(),
-            rpc_type: "full".to_owned(),
-            rpc_allow: vec!["198.51.100.0/24".to_owned(), "203.0.113.9".to_owned()],
-            management_allow: Vec::new(),
-            monitoring_allow: vec!["192.0.2.50".to_owned()],
-            ..RpcNode::default()
-        }
-    }
-
-    #[test]
-    fn an_rpc_node_round_trips_with_its_allow_lists() {
-        let op = FakeOp::default();
-        let s = arc_store(&op);
-        let stored = s
-            .add_rpc_node(&rpc_node("arc1", "203.0.113.5"))
-            .expect("stored");
-        assert_eq!(stored.rpc_allow, ["198.51.100.0/24", "203.0.113.9"]);
-        assert!(stored.management_allow.is_empty());
-        {
-            let items = op.items.borrow();
-            assert_eq!(items[0]["title"], "erpc testnet arc1 arc-rpc");
-            assert!(
-                items[0]["tags"]
-                    .as_array()
-                    .expect("tags")
-                    .contains(&json!("erpc/arc/testnet/rpc"))
-            );
-        }
-        op.calls.borrow_mut().clear();
-        assert_eq!(s.rpc_nodes().expect("loads"), std::slice::from_ref(&stored));
-        assert_eq!(op.calls.borrow().len(), 2);
-        let updated = s
-            .update_rpc_node(&RpcNode {
-                last_result: "deploy ok".to_owned(),
-                ..stored
-            })
-            .expect("updated");
-        assert_eq!(updated.last_result, "deploy ok");
-    }
-
-    #[test]
-    fn a_provider_node_keeps_its_peers_and_an_old_item_is_full() {
-        let op = FakeOp::default();
-        let s = arc_store(&op);
-        let stored = s
-            .add_rpc_node(&RpcNode {
-                rpc_type: "provider".to_owned(),
-                debug_api: false,
-                trusted_peers: vec![format!("enode://{}@192.0.2.7:30303", "ab".repeat(64))],
-                sentry_peers: vec!["/ip4/192.0.2.8/tcp/27000/p2p/12D3KooWabc".to_owned()],
-                ..rpc_node("arc1", "203.0.113.5")
-            })
-            .expect("stored");
-        assert_eq!(stored.rpc_type, "provider");
-        assert_eq!(stored.trusted_peers.len(), 1);
-        assert_eq!(
-            stored.sentry_peers,
-            ["/ip4/192.0.2.8/tcp/27000/p2p/12D3KooWabc"]
-        );
-        let old = s
-            .add_rpc_node(&RpcNode {
-                rpc_type: String::new(),
-                ..rpc_node("arc2", "203.0.113.6")
-            })
-            .expect("stored");
-        assert_eq!(old.rpc_type, "full");
-        assert!(!old.debug_api);
-    }
-
-    #[test]
-    fn an_rpc_node_name_or_address_twice_is_refused_and_nothing_leaks_to_argv() {
-        let op = FakeOp::default();
-        let s = arc_store(&op);
-        s.add_rpc_node(&rpc_node("arc1", "203.0.113.5"))
-            .expect("stored");
-        for twice in [
-            rpc_node("arc1", "203.0.113.6"),
-            rpc_node("arc2", "203.0.113.5"),
-        ] {
-            assert!(matches!(
-                s.add_rpc_node(&twice),
-                Err(InventoryError::Refused(_))
-            ));
-        }
-        for call in op.calls.borrow().iter() {
-            let line = call.join(" ");
-            for secret in ["203.0.113.5", "AAAAC3NzaC1lZDI1NTE5", "198.51.100.0"] {
-                assert!(!line.contains(secret), "{secret} in argv: {line}");
-            }
-        }
-    }
-
     fn mainnet_store(op: &FakeOp) -> Store<&FakeOp> {
         let dir =
             std::env::temp_dir().join(format!("erpc-inventory-solana-rpc-{}", std::process::id()));
@@ -1889,87 +1790,6 @@ mod tests {
             }),
             Err(InventoryError::Refused(_))
         ));
-    }
-
-    #[test]
-    fn avalanche_identity_and_backup_are_immutable_and_not_in_argv() {
-        use super::avax::AvaxNode;
-        let op = FakeOp::default();
-        let dir = tempfile_dir();
-        let s = Store::new(
-            &op,
-            "vaultid",
-            Scope {
-                chain: "avax".into(),
-                network: "fuji".into(),
-            },
-            dir.join("avax.lock"),
-        );
-        let node = AvaxNode {
-            name: "av1".into(),
-            address: "192.0.2.10".into(),
-            network: "fuji".into(),
-            rpc_type: "full".into(),
-            validator: true,
-            ..AvaxNode::default()
-        };
-        let stored = s.add_avax_node(&node).expect("create");
-        assert!(s.add_avax_node(&node).is_err());
-        let pinned = s
-            .update_avax_node(&AvaxNode {
-                node_id: "public-node-id".into(),
-                identity_hashes: json!({"public":"digest"}),
-                node_pop: json!({"public":"proof"}),
-                ..stored.clone()
-            })
-            .expect("pin");
-        assert!(s.update_avax_node(&stored).is_err());
-        let secret = SecretString::from("inert encrypted-backup fixture");
-        let backed = s.backup_avax_identity(&pinned, &secret).expect("backup");
-        assert_eq!(
-            s.avax_identity_backup(&backed)
-                .expect("read")
-                .expose_secret(),
-            secret.expose_secret()
-        );
-        for altered in [
-            AvaxNode {
-                address: "192.0.2.11".into(),
-                ..backed.clone()
-            },
-            AvaxNode {
-                node_id: "different".into(),
-                ..backed.clone()
-            },
-            AvaxNode {
-                rpc_type: "archive".into(),
-                ..backed.clone()
-            },
-            AvaxNode {
-                validator: false,
-                ..backed.clone()
-            },
-        ] {
-            assert!(s.update_avax_node(&altered).is_err());
-        }
-        let updated = s
-            .update_avax_node(&AvaxNode {
-                last_result: "ok".into(),
-                ..backed
-            })
-            .expect("update");
-        assert_eq!(
-            s.avax_identity_backup(&updated)
-                .expect("retained")
-                .expose_secret(),
-            secret.expose_secret()
-        );
-        assert!(
-            !format!("{:?}", s.avax_nodes().expect("listing")).contains(secret.expose_secret())
-        );
-        for call in op.calls.borrow().iter() {
-            assert!(!call.join(" ").contains(secret.expose_secret()));
-        }
     }
 
     fn solana_rpc(name: &str, address: &str) -> SolanaRpc {
@@ -2206,9 +2026,213 @@ mod tests {
         );
     }
 
+    #[test]
+    fn polygon_original_signer_binding_is_monotonic_and_sentry_policy_remains_mutable() {
+        use super::polygon::{PolygonNode, PolygonSentry, PolygonValidator};
+        let op = FakeOp::default();
+        let dir = tempfile_dir();
+        let store = Store::new(
+            &op,
+            "vaultid",
+            Scope {
+                chain: "polygon".into(),
+                network: "amoy".into(),
+            },
+            dir.join("polygon-key.lock"),
+        );
+        let original = PolygonNode {
+            name: "validator-one".into(),
+            address: "192.0.2.1".into(),
+            ssh_user: "ubuntu".into(),
+            ssh_port: 22,
+            host_key: "fixture-pinned-host".into(),
+            network: "amoy".into(),
+            role: "validator".into(),
+            architecture: "x86_64".into(),
+            advertise_ip: "192.0.2.2".into(),
+            upstream_ref: format!("op://{}/{}/l1", "a".repeat(26), "b".repeat(26)),
+            profile: serde_json::json!({"network":"amoy"}),
+            validator: Some(PolygonValidator {
+                phase: "observing".into(),
+                stake_owner: format!("0x{}", "cd".repeat(20)),
+                signer: format!("0x{}", "ab".repeat(20)),
+                creation: "c".repeat(32),
+                original_ref: String::new(),
+                original_ready: false,
+                sentries: vec![PolygonSentry {
+                    address: "192.0.2.3".into(),
+                    bor_node_id: "ab".repeat(64),
+                    heimdall_node_id: "cd".repeat(20),
+                }],
+            }),
+            ..PolygonNode::default()
+        };
+        let saved = store
+            .add_polygon_node(&original)
+            .expect("public creation binding");
+        let mut ready = saved.clone();
+        let authority = ready.validator.as_mut().expect("authority");
+        authority.original_ref =
+            format!("op://{}/{}/signer_secret", "a".repeat(26), "b".repeat(26));
+        authority.original_ready = true;
+        let ready = store
+            .update_polygon_node(&ready)
+            .expect("one-way read-back transition");
+        for field in ["owner", "signer", "creation", "reference", "readiness"] {
+            let mut changed = ready.clone();
+            let authority = changed.validator.as_mut().expect("authority");
+            match field {
+                "owner" => authority.stake_owner = format!("0x{}", "ef".repeat(20)),
+                "signer" => authority.signer = format!("0x{}", "ef".repeat(20)),
+                "creation" => authority.creation = "d".repeat(32),
+                "reference" => {
+                    authority.original_ref =
+                        format!("op://{}/{}/signer_secret", "a".repeat(26), "c".repeat(26));
+                }
+                _ => {
+                    authority.original_ref.clear();
+                    authority.original_ready = false;
+                }
+            }
+            assert!(store.update_polygon_node(&changed).is_err(), "{field}");
+        }
+        let mut changed = ready.clone();
+        changed.validator.as_mut().expect("authority").sentries[0].address = "192.0.2.4".into();
+        assert!(store.update_polygon_node(&changed).is_ok());
+        let mut shared_owner = original.clone();
+        shared_owner.name = "invalid-owner".into();
+        shared_owner.address = "192.0.2.5".into();
+        let authority = shared_owner.validator.as_mut().expect("authority");
+        authority.stake_owner.clone_from(&authority.signer);
+        assert!(store.add_polygon_node(&shared_owner).is_err());
+    }
+
+    #[test]
+    fn polygon_inventory_preserves_owner_and_separates_roles_and_networks() {
+        use super::polygon::PolygonNode;
+        let op = FakeOp::default();
+        let dir = tempfile_dir();
+        let store = Store::new(
+            &op,
+            "vaultid",
+            Scope {
+                chain: "polygon".into(),
+                network: "amoy".into(),
+            },
+            dir.join("polygon.lock"),
+        );
+        let original = PolygonNode {
+            name: "one".into(),
+            address: "192.0.2.1".into(),
+            ssh_user: "ubuntu".into(),
+            ssh_port: 22,
+            host_key: "fixture-pinned-host".into(),
+            network: "amoy".into(),
+            role: "fullnode".into(),
+            architecture: "x86_64".into(),
+            advertise_ip: "192.0.2.2".into(),
+            upstream_ref: format!("op://{}/{}/l1", "a".repeat(26), "b".repeat(26)),
+            profile: serde_json::json!({"network":"amoy"}),
+            ..PolygonNode::default()
+        };
+        let saved = store
+            .add_polygon_node(&original)
+            .expect("stable reservation");
+        assert!(saved.id.is_some());
+        let mut duplicate = original.clone();
+        duplicate.role = "validator".into();
+        duplicate.name = "two".into();
+        assert!(store.add_polygon_node(&duplicate).is_err());
+        for field in [
+            "network",
+            "role",
+            "architecture",
+            "address",
+            "name",
+            "host_key",
+        ] {
+            let mut changed = saved.clone();
+            match field {
+                "network" => changed.network = "mainnet".into(),
+                "role" => changed.role = "validator".into(),
+                "architecture" => changed.architecture = "aarch64".into(),
+                "address" => changed.address = "192.0.2.3".into(),
+                "name" => changed.name = "renamed".into(),
+                _ => changed.host_key = "changed".into(),
+            }
+            assert!(store.update_polygon_node(&changed).is_err(), "{field}");
+        }
+        let mut rotation = saved.clone();
+        rotation.upstream_ref = format!("op://{}/{}/l1", "a".repeat(26), "c".repeat(26));
+        let rotated = store
+            .update_polygon_node(&rotation)
+            .expect("explicit parent rotation");
+        assert_eq!(rotated.id, saved.id);
+        assert!(
+            store.update_polygon_node(&saved).is_err(),
+            "stale version cannot undo rotation"
+        );
+    }
+
+    #[test]
+    fn the_doubles_print_selected_fields_as_op_does() {
+        let field = |label: &str, value: &str| -> Value {
+            json!({"id":label,"label":label,"type":"STRING","value":value})
+        };
+        // An empty value has no key at all.
+        assert_eq!(
+            super::fields_as_op_prints(vec![field("name", "tv1"), field("region", "")]),
+            json!([field("name", "tv1"), {"id":"region","label":"region","type":"STRING"}])
+        );
+        // One selected field is an object, not an array of one.
+        assert_eq!(
+            super::fields_as_op_prints(vec![field("region", "")]),
+            json!({"id":"region","label":"region","type":"STRING"})
+        );
+        assert_eq!(
+            super::fields_as_op_prints(vec![field("name", "tv1")]),
+            field("name", "tv1")
+        );
+    }
+
+    #[test]
+    fn op_errors_keep_the_first_line_without_control_characters_and_at_most_300_long() {
+        // What op wrote to standard error goes to a terminal and into --json:
+        // no escape sequence, bell, carriage return or other control
+        // character of it, and no more than 300 characters.
+        let stderr = format!(
+            "\n  [ERROR] a\u{1b}[31mb\u{7}c\rd\u{9b}e\u{0}f {}\nan inert second line\n",
+            "x".repeat(400)
+        );
+        let InventoryError::Op { operation, reason } =
+            super::op_error("list the inventory", &stderr)
+        else {
+            panic!("op's failure is an op failure");
+        };
+        assert_eq!(operation, "list the inventory");
+        let shown = format!("[ERROR] a[31mbcdef {}", "x".repeat(400));
+        assert_eq!(reason, shown.chars().take(300).collect::<String>());
+        assert_eq!(reason.chars().count(), 300);
+        assert!(!reason.chars().any(char::is_control), "{reason:?}");
+        // Blank standard error says so.
+        assert_eq!(
+            super::op_error("read the item", " \n\t\n").to_string(),
+            "1Password could not read the item: no reason given"
+        );
+    }
+
     /// One real round trip through 1Password: create a validator and a host,
-    /// read them back, update the host, then remove both. Run by hand with
-    /// `ERPC_TEST_VAULT=<vault id>`; it asks 1Password for approval.
+    /// read them back, update the host, then remove both. Then what a first
+    /// native `erpc v init` stores for a new validator, and the listing
+    /// `erpc v list` reads of it. Run by hand with
+    /// `ERPC_TEST_VAULT=<vault id>`; it asks 1Password for approval. The
+    /// first half removes its validator and host when each of its steps
+    /// passes; one that fails can leave them in the vault, under the
+    /// `roundtrip` network tag. The native half looks for the items it made,
+    /// whatever happened, and removes them or names any it could not. The
+    /// native items can only be made in the vault's Solana testnet scope, so
+    /// that half refuses a vault that holds such an inventory: name a vault
+    /// without one.
     #[test]
     #[ignore = "writes to a real 1Password vault"]
     fn a_real_round_trip_through_1password() {
@@ -2217,8 +2241,8 @@ mod tests {
         let runner = OpCli::from_env(Mode::Desktop, |n| std::env::var_os(n)).expect("op");
         let dir = tempfile_dir();
         let s = Store::new(
-            runner,
-            vault,
+            runner.clone(),
+            vault.clone(),
             Scope {
                 chain: "solana".to_owned(),
                 network: "roundtrip".to_owned(),
@@ -2259,7 +2283,191 @@ mod tests {
             .expect("host removed");
         s.remove(v.id.as_deref().expect("id"))
             .expect("validator removed");
+        let native = real_native_registration(&runner, &vault, &name);
         result.expect("round trip");
+        assert!(native.is_empty(), "{}", native.join("\n"));
+    }
+
+    /// What a first native `erpc v init` stores for a new validator: its
+    /// registration, which leaves four of its fields empty, its host and that
+    /// host's settings.
+    fn native_registration(name: &str) -> (Validator, NativeHost, NativeConfig) {
+        use erpc_chain_solana_native::contract::{Contract, Volumes, host_binding};
+        let reference = |item: &str| format!("op://{}/{}/keypair", "v".repeat(26), item.repeat(26));
+        let source = erpc_chain_solana_native::catalog()
+            .expect("catalog")
+            .networks
+            .remove("testnet")
+            .expect("a testnet release");
+        let key = host("x", "198.51.100.8", Role::Primary).host_key;
+        let validator = Validator {
+            name: name.to_owned(),
+            identity_account: "2".repeat(44),
+            identity_ref: reference("k"),
+            vote_account: "3".repeat(44),
+            authority_account: "4".repeat(44),
+            client: "agave".to_owned(),
+            version: source.version,
+            commit: source.commit,
+            ..Validator::default()
+        };
+        let node = NativeHost {
+            item_version: 0,
+            address: "198.51.100.8".to_owned(),
+            ssh_user: "ubuntu".to_owned(),
+            ssh_port: 22,
+            contract: Contract {
+                schema: 1,
+                profile: "agave-native".to_owned(),
+                inventory_id: String::new(),
+                name: name.to_owned(),
+                network: "testnet".to_owned(),
+                host_binding: host_binding("198.51.100.8", "ubuntu", 22, &key),
+                identity_account: validator.identity_account.clone(),
+                vote_account: Some(validator.vote_account.clone()),
+                authority_account: Some(validator.authority_account.clone()),
+                volumes: Volumes {
+                    accounts: "10000000-0000-0000-0000-000000000001".to_owned(),
+                    ledger: "10000000-0000-0000-0000-000000000002".to_owned(),
+                    snapshots: "10000000-0000-0000-0000-000000000003".to_owned(),
+                },
+            },
+            host_key: key,
+        };
+        let settings = NativeConfig {
+            identity_ref: reference("k"),
+            sync_ref: Some(reference("s")),
+            sync_identity: Some("5".repeat(44)),
+            rpc_allow: Vec::new(),
+            management_allow: Vec::new(),
+            commission: Some(5),
+        };
+        (validator, node, settings)
+    }
+
+    /// The native half of the real round trip, and what went wrong in it:
+    /// this is where the way 1Password keeps and prints an empty field shows.
+    /// Whatever happened, the items are found again by their titles and
+    /// removed.
+    fn real_native_registration(
+        runner: &erpc_auth::store::one_password::OpCli,
+        vault: &str,
+        name: &str,
+    ) -> Vec<String> {
+        use super::Kind;
+        let s = Store::new(
+            runner.clone(),
+            vault,
+            Scope {
+                chain: "solana".to_owned(),
+                network: "testnet".to_owned(),
+            },
+            tempfile_dir().join("inventory.lock"),
+        );
+        // A test item must never sit beside a real one, or be listed with it.
+        for kind in [
+            Kind::Validator,
+            Kind::Host,
+            Kind::Rpc,
+            Kind::NativeHost,
+            Kind::NativeMigration,
+        ] {
+            match s.items(kind) {
+                Ok(items) if items.is_empty() => {}
+                Ok(_) => {
+                    return vec![
+                        "the vault holds a Solana testnet inventory, so the native half wrote \
+                         nothing; name a vault without one"
+                            .to_owned(),
+                    ];
+                }
+                Err(e) => return vec![format!("the vault could not be looked through: {e}")],
+            }
+        }
+        let (validator, node, settings) = native_registration(name);
+        let outcome = (|| {
+            let stored = s
+                .add_native_solana_validator(&validator, &node)
+                .map_err(|e| format!("the registration was not stored: {e}"))?;
+            s.add_configured_solana_native_host(&node, &settings)
+                .map_err(|e| format!("the native host was not stored: {e}"))?;
+            let rows = s
+                .solana_node_summaries(false)
+                .map_err(|e| format!("the validators were not listed: {e}"))?;
+            let row = rows
+                .iter()
+                .find(|row| row["name"] == name)
+                .ok_or("the registration is not in the listing")?;
+            if row["backend"] != "native" || row["region"] != "" {
+                return Err(format!("the registration is listed as {row}"));
+            }
+            let id = stored.id.as_deref().ok_or("the registration has no id")?;
+            an_empty_field_alone(runner, vault, id)
+        })();
+        let mut problems: Vec<String> = outcome.err().into_iter().collect();
+        for kind in [Kind::NativeHost, Kind::Validator] {
+            let title = s.title(kind, name);
+            match s.items(kind) {
+                Ok(items) => {
+                    for item in items.iter().filter(|item| item.title == title) {
+                        if let Err(e) = s.remove(&item.id) {
+                            problems.push(format!("{title:?} is still in the vault: {e}"));
+                        }
+                    }
+                }
+                Err(e) => problems.push(format!("{title:?} may still be in the vault: {e}")),
+            }
+        }
+        problems
+    }
+
+    /// Selects the registration's empty region alone, says how 1Password
+    /// printed it, and reads it as the inventory does.
+    fn an_empty_field_alone(
+        runner: &erpc_auth::store::one_password::OpCli,
+        vault: &str,
+        id: &str,
+    ) -> Result<(), String> {
+        let selector = [
+            "item",
+            "get",
+            id,
+            "--vault",
+            vault,
+            "--fields",
+            "label=region",
+            "--format",
+            "json",
+        ];
+        let reply = runner.run(&selector, None).map_err(|e| e.to_string())?;
+        if !reply.success {
+            return Err(super::op_error("read the item", &reply.stderr).to_string());
+        }
+        let with = |key: &str| {
+            if reply.stdout.contains(key) {
+                "with"
+            } else {
+                "without"
+            }
+        };
+        println!(
+            "1Password printed one selected field as an {}, {} a value key and {} a section key",
+            if reply.stdout.trim_start().starts_with('{') {
+                "object"
+            } else {
+                "array"
+            },
+            with("\"value\""),
+            with("\"section\""),
+        );
+        let raw = SecretString::from(reply.stdout);
+        let field = super::solana_public::selected_fields(&raw, &["region"])
+            .map_err(|e| format!("an empty field selected alone was not read: {e}"))?;
+        if field["region"].expose_secret().is_empty() {
+            Ok(())
+        } else {
+            Err("the empty region did not read back empty".to_owned())
+        }
     }
 
     #[test]
@@ -2442,6 +2650,356 @@ mod tests {
         }
     }
     #[test]
+    fn hyperliquid_rpc_records_cannot_change_original_network_or_accept_wallet_fields() {
+        use super::hyperliquid::HyperliquidNode;
+        use erpc_chain_hyperliquid::{Network, contract::Contract};
+        let op = FakeOp::default();
+        let store = Store::new(
+            &op,
+            "vaultid",
+            Scope {
+                chain: "hyperliquid".into(),
+                network: "testnet".into(),
+            },
+            tempfile_dir().join("hyperliquid.lock"),
+        );
+        let node = HyperliquidNode {
+            id: None,
+            item_version: 0,
+            name: "hyper1".into(),
+            address: "192.0.2.44".into(),
+            ssh_user: "ubuntu".into(),
+            ssh_port: 22,
+            host_key: "inert-host-key".into(),
+            contract: Contract {
+                owner: "a".repeat(32),
+                network: Network::Testnet,
+                role: "rpc".into(),
+                public_ip: "8.8.8.8".into(),
+                validator: None,
+            },
+            supervisor_sha256: "b".repeat(64),
+            signed_at: 1_788_863_627,
+            rpc_allow: vec![],
+            management_allow: vec![],
+            last_run: String::new(),
+            last_result: String::new(),
+        };
+        let saved = store
+            .add_hyperliquid_node(&node)
+            .expect("new public ownership");
+        assert!(store.add_hyperliquid_node(&node).is_err());
+        for kind in 0..4 {
+            let mut changed = saved.clone();
+            match kind {
+                0 => changed.contract.network = Network::Mainnet,
+                1 => changed.contract.public_ip = "1.1.1.1".into(),
+                2 => changed.ssh_port = 2222,
+                _ => changed.contract.role = "validator".into(),
+            }
+            assert!(store.update_hyperliquid_node(&changed).is_err());
+        }
+        let mut updated = saved.clone();
+        updated.last_result = "prepared".into();
+        store
+            .update_hyperliquid_node(&updated)
+            .expect("same owner result");
+        assert!(store.update_hyperliquid_node(&saved).is_err());
+        let mut corrupted = serde_json::to_value(saved).expect("public record");
+        corrupted["wallet_material"] = json!("inert unexpected authority");
+        {
+            let mut items = op.items.borrow_mut();
+            let fields = items[0]["fields"].as_array_mut().unwrap();
+            fields
+                .iter_mut()
+                .find(|field| field["label"] == "hyperliquid_record")
+                .unwrap()["value"] = json!(corrupted.to_string());
+        }
+        assert!(store.hyperliquid_nodes().is_err());
+        assert!(
+            op.calls
+                .borrow()
+                .iter()
+                .all(|args| !args.join(" ").contains("192.0.2.44"))
+        );
+    }
+
+    #[test]
+    fn hyperliquid_validator_preserves_original_hot_authority_and_excludes_rpc_hosts() {
+        use super::hyperliquid::HyperliquidNode;
+        use super::hyperliquid_validator::{Mode, ValidatorNode};
+        use erpc_chain_hyperliquid::{Network, contract::Contract, validator::HotMaterial};
+        let op = FakeOp::default();
+        let store = Store::new(
+            &op,
+            "vaultid",
+            Scope {
+                chain: "hyperliquid".into(),
+                network: "testnet".into(),
+            },
+            tempfile_dir().join("hl-validator.lock"),
+        );
+        let key =
+            HotMaterial::parse(format!("{{\"key\":\"{}\"}}", "01".repeat(32)).into()).unwrap();
+        let node = ValidatorNode {
+            host: HyperliquidNode {
+                id: None,
+                item_version: 0,
+                name: "val1".into(),
+                address: "192.0.2.45".into(),
+                ssh_user: "ubuntu".into(),
+                ssh_port: 22,
+                host_key: "inert-host-key".into(),
+                contract: Contract {
+                    owner: "a".repeat(32),
+                    network: Network::Testnet,
+                    role: "validator".into(),
+                    public_ip: "8.8.8.8".into(),
+                    validator: Some(
+                        key.identity(&format!("0x{}", "ab".repeat(20)), "0.01")
+                            .unwrap(),
+                    ),
+                },
+                supervisor_sha256: "b".repeat(64),
+                signed_at: 1_788_863_627,
+                rpc_allow: vec![],
+                management_allow: vec![],
+                last_run: String::new(),
+                last_result: String::new(),
+            },
+            hot_key_ref: format!("op://{}/{}/consensus", "a".repeat(26), "b".repeat(26)),
+            mode: Mode::Follower,
+        };
+        assert!(!format!("{node:?}").contains(&node.hot_key_ref));
+        let saved = store.add_hyperliquid_validator(&node).unwrap();
+        assert!(store.add_hyperliquid_validator(&node).is_err());
+        let mut rpc = node.host.clone();
+        rpc.contract.role = "rpc".into();
+        rpc.contract.validator = None;
+        assert!(store.add_hyperliquid_node(&rpc).is_err());
+        for change in 0..7 {
+            let mut wrong = saved.clone();
+            match change {
+                0 => wrong.host.contract.network = Network::Mainnet,
+                1 => wrong.hot_key_ref = "https://github.com".into(),
+                2 => wrong.host.contract.validator.as_mut().unwrap().max_hot_usdc = "1".into(),
+                3 => wrong.host.contract.public_ip = "1.1.1.1".into(),
+                4 => wrong.host.rpc_allow = vec!["192.0.2.20".into()],
+                5 => wrong.host.ssh_port = 2222,
+                _ => {
+                    wrong.hot_key_ref = format!("op://{}/{}/other", "a".repeat(26), "b".repeat(26));
+                }
+            }
+            assert!(store.update_hyperliquid_validator(&wrong).is_err());
+        }
+        let mut active = saved.clone();
+        active.mode = Mode::Validator;
+        let active = store.update_hyperliquid_validator(&active).unwrap();
+        let mut downgrade = active.clone();
+        downgrade.mode = Mode::Follower;
+        assert!(store.update_hyperliquid_validator(&downgrade).is_err());
+        assert!(store.update_hyperliquid_validator(&saved).is_err());
+        assert_eq!(store.hyperliquid_validators().unwrap()[0], active);
+        assert!(
+            op.calls
+                .borrow()
+                .iter()
+                .all(|args| !args.join(" ").contains(&node.hot_key_ref))
+        );
+        // Reverse reservation order is refused as well.
+        let other_op = FakeOp::default();
+        let other = Store::new(
+            &other_op,
+            "vaultid",
+            Scope {
+                chain: "hyperliquid".into(),
+                network: "testnet".into(),
+            },
+            tempfile_dir().join("hl-reverse.lock"),
+        );
+        other.add_hyperliquid_node(&rpc).unwrap();
+        assert!(other.add_hyperliquid_validator(&node).is_err());
+    }
+
+    fn aqa_fixture() -> super::hyperliquid_aqa::Publisher {
+        use erpc_chain_hyperliquid::{Network, aqa};
+        let material =
+            aqa::AgentMaterial::parse(format!("{{\"key\":\"{}\"}}", "02".repeat(32)).into())
+                .unwrap();
+        super::hyperliquid_aqa::Publisher {
+            id: None,
+            item_version: 0,
+            name: "publisher1".into(),
+            address: "192.0.2.46".into(),
+            ssh_user: "ubuntu".into(),
+            ssh_port: 2222,
+            host_key: "inert-aqa-host-key".into(),
+            contract: aqa::Contract {
+                schema: 1,
+                profile: "hyperliquid-aqa".into(),
+                owner: "c".repeat(32),
+                network: Network::Testnet,
+                host_binding: aqa::host_binding("192.0.2.46", "ubuntu", 2222, "inert-aqa-host-key"),
+                identity: material
+                    .identity(
+                        &format!("0x{}", "ab".repeat(20)),
+                        &format!("0x{}", "cd".repeat(20)),
+                        &format!("0x{}", "ef".repeat(20)),
+                        "original-agent",
+                    )
+                    .unwrap(),
+            },
+            agent_key_ref: format!("op://{}/{}/agent", "a".repeat(26), "b".repeat(26)),
+            version: "1.2.0".into(),
+            archive_sha256: "e".repeat(64),
+            signed_at: 1_774_922_628,
+            management_allow: vec![],
+            last_run: String::new(),
+            last_result: String::new(),
+        }
+    }
+
+    #[test]
+    fn aqa_inventory_keeps_original_separate_host_agent_and_concealed_identifier() {
+        let op = FakeOp::default();
+        let store = Store::new(
+            &op,
+            "vaultid",
+            Scope {
+                chain: "hyperliquid".into(),
+                network: "testnet".into(),
+            },
+            tempfile_dir().join("aqa.lock"),
+        );
+        let node = aqa_fixture();
+        assert!(!format!("{node:?}").contains(&node.agent_key_ref));
+        let saved = store.add_hyperliquid_publisher(&node).unwrap();
+        for change in 0..7 {
+            let mut duplicate = node.clone();
+            duplicate.name = "publisher2".into();
+            duplicate.address = "192.0.2.47".into();
+            duplicate.host_key = "inert-second-host-key".into();
+            duplicate.contract.owner = "d".repeat(32);
+            duplicate.agent_key_ref =
+                format!("op://{}/{}/second-agent", "a".repeat(26), "b".repeat(26));
+            let key = erpc_chain_hyperliquid::aqa::AgentMaterial::parse(
+                format!("{{\"key\":\"{}\"}}", "03".repeat(32)).into(),
+            )
+            .unwrap();
+            duplicate.contract.identity = key
+                .identity(
+                    &node.contract.identity.validator,
+                    &node.contract.identity.consensus_signer,
+                    &node.contract.identity.agent_master,
+                    "second-agent",
+                )
+                .unwrap();
+            match change {
+                0 => duplicate.name = node.name.clone(),
+                1 => duplicate.address = node.address.clone(),
+                2 => duplicate.host_key = node.host_key.clone(),
+                3 => duplicate.contract.owner = node.contract.owner.clone(),
+                4 => duplicate.contract.identity = node.contract.identity.clone(),
+                5 => duplicate.agent_key_ref = node.agent_key_ref.clone(),
+                _ => duplicate.agent_key_ref = "https://github.com/inert-private-value".into(),
+            }
+            duplicate.contract.host_binding = erpc_chain_hyperliquid::aqa::host_binding(
+                &duplicate.address,
+                &duplicate.ssh_user,
+                duplicate.ssh_port,
+                &duplicate.host_key,
+            );
+            assert!(store.add_hyperliquid_publisher(&duplicate).is_err());
+        }
+        for change in 0..6 {
+            let mut wrong = saved.clone();
+            match change {
+                0 => wrong.ssh_port = 22,
+                1 => wrong.contract.identity.agent_name = "replacement".into(),
+                2 => {
+                    wrong.agent_key_ref =
+                        format!("op://{}/{}/replacement", "a".repeat(26), "b".repeat(26));
+                }
+                3 => wrong.contract.network = erpc_chain_hyperliquid::Network::Mainnet,
+                4 => wrong.signed_at -= 1,
+                _ => wrong.management_allow = vec!["0.0.0.0/0".into()],
+            }
+            assert!(store.update_hyperliquid_publisher(&wrong).is_err());
+        }
+        let mut update = saved.clone();
+        update.last_result = "stopped; ciphertext retained".into();
+        let update = store.update_hyperliquid_publisher(&update).unwrap();
+        assert!(store.update_hyperliquid_publisher(&saved).is_err());
+        assert_eq!(store.hyperliquid_publishers().unwrap(), vec![update]);
+        assert!(
+            op.calls
+                .borrow()
+                .iter()
+                .all(|args| !args.join(" ").contains(&node.agent_key_ref))
+        );
+        let mut items = op.items.borrow_mut();
+        let fields = items[0]["fields"].as_array_mut().unwrap();
+        let record = fields
+            .iter_mut()
+            .find(|field| field["label"] == "hyperliquid_aqa_record")
+            .unwrap();
+        let mut corrupt: serde_json::Value =
+            serde_json::from_str(record["value"].as_str().unwrap()).unwrap();
+        corrupt["private_key"] = json!("inert unexpected authority");
+        record["value"] = json!(corrupt.to_string());
+        drop(items);
+        assert!(store.hyperliquid_publishers().is_err());
+    }
+
+    #[test]
+    fn publisher_and_rpc_cannot_share_a_host_in_either_reservation_order() {
+        use super::hyperliquid::HyperliquidNode;
+        use erpc_chain_hyperliquid::{Network, contract::Contract};
+        let aqa = aqa_fixture();
+        let rpc = HyperliquidNode {
+            id: None,
+            item_version: 0,
+            name: "rpc1".into(),
+            address: aqa.address.clone(),
+            ssh_user: "ubuntu".into(),
+            ssh_port: 22,
+            host_key: "inert-rpc-host-key".into(),
+            contract: Contract {
+                owner: "f".repeat(32),
+                network: Network::Testnet,
+                role: "rpc".into(),
+                public_ip: "8.8.8.8".into(),
+                validator: None,
+            },
+            supervisor_sha256: "a".repeat(64),
+            signed_at: 1_788_863_627,
+            rpc_allow: vec![],
+            management_allow: vec![],
+            last_run: String::new(),
+            last_result: String::new(),
+        };
+        for publisher_first in [true, false] {
+            let op = FakeOp::default();
+            let store = Store::new(
+                &op,
+                "vaultid",
+                Scope {
+                    chain: "hyperliquid".into(),
+                    network: "testnet".into(),
+                },
+                tempfile_dir().join("aqa-separate.lock"),
+            );
+            if publisher_first {
+                store.add_hyperliquid_publisher(&aqa).unwrap();
+                assert!(store.add_hyperliquid_node(&rpc).is_err());
+            } else {
+                store.add_hyperliquid_node(&rpc).unwrap();
+                assert!(store.add_hyperliquid_publisher(&aqa).is_err());
+            }
+        }
+    }
+
+    #[test]
     fn rollup_inventory_scope_secrets_retention_and_revision_are_enforced() {
         use super::rollup::RollupRpc;
         let op = FakeOp::default();
@@ -2505,6 +3063,478 @@ mod tests {
                 .borrow()
                 .iter()
                 .all(|args| !args.join(" ").contains("provider-value"))
+        );
+    }
+    #[test]
+    fn near_inventory_preserves_owned_host_and_rejects_stale_writers() {
+        use super::near::NearRpc;
+        let op = FakeOp::default();
+        let store = Store::new(
+            &op,
+            "vaultid",
+            Scope {
+                chain: "near".into(),
+                network: "testnet".into(),
+            },
+            tempfile_dir().join("near.lock"),
+        );
+        let node = NearRpc {
+            name: "near1".into(),
+            address: "192.0.2.55".into(),
+            platform: "x86_64".into(),
+            version: "2.14.0-rc.6".into(),
+            commit: "a".repeat(40),
+            ..NearRpc::default()
+        };
+        let stored = store.add_near_rpc(&node).expect("reserve owner");
+        assert!(store.add_near_rpc(&node).is_err());
+        let mut changed = stored.clone();
+        changed.address = "192.0.2.56".into();
+        assert!(store.update_near_rpc(&changed).is_err());
+        changed = stored.clone();
+        changed.platform = "aarch64".into();
+        assert!(store.update_near_rpc(&changed).is_err());
+        changed = stored.clone();
+        changed.rpc_allow = vec!["192.0.2.0/24".into()];
+        let updated = store
+            .update_near_rpc(&changed)
+            .expect("change desired policy");
+        assert_eq!(updated.rpc_allow, changed.rpc_allow);
+        assert!(store.update_near_rpc(&stored).is_err());
+        assert_eq!(store.near_rpcs().expect("list"), vec![updated]);
+        assert!(
+            op.calls
+                .borrow()
+                .iter()
+                .all(|args| !args.join(" ").contains("192.0.2."))
+        );
+    }
+
+    #[test]
+    fn near_validator_inventory_is_role_scoped_and_cannot_replace_consensus_identity() {
+        use super::near::{NearRpc, Validator};
+        let op = FakeOp::default();
+        let store = Store::new(
+            &op,
+            "vaultid",
+            Scope {
+                chain: "near".into(),
+                network: "testnet".into(),
+            },
+            tempfile_dir().join("near-validator.lock"),
+        );
+        let node = NearRpc {
+            name: "validator".into(),
+            address: "192.0.2.55".into(),
+            platform: "x86_64".into(),
+            version: "2.14.0-rc.6".into(),
+            commit: "a".repeat(40),
+            validator: Some(Validator {
+                account_id: "fixture.pool.f863973.m0".into(),
+                owner_account: "owner.testnet".into(),
+                public_key: "ed25519:FVen3X669xLzsi6N2V91DoiyzHzg1uAgqiT8jZ9nS96Z".into(),
+                key_ref: format!("op://{}/{}/validator", "a".repeat(26), "b".repeat(26)),
+                commission_basis_points: 500,
+            }),
+            ..NearRpc::default()
+        };
+        let stored = store.add_near_rpc(&node).expect("validator reservation");
+        assert!(store.near_rpcs().expect("RPC scope").is_empty());
+        assert_eq!(
+            store.near_nodes(true).expect("validator scope"),
+            vec![stored.clone()]
+        );
+        let mut rpc = node.clone();
+        rpc.validator = None;
+        rpc.name = "rpc".into();
+        assert!(
+            store.add_near_rpc(&rpc).is_err(),
+            "same host cannot be reserved under another role"
+        );
+        rpc.address = "192.0.2.56".into();
+        store.add_near_rpc(&rpc).expect("separate RPC host");
+        let mut duplicate = node.clone();
+        duplicate.name = "other-validator".into();
+        duplicate.address = "192.0.2.57".into();
+        assert!(
+            store.add_near_rpc(&duplicate).is_err(),
+            "dedicated consensus identity cannot be reserved twice"
+        );
+        for change in 0..5 {
+            let mut changed = stored.clone();
+            let validator = changed.validator.as_mut().expect("validator");
+            match change {
+                0 => validator.account_id = "other.pool.f863973.m0".into(),
+                1 => validator.owner_account = "another.testnet".into(),
+                2 => validator.public_key = "different".into(),
+                3 => validator.commission_basis_points = 1000,
+                _ => {
+                    validator.key_ref =
+                        format!("op://{}/{}/validator", "c".repeat(26), "d".repeat(26));
+                }
+            }
+            assert!(store.update_near_rpc(&changed).is_err());
+        }
+        let mut changed = stored.clone();
+        changed.validator = None;
+        assert!(store.update_near_rpc(&changed).is_err());
+        changed = stored;
+        changed.rpc_allow = vec!["192.0.2.0/24".into()];
+        assert!(
+            store.update_near_rpc(&changed).is_err(),
+            "validator RPC remains local"
+        );
+    }
+
+    #[test]
+    fn bsc_inventory_freezes_host_retention_snapshot_and_refuses_stale_writes() {
+        use super::bsc::BscRpc;
+        let op = FakeOp::default();
+        let store = Store::new(
+            &op,
+            "vaultid",
+            Scope {
+                chain: "bsc".into(),
+                network: "chapel".into(),
+            },
+            tempfile_dir().join("bsc.lock"),
+        );
+        let node = BscRpc {
+            name: "bsc1".into(),
+            address: "192.0.2.42".into(),
+            ssh_port: 22,
+            version: "1.8.1".into(),
+            commit: "a".repeat(40),
+            platform: "amd64".into(),
+            storage: "full".into(),
+            snapshot: "testnet-fixture".into(),
+            ..BscRpc::default()
+        };
+        let stored = store.add_bsc_rpc(&node).expect("reserved");
+        assert_eq!(store.bsc_rpcs().expect("list"), vec![stored.clone()]);
+        for field in ["address", "host_key", "platform", "storage", "snapshot"] {
+            let mut changed = serde_json::to_value(&stored).expect("record");
+            changed[field] = json!("different");
+            let mut changed: BscRpc = serde_json::from_value(changed).expect("record");
+            changed.id.clone_from(&stored.id);
+            changed.item_version = stored.item_version;
+            assert!(store.update_bsc_rpc(&changed).is_err(), "{field}");
+        }
+        let mut changed = stored.clone();
+        changed.last_result = "prepared".into();
+        store.update_bsc_rpc(&changed).expect("result update");
+        assert!(store.update_bsc_rpc(&stored).is_err());
+        assert!(store.add_bsc_rpc(&node).is_err());
+        assert!(
+            op.calls
+                .borrow()
+                .iter()
+                .all(|args| !args.join(" ").contains("192.0.2."))
+        );
+    }
+    #[test]
+    fn bsc_signer_reservation_survives_rejected_replacement_and_retirement() {
+        use super::{bsc::BscRpc, bsc_validator::BscValidator};
+        let op = FakeOp::default();
+        let store = Store::new(
+            &op,
+            "vaultid",
+            Scope {
+                chain: "bsc".into(),
+                network: "chapel".into(),
+            },
+            tempfile_dir().join("bsc-validator.lock"),
+        );
+        let new = |name: &str, address: &str| BscValidator {
+            node: BscRpc {
+                name: name.into(),
+                address: address.into(),
+                ssh_port: 22,
+                version: "1.8.1".into(),
+                commit: "a".repeat(40),
+                platform: "amd64".into(),
+                storage: "full".into(),
+                snapshot: "testnet-fixture".into(),
+                ..BscRpc::default()
+            },
+            operator: format!("0x{}", "2".repeat(40)),
+            custody: "unprovisioned".into(),
+            ..BscValidator::default()
+        };
+        let mut first = store
+            .add_bsc_validator(&new("first", "192.0.2.42"))
+            .expect("fresh reservation");
+        assert!(store.add_bsc_rpc(&first.node).is_err());
+        let mut second = store
+            .add_bsc_validator(&new("second", "192.0.2.43"))
+            .expect("second host");
+        first.consensus = format!("0x{}", "3".repeat(40));
+        first.vote = "4".repeat(96);
+        first.proof = format!("0x{}", "5".repeat(192));
+        first.custody = "owned".into();
+        first = store
+            .update_bsc_validator(&first)
+            .expect("host public receipt reserved");
+        for (field, replacement) in [
+            ("operator", String::new()),
+            ("consensus", String::new()),
+            ("vote", String::new()),
+            ("proof", String::new()),
+            ("custody", String::new()),
+            ("operator", format!("0x{}", "9".repeat(40))),
+            ("consensus", format!("0x{}", "6".repeat(40))),
+            ("vote", "7".repeat(96)),
+            ("proof", format!("0x{}", "8".repeat(192))),
+        ] {
+            let mut altered = serde_json::to_value(&first).expect("public record");
+            altered[field] = json!(replacement);
+            let mut altered: BscValidator = serde_json::from_value(altered).expect("public record");
+            altered.node.id.clone_from(&first.node.id);
+            altered.node.item_version = first.node.item_version;
+            assert!(store.update_bsc_validator(&altered).is_err());
+            assert_eq!(
+                store
+                    .bsc_validators()
+                    .expect("unchanged reservation")
+                    .into_iter()
+                    .find(|n| n.node.id == first.node.id)
+                    .expect("first"),
+                first
+            );
+        }
+        second.consensus.clone_from(&first.consensus);
+        second.vote.clone_from(&first.vote);
+        second.proof.clone_from(&first.proof);
+        second.custody = "owned".into();
+        assert!(store.update_bsc_validator(&second).is_err());
+        first.node.last_result = "destroy complete; keys retained".into();
+        store
+            .update_bsc_validator(&first)
+            .expect("retirement result");
+        assert!(store.update_bsc_validator(&second).is_err());
+    }
+
+    #[test]
+    fn monad_reservations_preserve_physical_device_keys_and_financial_authorities() {
+        use super::monad::MonadNode;
+        let op = FakeOp::default();
+        let store = Store::new(
+            &op,
+            "vaultid",
+            Scope {
+                chain: "monad".into(),
+                network: "testnet".into(),
+            },
+            tempfile_dir().join("monad.lock"),
+        );
+        let c = erpc_chain_monad::contract::Contract {
+            owner: "ab".repeat(16),
+            network: "testnet".into(),
+            role: "validator".into(),
+            partuuid: "abcdefab-abcd-abcd-abcd-abcdefabcdef".into(),
+            public_ip: "8.8.8.8".into(),
+            name_record_sequence: 1,
+            // Public SEC1 generator, no private material or native key generation.
+            secp: "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798".into(),
+            bls: "ab".repeat(48),
+            beneficiary: format!("0x{}", "cd".repeat(20)),
+            auth_address: format!("0x{}", "ef".repeat(20)),
+        };
+        let n = MonadNode {
+            id: None,
+            item_version: 0,
+            name: "node".into(),
+            address: "192.0.2.60".into(),
+            ssh_user: "ubuntu".into(),
+            ssh_port: 22,
+            host_key: String::new(),
+            contract: c,
+            keys_ref: format!("op://{}/{}/keys", "a".repeat(26), "b".repeat(26)),
+            version: "0.16.5".into(),
+            consensus_commit: "a".repeat(40),
+            execution_commit: "b".repeat(40),
+            rpc_allow: vec![],
+            management_allow: vec![],
+            monitoring_allow: vec![],
+            last_run: String::new(),
+            last_result: String::new(),
+        };
+        let saved = store.add_monad_node(&n).expect("new ownership");
+        assert!(store.monad_nodes("rpc").unwrap().is_empty());
+        for change in 0..6 {
+            let mut altered = saved.clone();
+            match change {
+                0 => altered.contract.partuuid = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb".into(),
+                1 => altered.contract.owner = "bc".repeat(16),
+                2 => altered.contract.beneficiary = format!("0x{}", "ba".repeat(20)),
+                3 => altered.contract.auth_address = format!("0x{}", "dc".repeat(20)),
+                4 => altered.keys_ref = format!("op://{}/{}/keys", "c".repeat(26), "d".repeat(26)),
+                _ => altered.contract.name_record_sequence = 2,
+            }
+            assert!(store.update_monad_node(&altered).is_err());
+        }
+        let mut different = n.clone();
+        different.contract.network = "mainnet".into();
+        different.address = "192.0.2.61".into();
+        different.name = "different".into();
+        assert!(store.add_monad_node(&different).is_err());
+        different.contract.network = "testnet".into();
+        assert!(
+            store.add_monad_node(&different).is_err(),
+            "duplicate consensus identity"
+        );
+        different.keys_ref = "not-a-secret-reference".into();
+        assert!(store.add_monad_node(&different).is_err());
+        let mut updated = saved;
+        updated.last_result = "stopped".into();
+        store.update_monad_node(&updated).expect("result update");
+    }
+
+    #[test]
+    fn kaia_inventory_preserves_network_genesis_and_original_bootstrap() {
+        use super::kaia::KaiaRpc;
+        let op = FakeOp::default();
+        let directory = tempfile_dir();
+        let store = Store::new(
+            &op,
+            "vaultid",
+            Scope {
+                chain: "kaia".into(),
+                network: "kairos".into(),
+            },
+            directory.join("kaia.lock"),
+        );
+        let original = KaiaRpc {
+            name: "endpoint".into(),
+            network: "kairos".into(),
+            genesis: format!("0x{}", "a".repeat(64)),
+            address: "192.0.2.1".into(),
+            ssh_user: "ubuntu".into(),
+            ssh_port: 22,
+            host_key: "fixture".into(),
+            version: "2.2.2".into(),
+            commit: "b".repeat(40),
+            image: format!("docker.io/kaiachain/kaia@sha256:{}", "c".repeat(64)),
+            platform: "amd64".into(),
+            storage: "full".into(),
+            snapshot: "genesis".into(),
+            ..KaiaRpc::default()
+        };
+        let saved = store.add_kaia_rpc(&original).unwrap();
+        let mut duplicate = original.clone();
+        duplicate.name = "other".into();
+        assert!(store.add_kaia_rpc(&duplicate).is_err());
+        for change in 0..7 {
+            let mut changed = saved.clone();
+            match change {
+                0 => changed.network = "mainnet".into(),
+                1 => changed.genesis = format!("0x{}", "d".repeat(64)),
+                2 => changed.address = "192.0.2.2".into(),
+                3 => changed.host_key = "different".into(),
+                4 => changed.ssh_port = 2222,
+                5 => changed.ssh_user = "another-user".into(),
+                _ => {
+                    changed.storage = "pruned".into();
+                    changed.snapshot =
+                        "kaia-kairos-pruning-chaindata-20261026010014.tar.zst".into();
+                }
+            }
+            assert!(store.update_kaia_rpc(&changed).is_err());
+        }
+        let mut policy = saved.clone();
+        policy.management_allow.push("198.51.100.1".into());
+        store.update_kaia_rpc(&policy).unwrap();
+        assert!(store.update_kaia_rpc(&saved).is_err());
+    }
+
+    /// One real round trip through 1Password: create a validator and a host,
+    /// read them back, update the host, then remove both. Run by hand with
+    /// `ERPC_TEST_VAULT=<vault id>`; it asks 1Password for approval.
+
+    #[test]
+    fn kaia_corecell_reservations_preserve_host_role_and_established_custody() {
+        use super::{kaia::KaiaRpc, kaia_corecell::KaiaCoreCell};
+        let op = FakeOp::default();
+        let store = Store::new(
+            &op,
+            "vaultid",
+            Scope {
+                chain: "kaia".into(),
+                network: "kairos".into(),
+            },
+            tempfile_dir().join("kaia-cell.lock"),
+        );
+        let fresh = KaiaCoreCell {
+            node: KaiaRpc {
+                name: "core1".into(),
+                network: "kairos".into(),
+                genesis: format!("0x{}", "a".repeat(64)),
+                address: "192.0.2.10".into(),
+                ssh_user: "ubuntu".into(),
+                ssh_port: 22,
+                host_key: "inert-host-key".into(),
+                version: "2.2.2".into(),
+                commit: "a".repeat(40),
+                image: format!("docker.io/kaiachain/kaia@sha256:{}", "b".repeat(64)),
+                platform: "amd64".into(),
+                storage: "full".into(),
+                snapshot: "genesis".into(),
+                ..KaiaRpc::default()
+            },
+            node_kind: "cn".into(),
+            advertise: "192.0.2.10".into(),
+            peers: vec![
+                "kni://public-fixture-cn".into(),
+                "kni://public-fixture-pn".into(),
+            ],
+            reward_address: format!("0x{}", "a".repeat(40)),
+            manager_address: format!("0x{}", "b".repeat(40)),
+            gc_id: "17".into(),
+            ..KaiaCoreCell::default()
+        };
+        let reserved = store.add_kaia_corecell(&fresh).unwrap();
+        assert!(store.add_kaia_rpc(&fresh.node).is_err());
+        let mut established = reserved.clone();
+        established.node_address = format!("0x{}", "c".repeat(40));
+        established.peer_key = "d".repeat(128);
+        established.bls_key = "e".repeat(96);
+        established.bls_pop = "f".repeat(192);
+        let established = store.update_kaia_corecell(&established).unwrap();
+        for change in 0..6 {
+            let mut value = established.clone();
+            match change {
+                0 => value.node.address = "192.0.2.11".into(),
+                1 => value.node_kind = "pn".into(),
+                2 => value.node_address = format!("0x{}", "d".repeat(40)),
+                3 => value.bls_key = "a".repeat(96),
+                4 => {
+                    value.node_address.clear();
+                    value.peer_key.clear();
+                    value.bls_key.clear();
+                    value.bls_pop.clear();
+                }
+                _ => value.node.network = "mainnet".into(),
+            }
+            assert!(store.update_kaia_corecell(&value).is_err());
+        }
+        assert!(store.update_kaia_corecell(&reserved).is_err());
+        assert_eq!(store.kaia_corecells().unwrap(), vec![established.clone()]);
+        let mut other = fresh;
+        other.node.name = "core2".into();
+        other.node.address = "192.0.2.20".into();
+        other.advertise = "192.0.2.20".into();
+        let mut other = store.add_kaia_corecell(&other).unwrap();
+        other.node_address = established.node_address;
+        other.peer_key = established.peer_key;
+        other.bls_key = established.bls_key;
+        other.bls_pop = established.bls_pop;
+        assert!(store.update_kaia_corecell(&other).is_err());
+        assert!(
+            store
+                .kaia_corecells()
+                .unwrap()
+                .iter()
+                .any(|value| value.node.name == "core2" && value.node_address.is_empty())
         );
     }
 }

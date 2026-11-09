@@ -1,0 +1,30 @@
+#!/usr/sbin/nft -f
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+table inet erpc_near
+delete table inet erpc_near
+table inet erpc_near {
+  chain input {
+    type filter hook input priority 0
+    policy drop
+    ct state invalid drop
+    ct state established,related accept
+    iifname "lo" accept
+    ip protocol icmp accept
+    ip6 nexthdr ipv6-icmp accept
+    tcp dport 24567 accept
+{% for address in near_management_v4 %}
+    tcp dport {{ near_ssh_port }} ip saddr {{ address }} accept
+{% endfor %}
+{% for address in near_management_v6 %}
+    tcp dport {{ near_ssh_port }} ip6 saddr {{ address }} accept
+{% endfor %}
+{% for address in near_rpc_allow %}
+    tcp dport 3030 ip saddr {{ address }} accept
+{% endfor %}
+{% for address in near_metrics_allow %}
+    tcp dport 3032 ip saddr {{ address }} accept
+{% endfor %}
+    counter drop
+  }
+}

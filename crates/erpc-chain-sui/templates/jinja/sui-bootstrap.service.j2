@@ -12,17 +12,22 @@ Requires=erpc-sui-firewall.service
 ConditionPathExists=!/var/lib/sui/.bootstrap-complete
 
 [Service]
-ExecStartPre=+/usr/local/lib/erpc/erpc-sui-control.py runtime {{ sui_network }} {{ sui_role }} {{ sui_genesis_sha256 }}
+ExecStartPre=+{{ sui_service_guard }} open-bootstrap {{ sui_network }} {{ sui_role }} {{ sui_genesis_sha256 }}
 Type=oneshot
-User=sui
-Group=sui
+User={{ sui_runtime_account.uid }}
+Group={{ sui_runtime_account.gid }}
+SupplementaryGroups=
+DynamicUser=no
+LimitCORE=0
 WorkingDirectory=/var/lib/sui
 ExecStartPre=/usr/bin/test ! -e /var/lib/sui/db/live
 ExecStart=/opt/sui/current/sui-tool download-formal-snapshot --latest --genesis /etc/sui/genesis.blob --network {{ sui_network }} --path /var/lib/sui/db --no-sign-request --verify strict
-ExecStartPost=/usr/bin/touch /var/lib/sui/.bootstrap-complete
+ExecStartPost=+{{ sui_service_guard }} complete-bootstrap {{ sui_network }} {{ sui_role }} {{ sui_genesis_sha256 }}
 ExecStartPost=+/usr/bin/systemctl --no-block start sui-node.service
 TimeoutStartSec=infinity
 TimeoutStopSec=600
+KillMode=control-group
+SendSIGKILL=no
 UMask=0077
 NoNewPrivileges=true
 ProtectSystem=strict

@@ -4,6 +4,6 @@
 # node-run.sh holds /opt/erpc across this guard and every subsequent task.
 - name: Verify immutable host ownership before any mutation
   ansible.builtin.command:
-    argv: "{{ ['python3', tron_control, tron_guard] + tron_contract_args + ([tron_intent, tron_release_target | to_json] if tron_guard == 'guard-phase' else []) }}"
+    argv: "{{ ['/usr/bin/python3', '-I', tron_control, tron_guard] + tron_contract_args + ([tron_intent, tron_release_target | to_json] if tron_guard == 'guard-phase' else []) }}"
   changed_when: false
 

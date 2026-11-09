@@ -1,0 +1,135 @@
+{
+  "network": "amoy",
+  "chain_id": 80002,
+  "parent": "sepolia",
+  "bor_genesis_hash": "0x7202b2b53c5a0836e773e319d18922cc756dd67432f9a1f65352b61f4406c697",
+  "heimdall_chain_id": "heimdallv2-80002",
+  "heimdall_initial_height": 8788501,
+  "heimdall_genesis": {
+    "url": "https://storage.googleapis.com/amoy-heimdallv2-genesis/migrated_dump-genesis.json?generation=1750794512935656",
+    "sha256": "25a5bc9e17f314b54cca597a1e795ab56db7787e2fc986172f1e560ff3bf2f98",
+    "bytes": 35404068
+  },
+  "genesis_generation": "1750794512935656",
+  "observed_at": "2026-11-04",
+  "releases": {
+    "bor": {
+      "tag": "v2.10.3",
+      "commit": "a16f123d9b4f41a552a3a98d93a0340430838576",
+      "published_at": "2026-10-15T06:28:06Z",
+      "certificate_identity": "https://github.com/0xPolygon/bor/.github/workflows/packager_deb.yml@refs/tags/v2.10.3",
+      "assets": {
+        "x86_64": {
+          "package": {
+            "url": "https://github.com/0xPolygon/bor/releases/download/v2.10.3/bor-v2.10.3-amd64.deb",
+            "sha256": "dc2e95e817f386a85e5e33d2e87d189bd5e7232a8b91ce20dbbe77f170b45d1e",
+            "bytes": 67271514
+          },
+          "signature": {
+            "url": "https://github.com/0xPolygon/bor/releases/download/v2.10.3/bor-v2.10.3-amd64.deb.sig",
+            "sha256": "050f71d8c2a34650a11fa76c1e3cbbdb8340410c4c07dbe22d8e5b9a03da0621",
+            "bytes": 96
+          },
+          "certificate": {
+            "url": "https://github.com/0xPolygon/bor/releases/download/v2.10.3/bor-v2.10.3-amd64.deb.pem",
+            "sha256": "c38874b2fc3bf823a78d6398f7a9fc87a22d554f18ab4da789a4c758e8272e57",
+            "bytes": 3216
+          }
+        },
+        "aarch64": {
+          "package": {
+            "url": "https://github.com/0xPolygon/bor/releases/download/v2.10.3/bor-v2.10.3-arm64.deb",
+            "sha256": "6f0d006c870fa9b25485e134a209b1e140a2d45f5104d7d2bcd8c6c4dc1a9e5e",
+            "bytes": 61245834
+          },
+          "signature": {
+            "url": "https://github.com/0xPolygon/bor/releases/download/v2.10.3/bor-v2.10.3-arm64.deb.sig",
+            "sha256": "36af06228f5fc77c291f457000fe377d7d8be86516e62f2d54747994940bb34c",
+            "bytes": 96
+          },
+          "certificate": {
+            "url": "https://github.com/0xPolygon/bor/releases/download/v2.10.3/bor-v2.10.3-arm64.deb.pem",
+            "sha256": "28607d1336c855216e63c329f781ab1ae171efce6fda4da33f8e1e5835f59b0b",
+            "bytes": 3216
+          }
+        }
+      }
+    },
+    "heimdall": {
+      "tag": "v0.13.2",
+      "commit": "03090c94e7eaef344cd16efd6c968431c4041847",
+      "published_at": "2026-11-03T11:31:46Z",
+      "certificate_identity": "https://github.com/0xPolygon/heimdall-v2/.github/workflows/packager_deb.yml@refs/tags/v0.13.2",
+      "assets": {
+        "x86_64": {
+          "package": {
+            "url": "https://github.com/0xPolygon/heimdall-v2/releases/download/v0.13.2/heimdall-v0.13.2-amd64.deb",
+            "sha256": "7ddaa5cc243fef4a744e5899b967a0df8bc9da5e7b297b4e10e7d47b8736917c",
+            "bytes": 51824776
+          },
+          "signature": {
+            "url": "https://github.com/0xPolygon/heimdall-v2/releases/download/v0.13.2/heimdall-v0.13.2-amd64.deb.sig",
+            "sha256": "b31919013ba0538dda75c371ff4959c87512163c4c70a4ce791d0d8bee53acf7",
+            "bytes": 96
+          },
+          "certificate": {
+            "url": "https://github.com/0xPolygon/heimdall-v2/releases/download/v0.13.2/heimdall-v0.13.2-amd64.deb.pem",
+            "sha256": "2dbdd0d857d698391859de2fcf0eb7d3c9e965ded62128c8f449be53276ec3ea",
+            "bytes": 3312
+          }
+        },
+        "aarch64": {
+          "package": {
+            "url": "https://github.com/0xPolygon/heimdall-v2/releases/download/v0.13.2/heimdall-v0.13.2-arm64.deb",
+            "sha256": "c064db28ec8d3542e6d0c820d81c3ee40b1e1bf139e46c18a66b24de4ed1e543",
+            "bytes": 47215184
+          },
+          "signature": {
+            "url": "https://github.com/0xPolygon/heimdall-v2/releases/download/v0.13.2/heimdall-v0.13.2-arm64.deb.sig",
+            "sha256": "01c708a192d0a78ce79bcf89150e2d8f8cb8ba5919dea64d99e1d833cc4e6ccf",
+            "bytes": 96
+          },
+          "certificate": {
+            "url": "https://github.com/0xPolygon/heimdall-v2/releases/download/v0.13.2/heimdall-v0.13.2-arm64.deb.pem",
+            "sha256": "85fc8f5a0d2151fce443b866fcb6ca3eb7a164f466a6aecdda17b189cc9d1b2e",
+            "bytes": 3312
+          }
+        }
+      }
+    }
+  },
+  "configs": {
+    "bor": {
+      "url": "https://github.com/0xPolygon/bor/raw/a16f123d9b4f41a552a3a98d93a0340430838576/packaging/templates/testnet-amoy/sentry/sentry/bor/pbss_config.toml",
+      "sha256": "cfc41dcc252306f1fa9f6a5231c46c28557f3346c42957ad074bfe19ee9964c1",
+      "bytes": 4943
+    },
+    "heimdall_config": {
+      "url": "https://github.com/0xPolygon/heimdall-v2/raw/03090c94e7eaef344cd16efd6c968431c4041847/packaging/templates/config/amoy/config.toml",
+      "sha256": "115ad653422737507cdcc019d07e77b658fe2e1a7f1a4c6c286e7d69789b4be4",
+      "bytes": 23165
+    },
+    "heimdall_app": {
+      "url": "https://github.com/0xPolygon/heimdall-v2/raw/03090c94e7eaef344cd16efd6c968431c4041847/packaging/templates/config/amoy/app.toml",
+      "sha256": "9816838de1b9727ab28ab22621770044684151a114943f3f28fafec49db0e466",
+      "bytes": 11142
+    }
+  },
+  "verifier": {
+    "tag": "v3.1.4",
+    "assets": {
+      "x86_64": {
+        "url": "https://github.com/sigstore/cosign/releases/download/v3.1.4/cosign-linux-amd64",
+        "sha256": "424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa",
+        "bytes": 145688404
+      },
+      "aarch64": {
+        "url": "https://github.com/sigstore/cosign/releases/download/v3.1.4/cosign-linux-arm64",
+        "sha256": "ade83b7aac62e131cacfe96d958948b2150cc9efec46a570a2649b8e27dedad2",
+        "bytes": 136437761
+      }
+    },
+    "commit": "0e48502cf5ef34e2e60bbd3617aa19945712f705",
+    "published_at": "2026-10-20T18:27:42Z"
+  }
+}

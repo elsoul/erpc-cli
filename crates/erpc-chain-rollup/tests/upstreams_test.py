@@ -9,7 +9,7 @@ from pathlib import Path
 import socket
 import threading
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, PropertyMock, patch
 import http.client
 
 PATH = Path(__file__).parents[1] / "templates/scripts/upstreams.py"
@@ -71,6 +71,64 @@ class ProxyTests(unittest.TestCase):
             self.assertFalse(proxy.address_allowed(value, False), value)
         self.assertTrue(proxy.address_allowed("8.8.8.8", False))
         self.assertTrue(proxy.address_allowed("2001:4860:4860::8888", False))
+
+    def test_iana_special_assignments_are_denied_independently_of_python_registry_flags(self):
+        # Independent representative vectors include nested IANA exceptions and
+        # special anycasts whose Globally Reachable field is true. They remain
+        # deliberately outside this credential transport's conservative policy.
+        blocked = [
+            "0.0.0.1", "10.255.255.255", "100.64.0.1", "100.127.255.255", "127.0.0.2",
+            "169.254.1.1", "172.16.0.1", "172.31.255.255", "192.0.0.8", "192.0.0.9",
+            "192.0.0.10", "192.0.0.170", "192.0.0.171", "192.0.0.255", "192.0.2.1",
+            "192.31.196.1", "192.52.193.1", "192.88.99.1", "192.88.99.2", "192.168.1.1",
+            "192.175.48.1", "198.18.0.1", "198.19.255.255", "198.51.100.1", "203.0.113.1",
+            "224.0.0.1", "239.255.255.255", "240.0.0.1", "255.255.255.255",
+            "::", "::1", "::8.8.8.8", "::192.168.1.1", "::ffff:8.8.8.8", "64:ff9b::808:808",
+            "64:ff9b:1::1", "100::1", "100:0:0:1::1", "2001::1", "2001:1::1",
+            "2001:1::2", "2001:1::3", "2001:2::1", "2001:3::1", "2001:4:112::1",
+            "2001:10::1", "2001:20::1", "2001:30::1", "2001:1ff:ffff::1", "2001:db8::1",
+            "2002:808:808::1", "2620:4f:8000::1", "3ffe:831f::1", "3fff::1", "3fff:fff:ffff::1",
+            "4000::1", "5f00::1", "fc00::1", "fe80::1", "fec0::1", "ff00::1",
+        ]
+        public = ["1.1.1.1", "8.8.8.8", "100.128.0.1", "192.0.1.1", "192.88.100.1",
+                  "2001:200::1", "2001:4860:4860::8888", "2606:4700:4700::1111", "2a00:1450::1"]
+        with contextlib.ExitStack() as stack:
+            for kind in (proxy.ipaddress.IPv4Address, proxy.ipaddress.IPv6Address):
+                for name in ("is_global", "is_private", "is_reserved", "is_loopback", "is_multicast"):
+                    stack.enter_context(patch.object(kind, name, new_callable=PropertyMock,
+                                                     side_effect=AssertionError("registry flags must not decide transport policy")))
+            for value in blocked:
+                self.assertFalse(proxy.address_allowed(value, False), value)
+            for value in public:
+                self.assertTrue(proxy.address_allowed(value, False), value)
+            for value in ("127.0.0.1", "127.0.0.2", "::1"):
+                self.assertTrue(proxy.address_allowed(value, True), value)
+            for value in ("localhost", "8.8.8.8", "::ffff:127.0.0.1", "::1%lo", "2002:7f00:1::"):
+                self.assertFalse(proxy.address_allowed(value, True), value)
+
+    def test_reserved_literals_and_mixed_dns_answers_never_reach_connect_or_headers(self):
+        for value in ("192.0.0.8", "192.88.99.2", "192.0.0.9", "100:0:0:1::1", "3fff::1", "2001:1::1"):
+            host = "[" + value + "]" if ":" in value else value
+            with patch.object(proxy.socket, "getaddrinfo") as lookup:
+                self.reject(proxy.Endpoint, endpoint("https://" + host))
+                lookup.assert_not_called()
+            family = socket.AF_INET6 if ":" in value else socket.AF_INET
+            denied = (family, socket.SOCK_STREAM, 6, "", (value, 443, 0, 0) if family == socket.AF_INET6 else (value, 443))
+            allowed = (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 443))
+            with patch.object(proxy.socket, "getaddrinfo", return_value=[allowed, denied]), patch.object(proxy.socket, "socket") as connect:
+                self.reject(proxy.Endpoint(endpoint()).request, "POST", "", b'{}')
+                connect.assert_not_called()
+        for host in ("8.8.8.8", "[2001:4860:4860::8888]"):
+            self.assertFalse(proxy.Endpoint(endpoint("https://" + host)).loopback)
+
+    def test_each_connection_rechecks_a_previously_public_name_against_special_use(self):
+        public = (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 443))
+        for address in ("192.0.0.8", "192.88.99.2"):
+            special = (socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, 443))
+            value = proxy.Endpoint(endpoint())
+            with patch.object(proxy.socket, "getaddrinfo", side_effect=[[public], [special]]):
+                self.assertEqual(value.addresses()[0][-1][0], "8.8.8.8")
+                self.reject(value.addresses)
 
     def test_dns_rebinding_and_mixed_answer_sets(self):
         public = (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 443))

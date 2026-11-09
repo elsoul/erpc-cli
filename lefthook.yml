@@ -36,4 +36,5 @@ pre-push:
     clippy:
       run: cargo clippy --workspace --all-targets -- -D warnings
     test:
-      run: cargo test --workspace
+      # The fixtures refuse files that their group or others can write to.
+      run: umask 022 && cargo test --workspace

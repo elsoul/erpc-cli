@@ -46,7 +46,8 @@
 - name: Apply this operation under its rollback timer
   ansible.builtin.command:
     argv:
-      - python3
+      - /usr/bin/python3
+      - -I
       - /usr/local/lib/erpc/rpc-firewall.py
       - solana-rpc
       - apply

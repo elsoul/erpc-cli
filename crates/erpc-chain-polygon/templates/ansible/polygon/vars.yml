@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+polygon_scripts: "{{ playbook_dir }}/../../scripts"
+polygon_templates: "{{ playbook_dir }}/../../jinja"
+polygon_request:
+  contract: "{{ polygon_contract }}"
+  profile: "{{ polygon_profile }}"
+  helpers: "{{ polygon_helpers }}"
+  intent: "{{ polygon_intent }}"
+  advertise: "{{ polygon_advertise }}"
+  restore_keys: "{{ polygon_restore_keys | default(false) | bool }}"

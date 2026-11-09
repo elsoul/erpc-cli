@@ -11,7 +11,7 @@ use std::fmt;
 
 /// Lowest release supported by this backend, with the 31.1 operational fixes.
 pub const FLOOR: &str = "31.1";
-/// Default release; newer releases require explicit selection and re-verification.
+/// Default and currently source-qualified executable release.
 pub const RECOMMENDED: &str = "31.1";
 /// Source commit of the default release.
 pub const RECOMMENDED_COMMIT: &str = "9be056a8a72b624dae9623b2f7bded92c2a21c91";
@@ -28,6 +28,11 @@ pub const ACHOW_KEY: &str = include_str!("../templates/gpg/achow101.asc");
 /// Error in an untrusted release input. No arbitrary input is echoed.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum Error {
+    /// Signed releases still need qualified runtime/API behavior before execution.
+    #[error(
+        "native release is not in this CLI's source-qualified catalog; update erpc before selecting it"
+    )]
+    Catalog,
     /// Only stable, canonical, numeric release versions are accepted.
     #[error("expected a supported stable Bitcoin Core version, such as 31.1")]
     Version,
@@ -250,6 +255,23 @@ pub struct Pin {
 }
 
 impl Pin {
+    /// Refuse source/tag or archive replacement and unqualified future runtimes.
+    /// # Errors
+    /// The current executable catalog contains the exact reviewed 31.1 artifacts.
+    pub fn qualified(&self) -> Result<(), Error> {
+        let digest = match self.platform {
+            Platform::X86_64 => "b80d9c3e04da78fb6f0569685673418cf686fadba9042d926d13fb87ff503f9e",
+            Platform::Aarch64 => "dcf1873f2208ba4f962f3398d47e154c39c0084be8f4553e05c940d0ace3d004",
+        };
+        if self.version.as_str() != RECOMMENDED
+            || self.commit != RECOMMENDED_COMMIT
+            || self.sha256 != digest
+        {
+            return Err(Error::Catalog);
+        }
+        Ok(())
+    }
+
     /// Combine authenticated manifest evidence with a validated source pin.
     ///
     /// # Errors
@@ -295,6 +317,30 @@ mod tests {
             checksum(manifest, &version, Platform::Aarch64).expect("arm"),
             "dcf1873f2208ba4f962f3398d47e154c39c0084be8f4553e05c940d0ace3d004"
         );
+    }
+
+    #[test]
+    fn executable_catalog_does_not_admit_arbitrary_higher_history_or_substituted_sources() {
+        let manifest = include_str!("../releases/SHA256SUMS-31.1");
+        for platform in [Platform::X86_64, Platform::Aarch64] {
+            let version = Version::parse("31.1").unwrap();
+            let mut pin = super::Pin {
+                sha256: checksum(manifest, &version, platform).unwrap(),
+                version,
+                commit: super::RECOMMENDED_COMMIT.into(),
+                platform,
+            };
+            assert!(pin.qualified().is_ok());
+            let original = pin.clone();
+            pin.commit = "a".repeat(40);
+            assert_eq!(pin.qualified(), Err(Error::Catalog));
+            pin = original.clone();
+            pin.sha256 = "b".repeat(64);
+            assert_eq!(pin.qualified(), Err(Error::Catalog));
+            pin = original;
+            pin.version = Version::parse("32.0").unwrap();
+            assert_eq!(pin.qualified(), Err(Error::Catalog));
+        }
     }
 
     #[test]

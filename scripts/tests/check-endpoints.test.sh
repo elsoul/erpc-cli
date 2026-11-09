@@ -54,7 +54,19 @@ $cand
   exit "$rc"
 fi
 
-repo_root="$(git rev-parse --show-toplevel)"
+# Fixtures must not enter the live source tree: pre-push compiles embedded
+# templates concurrently, and some probes intentionally use real scoped paths.
+source_root="$(git rev-parse --show-toplevel)" || exit 1
+repo_root="$(mktemp -d)" || exit 1
+trap 'rm -rf "$repo_root"' EXIT
+mkdir -p "$repo_root/scripts" "$repo_root/crates/erpc-core/src" || exit 1
+cp "$source_root/scripts/check-endpoints.sh" "$repo_root/scripts/" || exit 1
+cp "$source_root/crates/erpc-core/src/endpoints.rs" \
+  "$repo_root/crates/erpc-core/src/endpoints.rs" || exit 1
+# Do not let a caller's Git environment redirect the fixture gate to its repo.
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
+git init -q "$repo_root" || exit 1
+cd "$repo_root" || exit 1
 gate="$repo_root/scripts/check-endpoints.sh"
 
 allowlist_src="$repo_root/crates/erpc-core/src/endpoints.rs"
@@ -109,6 +121,15 @@ check() {
 
 # --- the extraction itself --------------------------------------------------
 
+check "native nginx documentation allowed" allow "docs/$sample_dir/nginx.md" \
+  '[WebSocket proxying](https://nginx.org/en/docs/http/websocket.html)'
+check "native WebSocket RFC documentation allowed" allow "docs/$sample_dir/websocket.md" \
+  '[RFC 6455](https://www.rfc-editor.org/rfc/rfc6455.html)'
+check "nginx documentation cannot become token-bearing CLI destination" block "$sample_dir/nginx.rs" \
+  'const URL: &str = "https://nginx.org/en/docs/http/websocket.html";'
+check "WebSocket RFC lookalike refused" block "docs/$sample_dir/websocket.md" \
+  '[RFC](https://www.rfc-editor.org.evil.example/rfc/rfc6455.html)'
+
 extracted=$(awk '
   /^#\[cfg\(test\)\]/ { exit }
   /^pub const [A-Z_]+: &\[/ { inside = 1 }
@@ -131,7 +152,7 @@ fi
 
 # A host named in a comment inside a const array must not widen the allowlist:
 # the extraction strips `//` to end of line.
-probe_src="$(mktemp)"
+probe_src="$repo_root/allowlist-probe.rs"
 cat > "$probe_src" <<'RS'
 pub const SERVICE_HOSTS: &[&str] = &[
     // formerly "exfil.example.com", kept for reference
@@ -164,6 +185,12 @@ else
 fi
 rm -f "$repo_root/$nul_rel"; rmdir "$repo_root/$sample_dir" 2>/dev/null || true
 
+# Binary assets and damaged UTF-8 must not make sed silently skip a literal URL.
+check "non-UTF8 bytes cannot hide an undeclared URL" block "$sample_dir/invalid-bytes.bin" \
+  '\377payload https://evil.example.invalid/x'
+check "non-UTF8 bytes preserve a declared URL" allow "$sample_dir/allowed-bytes.bin" \
+  '\377payload https://github.com/elsoul/erpc-cli'
+
 # The documented exception list must be the one the gate applies.
 if "$sh" "$gate" --print-exceptions | grep -q 'release\.yml'; then
   pass=$((pass + 1)); printf 'ok   --print-exceptions reports the skip list\n'
@@ -171,7 +198,29 @@ else
   fail=$((fail + 1)); printf 'FAIL --print-exceptions must report the skip list\n'
 fi
 
+# Native source-build compiler artifacts remain node-only destinations.
+check "Agave compiler artifact in native templates" allow "crates/erpc-chain-solana-native/templates/probe.json" \
+  '{"url":"https://static.rust-lang.org/dist/2026-07-16/rustc-1.97.1-x86_64-unknown-linux-gnu.tar.xz"}'
+check "Native compiler host cannot enter controller Rust" block "$sample_dir/native.rs" \
+  'const URL: &str = "https://static.rust-lang.org/dist/";'
+check "Native template rejects an unqualified compiler origin" block "crates/erpc-chain-solana-native/templates/probe.json" \
+  '{"url":"https://unregistered.example.invalid/compiler"}'
+check "1Password CLI documentation is prose-only" allow "$sample_dir/password-docs.md" \
+  'See https://www.1password.dev/cli/reference/management-commands/item'
+check "1Password documentation host cannot become a runtime destination" block "$sample_dir/password-runtime.rs" \
+  'const URL: &str = "https://www.1password.dev/cli/reference/management-commands/item";'
+
 # Sui runtime-only destinations belong in the embedded template tree.
+check "Monad provenance documentation may link its official artifacts" allow "$sample_dir/monad.md" \
+  '[bootstrap](https://bucket.monadinfra.com/config/mainnet/latest/node.toml)'
+check "Monad signed package in its carried template" allow "crates/erpc-chain-monad/templates/probe.py" \
+  'url = "https://pkg.category.xyz/pool/main/package.deb"'
+check "Monad official bootstrap in its carried catalog" allow "crates/erpc-chain-monad/templates/probe.json" \
+  '{"url":"https://bucket.monadinfra.com/config/mainnet/latest/node.toml"}'
+check "Monad template rejects unknown origin" block "crates/erpc-chain-monad/templates/probe.py" \
+  'url = "https://unknown.example.invalid/node.toml"'
+check "Monad node-only host cannot enter controller Rust" block "$sample_dir/monad.rs" \
+  'const URL: &str = "https://pkg.category.xyz";'
 check "TRON observation host in TRON templates" allow "crates/erpc-chain-tron/templates/probe.py" \
   'url = "https://nile.trongrid.io"'
 check "TRON node host cannot leak into Rust" block "$sample_dir/tron.rs" \
@@ -504,6 +553,15 @@ check "snapshot mirror matched by pattern" allow "$sample_dir/i.rs" \
 check "loopback over plain http" allow "$sample_dir/j.rs" \
   'const CB: &str = "http://127.0.0.1:53123/callback";'
 
+for address in 127.0.0.10 127.0.0.11 127.0.0.12 127.0.0.13 127.0.0.14; do
+  check "fixed Polygon TLS authority $address" allow "$sample_dir/polygon-loopback.rs" \
+    "const NATIVE: &str = \"https://$address:9545/\";"
+done
+check "unregistered adjacent loopback remains refused" block "$sample_dir/polygon-adjacent.rs" \
+  'const NATIVE: &str = "https://127.0.0.15:9545/";'
+check "fixed loopback suffix cannot escape locally" block "$sample_dir/polygon-loopback-suffix.rs" \
+  'const NATIVE: &str = "https://127.0.0.10.example.com:9545/";'
+
 # A wholly-templated host is a STATED LIMIT, not an endorsement: in a
 # workflow this is exactly where an egress could be introduced, and the gate
 # cannot see where it points. The fixture no longer names the release mirror,
@@ -513,6 +571,11 @@ check "a wholly-templated host is skipped, by stated limit" allow "$sample_dir/k
 
 check "declared documentation host in prose" allow "$sample_dir/l.md" \
   'See https://keepachangelog.com/en/1.1.0/ for the format.'
+
+check "1Password documentation is permitted in prose" allow "$sample_dir/op.md" \
+  'See https://www.1password.dev/cli/reference/management-commands/item.'
+check "1Password documentation is not a runtime destination" block "$sample_dir/op.rs" \
+  'const HOST: &str = "https://www.1password.dev/cli/reference/management-commands/item";'
 
 check "code span beside a declared documentation link" allow "$sample_dir/l2.md" \
   'See the [\x60serde\x60 guide](https://semver.org/) for details.'
@@ -1411,14 +1474,105 @@ check "an Arc relay in the Arc network table" allow "crates/erpc-chain-arc/netwo
 check "an Arc relay in the Arc templates" allow "crates/erpc-chain-arc/templates/$sample_dir/a4.j2" \
   '--rpc.forwarder https://rpc.testnet.arc.io/'
 
+check "Polygon official genesis in its network catalog" allow "crates/erpc-chain-polygon/networks/$sample_dir/polygon.json" \
+  '{"url":"https://storage.googleapis.com/mainnet-heimdallv2-genesis/migrated_dump-genesis.json"}'
+check "Polygon signature issuer in its carried verifier" allow "crates/erpc-chain-polygon/templates/$sample_dir/polygon.py" \
+  'issuer="https://token.actions.githubusercontent.com"'
+check "Polygon node host cannot become a CLI destination" block "$sample_dir/polygon.rs" \
+  'let url = "https://storage.googleapis.com/mainnet-heimdallv2-genesis/migrated_dump-genesis.json";'
+check "Polygon unknown artifact source stays rejected" block "crates/erpc-chain-polygon/networks/$sample_dir/polygon.json" \
+  '{"url":"https://unreviewed.invalid/genesis"}'
+check "Polygon plaintext artifact transport stays rejected" block "crates/erpc-chain-polygon/networks/$sample_dir/polygon.json" \
+  '{"url":"http://storage.googleapis.com/genesis"}'
+
+for fixture in pre-karwar-mainnet.json pre-karwar-amoy.json pre-karwar-state.py; do
+  check "Polygon exact historical fixture $fixture" allow "crates/erpc-chain-polygon/tests/fixtures/$fixture" \
+    '"https://storage.googleapis.com/mainnet-heimdallv2-genesis/migrated_dump-genesis.json"'
+done
+check "Polygon historical fixture does not permit plaintext" block "crates/erpc-chain-polygon/tests/fixtures/pre-karwar-mainnet.json" \
+  '"http://storage.googleapis.com/genesis"'
+check "Polygon adjacent fixture is not a node destination" block "crates/erpc-chain-polygon/tests/fixtures/pre-karwar-next.json" \
+  '"https://storage.googleapis.com/genesis"'
+check "Polygon fixture scope does not permit another host" block "crates/erpc-chain-polygon/tests/fixtures/pre-karwar-state.py" \
+  '"https://storage.googleapis.com.unreviewed.invalid/genesis"'
+check "Polygon fixture allowance cannot become runtime code" block "crates/erpc/src/polygon-history.rs" \
+  '"https://storage.googleapis.com/genesis"'
+
 check "a Nitro metadata host in its carried network table" allow "crates/erpc-chain-nitro/networks/$sample_dir/nitro.json" \
   '{"url":"https://cdn.robinhood.com/chain-info.json"}'
+check "Kaia official snapshot object in its carried catalog" allow "crates/erpc-chain-kaia/templates/$sample_dir/catalog.json" \
+  '{"url":"https://kaia-chaindata-r2-logging.kaia-foundation.workers.dev/kairos/pruning/fixture.tar.zst"}'
+check "Kaia snapshot host cannot become a CLI destination" block "$sample_dir/kaia.rs" \
+  'let url="https://kaia-chaindata-r2-logging.kaia-foundation.workers.dev/fixture";'
+check "Kaia unknown snapshot source is refused" block "crates/erpc-chain-kaia/templates/$sample_dir/catalog.json" \
+  '{"url":"https://unreviewed.invalid/fixture"}'
+check "Kaia plaintext snapshot transport is refused" block "crates/erpc-chain-kaia/templates/$sample_dir/catalog.json" \
+  '{"url":"http://kaia-chaindata-r2-logging.kaia-foundation.workers.dev/fixture"}'
 check "an unapproved Nitro metadata destination" block "crates/erpc-chain-nitro/networks/$sample_dir/nitro.json" \
   '{"url":"https://cdn.robinhood.com.evil.example/chain-info.json"}'
 check "a Nitro snapshot host in its templates" allow "crates/erpc-chain-nitro/templates/$sample_dir/nitro.py" \
   'URL="https://snapshot.arbitrum.foundation/arb1/latest-full-path.txt"'
 check "a Nitro-only host in ordinary controller code" block "$sample_dir/nitro.rs" \
   'const URL: &str = "https://cdn.robinhood.com/chain-info.json";'
+
+check "a NEAR genesis source in the node templates" allow "crates/erpc-chain-near/templates/$sample_dir/near.py" \
+  'SOURCE="https://s3-us-west-1.amazonaws.com/build.nearprotocol.com/nearcore-deploy/testnet/genesis.json.xz"'
+check "a lookalike NEAR artifact destination" block "crates/erpc-chain-near/templates/$sample_dir/near.py" \
+  'SOURCE="https://s3-us-west-1.amazonaws.com.evil.example/genesis.json.xz"'
+check "a NEAR node-only host in ordinary CLI code" block "$sample_dir/near.rs" \
+  'const URL: &str = "https://s3-us-west-1.amazonaws.com/genesis.json.xz";'
+
+check "NEAR bootstrap observation stays in node templates" allow "crates/erpc-chain-near/templates/$sample_dir/bootstrap.py" \
+  'SOURCE="https://rpc.testnet.near.org"'
+check "NEAR bootstrap is not an ERPC-token CLI destination" block "$sample_dir/bootstrap.rs" \
+  'const URL: &str = "https://rpc.mainnet.near.org";'
+
+check "BSC official snapshot metadata in carried catalog" allow "crates/erpc-chain-bsc/networks/$sample_dir/bsc.json" \
+  '{"url":"https://pub-c0627345c16f47ab858c9469133073a8.r2.dev/snapshot.tar.lz4"}'
+check "BSC snapshot host in host bootstrap program" allow "crates/erpc-chain-bsc/templates/$sample_dir/bootstrap.py" \
+  'URL="https://pub-c0627345c16f47ab858c9469133073a8.r2.dev/snapshot.tar.lz4"'
+check "BSC snapshot cannot become a controller destination" block "$sample_dir/bsc.rs" \
+  'const URL: &str = "https://pub-c0627345c16f47ab858c9469133073a8.r2.dev/snapshot.tar.lz4";'
+check "BSC catalog rejects unapproved snapshot host" block "crates/erpc-chain-bsc/networks/$sample_dir/bsc.json" \
+  '{"url":"https://unreviewed.example.net/snapshot.tar.lz4"}'
+
+check "Hyperliquid supervisor in its carried catalog" allow "crates/erpc-chain-hyperliquid/templates/$sample_dir/pins.json" \
+  '{"url":"https://binaries.hyperliquid.xyz/Mainnet/hl-visor"}'
+check "Hyperliquid public testnet observation in its helper" allow "crates/erpc-chain-hyperliquid/templates/$sample_dir/observe.py" \
+  'URL="https://api.hyperliquid-testnet.xyz/info"'
+check "AQA native reference feed in its carried catalog" allow "crates/erpc-chain-hyperliquid/templates/$sample_dir/aqa.json" \
+  '{"url":"https://fred.stlouisfed.org/graph/fredgraph.csv"}'
+check "AQA native feed cannot become a token-bearing CLI destination" block "$sample_dir/aqa.rs" \
+  'const URL: &str = "https://data.financialresearch.gov/v1/series/timeseries";'
+check "AQA feed lookalike refused" block "crates/erpc-chain-hyperliquid/templates/$sample_dir/aqa.json" \
+  '{"url":"https://markets.newyorkfed.org.evil.example/api/rates"}'
+check "Hyperliquid supervisor lookalike refused" block "crates/erpc-chain-hyperliquid/templates/$sample_dir/pins.json" \
+  '{"url":"https://binaries.hyperliquid.xyz.evil.example/Mainnet/hl-visor"}'
+check "Hyperliquid node-only host refused in token-bearing CLI code" block "$sample_dir/hyperliquid.rs" \
+  'const URL: &str = "https://api.hyperliquid.xyz/info";'
+check "Hyperliquid node-only host refused in ordinary crate source" block "crates/erpc-chain-hyperliquid/src/$sample_dir/pins.rs" \
+  'const URL: &str = "https://binaries.hyperliquid.xyz/Mainnet/hl-visor";'
+
+check "validator Engine TLS audience in its exact helper scope" allow "crates/erpc-chain-eth/templates/authority/eth_validator_${sample_dir}.py" \
+  'URL="https://127.0.0.2:8552"'
+check "validator Beacon TLS audience in its exact helper scope" allow "crates/erpc-chain-eth/templates/authority/eth_validator_${sample_dir}.py" \
+  'URL="https://127.0.0.3:5052"'
+check "validator TLS audience in its dedicated inert regression" allow "crates/erpc-chain-eth/tests/authority_validator_${sample_dir}.py" \
+  'EXPECTED="https://127.0.0.3:5052"'
+check "validator TLS audience in its dedicated Rust carried-source regression" allow "crates/erpc-chain-eth/tests/authority_validator_${sample_dir}.rs" \
+  'const AUDIENCE: &str = "https://127.0.0.2:8552";'
+check "validator TLS audience in unrelated Rust test" block "crates/erpc-chain-eth/tests/foreign_${sample_dir}.rs" \
+  'const AUDIENCE: &str = "https://127.0.0.2:8552";'
+check "validator TLS audience rejects plaintext" block "crates/erpc-chain-eth/templates/authority/eth_validator_${sample_dir}.py" \
+  'URL="http://127.0.0.2:8552"'
+check "validator TLS audience rejects an RPC helper" block "crates/erpc-chain-eth/templates/authority/${sample_dir}.py" \
+  'URL="https://127.0.0.3:5052"'
+check "validator TLS audience rejects another node" block "crates/erpc-chain-nitro/templates/$sample_dir/transport.py" \
+  'URL="https://127.0.0.2:8552"'
+check "validator TLS audience is not an ordinary ERPC destination" block "$sample_dir/validator.rs" \
+  'const URL: &str = "https://127.0.0.3:5052";'
+check "validator TLS audience rejects neighboring address" block "crates/erpc-chain-eth/templates/authority/eth_validator_${sample_dir}.py" \
+  'URL="https://127.0.0.4:8552"'
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

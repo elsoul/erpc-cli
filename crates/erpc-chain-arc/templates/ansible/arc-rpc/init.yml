@@ -1,13 +1,7 @@
 # SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
 # SPDX-License-Identifier: Apache-2.0
-#
-# erpc's Arc RPC node init: the host an Arc node needs, before any Arc
-# software. Packages, the `arc` system user (no login, no password), the
-# data disk at /var/lib/arc when the operator agreed to one, kernel settings
-# and persistent, bounded logs. Re-running changes nothing on a host that has
-# all of it.
 ---
-- name: Prepare the host for an Arc RPC node
+- name: Prepare original Arc follower authority on pre-mounted storage
   hosts: all
   become: true
   gather_facts: true
@@ -15,144 +9,72 @@
   vars_files:
     - vars.yml
   tasks:
-    - name: Stop unless the host is Ubuntu 24.04 or later on x86_64 or aarch64
+    - name: Require the qualified Ubuntu and native platform
       ansible.builtin.assert:
         that:
           - ansible_facts.distribution == 'Ubuntu'
-          - ansible_facts.distribution_version is version('24.04', '>=')
+          - ansible_facts.distribution_version is version('24.04', '==')
           - ansible_facts.architecture in ['x86_64', 'aarch64']
-        fail_msg: >-
-          {{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }} on
-          {{ ansible_facts.architecture }}: erpc sets Arc nodes up on Ubuntu 24.04 or later
-          (systemd-creds keeps the consensus key encrypted), x86_64 or aarch64. Nothing was changed.
+          - ansible_facts.memtotal_mb >= 60000
         quiet: true
 
-    - name: Stop unless the host has the memory Arc asks for
-      ansible.builtin.assert:
-        that:
-          - ansible_facts.memtotal_mb >= arc_min_memory_mb | default(60000) | int
-        fail_msg: >-
-          The host has {{ ansible_facts.memtotal_mb }} MB of memory; Arc asks for 64 GB.
-          Nothing was changed.
-        quiet: true
+    - name: Qualify and durably prepare the original identity and data volume
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - -I
+          - -c
+          - "{{ arc_authority_loader }}"
+          - "{{ playbook_dir }}/../../authority/control.py"
+        stdin: "{{ arc_authority_request | to_json }}"
+      register: arc_original
+      changed_when: true
 
-    - name: Install the packages the node uses
+    - name: Install bounded prerequisites without starting package-owned listeners
       ansible.builtin.apt:
-        name:
-          - ca-certificates
-          - curl
-          - jq
-          - nftables
-          - tar
-          - e2fsprogs
+        name: [ca-certificates, curl, jq, nftables, tar, openssl]
         state: present
         update_cache: true
         cache_valid_time: 3600
+        policy_rc_d: 101
 
-    - name: Keep the clock in time
+    - name: Observe an already active clock daemon
+      ansible.builtin.command: systemctl is-active chrony.service systemd-timesyncd.service
+      register: arc_clock
+      failed_when: false
+      changed_when: false
+
+    - name: Install the supported clock daemon only when none is active
+      ansible.builtin.apt:
+        name: systemd-timesyncd
+        state: present
+      when: "'active' not in arc_clock.stdout_lines"
+
+    - name: Start the selected clock daemon
       ansible.builtin.systemd_service:
         name: systemd-timesyncd
-        state: started
         enabled: true
+        state: started
+      when: "'active' not in arc_clock.stdout_lines"
 
-    - name: Make the arc system user, which runs both layers
-      ansible.builtin.user:
-        name: arc
-        system: true
-        create_home: false
-        home: "{{ arc_home }}"
-        shell: /usr/sbin/nologin
-        password: "!"
-
-    # A disk erpc offered and the operator agreed to is formatted and mounted
-    # at /var/lib/arc. It is checked again here, right before anything is
-    # wiped: if it changed since, the run stops with nothing wiped.
-    - name: Take the agreed disk
-      when: arc_disk is defined and arc_disk
-      block:
-        - name: Read whether the data directory is a mount already
-          ansible.builtin.command: findmnt -n -o SOURCE --target {{ arc_home }} --mountpoint {{ arc_home }}
-          register: arc_mounted
-          changed_when: false
-          failed_when: false
-
-        - name: List the disks that hold nothing, as erpc did before the run
-          ansible.builtin.command: bash "{{ playbook_dir }}/../../files/free-disks.sh"
-          register: arc_free_disks
-          changed_when: false
-          when: arc_mounted.rc != 0
-
-        - name: Stop unless the disk still holds nothing
-          ansible.builtin.assert:
-            that:
-              - arc_free_disks.stdout_lines | select('match', '^free ' ~ arc_disk.name ~ ' [0-9]+ ') | list | length == 1
-            fail_msg: >-
-              /dev/{{ arc_disk.name }} is no longer free
-              ({{ arc_free_disks.stdout_lines | select('search', ' ' ~ arc_disk.name ~ ' ') | join('; ') }}).
-              Nothing was wiped.
-            quiet: true
-          when: arc_mounted.rc != 0
-
-        - name: Remove the empty partition table the operator agreed to wipe
-          ansible.builtin.shell:
-            cmd: >-
-              wipefs --all /dev/{{ arc_disk.name }} &&
-              blockdev --rereadpt /dev/{{ arc_disk.name }} &&
-              udevadm settle
-          when: arc_mounted.rc != 0 and arc_disk.wipe | default(false)
-          changed_when: true
-
-        - name: Make the file system
-          community.general.filesystem:
-            dev: /dev/{{ arc_disk.name }}
-            fstype: ext4
-            opts: -m 0 -L arc-data
-          when: arc_mounted.rc != 0
-
-        - name: Read the new file system's UUID
-          ansible.builtin.command: blkid -s UUID -o value /dev/{{ arc_disk.name }}
-          register: arc_disk_uuid
-          changed_when: false
-          when: arc_mounted.rc != 0
-
-        - name: Mount it at the data directory, now and at boot
-          ansible.posix.mount:
-            path: "{{ arc_home }}"
-            src: UUID={{ arc_disk_uuid.stdout }}
-            fstype: ext4
-            opts: defaults,noatime
-            state: mounted
-          when: arc_mounted.rc != 0
-
-    - name: Make the data, release and firewall directories
-      ansible.builtin.file:
-        path: "{{ item.path }}"
-        state: directory
-        owner: "{{ item.owner }}"
-        group: "{{ item.owner }}"
-        mode: "{{ item.mode }}"
-      loop:
-        - { path: "{{ arc_home }}", owner: arc, mode: "0750" }
-        - { path: "{{ arc_home }}/execution", owner: arc, mode: "0750" }
-        - { path: "{{ arc_home }}/consensus", owner: arc, mode: "0750" }
-        - { path: "{{ arc_opt }}", owner: root, mode: "0755" }
-        - { path: "{{ arc_fw_dir }}", owner: root, mode: "0700" }
-        - { path: "{{ arc_helpers }}", owner: root, mode: "0755" }
-        - { path: /etc/credstore.encrypted, owner: root, mode: "0700" }
-        - { path: /etc/systemd/journald.conf.d, owner: root, mode: "0755" }
-      loop_control:
-        label: "{{ item.path }}"
-
-    - name: Set the kernel up for many RPC clients
+    - name: Set the bounded Arc kernel floors
       ansible.builtin.template:
         src: "{{ arc_jinja }}/90-erpc-arc.conf.j2"
         dest: /etc/sysctl.d/90-erpc-arc.conf
         owner: root
         group: root
         mode: "0644"
-      notify: Apply kernel settings
+      notify: Apply Arc kernel settings
 
-    - name: Keep the logs across reboots, within bounds
+    - name: Ensure persistent bounded journal configuration directory
+      ansible.builtin.file:
+        path: /etc/systemd/journald.conf.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Bound persistent Arc journals
       ansible.builtin.template:
         src: "{{ arc_jinja }}/90-erpc-arc-journald.conf.j2"
         dest: /etc/systemd/journald.conf.d/90-erpc-arc.conf
@@ -160,12 +82,10 @@
         group: root
         mode: "0644"
       notify: Restart journald
-
   handlers:
-    - name: Apply kernel settings
+    - name: Apply Arc kernel settings
       ansible.builtin.command: sysctl --system
       changed_when: true
-
     - name: Restart journald
       ansible.builtin.systemd_service:
         name: systemd-journald

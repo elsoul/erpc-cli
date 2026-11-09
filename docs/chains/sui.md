@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Sui
 
-Researched 2026-10-26 against Sui mainnet-v1.82.3; documentation pages were read on that date. [S1]
+Researched 2026-10-26 against Sui mainnet-v1.82.3; Testnet source and protocol qualification refreshed 2026-11-04. [S1], [S6]
 
 ## Networks
 
@@ -14,7 +14,7 @@ Mainnet, Testnet and Devnet use different `genesis.blob` files from MystenLabs' 
 ## RPC node
 
 - **Client:** MystenLabs' `sui` repository supplies the reference `sui-node` for full nodes and validators, under Apache-2.0. Repository, release and license sources are below. [S1], [S4], [S5]
-- **Latest stable by network:** Mainnet `mainnet-v1.82.3`, commit `bf4073918ed33cfa0b09c500658fa116a774bcfd`, published 2026-10-21. Testnet `testnet-v1.82.2`, commit `e10772f4fafef31c46f598835fe66648caf6e005`, published 2026-10-20. Mainnet/Testnet releases are distinct despite both being non-prereleases; Devnet tags are not Mainnet recommendations. [S1], [S6]
+- **Latest stable by network:** Mainnet `mainnet-v1.82.3`, commit `bf4073918ed33cfa0b09c500658fa116a774bcfd`, published 2026-10-21. Testnet `testnet-v1.83.1`, commit `0e0ede4cbf48c6d7654b613f62fdca71542ace03`, published 2026-11-03. Its maximum protocol is 140; official Testnet gRPC reported protocol 140 on 2026-11-04, requiring an update from the previous max-139 1.82.2 client. Mainnet remained protocol 139 in the separate observation. Mainnet/Testnet releases are distinct despite both being non-prereleases; Devnet tags are not Mainnet recommendations. [S1], [S6]
 - **Verification:** The Mainnet release exposes OS/architecture archives but no separate signed checksum/GPG assets. A normal-release checksum-signing fingerprint or reproducible-build guarantee is **not documented** there. The operator guide separately documents signed private security releases with out-of-band announcements; that process must not be conflated with ordinary public-release verification. No binary was downloaded. [S1], [S7]
 - **Install/OS:** Use a prebuilt archive/container or build the pinned source with `cargo build --release --bin sui-node`. Official systemd instructions and unit are available. Production guidance favors Linux (Ubuntu/Debian); macOS is for development. A glibc floor and CPU-instruction requirement are **not documented** in the cited installation/operator pages. [S1], [S8], [S9]
 - **Hardware, read 2026-10-26:** Full-node minimum recommendation is 8 physical cores/16 vCPUs, 128 GB RAM, 4 TB NVMe. A bandwidth minimum is **not documented** on the full-node page. Retention/indexing can substantially increase storage requirements. [S9]
@@ -32,7 +32,7 @@ Mainnet, Testnet and Devnet use different `genesis.blob` files from MystenLabs' 
 - **Registration/keys:** Submit `request_add_validator_candidate`, fund its pool, then `request_add_validator` when eligible. Key roles are `protocol.key` (BLS), `account.key` (staking assets), `network.key` (state sync), `worker.key` (consensus); the latter three are ed25519. The systemd guide places node keys under `/opt/sui/key-pairs`. Account operation capabilities can be delegated while keeping the account key offline. A production remote-protocol-signer integration is **not documented** in these guides. [S7], [S8]
 - **Slashing:** After reports from `2f + 1` other validators by voting power, staking rewards are reduced. The cited guide does not document this as destruction of principal; an independent principal-slashing schedule is **not documented** there. [S7]
 - **Processes/hardware:** Validator `sui-node` handles consensus; no separate mandatory MEV process is **documented**. Recommended minimum is 24 physical cores/48 vCPUs, 128 GB RAM, 4 TB NVMe, 1 Gbps. Open TCP 8080/8081 for validator traffic and UDP 8084 for state sync; keep metrics private. The official deployment and management guides cover onboarding. [S4], [S7]
-- **erpc today:** **Partial**: the [CLI][R21] and [skill][R20] expose a full-node lifecycle with a compatible node alias; validator lifecycle and external registration preparation/validation/status are implemented; real-host acceptance remains deferred. See the [implementation plan][R22] and [embedded operations guide][R23].
+- **erpc today:** **Partial**: the [CLI][R21] and [skill][R20] expose a full-node lifecycle with a compatible node alias; validator lifecycle and external registration preparation/validation/status are implemented; real-host acceptance remains deferred. See the [embedded operations guide][R23].
 
 ## Pitfalls
 
@@ -47,7 +47,7 @@ Mainnet, Testnet and Devnet use different `genesis.blob` files from MystenLabs' 
 [S3]: https://github.com/MystenLabs/sui/blob/bf4073918ed33cfa0b09c500658fa116a774bcfd/crates/sui-types/src/digests.rs "Pinned genesis checkpoint identifiers and short-ID tests"
 [S4]: https://docs.sui.io/operators/validator/validator-config "Official validator deployment, hardware and transitional stake requirements; read 2026-10-26"
 [S5]: https://github.com/MystenLabs/sui/blob/bf4073918ed33cfa0b09c500658fa116a774bcfd/LICENSE "Apache-2.0 license at resolved Mainnet commit"
-[S6]: https://github.com/MystenLabs/sui/releases/tag/testnet-v1.82.2 "Testnet release resolved to e10772f4fafef31c46f598835fe66648caf6e005"
+[S6]: https://github.com/MystenLabs/sui/releases/tag/testnet-v1.83.1 "Testnet release resolved to 0e0ede4cbf48c6d7654b613f62fdca71542ace03"
 [S7]: https://docs.sui.io/operators/validator/validator-tasks "Keys, reward penalties, metrics and private security releases; read 2026-10-26"
 [S8]: https://github.com/MystenLabs/sui/blob/bf4073918ed33cfa0b09c500658fa116a774bcfd/nre/systemd/README.md "Pinned official build/systemd/key-path procedure"
 [S9]: https://docs.sui.io/operators/full-node/sui-full-node "Full-node hardware, ports, gRPC and readiness; read 2026-10-26"
@@ -62,6 +62,5 @@ Mainnet, Testnet and Devnet use different `genesis.blob` files from MystenLabs' 
 
 [R21]: ../../crates/erpc/src/main.rs "Existing repository CLI"
 
-[R22]: ../plans/2026-10-26-chain-implementation.md "Implementation and acceptance tracking"
 
 [R23]: ../../crates/erpc-chain-sui/templates/README.md "Sui full-node lifecycle and deferred live acceptance"

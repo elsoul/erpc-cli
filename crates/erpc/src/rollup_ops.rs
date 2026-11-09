@@ -541,6 +541,14 @@ async fn operation(
     Err("unsupported follower operation".into())
 }
 
+pub(crate) fn report_status(
+    result: Result<Value, String>,
+    json_out: bool,
+    output: &mut dyn FnMut(&str),
+) -> Outcome {
+    crate::node_report::status(result, "/readiness/ready", json_out, output)
+}
+
 pub(crate) async fn run(
     chain: erpc_core::chain::Chain,
     verb: &str,
@@ -558,19 +566,18 @@ pub(crate) async fn run(
         return Outcome::Usage("select an explicit supported follower network".into());
     };
     let say = Say { quiet: json_out };
-    match operation(verb, profile, args, &say, json_out).await {
+    let result = operation(verb, profile, args, &say, json_out).await;
+    if verb == "status" {
+        return report_status(result, json_out, &mut crate::print_line);
+    }
+    match result {
         Ok(value) => {
-            let not_ready = verb == "status" && value["readiness"]["ready"] != true;
             if json_out {
                 crate::print_json(&value);
             } else {
                 say.line(&serde_json::to_string_pretty(&value).unwrap_or_default());
             }
-            if not_ready {
-                Outcome::Failed("follower RPC is not ready; inspect readiness problems".into())
-            } else {
-                Outcome::Done(String::new())
-            }
+            Outcome::Done(String::new())
         }
         Err(error) => Outcome::Failed(error),
     }

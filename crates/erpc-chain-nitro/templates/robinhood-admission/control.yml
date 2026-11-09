@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Observe public Robinhood admission without changing the node or signing
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Inspect only the original RPC scope and authenticated parent protocol
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, '{{ playbook_dir }}/node/entry.py', observe]
+        stdin: '{{ admission_request | to_json }}'
+      changed_when: false

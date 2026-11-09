@@ -52,6 +52,9 @@ pub(crate) fn args(mut command: Command, verb: &Verb, validator: bool) -> Comman
                     .value_parser(value_parser!(u16)),
             );
     }
+    if verb.name == "init" {
+        command = command.arg(Arg::new("migrate-account").long("migrate-account").action(ArgAction::SetTrue).help("Explicitly verify and retain this existing host original numeric account; stop old units, retain keys/data and require redeployment before start"));
+    }
     if validator && verb.name == "init" {
         command = validator_init_args(command);
     }
@@ -84,11 +87,14 @@ pub(crate) fn args(mut command: Command, verb: &Verb, validator: bool) -> Comman
             );
         }
     }
-    if verb.name == "deploy" {
+    if matches!(verb.name, "deploy" | "update") {
         command = command.arg(Arg::new("recover-bootstrap").long("recover-bootstrap").action(ArgAction::SetTrue).help("Stop incomplete bootstrap, retain its database in quarantine and perform a fresh verified restore; requires extra free space"));
     }
     if validator && verb.name == "deploy" {
-        command = command.arg(Arg::new("restore-keys").long("restore-keys").action(ArgAction::SetTrue).help("Stop this established validator and restore the original three keys from its saved references; retain old ciphertext, refuse changed metadata"));
+        command = command.arg(Arg::new("restore-keys").long("restore-keys").conflicts_with("recover-bootstrap").action(ArgAction::SetTrue).help("Stop this established validator and restore the original three keys from its saved references; retain old ciphertext, refuse changed metadata"));
+    }
+    if verb.name == "update" {
+        command = command.arg(source_history_arg());
     }
     if verb.name == "logs" {
         command = command
@@ -106,6 +112,12 @@ pub(crate) fn args(mut command: Command, verb: &Verb, validator: bool) -> Comman
             );
     }
     command.about(about(verb))
+}
+
+fn source_history_arg() -> Arg {
+    Arg::new("migrate-source-history").long("migrate-source-history").conflicts_with("recover-bootstrap")
+        .value_parser(value_parser!(std::path::PathBuf))
+        .help("Stop and migrate independently recorded original highest-opened source; migration only, no update or startup")
 }
 
 fn about(verb: &Verb) -> &'static str {
@@ -153,6 +165,17 @@ pub(crate) fn run(
     };
     let args = crate::sui_node::Args {
         validator,
+        source_history: sub
+            .try_get_one::<std::path::PathBuf>("migrate-source-history")
+            .ok()
+            .flatten()
+            .cloned(),
+        migrate_account: sub
+            .try_get_one::<bool>("migrate-account")
+            .ok()
+            .flatten()
+            .copied()
+            .unwrap_or(false),
         restore_keys: sub
             .try_get_one::<bool>("restore-keys")
             .ok()

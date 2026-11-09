@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3 -I
 # SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
 # SPDX-License-Identifier: Apache-2.0
 """Root-owned validator lifecycle helper. Requests, including custody, arrive on stdin.
@@ -86,6 +86,38 @@ def stopped():
             'validator is still running or stopping')
     pid = run(['systemctl', 'show', '-p', 'MainPID', '--value', UNITS[0]]).strip()
     require(pid in (b'0', b''), 'validator process has not exited')
+
+
+def quiesce(units):
+    """Attempt every owned shutdown action even if another one fails."""
+    failed = False
+    for unit in units:
+        for action in ('stop', 'disable'):
+            try:
+                ctl(action, unit)
+            except Exception:
+                failed = True
+    try:
+        stopped()
+    except Exception:
+        failed = True
+    require(not failed, 'owned shutdown could not be confirmed; custody and data retained')
+
+
+def persist_and_quiesce(state, units):
+    # A persistence error must not leave an already signing process untouched.
+    # Failure is still reported: successful shutdown cannot promise a durable
+    # reboot fence when storage itself cannot preserve that fence.
+    failed = False
+    try:
+        save(state)
+    except Exception:
+        failed = True
+    try:
+        quiesce(units)
+    except Exception:
+        failed = True
+    require(not failed, 'fencing or owned shutdown failed; custody and data retained')
 
 
 def rpc(path, payload=None):
@@ -267,10 +299,7 @@ def fence(config, state, destination):
     require(state.get('fenced_to', destination) == destination, 'host already fenced to another destination')
     # Fence is durable BEFORE attempting shutdown: reboot/manual service start fails guard.
     state.update(state='fenced', fenced_to=destination)
-    save(state)
-    ctl('stop', UNITS[0])
-    ctl('disable', UNITS[0])
-    stopped()
+    persist_and_quiesce(state, UNITS[:1])
     require((ROOT / 'vc/validators/slashing_protection.sqlite').is_file(), 'slashing database is missing')
     export = ROOT / 'vc/migration-history.json'
     export.unlink(missing_ok=True)
@@ -293,13 +322,21 @@ def dispatch(config, state, request):
             require(state.get('config_digest') == digest, 'resume the interrupted configuration before changing it')
         else:
             state.update(prior_state=state['state'], state='maintenance', config_digest=digest)
+        # Re-persist on retry too: a visible post-rename receipt may not have
+        # survived the previous directory fsync. Never publish new artifacts
+        # unless both the maintenance fence and shutdown are confirmed.
+        try:
             save(state)
-        loaded = run(['systemctl', 'show', '--property=LoadState', '--value', UNITS[0]], allowed=(0, 1)).strip()
-        require(loaded in (b'not-found', b'loaded', b'masked'), 'could not determine validator service state')
+            loaded = run(['systemctl', 'show', '--property=LoadState', '--value', UNITS[0]], allowed=(0, 1)).strip()
+            require(loaded in (b'not-found', b'loaded', b'masked'), 'could not determine validator service state')
+        except Exception:
+            try:
+                quiesce(UNITS[:1])
+            except Exception:
+                pass
+            raise Refused('maintenance fencing failed; owned shutdown attempted; data retained') from None
         if loaded != b'not-found':
-            ctl('stop', UNITS[0])
-            ctl('disable', UNITS[0])
-            stopped()
+            quiesce(UNITS[:1])
         return {'state': 'maintenance'}
     if action == 'install-end':
         require(state['state'] == 'maintenance', 'configuration lost its maintenance ownership')
@@ -315,12 +352,7 @@ def dispatch(config, state, request):
     if action == 'fence-export':
         return fence(config, state, request['destination'])
     if action == 'stop':
-        ctl('stop', UNITS[0])
-        ctl('disable', UNITS[0])
-        stopped()
-        for unit in UNITS[1:]:
-            ctl('stop', unit)
-            ctl('disable', unit)
+        quiesce(UNITS)
         return {'state': 'stopped', 'history_preserved': True}
     if action in ('start', 'restart'):
         if action == 'restart':
@@ -339,11 +371,7 @@ def dispatch(config, state, request):
     if action == 'destroy':
         # This command never deletes keys, history, binaries or inventory. It may be resumed safely.
         state['state'] = 'fenced'
-        save(state)
-        for unit in UNITS:
-            ctl('stop', unit)
-            ctl('disable', unit)
-        stopped()
+        persist_and_quiesce(state, UNITS)
         return {'state': 'fenced', 'keys_and_history_preserved': True}
     raise Refused('unsupported operation')
 

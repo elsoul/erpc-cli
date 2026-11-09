@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+[Unit]
+Description=ERPC original Robinhood testnet Defensive validator confirmed ingress policy
+Before=erpc-robinhood-upstreams.service erpc-robinhood-nitro.service
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=0
+Group=0
+ExecStart={{ validator_runtime_command }} firewall-load
+[Install]
+WantedBy=multi-user.target

@@ -23,9 +23,8 @@ result() {
   # $1 status, $2 exit code, $3 message (no quotes or backslashes in it)
   local finished
   finished="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  printf '{"status":"%s","exit_code":%d,"started_at":"%s","finished_at":"%s","play":"%s","message":"%s"}\n' \
-    "$1" "$2" "$started" "$finished" "$play" "$3" > "$run_dir/result.json.tmp" \
-    && mv -f "$run_dir/result.json.tmp" "$run_dir/result.json"
+  sudo -n /usr/bin/python3 -I "$run_dir/run-files.py" result "$run_dir" \
+    "$1" "$2" "$started" "$finished" "$play" "$3"
 }
 
 cd "$run_dir" || exit 1
@@ -47,7 +46,7 @@ if [ "$got" != "$want" ]; then
   result failed 1 "the bundle does not match its digest"
   exit 1
 fi
-mkdir -p bundle && tar -xzf bundle.tar.gz -C bundle || { result failed 1 "the bundle did not extract"; exit 1; }
+# The CLI sealed and extracted this exact bundle before systemd opened its log.
 
 # The venv is named after its pins, so a new set of pins gets a new venv and
 # an existing one is never changed under a run. It is built by root and
@@ -57,23 +56,26 @@ req_sha="$(sha256sum bundle/requirements.txt | cut -d' ' -f1)"
 venv="/opt/erpc/venvs/${req_sha:0:16}"
 if [ ! -x "$venv/bin/ansible-playbook" ] || [ "$(cat "$venv/.ready" 2>/dev/null)" != "$req_sha" ]; then
   echo "erpc: preparing Ansible on this node from pinned wheels"
-  if ! python3 -c 'import ensurepip, venv' 2>/dev/null; then
+  if ! /usr/bin/python3 -I -c 'import ensurepip, venv' 2>/dev/null; then
     echo "erpc: installing python3-venv"
     sudo -n env DEBIAN_FRONTEND=noninteractive apt-get update -qq \
       && sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-venv \
       || { result failed 1 "python3-venv could not be installed"; exit 1; }
   fi
-  sudo -n sh -c 'umask 022 && rm -rf "$1" && mkdir -p /opt/erpc/venvs && python3 -m venv "$1" \
-      && "$1/bin/pip" install --quiet --disable-pip-version-check --no-input \
+  sudo -n env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root LANG=C.UTF-8 /bin/sh -c 'umask 022 && rm -rf "$1" && mkdir -p /opt/erpc/venvs && /usr/bin/python3 -I -m venv "$1" \
+      && "$1/bin/python" -I -m pip install --quiet --disable-pip-version-check --no-input \
            --require-hashes --only-binary=:all: -r "$2" \
       && echo "$3" > "$1/.ready"' sh "$venv" "$run_dir/bundle/requirements.txt" "$req_sha" \
     || { result failed 1 "Ansible could not be installed from the pinned wheels"; exit 1; }
 fi
 
+export ANSIBLE_PYTHON_INTERPRETER="$run_dir/python-isolated"
 export ANSIBLE_CONFIG="$run_dir/bundle/ansible.cfg"
-export ANSIBLE_LOCAL_TEMP="$run_dir/.ansible-local"
+ANSIBLE_LOCAL_TEMP="$(mktemp -d /tmp/erpc-ansible.XXXXXXXXXX)" || { result failed 1 "Ansible temporary directory could not be created"; exit 1; }
+export ANSIBLE_LOCAL_TEMP
+trap 'rm -rf -- "$ANSIBLE_LOCAL_TEMP"' EXIT
 export PYTHONUNBUFFERED=1
-"$venv/bin/ansible-playbook" -i bundle/inventory.yml "bundle/$play"
+"$venv/bin/python" -I -m ansible.cli.playbook -i bundle/inventory.yml "bundle/$play"
 code=$?
 if [ "$code" -eq 0 ]; then
   result ok 0 ""

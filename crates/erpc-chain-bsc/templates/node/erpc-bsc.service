@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+[Unit]
+Description=ERPC BNB Smart Chain node
+Requires=erpc-bsc-firewall.service
+After=erpc-bsc-firewall.service network-online.target
+Wants=network-online.target
+RequiresMountsFor=/var/lib/erpc-bsc /etc/erpc/bsc /opt/erpc-bsc
+
+[Service]
+Type=exec
+UMask=0077
+LimitCORE=0
+LimitNOFILE=65536
+WorkingDirectory=/var/lib/erpc-bsc/data
+ExecStartPre=@ERPC_BSC_CONTROL@ guard
+# The fixed launcher checks ownership then drops supplementary groups/GID/UID
+# before exec. Geth never runs with root credentials.
+ExecStart=@ERPC_BSC_CONTROL@ execute
+KillSignal=SIGTERM
+TimeoutStopSec=1800
+SendSIGKILL=no
+Restart=on-failure
+RestartSec=30
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/erpc-bsc/data
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Retire an owned Polygon node while retaining identities and history
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars_files: [vars.yml]
+  tasks:
+    - name: Verify immutable ownership before any helper or service mutation
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ polygon_scripts }}/control.py", within-run]
+        stdin: "{{ polygon_request | combine({'action':'guard'}) | to_json }}"
+      changed_when: false
+    - name: Install the reviewed stop-before-filter-removal controller
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../rpc-firewall.py"
+        dest: /usr/local/lib/erpc/rpc-firewall.py
+        owner: root
+        group: root
+        mode: '0755'
+    - name: Fence, drain and disable both clients before removing their ingress policy
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ polygon_scripts }}/control.py", within-run]
+        stdin: "{{ polygon_request | combine({'action':'destroy'}) | to_json }}"

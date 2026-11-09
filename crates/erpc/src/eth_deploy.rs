@@ -58,6 +58,10 @@ pub struct Args {
     pub forget: bool,
     /// `plan`: `deploy`, `update` or `update-config`.
     pub change: String,
+    /// Explicit original interrupted operation to archive without restarting.
+    pub recover_cutover: Option<String>,
+    /// Explicit independent filesystem UUID evidence; upgrade only, never start.
+    pub upgrade_volume_authority: Option<std::path::PathBuf>,
 }
 
 /// A node opened for a change: its vault, the node, a session to it, its
@@ -88,7 +92,7 @@ fn reach(args: &Args, say: &Say) -> Result<Reached, String> {
     if !refusals.is_empty() {
         return Err(format!("{}: {}", node.name, refusals.join("; ")));
     }
-    let status = read_status(&session)?;
+    let status = read_status(&session, &node, &args.network)?;
     Ok(Reached {
         opened,
         node,
@@ -103,6 +107,7 @@ fn vars<'a>(r: &'a Reached, node: &'a EthRpc, phase: &str) -> RunVars<'a> {
     let mut extra = Map::new();
     extra.insert("eth_phase".to_owned(), json!(phase));
     RunVars {
+        role: erpc_core::chain::Role::Rpc,
         node,
         network: &r.opened.network,
         facts: &r.facts,
@@ -152,8 +157,185 @@ fn pair(node: &EthRpc) -> String {
     )
 }
 
+fn recover(args: &Args, json_out: bool) -> Outcome {
+    let Some(intent) = args.recover_cutover.as_deref() else {
+        return Outcome::Usage("original recovery intent required".into());
+    };
+    if intent.len() != 32
+        || !intent
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Outcome::Usage("--recover-cutover requires the original 32-character lowercase hexadecimal intent from plan".into());
+    }
+    if args.reth_version.is_some()
+        || args.lighthouse_version.is_some()
+        || args.rpc_allow.is_some()
+        || args.management_allow.is_some()
+        || args.monitoring_allow.is_some()
+    {
+        return Outcome::Usage("recovery is stop/archive-only; request release or access changes in a later deployment".into());
+    }
+    let say = Say { quiet: json_out };
+    let result = (|| -> Result<_, CliError> {
+        let opened = open(&args.network, None, &say)?;
+        let node = find(&opened.nodes, &args.name, &args.network)?.clone();
+        let target = target(&node, &args.login)?;
+        let session = Session::open(&target).map_err(|e| e.to_string())?;
+        let facts = facts(&session)?;
+        go_ahead(args.yes, "Ethereum recovery was not confirmed")?;
+        let mut extra = Map::new();
+        extra.insert(
+            "eth_authority_request".into(),
+            crate::eth_authority::request(
+                &node,
+                &args.network,
+                "recover",
+                json!({"intent":intent}),
+            )?,
+        );
+        let run = run_play(
+            &session,
+            &target,
+            &RunVars {
+                role: erpc_core::chain::Role::Rpc,
+                node: &node,
+                network: &opened.network,
+                facts: &facts,
+                extra,
+            },
+            plays::RECOVER,
+            "Repeat recovery with the same original intent",
+            &say,
+        )?;
+        Ok(
+            json!({"name":node.name,"run":run,"recovered":true,"started":false,"data_preserved":true,"intent":intent}),
+        )
+    })();
+    match result {
+        Ok(value) => done(
+            "Original Ethereum deployment recovered; start a fresh explicit deploy to resume."
+                .into(),
+            json_out,
+            &value,
+        ),
+        Err(error) => Outcome::from(error),
+    }
+}
+
+fn volume_evidence(path: &std::path::Path) -> Result<Value, String> {
+    use std::io::Read as _;
+    let metadata =
+        std::fs::symlink_metadata(path).map_err(|_| "cannot inspect original filesystem record")?;
+    if !metadata.is_file() || metadata.len() > 4096 {
+        return Err("original filesystem record must be a bounded ordinary file".into());
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .map_err(|_| "cannot open original filesystem record")?
+        .take(4097)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "cannot read original filesystem record")?;
+    if bytes.len() > 4096 {
+        return Err("original filesystem record exceeds its bound".into());
+    }
+    let value: Value =
+        serde_json::from_slice(&bytes).map_err(|_| "invalid original filesystem JSON")?;
+    let object = value
+        .as_object()
+        .ok_or("original filesystem object required")?;
+    let uuid = value["uuid"]
+        .as_str()
+        .ok_or("original filesystem UUID required")?;
+    let valid_uuid = uuid.len() == 36
+        && uuid.bytes().enumerate().all(|(i, byte)| {
+            if [8, 13, 18, 23].contains(&i) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
+            }
+        })
+        && uuid != "00000000-0000-0000-0000-000000000000";
+    if object.len() != 3
+        || !valid_uuid
+        || value["root"] != "/"
+        || !matches!(value["type"].as_str(), Some("ext4" | "xfs"))
+    {
+        return Err("original ext4/xfs UUID, type and whole-filesystem root required".into());
+    }
+    Ok(value)
+}
+
+fn upgrade_volume(args: &Args, json_out: bool) -> Outcome {
+    let say = Say { quiet: json_out };
+    let result = (|| -> Result<Value, CliError> {
+        let path = args
+            .upgrade_volume_authority
+            .as_ref()
+            .ok_or("original filesystem record required")?;
+        let evidence = volume_evidence(path)?;
+        if args.recover_cutover.is_some()
+            || args.reth_version.is_some()
+            || args.lighthouse_version.is_some()
+            || args.rpc_allow.is_some()
+            || args.management_allow.is_some()
+            || args.monitoring_allow.is_some()
+        {
+            return Err(
+                "volume upgrade is stop-only; complete recovery or deployment separately".into(),
+            );
+        }
+        let opened = open(&args.network, None, &say)?;
+        let node = find(&opened.nodes, &args.name, &args.network)?.clone();
+        let target = target(&node, &args.login)?;
+        let session = Session::open(&target).map_err(|e| e.to_string())?;
+        let facts = facts(&session)?;
+        go_ahead(
+            args.yes,
+            "Original filesystem authority upgrade was not confirmed",
+        )?;
+        let mut extra = Map::new();
+        extra.insert(
+            "eth_authority_request".into(),
+            crate::eth_authority::request(
+                &node,
+                &args.network,
+                "upgrade-volume",
+                json!({"filesystem":evidence}),
+            )?,
+        );
+        let run = run_play(
+            &session,
+            &target,
+            &RunVars {
+                role: erpc_core::chain::Role::Rpc,
+                node: &node,
+                network: &opened.network,
+                facts: &facts,
+                extra,
+            },
+            plays::UPGRADE_VOLUME,
+            "Repeat only with the same independent original filesystem record",
+            &say,
+        )?;
+        Ok(
+            json!({"name":node.name,"run":run,"upgraded":true,"started":false,"data_preserved":true}),
+        )
+    })();
+    match result {
+        Ok(value) => done("Original filesystem evidence bound; node remains stopped. Complete any original init or legacy migration, then use a separate explicit deploy.".into(), json_out, &value),
+        Err(error) => Outcome::from(error),
+    }
+}
+
 /// Runs `erpc r --chain eth deploy`.
 pub fn deploy(args: &Args, json_out: bool) -> Outcome {
+    if args.upgrade_volume_authority.is_some() {
+        return upgrade_volume(args, json_out);
+    }
+    if args.recover_cutover.is_some() {
+        return recover(args, json_out);
+    }
     let say = Say { quiet: json_out };
     let result = (|| {
         let r = reach(args, &say)?;
@@ -196,7 +378,7 @@ pub fn deploy(args: &Args, json_out: bool) -> Outcome {
             &say,
         )?;
         let fresh = Session::open(&r.target).map_err(|e| e.to_string())?;
-        let status = read_status(&fresh)?;
+        let status = read_status(&fresh, &r.node, &args.network)?;
         let node = record(&r, r.node.clone(), &run, "deploy ok", &say);
         Ok::<_, CliError>((node, run, status))
     })();
@@ -250,12 +432,15 @@ fn with_lists(node: &EthRpc, args: &Args) -> Result<(EthRpc, Vec<String>), Strin
 
 /// Runs `erpc r --chain eth update-config`.
 pub fn update_config(args: &Args, json_out: bool) -> Outcome {
+    if args.recover_cutover.is_some() {
+        return recover(args, json_out);
+    }
     let say = Say { quiet: json_out };
     let result = (|| {
         let r = reach(args, &say)?;
         let (next, changes) = with_lists(&r.node, args)?;
         say.line(&format!(
-            "plan       {} on {}: {}; units and firewall written again, layers restarted only if their units change",
+            "plan       {} on {}: {}; units and firewall applied through a guarded original cutover, then both layers restarted",
             r.node.name,
             args.network,
             if changes.is_empty() {
@@ -335,6 +520,9 @@ fn same_pair(a: &EthRpc, b: &EthRpc) -> bool {
 
 /// Runs `erpc r --chain eth update`.
 pub async fn update(args: &Args, json_out: bool) -> Outcome {
+    if args.recover_cutover.is_some() {
+        return recover(args, json_out);
+    }
     let say = Say { quiet: json_out };
     let result = async {
         let r = reach(args, &say)?;
@@ -344,7 +532,7 @@ pub async fn update(args: &Args, json_out: bool) -> Outcome {
         }
         say.line(&format!(
             "plan       {} on {}: {} -> {}; installed beside the running pair, then both layers \
-             restart on it (RPC is down meanwhile); back to the running pair if it does not come up",
+             restart on it (RPC is down meanwhile); a failed upgrade stays fenced with original data retained",
             r.node.name,
             args.network,
             pair(&r.node),
@@ -374,14 +562,18 @@ pub async fn update(args: &Args, json_out: bool) -> Outcome {
             )
         })?;
         stored = record(&r, stored, &run, &format!("update to {} ok", pair(&next)), &say);
-        let status = read_status(&r.session)?;
+        let status = read_status(&r.session, &stored, &args.network)?;
         Ok((stored, run, Some(status)))
     }
     .await;
     match result {
         Err(e) => Outcome::from(e),
         Ok((node, _, None)) => done(
-            format!("{} runs {} already; nothing to do.", node.name, pair(&node)),
+            format!(
+                "{} already selects {}; no release or runtime state was changed.",
+                node.name,
+                pair(&node)
+            ),
             json_out,
             &json!({ "status": "ok", "name": node.name, "changed": false }),
         ),
@@ -394,12 +586,47 @@ pub async fn update(args: &Args, json_out: bool) -> Outcome {
     }
 }
 
+fn original_operation_lines(authority: &serde_json::Value) -> Result<Vec<String>, String> {
+    let mut lines = Vec::new();
+    for key in ["pending", "recovery"] {
+        if let Some(intent) = authority[key]["intent"].as_str() {
+            if intent.len() != 32
+                || !intent
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            {
+                return Err("invalid original operation identity in host state".into());
+            }
+            lines.push(format!(
+                "{key}: original intent {intent}; {}",
+                if key == "pending" && authority["pending_current"] == true {
+                    "resume the same request, or explicitly --recover-cutover this intent"
+                } else {
+                    "repeat --recover-cutover with this intent before fresh deployment"
+                }
+            ));
+        }
+    }
+    Ok(lines)
+}
+
+fn original_operation_plan(reached: &Reached, network: &str) -> Result<Vec<String>, String> {
+    let authority = crate::eth_authority::invoke(
+        &reached.session,
+        &reached.node,
+        network,
+        "deployment",
+        json!({}),
+    )?;
+    original_operation_lines(&authority)
+}
+
 /// Runs `erpc r --chain eth plan`.
 pub async fn plan(args: &Args, json_out: bool) -> Outcome {
     let say = Say { quiet: true };
     let result = async {
         let r = reach(args, &say)?;
-        let mut lines: Vec<String> = Vec::new();
+        let mut lines = original_operation_plan(&r, &args.network)?;
         match args.change.as_str() {
             "update" => {
                 let next = next_pair(&r.node, &r.facts, args).await?;
@@ -463,7 +690,7 @@ pub async fn plan(args: &Args, json_out: bool) -> Outcome {
                 lines.push(format!(
                     "deploy: layers {}",
                     if s.execution == "active" && s.consensus == "active" {
-                        "restarted only if their units change"
+                        "stopped and restarted through the original guarded cutover"
                     } else {
                         "started"
                     }
@@ -492,36 +719,19 @@ pub async fn plan(args: &Args, json_out: bool) -> Outcome {
 
 /// Runs `erpc r --chain eth destroy`.
 pub fn destroy(args: &Args, json_out: bool) -> Outcome {
+    if args.forget || args.purge_data {
+        return Outcome::Usage("original-authority retirement preserves native data, JWT and inventory; --purge-data and --forget are not supported by this operation".into());
+    }
     let say = Say { quiet: json_out };
     let result = (|| -> Result<_, CliError> {
-        // Data left behind would be taken for the next node's, whatever its type.
-        if args.forget && !args.purge_data {
-            return Err(
-                "--forget needs --purge-data: the next node set up on this server must not \
-                 start from this one's data"
-                    .to_owned()
-                    .into(),
-            );
-        }
         let opened = open(&args.network, None, &say)?;
         let node = find(&opened.nodes, &args.name, &args.network)?.clone();
         let target = target(&node, &args.login)?;
         let session = Session::open(&target).map_err(|e| e.to_string())?;
         let facts = facts(&session)?;
         say.line(&format!(
-            "plan       {} on {}: stop both layers and remove units, releases, firewall and the JWT{}; {}",
-            node.name,
-            args.network,
-            if args.purge_data {
-                ", AND DELETE THE CHAIN DATA"
-            } else {
-                "; the chain data stays"
-            },
-            if args.forget {
-                "then remove the node's 1Password item"
-            } else {
-                "the 1Password item stays"
-            }
+            "plan       {} on {}: stop and disable both original layers, fence startup, and retain native data, JWT, ingress, releases and the inventory binding",
+            node.name,args.network
         ));
         go_ahead(args.yes, "nothing was changed")?;
         let mut extra = Map::new();
@@ -531,6 +741,7 @@ pub fn destroy(args: &Args, json_out: bool) -> Outcome {
             &session,
             &target,
             &RunVars {
+                role: erpc_core::chain::Role::Rpc,
                 node: &node,
                 network: &opened.network,
                 facts: &facts,
@@ -540,24 +751,9 @@ pub fn destroy(args: &Args, json_out: bool) -> Outcome {
             "Run destroy again to see how it ended",
             &say,
         )?;
-        if args.forget {
-            let id = node.id.clone().ok_or("the node's item has no id")?;
-            opened.store.remove(&id).map_err(|e| {
-                format!(
-                    "{} is destroyed, but its item is still in 1Password: {e}",
-                    node.name
-                )
-            })?;
-            return Ok::<_, CliError>((node, run));
-        }
-        let result = if args.purge_data {
-            "destroyed (data deleted)"
-        } else {
-            "destroyed"
-        };
         if let Err(e) = opened.store.update_eth_rpc(&EthRpc {
             last_run: run.clone(),
-            last_result: result.to_owned(),
+            last_result: "retired (original data retained)".to_owned(),
             ..node.clone()
         }) {
             say.line(&format!(
@@ -569,17 +765,10 @@ pub fn destroy(args: &Args, json_out: bool) -> Outcome {
     match result {
         Err(e) => Outcome::from(e),
         Ok((node, run)) => done(
-            if args.forget {
-                format!(
-                    "{} no longer runs Ethereum and is out of the inventory; `erpc r --chain eth init` sets the server up again, as either type.",
-                    node.name
-                )
-            } else {
-                format!(
-                    "{} no longer runs Ethereum. Its 1Password item stays; `erpc r --chain eth deploy` sets it up again.",
-                    node.name
-                )
-            },
+            format!(
+                "{} is retired with its original data and inventory retained; an explicit deploy is required to resume.",
+                node.name
+            ),
             json_out,
             &json!({ "status": "ok", "name": node.name, "run": run, "purged": args.purge_data, "forgotten": args.forget }),
         ),
@@ -591,6 +780,26 @@ mod tests {
     use erpc_chain::inventory::EthRpc;
 
     use super::{Args, same_pair, with_lists};
+
+    #[test]
+    fn volume_evidence_requires_bounded_independent_uuid_before_any_remote_access() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("original-volume.json");
+        let valid = serde_json::json!({"uuid":"12345678-1234-1234-1234-123456789abc","type":"ext4","root":"/"});
+        std::fs::write(&path, valid.to_string()).unwrap();
+        assert_eq!(super::volume_evidence(&path).unwrap(), valid);
+        for invalid in [
+            serde_json::json!({}),
+            serde_json::json!({"uuid":"current-device-number","type":"ext4","root":"/"}),
+            serde_json::json!({"uuid":"12345678-1234-1234-1234-123456789abc","type":"tmpfs","root":"/"}),
+        ] {
+            std::fs::write(&path, invalid.to_string()).unwrap();
+            assert!(super::volume_evidence(&path).is_err());
+        }
+        std::fs::write(&path, vec![b' '; 4097]).unwrap();
+        assert!(super::volume_evidence(&path).is_err());
+        assert!(super::volume_evidence(directory.path()).is_err());
+    }
 
     #[test]
     fn update_config_changes_only_the_lists_it_is_given() {

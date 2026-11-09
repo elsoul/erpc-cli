@@ -12,20 +12,43 @@ pub struct Contract {
     pub validator: bool,
     /// C-Chain archive rather than pruned history.
     pub archive: bool,
+    /// Domain-separated digest of the stable inventory item, absent only before reservation.
+    pub owner: Option<[u8; 32]>,
 }
 impl Contract {
+    /// Public opaque host-ownership binding; never carries a vault/item locator.
+    #[must_use]
+    pub fn owner_label(self) -> Option<String> {
+        use std::fmt::Write;
+        self.owner.map(|bytes| {
+            let mut value = String::with_capacity(64);
+            for byte in bytes {
+                let _ = write!(value, "{byte:02x}");
+            }
+            value
+        })
+    }
     /// Check ownership immediately before fixed remote operations.
     pub(crate) fn check(self, allow_missing: bool) -> String {
         let network = if self.mainnet { "mainnet" } else { "fuji" };
         let kind = if self.archive { "archive" } else { "full" };
         let validator = if self.validator { "True" } else { "False" };
         let missing = if allow_missing { "True" } else { "False" };
+        let owner = self
+            .owner_label()
+            .map_or_else(|| "None".into(), |value| format!("\"{value}\""));
         format!(
-            r#"sudo -n python3 -c 'import json,pathlib,sys
+            r#"sudo -n /usr/bin/python3 -I -c 'import json,pathlib,sys
 p=pathlib.Path("/etc/avalanchego/contract.json")
 expected={{"network":"{network}","validator":{validator},"type":"{kind}"}}
+expected_owner={owner}
 if p.is_file():
-    ok=json.loads(p.read_text())==expected
+    actual=json.loads(p.read_text())
+    protocol=actual.pop("authority_protocol",None)
+    original=actual.pop("original_account",None)
+    actual_owner=actual.pop("owner",None)
+    bound=dict(expected,owner=expected_owner)
+    ok=actual==expected and ((protocol is None and actual_owner is None) or (protocol==2 and expected_owner is not None and actual_owner==expected_owner and isinstance(original,dict) and original.get("contract")==bound and original.get("protocol")==2))
 else:
     ok={missing} and not any(pathlib.Path(x).exists() for x in ["/etc/systemd/system/avalanchego.service","/etc/systemd/system/avalanche-rpc.service","/var/lib/avalanchego/db"]) and not any(pathlib.Path("/var/lib/avalanchego/staking").glob("*"))
 if not ok:
@@ -53,31 +76,27 @@ pub(crate) fn identity(action: IdentityAction, contract: Contract) -> String {
         IdentityAction::Restore => "restore",
     };
     format!(
-        "{} && sudo -n python3 /usr/local/lib/erpc/avax-identity.py {action}",
-        contract.check(false)
+        "{} && {} {action}",
+        contract.check(false),
+        crate::python::avax_control()
     )
 }
 /// Status never prints private files.
 pub(crate) fn status() -> String {
-    format!(
-        "python3 - <<'ERPC_AVAX_STATUS'\n{}\nERPC_AVAX_STATUS",
-        include_str!("avax_status.py")
-    )
+    format!("{} status", crate::python::avax_control())
 }
 /// Start/stop both services in dependency order.
 pub(crate) fn service(action: Action, contract: Contract) -> String {
     let operation = match action {
-        Action::Start => {
-            "sudo -n systemctl start avalanchego && sudo -n systemctl start avalanche-rpc"
-        }
-        Action::Stop => {
-            "sudo -n systemctl stop avalanche-rpc && sudo -n systemctl stop avalanchego"
-        }
-        Action::Restart => {
-            "sudo -n systemctl stop avalanche-rpc && sudo -n systemctl restart avalanchego && sudo -n systemctl start avalanche-rpc"
-        }
+        Action::Start => "start",
+        Action::Stop => "stop",
+        Action::Restart => "restart",
     };
-    format!("{} && {operation}", contract.check(false))
+    format!(
+        "{} && {} {operation}",
+        contract.check(false),
+        crate::python::avax_control()
+    )
 }
 /// The client journal only; identity operations never enter it.
 pub(crate) fn logs(lines: u32, follow: bool) -> String {
@@ -91,12 +110,20 @@ pub(crate) fn logs(lines: u32, follow: bool) -> String {
 pub struct FirewallToken {
     run: crate::RunId,
     bundle: String,
+    intent: String,
 }
 impl FirewallToken {
     /// Bind confirmation to the run and exact bundle submitted by this caller.
     /// # Errors
     /// Rejects malformed SHA-256, preventing shell interpolation of unchecked input.
-    pub fn new(run: crate::RunId, bundle: &str) -> Result<Self, String> {
+    pub fn new(run: crate::RunId, bundle: &str, intent: &str) -> Result<Self, String> {
+        if intent.len() != 32
+            || !intent
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err("invalid Avalanche intent".into());
+        }
         if bundle.len() != 64
             || !bundle
                 .bytes()
@@ -107,16 +134,19 @@ impl FirewallToken {
         Ok(Self {
             run,
             bundle: bundle.into(),
+            intent: intent.into(),
         })
     }
 }
 /// Confirm only the intended run, after checking host ownership again.
 pub(crate) fn confirm(contract: Contract, token: &FirewallToken) -> String {
     format!(
-        "{} && sudo -n python3 /usr/local/lib/erpc/avax-firewall.py confirm {} {}",
+        "{} && {} confirm {} {} {}",
         contract.check(false),
+        crate::python::avax_control(),
         token.run.as_str(),
-        token.bundle
+        token.bundle,
+        token.intent
     )
 }
 
@@ -145,6 +175,7 @@ mod tests {
             mainnet: true,
             validator: false,
             archive: false,
+            owner: Some([1; 32]),
         };
         let execute = |command: String| {
             let command = command
@@ -191,6 +222,7 @@ mod tests {
                     &FirewallToken::new(
                         crate::RunId::new("r-20261026t120000-abc123").unwrap(),
                         &"a".repeat(64),
+                        &"b".repeat(32),
                     )
                     .unwrap(),
                 ),
@@ -210,7 +242,10 @@ mod tests {
                 );
             }
         }
-        assert!(execute(service(Action::Stop, good)).status.success());
-        assert_eq!(std::fs::read_to_string(calls).unwrap().lines().count(), 2);
+        assert!(execute(good.check(false)).status.success());
+        assert!(
+            !calls.exists(),
+            "scope verification must not invoke service control"
+        );
     }
 }

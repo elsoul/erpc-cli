@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Deploy the exact Kaia image and initial database behind confirmed ingress
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Require this caller's exact confirmed firewall receipt first
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/control.py", firewall-require, "{{ erpc_fw_confirmed_run }}", "{{ erpc_fw_confirmed_bundle }}"]
+      changed_when: false
+    - name: Recheck the caller intent and fence all owned writers
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/control.py", play]
+        stdin: "{{ kaia_request | combine({'action':'begin-install'}) | to_json }}"
+    - name: Resolve the dedicated account
+      ansible.builtin.getent:
+        database: passwd
+        key: erpc-kaia
+    - name: Authenticate the image and publish only a complete initial database
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/control.py", play]
+        stdin: "{{ kaia_request | combine({'action':'install-artifacts','service_uid':getent_passwd['erpc-kaia'][1] | int,'service_gid':getent_passwd['erpc-kaia'][2] | int}) | to_json }}"
+    - name: Install the guarded native-container service
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/erpc-kaia.service"
+        dest: /etc/systemd/system/erpc-kaia.service
+        owner: root
+        group: root
+        mode: '0644'
+    - name: Persist the installed pin and confirmed receipt
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/control.py", play]
+        stdin: "{{ kaia_request | combine({'action':'finish-install','firewall':{'run':erpc_fw_confirmed_run,'bundle':erpc_fw_confirmed_bundle}}) | to_json }}"
+    - name: Reload the managed service
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+    - name: Start through owner, identity, image and ingress checks
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/control.py", play]
+        stdin: "{{ kaia_request | combine({'action':'start'}) | to_json }}"

@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Explicitly convert only the original stopped managed Ethereum validator
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    ev_command: [/usr/bin/python3, -I, -c, '{{ ev_loader }}', '{{ playbook_dir }}/../authority/eth_validator_control.py', carried]
+  tasks:
+    - name: Verify original network, inventory, numeric accounts and stock services before host mutation
+      ansible.builtin.command:
+        argv: '{{ ev_command }}'
+        stdin: '{{ ev_request | combine({"request":ev_request.request | combine({"action":"migration-check"})}) | to_json }}'
+      register: ev_migration_preflight
+      changed_when: false
+
+    - name: Install the distribution's safe YAML parser for native original definitions
+      ansible.builtin.apt:
+        name: python3-yaml
+        state: present
+        policy_rc_d: 101
+      when: not (ev_migration_preflight.stdout | from_json).already
+
+    - name: Fence legacy management and preserve original custody and live slashing history
+      ansible.builtin.command:
+        argv: '{{ ev_command }}'
+        stdin: '{{ ev_request | combine({"request":ev_request.request | combine({"action":"migrate-authority"})}) | to_json }}'
+      changed_when: true

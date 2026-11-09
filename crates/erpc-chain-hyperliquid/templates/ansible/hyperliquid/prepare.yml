@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Prepare the authenticated supervisor under the original RPC contract
+  hosts: all
+  gather_facts: false
+  become: true
+  any_errors_fatal: true
+  tasks:
+    - name: Fence and drain owned writers before replacing public runtime files
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, '{{ playbook_dir }}/../../node/control.py', play]
+        stdin: '{{ hyperliquid_request | combine({"action":"prepare"}) | to_json }}'
+      changed_when: true

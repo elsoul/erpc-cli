@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Recover or inspect the original validator using the sealed carried source
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Apply only the requested original-owner control operation
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/../node/entry.py", play-control]
+        stdin: "{{ validator_request | to_json }}"
+      changed_when: false

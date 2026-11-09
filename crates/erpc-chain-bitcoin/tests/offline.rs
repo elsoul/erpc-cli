@@ -5,6 +5,36 @@
 
 #[cfg(unix)]
 #[test]
+fn actual_generated_guard_refuses_untrusted_installed_bytes_before_execution() {
+    use std::io::Write as _;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut child = std::process::Command::new("python3")
+        .arg(root.join("tests/entrypoints.py"))
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(
+            serde_json::json!({"unit":erpc_chain_bitcoin::unit(20000,20000).unwrap()})
+                .to_string()
+                .as_bytes(),
+        )
+        .unwrap();
+    let result = child.wait_with_output().unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn actual_gpg_authenticates_public_release_fixture_and_rejects_tampering() {
     let manifest = include_str!("../releases/SHA256SUMS-31.1");
     let signatures = include_str!("../releases/SHA256SUMS-31.1.asc");
@@ -23,23 +53,34 @@ fn actual_gpg_authenticates_public_release_fixture_and_rejects_tampering() {
 #[test]
 fn mutations_enforce_ownership_and_interrupted_installation_safety() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let result = std::process::Command::new("python3")
-        .arg(root.join("tests/lifecycle.py"))
-        .arg(root.join("templates/node/control.py"))
-        .env("PYTHONDONTWRITEBYTECODE", "1")
-        .output()
-        .expect("Python3 offline harness");
-    assert!(
-        result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
+    for name in [
+        "lifecycle.py",
+        "cancellation_retry.py",
+        "accounts.py",
+        "volumes.py",
+        "authority.py",
+        "sources.py",
+        "processes.py",
+        "migration.py",
+    ] {
+        let result = std::process::Command::new("python3")
+            .arg(root.join("tests").join(name))
+            .arg(root.join("templates/node/control.py"))
+            .env("PYTHONDONTWRITEBYTECODE", "1")
+            .output()
+            .expect("Python3 offline harness");
+        assert!(
+            result.status.success(),
+            "{name}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
 }
 
 #[test]
 fn readiness_requires_network_index_and_sync_not_just_rpc() {
     use erpc_chain_bitcoin::{network::Network, status::evaluate, storage::Storage};
-    let mut sample = serde_json::json!({"phase":"installed","service":"active","rpc_available":true,"genesis":Network::Signet.genesis(),"blockchain":{"chain":"signet","blocks":100,"headers":100,"verificationprogress":1.0,"initialblockdownload":false,"pruned":false},"indexes":{"txindex":{"synced":true,"best_block_height":100}},"connections":4,"tip_time":100_000});
+    let mut sample = serde_json::json!({"phase":"installed","service":"active","rpc_available":true,"stopped":false,"authority_valid":true,"process_owned":true,"source_current":true,"genesis":Network::Signet.genesis(),"blockchain":{"chain":"signet","blocks":100,"headers":100,"verificationprogress":1.0,"initialblockdownload":false,"pruned":false},"indexes":{"txindex":{"synced":true,"best_block_height":100}},"connections":4,"tip_time":100_000});
     assert!(evaluate(Network::Signet, Storage::Full, &sample, 100_001).ready);
     sample["indexes"]["txindex"]["synced"] = serde_json::json!(false);
     assert!(!evaluate(Network::Signet, Storage::Full, &sample, 100_001).ready);
@@ -47,6 +88,10 @@ fn readiness_requires_network_index_and_sync_not_just_rpc() {
     for (field, value) in [
         ("genesis", serde_json::json!(Network::Mainnet.genesis())),
         ("rpc_available", serde_json::json!(false)),
+        ("stopped", serde_json::json!(true)),
+        ("process_owned", serde_json::json!(false)),
+        ("source_current", serde_json::json!(false)),
+        ("authority_valid", serde_json::json!(false)),
         ("connections", serde_json::json!(0)),
         ("tip_time", serde_json::json!(1)),
     ] {

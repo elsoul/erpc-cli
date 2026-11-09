@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3 -I
 # SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
 # SPDX-License-Identifier: Apache-2.0
 """Validator credential binding and read-only gRPC state. Never signs transactions."""
@@ -108,9 +108,9 @@ def blob_field(number, value):
 
 
 def admission(network, validators, epoch, protocol):
-    # Field layout: sui-rust-sdk 1313d511..., system_state.proto / state_service.proto.
-    # Policy: Sui bf407391..., sui-system/sources/validator_set.move, 14-epoch phases.
-    if protocol != 139:
+    # Field layouts are unchanged at SDK 1313d511... and 8c356d65....
+    # Policy: bf407391... mainnet and 0e0ede4c... testnet validator_set.move, 14-epoch phases.
+    if protocol not in ({139} if network == 'mainnet' else {139, 140}):
         return {'status': 'unknown', 'reason': 'protocol version needs a reviewed admission policy'}
     table = fields(one(validators, 9, b''))
     parent = one(table, 1, b'')
@@ -289,6 +289,9 @@ def receipt():
 
 
 def main():
+    if os.name == 'posix':
+        import resource
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     os.umask(0o077)
     contract = json.loads(pathlib.Path('/etc/sui/contract.json').read_text())
     if contract['role'] != 'validator':

@@ -12,7 +12,7 @@
   tasks:
     - name: Fence boot and stop only the immutable owner before any installation write
       ansible.builtin.command:
-        argv: [python3, /usr/local/lib/erpc/rollup_control.py, within-run]
+        argv: [/usr/bin/python3, -I, /usr/local/lib/erpc/rollup_control.py, within-run]
         stdin: "{{ op_request | combine({'action': 'begin-install'}) | to_json }}"
       changed_when: true
 
@@ -94,13 +94,13 @@
 
     - name: Record content hashes of the complete protected installation
       ansible.builtin.command:
-        argv: [python3, "{{ op_scripts }}/receipt.py"]
+        argv: [/usr/bin/python3, -I, "{{ op_scripts }}/receipt.py"]
         stdin: "{{ op_request | to_json }}"
       changed_when: true
 
     - name: Complete the durable installation fence without claiming sync readiness
       ansible.builtin.command:
-        argv: [python3, /usr/local/lib/erpc/rollup_control.py, within-run]
+        argv: [/usr/bin/python3, -I, /usr/local/lib/erpc/rollup_control.py, within-run]
         stdin: "{{ op_request | combine({'action': 'finish-install'}) | to_json }}"
       changed_when: true
 
@@ -110,6 +110,6 @@
 
     - name: Queue bootstrap or start the verified pair through the same lifecycle guard
       ansible.builtin.command:
-        argv: [python3, /usr/local/lib/erpc/rollup_control.py, within-run]
+        argv: [/usr/bin/python3, -I, /usr/local/lib/erpc/rollup_control.py, within-run]
         stdin: "{{ op_request | combine({'action': 'start'}) | to_json }}"
       changed_when: true

@@ -12,7 +12,7 @@ RequiresMountsFor=/opt/erpc /etc/erpc/{{ nitro_family }}
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/bin/python3 /usr/local/lib/erpc/rpc-firewall.py {{ nitro_family }} load
+ExecStart=/usr/bin/python3 -I /usr/local/lib/erpc/rpc-firewall.py {{ nitro_family }} load
 
 [Install]
 WantedBy=multi-user.target

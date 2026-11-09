@@ -26,6 +26,8 @@ use zeroize::Zeroizing;
 pub(crate) struct Args {
     pub(crate) validator: bool,
     pub(crate) restore_keys: bool,
+    pub(crate) migrate_account: bool,
+    pub(crate) source_history: Option<std::path::PathBuf>,
     pub(crate) validator_info: Option<std::path::PathBuf>,
     pub(crate) keys_unhosted: bool,
     pub(crate) key_references: [Option<String>; 3],
@@ -109,6 +111,12 @@ fn pin(node: &mut SuiNode, net: Network) -> Result<(), String> {
     Ok(())
 }
 fn vars(node: &SuiNode, net: Network, facts: &Facts, phase: &str) -> Result<Value, String> {
+    if ["stop", "destroy"].contains(&phase) {
+        return Ok(json!({"all":{"hosts":{node.name.clone():{
+            "ansible_connection":"local", "sui_network":net.name, "sui_role":node.role,
+            "sui_genesis_sha256":net.genesis_sha256, "sui_phase":phase
+        }}}}));
+    }
     net.validate_pin(
         &node.version,
         &node.commit,
@@ -131,6 +139,9 @@ fn vars(node: &SuiNode, net: Network, facts: &Facts, phase: &str) -> Result<Valu
     } else if node.validator_metadata.is_some() {
         return Err("full nodes cannot carry validator metadata".to_owned());
     }
+    if facts.ssh_port == 0 {
+        return Err("cannot determine the actual host SSH listener port".into());
+    }
     let mut management = node.management_allow.clone();
     let mut v6 = Vec::new();
     match facts.controller_ip()? {
@@ -142,24 +153,35 @@ fn vars(node: &SuiNode, net: Network, facts: &Facts, phase: &str) -> Result<Valu
     Ok(json!({"all":{"hosts":{node.name.clone():{
         "ansible_connection":"local", "sui_network":net.name,"sui_role":node.role,
         "sui_version":node.version,"sui_commit":node.commit,"sui_archive_sha256":node.archive_sha256,
+        "sui_release_pin":{"version":node.version,"commit":node.commit,"architecture":node.architecture,"archive_sha256":node.archive_sha256},
         "sui_archive_url":net.archive(&node.architecture)?.0,
         "sui_genesis_url":net.genesis_url(),"sui_genesis_sha256":net.genesis_sha256,
         "sui_validator_metadata":node.validator_metadata,"sui_rpc_allow":node.rpc_allow,"sui_monitoring_allow":node.monitoring_allow,
-        "sui_fw_management_v4":management,"sui_fw_management_v6":v6,"sui_ssh_port":node.ssh_port,"sui_phase":phase
+        "sui_fw_management_v4":management,"sui_fw_management_v6":v6,"sui_ssh_port":facts.ssh_port,"sui_phase":phase,"sui_migrate_account":phase=="migrate-account",
+        "sui_service_guard":erpc_ssh::python::systemd_command("/usr/local/lib/erpc/sui/erpc-sui-control.py")?,
+        "sui_identity_guard":erpc_ssh::python::systemd_command("/usr/local/lib/erpc/sui/erpc-sui-identity.py")?,
+        "sui_credential_condition":erpc_ssh::python::systemd_condition_command("/usr/local/lib/erpc/sui/erpc-sui-control.py")?
     }}}}))
 }
-fn run_play(
-    session: &Session,
-    target: &Target,
+struct RunPhase<'a> {
+    name: &'a str,
+    source_history: Option<&'a Value>,
+}
+impl<'a> From<&'a str> for RunPhase<'a> {
+    fn from(name: &'a str) -> Self {
+        Self {
+            name,
+            source_history: None,
+        }
+    }
+}
+fn run_bundle(
     node: &SuiNode,
     net: Network,
     facts: &Facts,
-    phase: &str,
-    say: &Say,
-) -> Result<String, String> {
-    let mut nonce = [0_u8; 16];
-    getrandom::fill(&mut nonce).map_err(|_| "could not make a unique Sui deployment intent")?;
-    let confirmation = Confirmation::new(nonce);
+    request: &RunPhase<'_>,
+    confirmation: Confirmation,
+) -> Result<Bundle, String> {
     let mut bundle = Bundle::new();
     for file in erpc_chain_sui::files() {
         bundle
@@ -175,7 +197,9 @@ fn run_play(
         .add(
             "inventory.yml",
             serde_json::to_vec(&{
-                let mut inventory = vars(node, net, facts, phase)?;
+                let mut inventory = vars(node, net, facts, request.name)?;
+                inventory["all"]["hosts"][&node.name]["sui_source_history"] =
+                    json!(request.source_history);
                 inventory["all"]["hosts"][&node.name]["sui_confirmation_id"] =
                     json!(confirmation.text());
                 inventory
@@ -183,9 +207,28 @@ fn run_play(
             .map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
+    Ok(bundle)
+}
+fn run_play<'a>(
+    session: &Session,
+    target: &Target,
+    node: &SuiNode,
+    net: Network,
+    facts: &Facts,
+    phase: impl Into<RunPhase<'a>>,
+    say: &Say,
+) -> Result<String, String> {
+    let request = phase.into();
+    let phase = request.name;
+    let mut nonce = [0_u8; 16];
+    getrandom::fill(&mut nonce).map_err(|_| "could not make a unique Sui deployment intent")?;
+    let confirmation = Confirmation::new(nonce);
+    let bundle = run_bundle(node, net, facts, &request, confirmation)?;
     let play = match phase {
-        "init" => "init",
+        "init" | "migrate-account" => "init",
         "destroy" => "destroy",
+        "stop" => "stop",
+        "migrate-source-history" => "migrate-source-history",
         _ => "deploy",
     };
     let run = erpc_ops::run::start(
@@ -208,7 +251,16 @@ fn run_play(
             result.exit_code
         ));
     }
-    if !["init", "destroy", "prepare-validator"].contains(&phase) {
+    if ![
+        "init",
+        "migrate-account",
+        "stop",
+        "destroy",
+        "prepare-validator",
+        "migrate-source-history",
+    ]
+    .contains(&phase)
+    {
         Session::open(target)
             .map_err(|e| e.to_string())?
             .run(
@@ -393,9 +445,32 @@ fn registration(
     )
 }
 
+fn deployment_phase(verb: &str, recovery: bool) -> Result<&str, String> {
+    match (verb, recovery) {
+        ("update", true) => Ok("recover-update"),
+        ("deploy", true) => Ok("recover-deploy"),
+        (_, true) => Err("bootstrap recovery is only available with deploy or update".into()),
+        (_, false) => Ok(verb),
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 fn execute(verb: &str, args: &Args, say: &Say) -> Result<Value, CliError> {
     let net = network::get(&args.network).ok_or("Sui supports mainnet and testnet")?;
+    let phase = deployment_phase(verb, args.recover_bootstrap)?;
+    if args.recover_bootstrap && (args.source_history.is_some() || args.restore_keys) {
+        return Err(
+            "bootstrap recovery must be separate from history migration or key restoration".into(),
+        );
+    }
+    let source_history = args
+        .source_history
+        .as_deref()
+        .map(crate::sui_source::read)
+        .transpose()?;
+    if source_history.is_some() && verb != "update" {
+        return Err("source history migration is an explicit update-only preparation".into());
+    }
     let vault = node_common::vault_for(
         &args.network,
         args.vault.as_deref(),
@@ -418,6 +493,9 @@ fn execute(verb: &str, args: &Args, say: &Say) -> Result<Value, CliError> {
     erpc_chain::inventory::check_name(&args.name).map_err(|e| e.to_string())?;
     let existing = nodes.iter().find(|n| n.name == args.name);
     if verb == "init" {
+        if args.migrate_account && existing.is_none() {
+            return Err("account migration requires an existing Sui inventory record".into());
+        }
         let mut node = if let Some(n) = existing {
             if args.host.as_ref().is_some_and(|h| h != &n.address) {
                 return Err("stored Sui host is immutable".into());
@@ -465,7 +543,19 @@ fn execute(verb: &str, args: &Args, say: &Say) -> Result<Value, CliError> {
         }
         .map_err(|e| e.to_string())?;
         node_common::save_vault(&args.network, &vault)?;
-        node.last_run = run_play(&session, &target, &node, net, &facts, "init", say)?;
+        node.last_run = run_play(
+            &session,
+            &target,
+            &node,
+            net,
+            &facts,
+            if args.migrate_account {
+                "migrate-account"
+            } else {
+                "init"
+            },
+            say,
+        )?;
         "init ok".clone_into(&mut node.last_result);
         let stored = store.update_sui_node(&node).map_err(|e| e.to_string())?;
         return Ok(public(&stored, net));
@@ -525,6 +615,13 @@ fn execute(verb: &str, args: &Args, say: &Say) -> Result<Value, CliError> {
             .map_err(|e| e.to_string())?;
         return Ok(json!({"status":"journal complete"}));
     }
+    if ["stop", "destroy"].contains(&verb) {
+        node_common::go_ahead(args.yes, "Sui operation was not started")?;
+        node.last_run = run_play(&session, &target, &node, net, &Facts::default(), verb, say)?;
+        node.last_result = format!("{verb} ok");
+        let stored = store.update_sui_node(&node).map_err(|e| e.to_string())?;
+        return Ok(public(&stored, net));
+    }
     if node.last_result.is_empty() {
         return Err("init has not completed; retry init first".into());
     }
@@ -553,6 +650,27 @@ fn execute(verb: &str, args: &Args, say: &Say) -> Result<Value, CliError> {
     }
     let f = facts(&session)?;
     preflight(&f, false, args.validator)?;
+    if let Some(history) = source_history.as_ref() {
+        // Migration only: preserve the original inventory pin and leave the host stopped.
+        let mut selected = node.clone();
+        pin(&mut selected, net)?;
+        let run = run_play(
+            &session,
+            &target,
+            &selected,
+            net,
+            &f,
+            RunPhase {
+                name: "migrate-source-history",
+                source_history: Some(history),
+            },
+            say,
+        )?;
+        return Ok(
+            json!({"operation":"source-history-migration","run":run,"service":"stopped",
+            "data_and_keys_retained":true,"next":"explicit update or deployment; inspect status first"}),
+        );
+    }
     if verb == "update" {
         pin(&mut node, net)?;
     }
@@ -562,23 +680,14 @@ fn execute(verb: &str, args: &Args, say: &Say) -> Result<Value, CliError> {
     if !["deploy", "update", "update-config", "destroy"].contains(&verb) {
         return Err("unsupported Sui operation".into());
     }
-    if args.recover_bootstrap {
-        if verb != "deploy" {
-            return Err("bootstrap recovery is only available with deploy".into());
-        }
-        session
-            .run(
-                &RemoteCommand::Sui(Command::RecoverBootstrap(contract(&node, net)?)),
-                None,
-            )
-            .map_err(|e| e.to_string())?;
-    }
-    if args.validator && verb == "deploy" {
+    // Validate the selected source before any carried recovery mutation.
+    vars(&node, net, &f, phase)?;
+    if args.validator && verb == "deploy" && !args.recover_bootstrap {
         // Prepare binaries/helpers with listeners stopped; no private material in the run bundle.
         run_play(&session, &target, &node, net, &f, "prepare-validator", say)?;
         import_validator(&session, &node, net, args.restore_keys)?;
     }
-    node.last_run = run_play(&session, &target, &node, net, &f, verb, say)?;
+    node.last_run = run_play(&session, &target, &node, net, &f, phase, say)?;
     node.last_result = format!("{verb} ok");
     let node = store.update_sui_node(&node).map_err(|e| {
         format!(
@@ -607,6 +716,181 @@ pub(crate) fn run(verb: &str, args: &Args, json_out: bool) -> Outcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn source_fixture_node(role: &str) -> SuiNode {
+        let mut node = SuiNode {
+            name: "fixture".into(),
+            role: role.into(),
+            architecture: "x86_64".into(),
+            ..Default::default()
+        };
+        if role == "validator" {
+            node.validator_metadata = Some(
+                json!({"info":{"name":"inert fixture","account-address":format!("0x{}", "01".repeat(32)),
+                "protocol-key":"A".repeat(128),"network-key":format!("{}=", "A".repeat(43)),"worker-key":format!("{}=", "A".repeat(43)),
+                "gas-price":1000,"commission-rate":0,"network-address":"/dns/fullnode.testnet.sui.io/tcp/8080/http",
+                "p2p-address":"/dns/fullnode.testnet.sui.io/udp/8084","narwhal-primary-address":"/dns/fullnode.testnet.sui.io/udp/8081",
+                "narwhal-worker-address":"/dns/fullnode.testnet.sui.io/udp/8082","description":"inert public metadata","image-url":"","project-url":""},
+                "proof_of_possession":"A".repeat(64)}),
+            );
+        }
+        node
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn compiled_original_history_bundle_routes_migration_without_deployment() {
+        use std::io::Write as _;
+        let mut documents = Vec::new();
+        for network in ["mainnet", "testnet"] {
+            let net = network::get(network).unwrap();
+            for role in ["fullnode", "validator"] {
+                let mut node = source_fixture_node(role);
+                pin(&mut node, net).unwrap();
+                let original = network::historical(
+                    network,
+                    if network == "testnet" {
+                        "testnet-v1.82.2"
+                    } else {
+                        net.version
+                    },
+                )
+                .unwrap();
+                let history = json!({"format":1,"database_state":"native-opened","contract":{"network":network,"role":role,"genesis":net.genesis_sha256},"service_uid":999,"service_gid":999,
+                    "highest_opened":{"version":original.version,"commit":original.commit,"architecture":"x86_64","archive_sha256":original.amd64_sha256}});
+                let facts = Facts {
+                    controller: "192.0.2.20".into(),
+                    ssh_port: 22,
+                    ..Default::default()
+                };
+                let request = RunPhase {
+                    name: "migrate-source-history",
+                    source_history: Some(&history),
+                };
+                let bundle = run_bundle(&node, net, &facts, &request, Confirmation::new([1; 16]))
+                    .unwrap()
+                    .finish()
+                    .unwrap();
+                documents.push(
+                    json!({"operation":"migrate-source-history","network":network,"role":role,"history":history,"bundle":bundle.bytes}),
+                );
+                let command = crate::tree::command(
+                    if role == "validator" {
+                        erpc_core::chain::Role::Validator
+                    } else {
+                        erpc_core::chain::Role::Rpc
+                    },
+                    erpc_core::chain::Chain::Sui,
+                )
+                .try_get_matches_from(["node", "update", "--recover-bootstrap"])
+                .unwrap();
+                let recovery = command
+                    .subcommand_matches("update")
+                    .unwrap()
+                    .get_flag("recover-bootstrap");
+                let request = RunPhase {
+                    name: deployment_phase("update", recovery).unwrap(),
+                    source_history: None,
+                };
+                assert_eq!(request.name, "recover-update");
+                let bundle = run_bundle(&node, net, &facts, &request, Confirmation::new([2; 16]))
+                    .unwrap()
+                    .finish()
+                    .unwrap();
+                let mut origin = history.clone();
+                origin["database_state"] = json!("bootstrap-only");
+                documents.push(json!({"operation":"recover-update","network":network,"role":role,"history":null,"origin":origin,"bundle":bundle.bytes}));
+            }
+        }
+        let raw = serde_json::to_vec(&documents).unwrap();
+        if let Some(path) = std::env::var_os("ERPC_TEST_SUI_CAPTURE") {
+            std::fs::write(path, &raw).unwrap();
+        }
+        let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../erpc-chain-sui/tests/release_play.py");
+        let mut child = std::process::Command::new(
+            std::env::var_os("ERPC_TEST_SUI_PYTHON").unwrap_or_else(|| "python3".into()),
+        )
+        .arg("-B")
+        .arg(script)
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+        child.stdin.take().unwrap().write_all(&raw).unwrap();
+        assert!(child.wait().unwrap().success());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn actual_external_sui_entrypoints_fail_before_unsafe_helper_bytes() {
+        use std::io::Write as _;
+        let node = SuiNode {
+            name: "sui1".into(),
+            role: "fullnode".into(),
+            architecture: "x86_64".into(),
+            ..SuiNode::default()
+        };
+        let net = network::get("testnet").expect("network");
+        let mut pinned = node;
+        pin(&mut pinned, net).expect("pin");
+        let facts = Facts {
+            controller: "192.0.2.1".into(),
+            ssh_port: 22,
+            ..Facts::default()
+        };
+        let inventory = vars(&pinned, net, &facts, "deploy").expect("inventory");
+        let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../erpc-chain-sui/tests/entrypoints.py");
+        let mut child = std::process::Command::new("python3")
+            .arg("-B")
+            .arg(script)
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .expect("Python required");
+        child
+            .stdin
+            .take()
+            .expect("stdin")
+            .write_all(&serde_json::to_vec(&inventory["all"]["hosts"]["sui1"]).unwrap())
+            .unwrap();
+        assert!(child.wait().expect("fixture exits").success());
+    }
+
+    #[test]
+    fn stop_inventory_needs_no_readiness_facts_and_firewall_uses_observed_port() {
+        let mut node = SuiNode {
+            name: "sui1".into(),
+            role: "fullnode".into(),
+            architecture: "x86_64".into(),
+            ssh_port: 2222,
+            ..SuiNode::default()
+        };
+        let net = network::get("testnet").expect("network");
+        pin(&mut node, net).expect("pin");
+        for phase in ["stop", "destroy"] {
+            assert!(vars(&node, net, &Facts::default(), phase).is_ok());
+        }
+        let facts = Facts {
+            controller: "192.0.2.1".into(),
+            ssh_port: 22,
+            ..Facts::default()
+        };
+        let prepared = vars(&node, net, &facts, "deploy").unwrap();
+        assert_eq!(prepared["all"]["hosts"]["sui1"]["sui_ssh_port"], 22);
+        assert!(
+            vars(
+                &node,
+                net,
+                &Facts {
+                    ssh_port: 0,
+                    ..facts
+                },
+                "deploy"
+            )
+            .is_err()
+        );
+    }
+
     #[test]
     fn preflight_refuses_small_hosts_and_cross_network_bundle_pins() {
         assert!(preflight(&Facts::default(), true, false).is_err());
@@ -620,6 +904,7 @@ mod tests {
         pin(&mut node, net).expect("pin");
         let f = Facts {
             controller: "192.0.2.1".to_owned(),
+            ssh_port: 22,
             ..Facts::default()
         };
         assert!(

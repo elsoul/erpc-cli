@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+[Unit]
+Description=ERPC BSC validator registration observation interval
+
+[Timer]
+OnBootSec=30
+OnUnitActiveSec=30
+Unit=erpc-bsc-activation.service
+
+[Install]
+WantedBy=timers.target

@@ -7,14 +7,18 @@
 //! dropped connection does not stop it; following again reattaches to it.
 
 use erpc_ssh::{
-    RESULT_MARKER, RemoteCommand, RemotePath, RunId, RunStart, Session, SshError, Stream,
+    RESULT_MARKER, RemoteCommand, RemotePath, RunId, RunPrepare, RunStart, Session, SshError,
+    Stream,
 };
 use serde::Deserialize;
+use sha2::{Digest as _, Sha256};
 
 use crate::bundle::Built;
 
 /// The runner the node executes, sent with every run.
 pub const NODE_RUN_SH: &str = include_str!("../node/node-run.sh");
+/// Isolated preparation and result publication, with no user-site imports.
+pub const RUN_FILES: &str = include_str!("../node/run-files.py");
 
 /// What went wrong with a run.
 #[derive(Debug, thiserror::Error)]
@@ -133,6 +137,10 @@ pub fn start(session: &Session, bundle: &Built, play: &str) -> Result<RunId, Run
         &RemoteCommand::WriteFile(path(&format!("{dir}/node-run.sh"))?),
         Some(NODE_RUN_SH.as_bytes()),
     )?;
+    session.run(
+        &RemoteCommand::WriteFile(path(&format!("{dir}/run-files.py"))?),
+        Some(RUN_FILES.as_bytes()),
+    )?;
     let archive = path(&format!("{dir}/bundle.tar.gz"))?;
     session.run(
         &RemoteCommand::WriteFile(archive.clone()),
@@ -152,6 +160,16 @@ pub fn start(session: &Session, bundle: &Built, play: &str) -> Result<RunId, Run
     }
     let start = RunStart::new(run.clone(), &bundle.sha256, play)
         .map_err(|e| RunError::Invalid(e.to_string()))?;
+    let prepared = RunPrepare::new(
+        &start,
+        &format!("{:x}", Sha256::digest(NODE_RUN_SH)),
+        &format!("{:x}", Sha256::digest(RUN_FILES)),
+    )
+    .map_err(|e| RunError::Invalid(e.to_string()))?;
+    session.run(
+        &RemoteCommand::PrepareRun(prepared),
+        Some(RUN_FILES.as_bytes()),
+    )?;
     session.run(&RemoteCommand::StartRun(start), None)?;
     Ok(run)
 }
@@ -225,9 +243,8 @@ mod tests {
             "the lock needs no write access"
         );
         let digest = script.find("sha256sum bundle.tar.gz").expect("digest");
-        let extract = script.find("tar -xzf").expect("extract");
-        let play = script.find("ansible-playbook\" -i").expect("play");
-        assert!(lock < digest && digest < extract && extract < play);
+        let play = script.find("-I -m ansible.cli.playbook -i").expect("play");
+        assert!(lock < digest && digest < play);
         assert!(script.contains("--require-hashes"));
     }
 }

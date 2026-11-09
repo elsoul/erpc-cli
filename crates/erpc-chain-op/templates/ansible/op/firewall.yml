@@ -10,7 +10,7 @@
   tasks:
     - name: Check immutable ownership before any firewall or unit write
       ansible.builtin.command:
-        argv: [python3, "{{ op_scripts }}/control.py", within-run]
+        argv: [/usr/bin/python3, -I, "{{ op_scripts }}/control.py", within-run]
         stdin: "{{ op_request | combine({'action': 'check-deploy'}) | to_json }}"
       changed_when: false
     - name: Install the operation-bound common firewall controller
@@ -46,7 +46,8 @@
     - name: Apply with an operation-specific rollback timer
       ansible.builtin.command:
         argv:
-          - python3
+          - /usr/bin/python3
+          - -I
           - /usr/local/lib/erpc/rpc-firewall.py
           - "{{ op_family }}"
           - apply

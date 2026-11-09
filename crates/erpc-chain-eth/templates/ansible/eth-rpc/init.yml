@@ -55,6 +55,12 @@
           wants 32 GB. Nothing was changed.
         quiet: true
 
+    - name: Reserve the original host and numeric identities before any mutation
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, -c, '{{ eth_authority_loader }}', '{{ playbook_dir }}/../../authority/control.py', request]
+        stdin: '{{ eth_authority_request | combine({"action":"reserve"}) | to_json }}'
+      changed_when: true
+
     - name: Install the packages the node uses
       ansible.builtin.apt:
         name:
@@ -70,29 +76,27 @@
         update_cache: true
         cache_valid_time: 3600
 
-    - name: Keep the clock in time
-      ansible.builtin.systemd_service:
+    - name: Discover existing host time synchronization services
+      ansible.builtin.service_facts:
+
+    - name: Preserve a running or installed time daemon before choosing a fallback
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/../../validator/time_service.py"]
+        stdin: "{{ ansible_facts.services | to_json }}"
+      register: eth_clock
+      changed_when: false
+
+    - name: Install the fallback only when no other time service was selected
+      ansible.builtin.apt:
         name: systemd-timesyncd
+        state: present
+      when: (eth_clock.stdout | from_json).install_fallback | bool
+
+    - name: Keep the selected clock service synchronized
+      ansible.builtin.systemd_service:
+        name: "{{ (eth_clock.stdout | from_json).service }}"
         state: started
         enabled: true
-
-    - name: Make the ethereum group the two layers share
-      ansible.builtin.group:
-        name: ethereum
-        system: true
-
-    - name: Make the reth and lighthouse system users
-      ansible.builtin.user:
-        name: "{{ item }}"
-        group: ethereum
-        system: true
-        create_home: false
-        home: "{{ eth_home }}/{{ item }}"
-        shell: /usr/sbin/nologin
-        password: "!"
-      loop:
-        - reth
-        - lighthouse
 
     # A disk erpc offered and the operator agreed to is formatted and mounted
     # at /var/lib/ethereum. It is checked again here, right before anything is
@@ -154,24 +158,11 @@
             state: mounted
           when: eth_mounted.rc != 0
 
-    - name: Make the data, release and firewall directories
-      ansible.builtin.file:
-        path: "{{ item.path }}"
-        state: directory
-        owner: "{{ item.owner }}"
-        group: "{{ item.group }}"
-        mode: "{{ item.mode }}"
-      loop:
-        - { path: "{{ eth_home }}", owner: root, group: ethereum, mode: "0750" }
-        - { path: "{{ eth_reth_dir }}", owner: reth, group: ethereum, mode: "0750" }
-        - { path: "{{ eth_lighthouse_dir }}", owner: lighthouse, group: ethereum, mode: "0750" }
-        - { path: "{{ eth_opt }}", owner: root, group: root, mode: "0755" }
-        - { path: /etc/ethereum, owner: root, group: ethereum, mode: "0750" }
-        - { path: "{{ eth_fw_dir }}", owner: root, group: root, mode: "0700" }
-        - { path: "{{ eth_helpers }}", owner: root, group: root, mode: "0755" }
-        - { path: /etc/systemd/journald.conf.d, owner: root, group: root, mode: "0755" }
-      loop_control:
-        label: "{{ item.path }}"
+    - name: Prepare original accounts and descriptor-bound data without adopting existing identities
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, -c, '{{ eth_authority_loader }}', '{{ playbook_dir }}/../../authority/control.py', request]
+        stdin: '{{ eth_authority_request | to_json }}'
+      changed_when: true
 
     - name: Set the kernel up for many RPC clients
       ansible.builtin.template:

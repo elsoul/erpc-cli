@@ -260,6 +260,7 @@ pub(crate) fn lockout_warning(management: &[String], facts: &Facts) -> Option<St
 
 /// What a run on the node is told about it: the inventory's host variables.
 pub(crate) struct RunVars<'a> {
+    pub(crate) role: erpc_core::chain::Role,
     pub(crate) node: &'a EthRpc,
     pub(crate) network: &'a Network,
     pub(crate) facts: &'a Facts,
@@ -271,6 +272,9 @@ impl RunVars<'_> {
     pub(crate) fn host_vars(&self) -> Result<Map<String, Value>, String> {
         let platform = self.facts.platform()?;
         let controller = self.facts.controller_ip()?;
+        if self.facts.ssh_port == 0 {
+            return Err("the server-observed SSH destination port is missing; refuse an unconfirmed ingress policy".into());
+        }
         let kind = RpcType::parse(&self.node.rpc_type)
             .ok_or_else(|| format!("{} has no type erpc runs", self.node.name))?;
         let (v4, v6) = management(self.node, controller);
@@ -313,7 +317,30 @@ impl RunVars<'_> {
         set("eth_monitoring_allow", json!(self.node.monitoring_allow));
         set("eth_fw_management_v4", json!(v4));
         set("eth_fw_management_v6", json!(v6));
-        set("eth_ssh_port", json!(self.node.ssh_port));
+        set("eth_ssh_port", json!(self.facts.ssh_port));
+        match self.role {
+            erpc_core::chain::Role::Rpc => {
+                set(
+                    "eth_authority_loader",
+                    json!(erpc_chain_eth::authority::carried_loader()),
+                );
+                set(
+                    "eth_authority_request",
+                    crate::eth_authority::request(
+                        self.node,
+                        self.network.name,
+                        "prepare",
+                        json!({}),
+                    )?,
+                );
+            }
+            erpc_core::chain::Role::Validator => {}
+            erpc_core::chain::Role::Node => {
+                return Err(
+                    "Ethereum run variables require an explicit RPC or validator role".into(),
+                );
+            }
+        }
         vars.extend(self.extra.clone());
         Ok(vars)
     }
@@ -365,6 +392,36 @@ pub(crate) fn run_play(
 ) -> Result<String, String> {
     let mut inventory = vars.inventory_json()?;
     if [erpc_chain_eth::plays::DEPLOY, erpc_chain_eth::plays::UPDATE].contains(&play) {
+        let source = crate::eth_authority::source(vars.node)?;
+        let observed = crate::eth_authority::invoke(
+            session,
+            vars.node,
+            vars.network.name,
+            "deployment",
+            json!({}),
+        )?;
+        let operation = if play == erpc_chain_eth::plays::UPDATE {
+            "update"
+        } else if vars.extra.get("eth_phase").and_then(Value::as_str) == Some("config") {
+            "update-config"
+        } else {
+            "deploy"
+        };
+        let intent = crate::eth_authority::deployment_intent(&observed, &source, operation)?;
+        crate::eth_authority::invoke(
+            session,
+            vars.node,
+            vars.network.name,
+            "reserve-deploy",
+            json!({"intent":intent,"target":source,"operation":operation}),
+        )?;
+        let mut document: Value = serde_json::from_str(&inventory).map_err(|e| e.to_string())?;
+        let host = document["all"]["hosts"][&vars.node.name]
+            .as_object_mut()
+            .ok_or("missing generated Ethereum host")?;
+        host.insert("eth_authority_intent".into(), json!(intent));
+        host.insert("eth_authority_source".into(), source);
+        inventory = document.to_string();
         let preparation = bundle(&inventory)?;
         let prepared = erpc_ops::run::start(session, &preparation, erpc_chain_eth::plays::FIREWALL)
             .map_err(|e| e.to_string())?;
@@ -377,11 +434,15 @@ pub(crate) fn run_play(
         if !result.ok() {
             return Err("firewall preparation failed; deployment was not started".into());
         }
-        confirm_firewall(
-            target,
-            erpc_ssh::firewall::FirewallToken::new(prepared.clone(), &preparation.sha256)?,
-            say,
+        let fresh = Session::open(target).map_err(|e| e.to_string())?;
+        crate::eth_authority::invoke(
+            &fresh,
+            vars.node,
+            vars.network.name,
+            "firewall-confirm",
+            json!({"intent":intent,"firewall":{"run":prepared.as_str(),"bundle":preparation.sha256}}),
         )?;
+        say.line("firewall   confirmed from a fresh authenticated connection");
         inventory = erpc_ops::firewall_inventory(&inventory, &prepared, &preparation.sha256)?;
     }
     let built = bundle(&inventory)?;
@@ -409,30 +470,6 @@ pub(crate) fn run_play(
     }
 }
 
-/// After a play that may have changed the firewall: connects afresh and
-/// confirms the table, which proves the new table admits erpc. If erpc
-/// cannot get in, the node puts the previous table back by itself.
-fn confirm_firewall(
-    target: &Target,
-    token: erpc_ssh::firewall::FirewallToken,
-    say: &Say,
-) -> Result<(), String> {
-    let fresh = Session::open(target).map_err(|e| e.to_string())?;
-    match fresh.run(&RemoteCommand::EthFirewallConfirm { token }, None) {
-        Ok(out) => {
-            let text = String::from_utf8_lossy(&out.stdout);
-            if text.contains("firewall=confirmed") {
-                say.line("firewall   confirmed from a fresh connection");
-            }
-            Ok(())
-        }
-        Err(e) => Err(format!(
-            "could not reach the node again after the firewall changed ({e}); it restores the \
-             previous table after its rollback timer and active operation finish. If no policy can be restored, node services are stopped and disabled. Check --management-allow and run the same command again"
-        )),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use erpc_chain::inventory::EthRpc;
@@ -452,6 +489,7 @@ mod tests {
 
     pub(crate) fn node() -> EthRpc {
         EthRpc {
+            id: Some("inertoriginalinventory".into()),
             name: "eth1".to_owned(),
             address: "192.0.2.10".to_owned(),
             ssh_user: "ubuntu".to_owned(),
@@ -466,6 +504,28 @@ mod tests {
             rpc_allow: vec!["198.51.100.0/24".to_owned()],
             ..EthRpc::default()
         }
+    }
+
+    #[test]
+    fn ingress_uses_the_server_observed_port_and_never_the_external_forwarded_target() {
+        let mut node = node();
+        node.ssh_port = 2200;
+        let mut observed = facts();
+        observed.ssh_port = 2222;
+        let network = erpc_chain_eth::network::get("mainnet").unwrap();
+        let build = |facts: &Facts| {
+            RunVars {
+                role: erpc_core::chain::Role::Rpc,
+                node: &node,
+                network: &network,
+                facts,
+                extra: serde_json::Map::new(),
+            }
+            .host_vars()
+        };
+        assert_eq!(build(&observed).unwrap()["eth_ssh_port"], 2222);
+        observed.ssh_port = 0;
+        assert!(build(&observed).is_err());
     }
 
     #[test]
@@ -511,6 +571,7 @@ mod tests {
         let n = node();
         let f = facts();
         let vars = RunVars {
+            role: erpc_core::chain::Role::Rpc,
             node: &n,
             network: &network,
             facts: &f,
@@ -521,6 +582,11 @@ mod tests {
         let doc: Value = serde_json::from_str(&text).expect("JSON");
         let host = &doc["all"]["hosts"]["eth1"];
         assert_eq!(host["eth_chain_id"], 1);
+        assert_eq!(host["eth_authority_request"]["contract"]["role"], "rpc");
+        assert_eq!(
+            host["eth_authority_request"]["contract"]["network"],
+            "mainnet"
+        );
         assert_eq!(host["eth_rpc_type"], "full");
         assert_eq!(host["eth_min_free_gb"], 1500);
         assert_eq!(host["eth_fw_management_v4"][0], "203.0.113.7");

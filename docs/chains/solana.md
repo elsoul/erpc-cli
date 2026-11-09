@@ -33,6 +33,27 @@ Latest stable releases returned by the projects' release APIs on the research da
 
 Agave's release explicitly recommends v4.3.2 for testnet, devnet and mainnet-beta; Firedancer calls v26.10.4 mainnet-ready. Jito directs older 4.3.x operators to v4.3.2-jito ahead of Alpenglow. [A2], [F2], [J2]
 
+Implementation qualification additionally examined Agave Testnet `v4.4.0-beta.1`,
+commit `3ad9da2c390eb7ad2630ed15afcd463e72e007a8`, whose release explicitly names
+Testnet. The exact source toolchains are Rust `1.97.1` for v4.3.2 and `1.98.1`
+for v4.4.0-beta.1. [A5], [A6], [A7]
+
+The official Linux x86-64 CLI archives for both versions were streamed and
+SHA256-checked on 2026-10-26 without extracting or executing their binaries.
+Each contains 17 members, including `solana`, `solana-keygen` and
+`solana-test-validator`, but **no production `agave-validator`**. Their compressed
+SHA256 values are `5c9599d7fa397375df69d58e8d4f550ee45463dd6d1ecad9e5a1f053ce8e0933`
+and `a872a3c08a490a32adbe47baaf9fb4111cd60a97fe019040784d1cab4f638070`, respectively.
+Production validator installation therefore needs a qualified source build.
+The upstream install script separates production binaries from developer tools
+to prevent unintended `dev-context-only-utils` feature activation. [A2], [A5], [A8]
+
+New native hosts are built from Agave `4.4.0`, commit
+`9ef63128134af559561f6a91a641ec01e665c70d`, with Rust `1.98.1`, on both Mainnet
+and Testnet: that is what the carried catalog pins. `v4.3.2` and `v4.4.0-beta.1`
+remain as the sources an existing Solv host can be migrated from.
+[A13], [R4], [R5]
+
 - **Verification:** Agave release assets expose GitHub SHA-256 digests; Jito also publishes archive `.sha256` files. An upstream GPG signing fingerprint or reproducible-build procedure is **not documented** in those releases. Firedancer supplies source, with no prebuilt assets in v26.10.4; signed-binary verification is therefore **N/A**, and reproducible-build verification is **not documented** in its getting-started guide. [A2], [J2], [F2], [S6]
 - **Install/OS:** Agave supports source builds and release assets. Its requirements page tests Ubuntu 24.04, requires AVX2 for official binaries, and has older text about retiring Ubuntu 20.04 binaries; the selected release's actual assets are the availability record. A specific current glibc floor is **not documented** on that page. Docker for production Agave validators is not recommended. [A2], [S2]
 - **Hardware (read 2026-10-26):** Agave validator: 12 cores/24 threads, 2.8 GHz+, SHA extensions, 256 GB+ RAM; RPC: 16 cores/32 threads and 512 GB+ for all account indexes. Separate high-endurance NVMe: accounts 1 TB+, ledger 1 TB+, snapshots 500 GB+. Public IPv4; unstaked 1 Gbps symmetric, staked at least 2 Gbps with 10 Gbps recommended. These are upstream guidelines, not RPC throughput guarantees. [S2]
@@ -64,7 +85,32 @@ Agave/Jito combine execution and validator duties in the validator process, unli
 
 ## ERPC today
 
-**Implemented:** mainnet RPC and mainnet/testnet validator flows, including client/version selection. Existing code also contains plugin/version compatibility checks, archive integration and operational safeguards. Remaining mapping limits include external archive backends and release-specific signer/feature policy; this page does not extend supported deployments. Existing plays and plans: [R1], [R2], [R3], [R4], [R5].
+For the Agave 4.3.2 and 4.4.0-beta.1 sources, the minimum dynamic
+port-range width is 26. The older `8000-8020` command example in the cluster
+guide is narrower than the current native parser accepts. The isolated native
+service template uses `8000-8032` (upper bound exclusive), UDP socket operation
+with `--no-xdp`, loopback RPC and the current `--limit-blockstore-size` option.
+The bootstrap catalog fixes the official network entrypoints and known-validator
+identities inspected on 2026-10-27. These are source/configuration qualifications;
+they do not constitute Linux or chain-synchronization acceptance. [S1], [A11], [A12]
+
+**Implemented:** new mainnet and testnet validators and RPC nodes use the native
+backend, with all twelve lifecycle verbs: Agave built on the host from the pinned
+source, operator-supplied identities, and no client or version selection. The
+[operations guide](../solana-native.md) has the host requirements and commands.
+A validator first runs a separate synchronization identity with voting disabled;
+`deploy --activate-validator` switches it to its registered identity.
+[Public registration checks](../solana-registration.md) prepare intent and validate
+account bindings for official external signing tools.
+Hosts recorded on the Solv backend keep their earlier commands, including the
+client and version chosen at initialization, key creation or import and the
+testnet `vote-account` workflow; an explicit migration moves a qualified one to
+the native backend. Native Tower and Alpenglow vote-history
+files must remain with their original identity through restart and recovery;
+the native CLI enables mandatory vote-history checks by default, with qualified
+new-account exceptions. Do not infer safe history erasure from a syncing host.
+[A9], [A10] Existing RPC code also contains plugin/version compatibility checks
+and archive integration. Existing plays: [R1], [R2], [R3].
 
 ## Sources
 
@@ -97,6 +143,16 @@ Agave/Jito combine execution and validator duties in the validator process, unli
 [R1]: ../../crates/erpc-chain-solana/templates/jinja/mainnet-rpc/start-validator.sh.j2 "Existing RPC flags and optional Geyser plugin"
 [R2]: ../../crates/erpc-chain-solana/src/rpc.rs "Existing RPC modes and plugin compatibility selection"
 [R3]: ../../crates/erpc-chain-solana/templates/ansible/ "Existing RPC and validator playbooks"
-[R4]: ../plans/2026-10-23-solana-rpc.md "Existing RPC implementation plan"
-[R5]: ../plans/2026-10-24-validator-clients.md "Existing validator client implementation plan"
+[R4]: ../../crates/erpc-chain-solana-native/templates/node/catalog.json "Carried native source and compiler catalog"
+[R5]: ../../crates/erpc-chain-solana-native/templates/node/migration-sources.json "Sources an existing Solv host can be migrated from"
 [R6]: ../public-hosts.md "ERPC and explicitly identified third-party snapshot mirrors"
+
+[A5]: https://github.com/anza-xyz/agave/releases/tag/v4.4.0-beta.1 "Testnet source and CLI release assets"
+[A6]: https://github.com/anza-xyz/agave/blob/a203300045b405f86c9c84308b2eae76af69ac3b/rust-toolchain.toml "Mainnet source toolchain"
+[A7]: https://github.com/anza-xyz/agave/blob/3ad9da2c390eb7ad2630ed15afcd463e72e007a8/rust-toolchain.toml "Testnet source toolchain"
+[A8]: https://github.com/anza-xyz/agave/blob/a203300045b405f86c9c84308b2eae76af69ac3b/scripts/cargo-install-all.sh "Production/developer build separation"
+[A9]: https://github.com/anza-xyz/agave/blob/a203300045b405f86c9c84308b2eae76af69ac3b/core/src/validator.rs "Native Tower/vote-history restoration conditions"
+[A10]: https://github.com/anza-xyz/agave/blob/a203300045b405f86c9c84308b2eae76af69ac3b/votor/src/vote_history_storage.rs "Signed native vote history and filesystem persistence semantics"
+[A11]: https://github.com/anza-xyz/agave/blob/a203300045b405f86c9c84308b2eae76af69ac3b/net-utils/src/lib.rs "Mainnet minimum native port-range width"
+[A12]: https://github.com/anza-xyz/agave/blob/3ad9da2c390eb7ad2630ed15afcd463e72e007a8/net-utils/src/lib.rs "Testnet minimum native port-range width"
+[A13]: https://github.com/anza-xyz/agave/releases/tag/v4.4.0 "Release the native catalog pins for both networks"

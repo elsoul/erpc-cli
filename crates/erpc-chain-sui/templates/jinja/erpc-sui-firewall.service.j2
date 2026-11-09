@@ -8,7 +8,7 @@ Before=sui-node.service sui-bootstrap.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/local/lib/erpc/erpc-sui-control.py load-firewall {{ sui_network }} {{ sui_role }} {{ sui_genesis_sha256 }}
+ExecStart={{ sui_service_guard }} load-firewall {{ sui_network }} {{ sui_role }} {{ sui_genesis_sha256 }}
 # Filtering remains on service stop. Listeners bind their lifecycle to this unit.
 
 [Install]

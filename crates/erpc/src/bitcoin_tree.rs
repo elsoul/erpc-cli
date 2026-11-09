@@ -35,17 +35,20 @@ pub(crate) fn args(mut command: Command, verb: &Verb) -> Command {
             .arg(Arg::new("port").long("port").default_value("22").value_parser(value_parser!(u16)))
             .arg(Arg::new("fingerprint").long("fingerprint"))
             .arg(Arg::new("vault").long("vault"))
-            .arg(Arg::new("version").long("version").help("Stable Core version; default is the reviewed recommendation"))
+            .arg(Arg::new("version").long("version").help("Source-qualified Core catalog target (31.1); future releases require explicit qualification"))
             .arg(Arg::new("type").long("type").value_parser(["full", "pruned"]).help("Default full retains blocks and enables txindex; immutable for this owner"))
             .arg(Arg::new("prune-mib").long("prune-mib").value_parser(value_parser!(u64)).requires("type").help("Explicit pruned target; default 10240 MiB plus chainstate overhead")),
-        "update" => command.about("Authenticate an explicitly selected stable release; preserve data, refuse downgrade and never auto-rollback")
+        "update" => command.about("Reapply the source-qualified Core 31.1 catalog; preserve data, refuse a higher opened-source downgrade and never auto-rollback")
             .arg(Arg::new("version").long("version").required(true)),
         "plan" => command.arg(Arg::new("change").long("change").default_value("deploy").value_parser(["deploy", "update", "update-config"]))
             .arg(Arg::new("version").long("version")),
         "logs" => command.arg(Arg::new("lines").long("lines").default_value("100").value_parser(value_parser!(u32)))
             .arg(Arg::new("follow").long("follow").short('f').action(ArgAction::SetTrue)),
         "destroy" => command.about("Retire and disable the owned service; retain data, cookie permissions and immutable ownership"),
-        "deploy" => command.about("Verify both manifest signers and archive digest, then start Core with private cookie RPC; IBD runs in background"),
+        "deploy" => command.about("Verify both manifest signers and archive digest, then start Core with private cookie RPC; IBD runs in background")
+            .arg(Arg::new("original-runtime-record").long("original-runtime-record")
+                .value_parser(value_parser!(std::path::PathBuf))
+                .help("Migrate only: independently recorded original account, machine, UUID/inodes and highest native source JSON; stop and preserve data without deploying")),
         "update-config" => command.about("Reapply the owned service and immutable private RPC configuration, preserving data"),
         _ => command,
     }

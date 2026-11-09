@@ -1,0 +1,98 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Reserve or fence a dedicated Kaia endpoint node before provisioning
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Verify immutable ownership and quiesce an existing deployment first
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/control.py", play]
+        stdin: "{{ kaia_request | combine({'action':kaia_prepare_action}) | to_json }}"
+      changed_when: false
+    - name: Provision only the durably reserved original core-cell identity
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/control.py", play]
+        stdin: "{{ kaia_request | combine({'action':'provision-account'}) | to_json }}"
+      when: kaia_request.role == 'validator'
+    - name: Install distribution-maintained prerequisites
+      ansible.builtin.apt:
+        name: [python3, ca-certificates, zstd, nftables, docker.io]
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+        policy_rc_d: 101
+    - name: Select an existing time service before core-cell startup
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/control.py", play]
+        stdin: "{{ kaia_request | combine({'action':'time-service'}) | to_json }}"
+      register: kaia_time_service
+      changed_when: false
+      when: kaia_request.role == 'validator'
+    - name: Install the distribution time-service fallback when none is available
+      ansible.builtin.apt:
+        name: systemd-timesyncd
+        state: present
+        policy_rc_d: 101
+      when: kaia_request.role == 'validator' and (kaia_time_service.stdout | from_json).install
+    - name: Enable the selected existing or fallback time service
+      ansible.builtin.systemd_service:
+        name: "{{ (kaia_time_service.stdout | from_json).service }}"
+        enabled: true
+        state: started
+      when: kaia_request.role == 'validator'
+    - name: Create the dedicated Kaia group
+      ansible.builtin.group:
+        name: erpc-kaia
+        system: true
+      when: kaia_request.role == 'rpc'
+    - name: Create the non-login native account
+      ansible.builtin.user:
+        name: erpc-kaia
+        group: erpc-kaia
+        system: true
+        create_home: false
+        shell: /usr/sbin/nologin
+      when: kaia_request.role == 'rpc'
+    - name: Create protected helper revision directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+      loop: [/usr/local/lib/erpc, /usr/local/lib/erpc/kaia, /usr/local/lib/erpc/kaia/releases, "/usr/local/lib/erpc/kaia/releases/{{ kaia_helper_sha }}", /etc/erpc/kaia]
+    - name: Copy one complete reviewed helper revision
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/{{ item }}"
+        dest: "/usr/local/lib/erpc/kaia/releases/{{ kaia_helper_sha }}/{{ item }}"
+        owner: root
+        group: root
+        mode: '0644'
+      loop: [control.py, bootstrap.py, custody.py, corecell.py, coreaccount.py, catalog.json]
+    - name: Install the isolated complete-revision launcher
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/launcher.py"
+        dest: /usr/local/lib/erpc/kaia-control
+        owner: root
+        group: root
+        mode: '0755'
+    - name: Atomically select the complete helper revision
+      ansible.builtin.file:
+        src: "/usr/local/lib/erpc/kaia/releases/{{ kaia_helper_sha }}"
+        dest: /usr/local/lib/erpc/kaia/current
+        state: link
+        owner: root
+        group: root
+    - name: Verify publication against the sealed carried source
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/control.py", play]
+        stdin: "{{ kaia_request | combine({'action':'verify-helpers'}) | to_json }}"
+      changed_when: false
+    - name: Start the local Docker daemon used through its fixed Unix socket
+      ansible.builtin.systemd_service:
+        name: docker.service
+        state: started
+        enabled: true

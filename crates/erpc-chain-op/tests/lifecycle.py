@@ -43,6 +43,9 @@ class OwnedTests(unittest.TestCase):
             patch.object(c, name, value).start()
         patch.object(c, 'paths', return_value=(self.conf, self.data, self.opt)).start()
         patch.object(c, 'validate_accounts', return_value=None).start()
+        # This lifecycle harness already models root ownership with OWNER_UID.
+        # Actual import ancestry/startup rejection is exercised in erpc-ops/tests/python_isolation.py.
+        patch.object(c, 'trusted_imports', side_effect=lambda directory: self.assertEqual(directory, self.lib)).start()
         self.contract = {'owner':'syntheticowner', 'family':'optimism', 'network':'sepolia', 'history':'full'}
         self.pin = {'kind':'genesis', 'url':'', 'sha256':'', 'required_free_bytes':1_000_000_000_000, 'chain_id':11155420}
         self.pair = {'architecture':'amd64', 'execution':{'version':'2.6.1'}, 'consensus':{'version':'1.19.11'}}
@@ -113,6 +116,26 @@ class OwnedTests(unittest.TestCase):
             with self.assertRaises(c.Refused): c.dispatch(self.request(action))
         self.assertEqual(c.OWNER.read_bytes(), before)
         self.assertFalse(any(args[:2] == ['systemctl','stop'] for args,_ in self.calls))
+
+    def test_reth28_forward_update_keeps_original_database_credentials_and_interrupted_target(self):
+        database=self.data/'execution/original';database.write_bytes(b'inert storage-v2 original')
+        original=(database.read_bytes(),database.stat().st_ino,copy.deepcopy(c.read_state()['identity']))
+        request=self.request('begin-install');request['pair']['execution']['version']='2.8.0'
+        with patch.object(c,'stop',side_effect=c.Refused('inert update shutdown interrupted')):
+            with self.assertRaises(c.Refused):c.dispatch(request)
+        self.assertEqual(c.read_state()['target'],request['pair'])
+        with self.assertRaises(c.Refused):c.dispatch(self.request('begin-install'))
+        c.dispatch(request)
+        receipt=json.loads((self.conf/'installation.json').read_bytes());receipt['pair']=request['pair']
+        (self.conf/'installation.json').write_text(json.dumps(receipt))
+        with patch.object(c,'identity_material',side_effect=AssertionError('original keys must not regenerate')):
+            c.dispatch(dict(request,action='finish-install'))
+        self.assertEqual(c.read_state()['pair'],request['pair'])
+        self.assertEqual((database.read_bytes(),database.stat().st_ino,c.read_state()['identity']),original)
+        c.verify_identity(c.read_state())
+        self.calls.clear()
+        with self.assertRaises(c.Refused):c.dispatch(self.request('begin-install'))
+        self.assertFalse(any(args[:2]==['systemctl','stop'] for args,_ in self.calls))
     def test_import_completion_cannot_waive_genesis_sync_space_or_operating_reserve(self):
         self.free = 500_000_000_000
         self.assertTrue(c.read_state()['bootstrap_done'])

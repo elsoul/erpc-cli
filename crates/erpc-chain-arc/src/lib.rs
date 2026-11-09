@@ -15,10 +15,13 @@
 
 use include_dir::{Dir, include_dir};
 
+pub mod authority;
 pub mod key;
 pub mod kind;
 pub mod network;
 pub mod releases;
+/// Dedicated validator public contract and approved runtime policy.
+pub mod validator;
 
 /// Crate name, used by `erpc version --json` to list workspace components.
 pub const CRATE_NAME: &str = "erpc-chain-arc";
@@ -28,6 +31,10 @@ pub static TEMPLATES: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/templates
 
 /// The plays erpc starts a run with, relative to the template root.
 pub mod plays {
+    /// Read-only qualification before original key reservation.
+    pub const PREFLIGHT: &str = "ansible/arc-rpc/preflight.yml";
+    /// Explicit historical original-authority migration.
+    pub const MIGRATE: &str = "ansible/arc-rpc/migrate.yml";
     /// Short firewall preparation, confirmed before deployment starts.
     pub const FIREWALL: &str = "ansible/arc-rpc/firewall.yml";
     /// Prepares the host: packages, the `arc` user, the data disk, kernel
@@ -36,17 +43,10 @@ pub mod plays {
     /// Installs the pinned release, fetches snapshots, starts both layers
     /// and applies the firewall; again for `update-config`.
     pub const DEPLOY: &str = "ansible/arc-rpc/deploy.yml";
-    /// Moves a running node to the pinned release, rolling back on failure.
+    /// Moves to the qualified release while retaining the highest opened source floor.
     pub const UPDATE: &str = "ansible/arc-rpc/update.yml";
-    /// Removes what deploy put on the host.
+    /// Retires the original runtime while retaining data, identity and filtering.
     pub const DESTROY: &str = "ansible/arc-rpc/destroy.yml";
-}
-
-/// What erpc adds to the template tree to make a run's bundle.
-pub mod bundle {
-    /// The free-disk rule `init.yml` checks again before it wipes a disk:
-    /// the script erpc ran before asking the operator.
-    pub const FREE_DISKS: &str = "files/free-disks.sh";
 }
 
 /// A file of the template tree, by its path from the root.
@@ -131,6 +131,8 @@ mod tests {
             }
         }
         for play in [
+            plays::PREFLIGHT,
+            plays::MIGRATE,
             plays::INIT,
             plays::FIREWALL,
             plays::DEPLOY,
@@ -145,7 +147,21 @@ mod tests {
     fn every_carried_file_is_named_by_a_play() {
         let yaml = all_yaml();
         for path in files() {
-            let named = if let Some(template) = path.strip_prefix("jinja/") {
+            let named = if let Some(helper) = path.strip_prefix("authority/") {
+                super::authority::profile().contains(&helper)
+                    && yaml.contains("arc_authority_loader")
+                    && yaml.contains("authority/control.py")
+            } else if let Some(helper) = path.strip_prefix("validator/") {
+                super::validator::helper_profile()
+                    .unwrap()
+                    .iter()
+                    .any(|name| name == helper)
+                    && yaml.contains("arc_validator_loader")
+                    && yaml.contains("validator/control.py")
+            } else if let Some(template) = path.strip_prefix("legacy/") {
+                let stem = template.trim_end_matches(".j2");
+                yaml.contains("../../legacy/{{ item }}.j2") && yaml.contains(&format!("- {stem}\n"))
+            } else if let Some(template) = path.strip_prefix("jinja/") {
                 let stem = template.trim_end_matches(".j2");
                 yaml.contains(template) || yaml.contains(&format!("- {stem}\n"))
             } else if let Some(task) = path.strip_prefix("ansible/arc-rpc/tasks/") {
@@ -156,11 +172,19 @@ mod tests {
                     || path == "README.md"
                     || path == "ansible/arc-rpc/vars.yml"
                     || [
+                        plays::PREFLIGHT,
+                        plays::MIGRATE,
                         plays::INIT,
                         plays::FIREWALL,
                         plays::DEPLOY,
                         plays::UPDATE,
                         plays::DESTROY,
+                        super::validator::plays::PREFLIGHT,
+                        super::validator::plays::INIT,
+                        super::validator::plays::FIREWALL,
+                        super::validator::plays::DEPLOY,
+                        super::validator::plays::DESTROY,
+                        super::validator::plays::CONTROL,
                     ]
                     .contains(&path)
             };
@@ -186,8 +210,12 @@ mod tests {
     }
 
     #[test]
-    fn the_only_urls_in_the_tree_are_the_nodes_own_loopback() {
+    fn literal_endpoints_are_loopback_or_the_exact_carried_network_catalog() {
         for path in files() {
+            if ["authority/networks.json", "validator/networks.json"].contains(&path) {
+                assert_eq!(file(path).unwrap(), include_bytes!("../networks/arc.json"));
+                continue;
+            }
             let body = text(path).replace("http://127.0.0.1", "");
             // The URLs a node fetches come in through the inventory: the
             // release archive and the relays.

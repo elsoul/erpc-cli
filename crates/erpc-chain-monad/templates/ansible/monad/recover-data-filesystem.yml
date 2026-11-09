@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+- name: Recover original consensus filesystem identity while the native node remains stopped
+  hosts: all
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Bind the independently recorded original UUID without changing any native data
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, '{{ playbook_dir }}/../../node/control.py', within-run]
+        stdin: '{{ monad_request | combine({"operation": "recover-data-filesystem"}) | to_json }}'

@@ -1,18 +1,10 @@
 // SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
 // SPDX-License-Identifier: Apache-2.0
 
-//! The commands an Ethereum RPC node is sent outside a play: its facts, its
-//! state, its services in dependency order, its journal, and the firewall
-//! confirmation.
-//!
-//! Lighthouse drives Reth over the engine API on 127.0.0.1:8551. So a start
-//! brings Reth up and waits for that port before Lighthouse; a stop takes
-//! Lighthouse down first; a restart of Reth stops Lighthouse, restarts Reth,
-//! waits for the port, then starts Lighthouse. The actions and layers are
-//! Arc's ([`crate::arc::Action`], [`crate::arc::Layer`]): execution is
-//! Reth, consensus is Lighthouse.
+//! Read-only Ethereum facts, observations and journals. Mutations use the
+//! original-authority controller in `eth_authority`, with contracts on stdin.
 
-use crate::arc::{Action, Layer};
+use crate::arc::Layer;
 
 /// Reth's unit.
 pub const EXECUTION_UNIT: &str = "reth";
@@ -20,11 +12,6 @@ pub const EXECUTION_UNIT: &str = "reth";
 pub const CONSENSUS_UNIT: &str = "lighthouse";
 /// The one-shot unit that fetches Reth's snapshot.
 pub const SNAPSHOT_UNIT: &str = "reth-snapshot";
-
-/// Waits up to ten minutes for Reth's engine port.
-const WAIT_ENGINE: &str = "i=0; until (exec 3<>/dev/tcp/127.0.0.1/8551) 2>/dev/null; do \
-     i=$((i+1)); [ $i -ge 600 ] && { echo 'Reth opened no engine port in 600 s' >&2; exit 1; }; \
-     sleep 1; done";
 
 /// The host's facts, as `key=value` lines.
 pub(crate) const NODE_FACTS: &str = r#"export LC_ALL=C
@@ -46,8 +33,8 @@ true"#;
 pub(crate) fn status() -> String {
     format!(
         r#"export LC_ALL=C
-rpc() {{ curl -s -m 5 -H 'Content-Type: application/json' -d "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"$1\",\"params\":[]}}" http://127.0.0.1:8545 2>/dev/null; }}
-beacon() {{ local p="$1"; curl -s -m 10 "http://127.0.0.1:5052/${{p#/}}" 2>/dev/null; }}
+rpc() {{ curl -q --noproxy '*' --proto =http -s -m 5 -H 'Content-Type: application/json' -d "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"$1\",\"params\":[]}}" http://127.0.0.1:8545 2>/dev/null; }}
+beacon() {{ local p="$1"; curl -q --noproxy '*' --proto =http -s -m 10 "http://127.0.0.1:5052/${{p#/}}" 2>/dev/null; }}
 for u in {EXECUTION_UNIT} {CONSENSUS_UNIT} {SNAPSHOT_UNIT} erpc-eth-firewall; do printf 'unit_%s=%s\n' "$u" "$(systemctl is-active "$u" 2>/dev/null)"; done
 printf 'current=%s\n' "$(readlink /opt/ethereum/current 2>/dev/null)"
 printf 'client_version=%s\n' "$(rpc web3_clientVersion)"
@@ -74,32 +61,6 @@ true"#
     )
 }
 
-/// Starts, stops or restarts `layer` in dependency order.
-pub(crate) fn service(action: Action, layer: Layer) -> String {
-    let ctl = |verb: &str, unit: &str| format!("sudo -n systemctl {verb} {unit}");
-    let parts: Vec<String> = match (action, layer) {
-        // Lighthouse wants Reth's engine: starting it starts Reth first.
-        (Action::Start, Layer::Both | Layer::Consensus) => vec![
-            ctl("start", EXECUTION_UNIT),
-            WAIT_ENGINE.to_owned(),
-            ctl("start", CONSENSUS_UNIT),
-        ],
-        (Action::Start, Layer::Execution) => vec![ctl("start", EXECUTION_UNIT)],
-        (Action::Stop, Layer::Both | Layer::Execution) => {
-            vec![ctl("stop", CONSENSUS_UNIT), ctl("stop", EXECUTION_UNIT)]
-        }
-        (Action::Stop, Layer::Consensus) => vec![ctl("stop", CONSENSUS_UNIT)],
-        (Action::Restart, Layer::Both | Layer::Execution) => vec![
-            ctl("stop", CONSENSUS_UNIT),
-            ctl("restart", EXECUTION_UNIT),
-            WAIT_ENGINE.to_owned(),
-            ctl("start", CONSENSUS_UNIT),
-        ],
-        (Action::Restart, Layer::Consensus) => vec![ctl("restart", CONSENSUS_UNIT)],
-    };
-    parts.join(" && ")
-}
-
 /// The journal of `layer`; `both` includes the snapshot download.
 pub(crate) fn logs(layer: Layer, lines: u32, follow: bool) -> String {
     let units: &[&str] = match layer {
@@ -115,21 +76,12 @@ pub(crate) fn logs(layer: Layer, lines: u32, follow: bool) -> String {
     )
 }
 
-/// Runs the firewall confirmation helper.
-pub(crate) fn confirm_firewall(token: &crate::firewall::FirewallToken) -> String {
-    format!(
-        "sudo -n python3 /usr/local/lib/erpc/rpc-firewall.py eth confirm {} {}",
-        token.run.as_str(),
-        token.bundle
-    )
-}
-
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]
-    use super::{NODE_FACTS, confirm_firewall};
-    use super::{logs, service, status};
-    use crate::arc::{Action, Layer};
+    use super::NODE_FACTS;
+    use super::{logs, status};
+    use crate::arc::Layer;
 
     #[cfg(unix)]
     fn valid_shell(line: &str) {
@@ -145,40 +97,7 @@ mod tests {
     fn every_line_is_valid_shell() {
         valid_shell(NODE_FACTS);
         valid_shell(&status());
-        for action in [Action::Start, Action::Stop, Action::Restart] {
-            for layer in [Layer::Execution, Layer::Consensus, Layer::Both] {
-                valid_shell(&service(action, layer));
-            }
-        }
         valid_shell(&logs(Layer::Both, 100, true));
-        valid_shell(&confirm_firewall(
-            &crate::firewall::FirewallToken::new(
-                crate::RunId::new("r-20261026t120000-abc123").unwrap(),
-                &"a".repeat(64),
-            )
-            .unwrap(),
-        ));
-    }
-
-    #[test]
-    fn the_layers_go_in_dependency_order() {
-        let restart = service(Action::Restart, Layer::Both);
-        let order: Vec<usize> = [
-            "stop lighthouse",
-            "restart reth",
-            "8551",
-            "start lighthouse",
-        ]
-        .iter()
-        .map(|s| restart.find(s).expect(s))
-        .collect();
-        assert!(order.windows(2).all(|w| w[0] < w[1]), "{restart}");
-        let stop = service(Action::Stop, Layer::Both);
-        assert!(stop.find("stop lighthouse") < stop.find("stop reth"));
-        assert_eq!(
-            service(Action::Restart, Layer::Consensus),
-            "sudo -n systemctl restart lighthouse"
-        );
     }
 
     #[test]

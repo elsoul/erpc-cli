@@ -1,0 +1,32 @@
+{
+  "source": "docs.arc.io/arc/references/node-requirements",
+  "read": "2026-10-27",
+  "genesis_source": "circlefin/arc-node@ab09dbfd9553a7ad48f9c134ec5e808c36512c74:crates/execution-config/src/chainspec.rs",
+  "networks": {
+    "testnet": {
+      "chain": "arc-testnet",
+      "chain_id": 5042002,
+      "genesis_hash": "0xe20e653af4441e8c6088e172b129d56420139824400477287b46e7101ae2bb1f",
+      "forwarder": "https://rpc.testnet.arc.io/",
+      "public_rpc": "https://rpc.testnet.arc.io",
+      "follow": [
+        { "http": "https://rpc.testnet.arc.io", "ws": "rpc.testnet.arc.io" },
+        { "http": "https://rpc.drpc.testnet.arc.io", "ws": "rpc.drpc.testnet.arc.io" },
+        { "http": "https://rpc.blockdaemon.testnet.arc.io", "ws": "rpc.blockdaemon.testnet.arc.io/websocket" }
+      ]
+    },
+    "mainnet": {
+      "chain": "arc-mainnet",
+      "chain_id": 5042,
+      "genesis_hash": "0x09944e07412986bb417fd0006c89ffb71ee523d68ce2017ec2dabc944c42edad",
+      "forwarder": "https://rpc.mainnet.arc.io/",
+      "public_rpc": "https://rpc.mainnet.arc.io",
+      "follow": [
+        { "http": "https://rpc.mainnet.arc.io", "ws": "rpc.mainnet.arc.io" },
+        { "http": "https://rpc.drpc.mainnet.arc.io", "ws": "rpc.drpc.mainnet.arc.io" },
+        { "http": "https://rpc.blockdaemon.mainnet.arc.io", "ws": "rpc.blockdaemon.mainnet.arc.io/websocket" },
+        { "http": "https://rpc.quicknode.mainnet.arc.io", "ws": "rpc.quicknode.mainnet.arc.io" }
+      ]
+    }
+  }
+}

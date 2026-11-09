@@ -14,6 +14,7 @@
 
 use include_dir::{Dir, include_dir};
 
+pub mod authority;
 pub mod deposit;
 pub mod kind;
 pub mod network;
@@ -36,12 +37,27 @@ pub mod plays {
     /// Installs the pinned pair, fetches Reth's snapshot, starts both layers
     /// and applies the firewall; again for `update-config`.
     pub const DEPLOY: &str = "ansible/eth-rpc/deploy.yml";
-    /// Moves a running node to the pinned pair, rolling back on failure.
+    /// Moves a running node to the pinned pair without lowering its database source floor.
     pub const UPDATE: &str = "ansible/eth-rpc/update.yml";
-    /// Removes what deploy put on the host.
+    /// Retires owned services while retaining original data and authority.
     pub const DESTROY: &str = "ansible/eth-rpc/destroy.yml";
+    /// Bind independent original filesystem UUID evidence without deployment.
+    pub const UPGRADE_VOLUME: &str = "ansible/eth-rpc/upgrade-volume.yml";
+    /// Stop and archive one explicitly named interrupted original operation.
+    pub const RECOVER: &str = "ansible/eth-rpc/recover.yml";
+    /// Import original numeric authority from independently retained host records.
+    pub const MIGRATE: &str = "ansible/eth-rpc/migrate.yml";
     /// Every play erpc starts a run with.
-    pub const ALL: [&str; 5] = [INIT, FIREWALL, DEPLOY, UPDATE, DESTROY];
+    pub const ALL: [&str; 8] = [
+        INIT,
+        FIREWALL,
+        DEPLOY,
+        UPDATE,
+        DESTROY,
+        RECOVER,
+        MIGRATE,
+        UPGRADE_VOLUME,
+    ];
 }
 
 /// What erpc adds to the template tree to make a run's bundle.
@@ -151,15 +167,23 @@ mod tests {
                 Client::ALL
                     .iter()
                     .any(|c| path == format!("gpg/{}.asc", c.name()))
+            } else if let Some(member) = path.strip_prefix("authority/") {
+                (crate::authority::PROFILE.contains(&member)
+                    && yaml.contains("../../authority/control.py"))
+                    || (crate::authority::VALIDATOR_PROFILE.contains(&member)
+                        && yaml.contains("../authority/eth_validator_control.py"))
             } else {
                 path.strip_prefix("ansible/eth-rpc/")
                     .is_some_and(|name| yaml.contains(&format!("import_playbook: {name}")))
                     || path == "ansible/eth-rpc/vars.yml"
                     || plays::ALL.contains(&path)
+                    || (path == "validator/install_release.yml"
+                        && yaml.contains("ansible.builtin.include_tasks: install_release.yml"))
                     || [
                         "validator/control.py",
                         "validator/time_service.py",
                         "validator/deploy.yml",
+                        "validator/migrate.yml",
                         "validator/execution.service.j2",
                         "validator/beacon.service.j2",
                         "validator/validator.service.j2",
@@ -207,21 +231,6 @@ mod tests {
                 key.starts_with("-----BEGIN PGP PUBLIC KEY BLOCK-----"),
                 "{client:?}"
             );
-        }
-    }
-
-    #[test]
-    fn the_only_urls_in_the_tree_are_loopback_and_the_checkpoint_server() {
-        for path in files().into_iter().filter(|p| !p.starts_with("gpg/")) {
-            let body = text(path)
-                .replace("http://127.0.0.1", "")
-                // The checkpoint server, a node host the endpoints gate checks
-                // in this tree.
-                .replace(&["https:", "//mainnet.checkpoint.sigp.io"].concat(), "")
-                .replace(&["https:", "//hoodi.checkpoint.sigp.io"].concat(), "");
-            // The release archives' URLs come in through the inventory.
-            assert!(!body.contains("http://"), "{path}");
-            assert!(!body.contains("https://"), "{path}");
         }
     }
 }

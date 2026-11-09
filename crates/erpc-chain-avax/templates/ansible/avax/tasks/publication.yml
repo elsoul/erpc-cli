@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Recheck every destination before helper publication
+  ansible.builtin.import_tasks: contract.yml
+- name: Create the closed privileged namespace
+  ansible.builtin.file:
+    path: /usr/local/lib/erpc/avax
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+- name: Publish complete carried helper sources
+  ansible.builtin.copy:
+    src: "{{ avax_jinja }}/{{ item }}"
+    dest: "/usr/local/lib/erpc/avax/{{ item }}"
+    owner: root
+    group: root
+    mode: '0644'
+  loop: [control.py, account.py, capacity.py, observe.py]
+- name: Publish the common operation-bound firewall
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../rpc-firewall.py"
+    dest: /usr/local/lib/erpc/rpc-firewall.py
+    owner: root
+    group: root
+    mode: '0644'
+- name: Compare installed bytes with the sealed carried source before retiring old helpers
+  ansible.builtin.command:
+    argv: [/usr/bin/python3, -I, "{{ avax_jinja }}/control.py"]
+    stdin: "{{ {'action':'publication','contract':avax_contract_value} | to_json }}"
+  changed_when: false

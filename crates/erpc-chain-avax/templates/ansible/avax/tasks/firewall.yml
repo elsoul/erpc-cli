@@ -2,13 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 ---
 # node-run.sh holds /opt/erpc's exclusive lock through candidate rendering/apply.
-- name: Install the operation-bound firewall controller
-  ansible.builtin.copy:
-    src: "{{ playbook_dir }}/../../jinja/firewall.py"
-    dest: /usr/local/lib/erpc/avax-firewall.py
-    owner: root
-    group: root
-    mode: '0700'
 - name: Load only a confirmed policy at boot
   ansible.builtin.template:
     src: "{{ avax_jinja }}/erpc-avax-firewall.service.j2"
@@ -32,8 +25,10 @@
 - name: Apply this run's candidate under an operation-specific rollback timer
   ansible.builtin.command:
     argv:
-      - python3
-      - /usr/local/lib/erpc/avax-firewall.py
+      - /usr/bin/python3
+      - -I
+      - "{{ playbook_dir }}/../../rpc-firewall.py"
+      - avax
       - apply
       - "{{ (playbook_dir ~ '/../../..') | realpath | basename }}"
       - "{{ avax_submitted_bundle.stat.checksum }}"

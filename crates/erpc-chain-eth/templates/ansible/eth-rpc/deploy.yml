@@ -1,162 +1,59 @@
 # SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
 # SPDX-License-Identifier: Apache-2.0
-#
-# eth RPC deployment runs only after a separate short firewall preparation
-# has been confirmed over fresh SSH. The first play checks that immutable receipt
-# before installation, snapshots, service changes or lengthy health waits.
 ---
 - import_playbook: firewall-guard.yml
-
-- name: Deploy an Ethereum RPC node
+- name: Install the exact original Ethereum request and resume only its native bootstrap
   hosts: all
   become: true
   gather_facts: false
   any_errors_fatal: true
-  vars_files:
-    - vars.yml
+  vars_files: [vars.yml]
   vars:
-    eth_config_only: "{{ eth_phase | default('deploy') == 'config' }}"
+    eth_control: [/usr/bin/python3, -I, -c, '{{ eth_authority_loader }}', '{{ playbook_dir }}/../../authority/control.py', request]
   tasks:
-    - name: Stop unless init has prepared this host
-      ansible.builtin.stat:
-        path: "{{ item }}"
-      loop:
-        - "{{ eth_home }}"
-        - /etc/ethereum
-      register: eth_prepared
-      failed_when: not eth_prepared.stat.exists
-
-    # Destroy removes some of these, and a later deploy sets the node up
-    # again without another init.
-    - name: Make the directories deploy uses
-      ansible.builtin.file:
-        path: "{{ item.path }}"
-        state: directory
-        owner: "{{ item.owner }}"
-        group: "{{ item.group }}"
-        mode: "{{ item.mode }}"
-      loop:
-        - { path: "{{ eth_reth_dir }}", owner: reth, group: ethereum, mode: "0750" }
-        - { path: "{{ eth_lighthouse_dir }}", owner: lighthouse, group: ethereum, mode: "0750" }
-        - { path: "{{ eth_opt }}", owner: root, group: root, mode: "0755" }
-        - { path: "{{ eth_fw_dir }}", owner: root, group: root, mode: "0700" }
-        - { path: "{{ eth_helpers }}", owner: root, group: root, mode: "0755" }
-      loop_control:
-        label: "{{ item.path }}"
-
-    # Reth uses the file it is given and makes one only without the flag;
-    # both layers must read the same secret, so it is made here first.
-    - name: Make the engine API's JWT, once
-      ansible.builtin.shell:
-        cmd: |
-          set -euo pipefail
-          umask 027
-          openssl rand -hex 32 > {{ eth_jwt }}.new
-          chown root:ethereum {{ eth_jwt }}.new
-          mv {{ eth_jwt }}.new {{ eth_jwt }}
-        executable: /bin/bash
-        creates: "{{ eth_jwt }}"
-
-    - name: Read which pair is current
-      ansible.builtin.stat:
-        path: "{{ eth_opt }}/current"
-      register: eth_current
-
-    - name: Read whether the pinned pair is installed
-      ansible.builtin.stat:
-        path: "{{ eth_release_dir }}/lighthouse"
-      register: eth_installed_pair
-
-    - name: Install the pinned pair
+    - name: Verify the original request and numeric account authority
+      ansible.builtin.command:
+        argv: '{{ eth_control }}'
+        stdin: '{{ eth_authority_request | combine({"action":"check-deploy","intent":eth_authority_intent,"target":eth_authority_source}) | to_json }}'
+      register: eth_original
+      changed_when: false
+    - name: Use only original numeric identities for public binary qualification
+      ansible.builtin.set_fact:
+        eth_original_accounts: '{{ (eth_original.stdout | from_json).accounts.users }}'
+    - name: Verify both release archives and their native source identity
       ansible.builtin.include_tasks: tasks/install_release.yml
-      when: not eth_config_only
-
-    - name: Stop unless the pinned pair is installed
-      ansible.builtin.stat:
-        path: "{{ eth_release_dir }}/{{ item }}"
-      loop:
-        - reth
-        - lighthouse
-      register: eth_binaries
-      failed_when: not eth_binaries.stat.exists
-
-    - name: Point current at the pinned pair on a new node
-      ansible.builtin.file:
-        src: "{{ eth_release_dir }}"
-        dest: "{{ eth_opt }}/current"
-        state: link
-        force: true
-      when: not eth_current.stat.exists
-
-    - name: Stop when the node runs another pair
-      ansible.builtin.assert:
-        that:
-          - eth_current.stat.lnk_target | default(eth_release_dir) == eth_release_dir
-        fail_msg: >-
-          The node runs {{ eth_current.stat.lnk_target | default('') | basename }}, not the pinned
-          {{ eth_pair }}. Use `erpc r --chain eth update` to move it. Nothing was changed.
-        quiet: true
-
-    - name: Write the units
-      ansible.builtin.template:
-        src: "{{ eth_jinja }}/{{ item }}.j2"
-        dest: /etc/systemd/system/{{ item }}
-        owner: root
-        group: root
-        mode: "0644"
-      loop:
-        - reth.service
-        - lighthouse.service
-        - reth-snapshot.service
-      register: eth_units
-
-    - name: Read whether Reth has its snapshot
-      ansible.builtin.stat:
-        path: "{{ eth_snapshot_marker }}"
-      register: eth_snapshotted
-
-    # The datadir is empty until reth-snapshot writes it, and only that unit
-    # writes to it before the marker exists: a download that stopped part way
-    # is resumed (`--resumable`) by the next run.
-    - name: Fetch Reth's snapshot into the new node's datadir
-      when: not eth_snapshotted.stat.exists
-      block:
-        - name: Read the datadir's free space
-          ansible.builtin.command: df --output=avail -B1000000000 {{ eth_reth_dir }}
-          register: eth_free
-          changed_when: false
-
-        - name: Stop unless the datadir has room for the snapshot
-          ansible.builtin.assert:
-            that:
-              - eth_free.stdout_lines[-1] | trim | int >= eth_min_free_gb | int
-            fail_msg: >-
-              {{ eth_reth_dir }} has {{ eth_free.stdout_lines[-1] | trim }} GB free; a
-              {{ eth_rpc_type }} node needs {{ eth_min_free_gb }} GB for Reth's snapshot and room
-              to grow. Nothing was downloaded.
-            quiet: true
-
-        - name: Start fetching the snapshot
-          ansible.builtin.command: systemctl start --no-block reth-snapshot.service
-          changed_when: true
-
-        - name: Wait for the snapshot (hours for an archive node; progress is in `erpc r --chain eth logs`)
-          ansible.builtin.command: systemctl is-active reth-snapshot.service
-          register: eth_snapshot_state
-          until: eth_snapshot_state.stdout not in ['activating', 'active']
-          retries: 4320
-          delay: 10
-          changed_when: false
-          failed_when: false
-
-        - name: Stop unless the snapshot finished
-          ansible.builtin.stat:
-            path: "{{ eth_snapshot_marker }}"
-          register: eth_snapshot_done
-          failed_when: not eth_snapshot_done.stat.exists
-
-
-    - name: Start the node, or restart it when its units changed
-      ansible.builtin.include_tasks: tasks/start.yml
-      vars:
-        eth_restart: "{{ (eth_units is changed) and eth_current.stat.exists }}"
+    - name: Publish only qualified immutable original release bytes
+      ansible.builtin.command:
+        argv: '{{ eth_control }}'
+        stdin: '{{ eth_authority_request | combine({"action":"qualify","intent":eth_authority_intent}) | to_json }}'
+      changed_when: true
+    - name: Fence cutover and drain all retained original writers
+      ansible.builtin.command:
+        argv: '{{ eth_control }}'
+        stdin: '{{ eth_authority_request | combine({"action":"begin","intent":eth_authority_intent}) | to_json }}'
+      changed_when: true
+    - name: Preserve or finish the original private engine JWT
+      ansible.builtin.command:
+        argv: '{{ eth_control }}'
+        stdin: '{{ eth_authority_request | combine({"action":"engine-init","intent":eth_authority_intent}) | to_json }}'
+      changed_when: true
+      no_log: true
+    - name: Publish numeric units and retained native process authority
+      ansible.builtin.command:
+        argv: '{{ eth_control }}'
+        stdin: '{{ eth_authority_request | combine({"action":"install","intent":eth_authority_intent,"firewall":{"run":erpc_fw_confirmed_run,"bundle":erpc_fw_confirmed_bundle}}) | to_json }}'
+      changed_when: true
+    - name: Submit or observe the original resumable native bootstrap
+      ansible.builtin.command:
+        argv: '{{ eth_control }}'
+        stdin: '{{ eth_authority_request | combine({"action":"bootstrap","intent":eth_authority_intent}) | to_json }}'
+      register: eth_bootstrap
+      until: (eth_bootstrap.stdout | from_json).snapshot == 'complete'
+      retries: 4320
+      delay: 10
+      changed_when: (eth_bootstrap.stdout | from_json).snapshot == 'submitted'
+    - name: Start only the still-authorized original target and verify real running services
+      ansible.builtin.command:
+        argv: '{{ eth_control }}'
+        stdin: '{{ eth_authority_request | combine({"action":"activate","intent":eth_authority_intent}) | to_json }}'
+      changed_when: true

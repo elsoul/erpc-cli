@@ -65,6 +65,16 @@ pub struct Args {
     pub login: Login,
     /// Do not ask before writing.
     pub yes: bool,
+    /// Explicit migration from independently retained original account records.
+    pub migrate_authority: bool,
+    /// Original host backup's passwd file, never a fresh NSS export.
+    pub original_passwd: Option<std::path::PathBuf>,
+    /// Original host backup's group file.
+    pub original_group: Option<std::path::PathBuf>,
+    /// Original host backup's machine-id file.
+    pub original_machine_id: Option<std::path::PathBuf>,
+    /// Original highest database-opening versions and source commits.
+    pub original_client_record: Option<std::path::PathBuf>,
 }
 
 /// What a finished init reports.
@@ -135,6 +145,9 @@ impl Done {
 
 /// Runs `erpc r --chain eth init`.
 pub async fn run(args: Args, json_out: bool) -> Outcome {
+    if args.migrate_authority {
+        return migrate(&args, json_out);
+    }
     let say = Say { quiet: json_out };
     match init(&args, &say).await {
         Ok(done) => {
@@ -146,6 +159,84 @@ pub async fn run(args: Args, json_out: bool) -> Outcome {
             }
         }
         Err(e) => Outcome::from(e),
+    }
+}
+
+fn migrate(args: &Args, json_out: bool) -> Outcome {
+    let say = Say { quiet: json_out };
+    let result = (|| -> Result<_, CliError> {
+        if args.reth_version.is_some()
+            || args.lighthouse_version.is_some()
+            || args.rpc_allow.is_some()
+            || args.management_allow.is_some()
+            || args.monitoring_allow.is_some()
+        {
+            return Err("authority migration preserves the original profile; request source/access changes in a later deployment".to_owned().into());
+        }
+        let passwd = args.original_passwd.as_deref().ok_or(
+            "--migrate-authority requires --original-passwd from the original host backup",
+        )?;
+        let group = args
+            .original_group
+            .as_deref()
+            .ok_or("--migrate-authority requires --original-group from the original host backup")?;
+        let machine = args.original_machine_id.as_deref().ok_or(
+            "--migrate-authority requires --original-machine-id from the original host backup",
+        )?;
+        let clients = args.original_client_record.as_deref().ok_or("--migrate-authority requires --original-client-record from independently retained highest-opened source records")?;
+        let opened = open(&args.network, args.vault.as_deref(), &say)?;
+        let node = crate::eth_rpc::find(&opened.nodes, &args.name, &args.network)?.clone();
+        let proof = crate::eth_authority_evidence::read(
+            &node,
+            &args.network,
+            passwd,
+            group,
+            machine,
+            clients,
+        )?;
+        let target = crate::eth_rpc::target(&node, &args.login)?;
+        let session = Session::open(&target).map_err(|e| e.to_string())?;
+        let facts = facts(&session)?;
+        say.line("migration  independently retained original account records will be checked against this pinned host; existing native writers must already be stopped; original units/data/JWT remain retained");
+        go_ahead(args.yes, "original-authority migration was not confirmed")?;
+        let mut extra = serde_json::Map::new();
+        extra.insert(
+            "eth_authority_request".into(),
+            crate::eth_authority::request(
+                &node,
+                &args.network,
+                "migrate",
+                json!({"evidence":proof}),
+            )?,
+        );
+        let run = run_play(
+            &session,
+            &target,
+            &RunVars {
+                role: erpc_core::chain::Role::Rpc,
+                node: &node,
+                network: &opened.network,
+                facts: &facts,
+                extra,
+            },
+            plays::MIGRATE,
+            "Repeat migration using the same original backup records",
+            &say,
+        )?;
+        Ok(
+            json!({"name":node.name,"run":run,"migrated":true,"started":false,"data_preserved":true}),
+        )
+    })();
+    match result {
+        Ok(value) => {
+            if json_out {
+                crate::print_json(&value);
+                Outcome::Done(String::new())
+            } else {
+                Outcome::Done("Original Ethereum authority migrated; data and identity retained. Run an explicit deploy to install guarded native units.".into())
+            }
+        }
+        Err(error) => Outcome::from(error),
     }
 }
 
@@ -458,6 +549,7 @@ async fn init(args: &Args, say: &Say) -> Result<Done, CliError> {
         ),
     );
     let vars = RunVars {
+        role: erpc_core::chain::Role::Rpc,
         node: &node,
         network: &opened.network,
         facts: &facts,

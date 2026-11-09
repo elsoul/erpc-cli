@@ -1,0 +1,96 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Reserve or fence a dedicated BSC host before installing helpers
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Verify immutable ownership and storage before provisioning
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/control.py", play]
+        stdin: "{{ bsc_request | combine({'action':bsc_prepare_action}) | to_json }}"
+      changed_when: false
+    - name: Install distribution prerequisites
+      ansible.builtin.apt:
+        name: [python3, ca-certificates, lz4, nftables]
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+        policy_rc_d: 101
+    - name: Observe kernel time synchronization for validator hosts
+      ansible.builtin.command:
+        argv: [/usr/bin/timedatectl, show, -p, NTPSynchronized, --value]
+      register: bsc_clock_synced
+      changed_when: false
+      when: bsc_request.role == 'validator'
+    - name: Discover existing time services before choosing a fallback
+      ansible.builtin.service_facts:
+      when: bsc_request.role == 'validator' and bsc_clock_synced.stdout != 'yes'
+    - name: Preserve a running or installed time service
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/time_service.py"]
+        stdin: "{{ ansible_facts.services | to_json }}"
+      register: bsc_clock
+      changed_when: false
+      when: bsc_request.role == 'validator' and bsc_clock_synced.stdout != 'yes'
+    - name: Install the time fallback only when selected
+      ansible.builtin.apt:
+        name: systemd-timesyncd
+        state: present
+        policy_rc_d: 101
+      when: bsc_request.role == 'validator' and bsc_clock_synced.stdout != 'yes' and (bsc_clock.stdout | from_json).install_fallback | bool
+    - name: Enable the selected time daemon
+      ansible.builtin.systemd_service:
+        name: "{{ (bsc_clock.stdout | from_json).service }}"
+        state: started
+        enabled: true
+      when: bsc_request.role == 'validator' and bsc_clock_synced.stdout != 'yes'
+    - name: Create the dedicated BSC group
+      ansible.builtin.group:
+        name: erpc-bsc
+        system: true
+        state: present
+    - name: Create the non-login BSC account
+      ansible.builtin.user:
+        name: erpc-bsc
+        group: erpc-bsc
+        system: true
+        create_home: false
+        shell: /usr/sbin/nologin
+    - name: Create root-controlled helper and configuration directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+      loop: ["/usr/local/lib/erpc/bsc/releases/{{ bsc_helper_sha }}", /etc/erpc/bsc, /opt/erpc-bsc]
+    - name: Install the reviewed host controller and catalog
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/{{ item }}"
+        dest: "/usr/local/lib/erpc/bsc/releases/{{ bsc_helper_sha }}/{{ item }}"
+        owner: root
+        group: root
+        mode: "{{ '0755' if item == 'control.py' else '0644' }}"
+      loop: [bootstrap.py, validator.py, catalog.json, control.py]
+    - name: Install the isolated complete-release launcher
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/launcher.py"
+        dest: /usr/local/lib/erpc/bsc-control
+        owner: root
+        group: root
+        mode: '0755'
+    - name: Publish a complete helper revision atomically
+      ansible.builtin.file:
+        src: "/usr/local/lib/erpc/bsc/releases/{{ bsc_helper_sha }}"
+        dest: /usr/local/lib/erpc/bsc/current
+        state: link
+        owner: root
+        group: root
+    - name: Verify publication against the sealed carried source
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ playbook_dir }}/control.py", play]
+        stdin: "{{ bsc_request | combine({'action':'verify-helpers'}) | to_json }}"
+      changed_when: false

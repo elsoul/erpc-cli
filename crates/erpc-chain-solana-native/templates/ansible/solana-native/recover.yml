@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Recover one original stopped Solana cutover without restarting it
+  hosts: all
+  gather_facts: false
+  become: true
+  any_errors_fatal: true
+  tasks:
+    - name: Require an explicitly named original cutover
+      ansible.builtin.assert:
+        that:
+          - solana_native_request.action == 'recover-cutover'
+          - solana_native_request.keys() | list | sort == ['action', 'contract', 'intent']
+    - name: Archive only original operation metadata and retain all native state
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, -c, '{{ solana_native_loader }}', '{{ playbook_dir }}/../../node/native_runtime_control.py', play]
+        stdin: '{{ solana_native_request | to_json }}'
+      changed_when: true

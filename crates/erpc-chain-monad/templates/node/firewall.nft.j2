@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+# Restored on boot only with its matching confirmed operation fingerprint.
+table inet erpc_monad
+delete table inet erpc_monad
+table inet erpc_monad {
+ chain input {
+  type filter hook input priority -10; policy drop;
+  iifname "lo" accept
+  ct state established,related accept
+  ct state invalid drop
+  ip protocol icmp accept
+  ip6 nexthdr ipv6-icmp accept
+{% for address in monad_management_v4 %}
+  ip saddr {{ address }} tcp dport {{ monad_ssh_port }} accept
+{% endfor %}
+{% for address in monad_management_v6 %}
+  ip6 saddr {{ address }} tcp dport {{ monad_ssh_port }} accept
+{% endfor %}
+  tcp dport 8000 accept
+{% if monad_request.contract.network == 'mainnet' %}
+  ip length 0-1400 udp dport 8000 drop
+  udp dport 8000 accept
+{% endif %}
+  udp dport 8001 accept
+{% if monad_request.contract.network == 'testnet' %}
+  udp dport 8002 accept
+{% endif %}
+{% for address in monad_rpc_allow %}
+  {{ 'ip6' if ':' in address else 'ip' }} saddr {{ address }} tcp dport 8545 accept
+{% endfor %}
+{% for address in monad_monitoring_allow %}
+  {{ 'ip6' if ':' in address else 'ip' }} saddr {{ address }} tcp dport 9144 accept
+{% endfor %}
+ }
+}

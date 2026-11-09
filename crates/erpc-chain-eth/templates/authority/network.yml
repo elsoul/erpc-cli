@@ -1,0 +1,4 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+# Fixed native network profile, copied with the immutable authority helper.
+eth_checkpoint_sync_url: https://mainnet.checkpoint.sigp.io

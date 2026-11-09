@@ -71,7 +71,7 @@ class Probes(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     module.main()
                 self.assertEqual(run.call_count, 1)
-                self.assertEqual(run.call_args.args[0][1], "guard")
+                self.assertIn("guard-account", run.call_args.args[0])
                 run.reset_mock()
                 credential = mapped('/etc/credstore.encrypted/sui-network.key')
                 credential.parent.mkdir(parents=True)
@@ -100,7 +100,17 @@ class ControlPaths(unittest.TestCase):
         self.calls = []
         self.live = 'candidate'
         self.intent = 'b' * 32
-        self.control = self.module.Control(self.root, self.command)
+        self.control = self.module.Control(self.root, self.command, owner=os.getuid())
+        # These existing firewall/recovery cases model the separately exercised
+        # original-account/native-release boundary (authority_test.py).
+        for method in ('account', 'release', 'credential_condition'):
+            context = patch.object(self.control, method, return_value={'service_uid':999,'service_gid':999})
+            context.start(); self.addCleanup(context.stop)
+        # Source history has separate actual-controller/fault tests in release_test.py.
+        context = patch.object(self.module.release_authority, 'recovery_allowed')
+        context.start(); self.addCleanup(context.stop)
+        context = patch.object(self.module.release_authority, 'runtime')
+        context.start(); self.addCleanup(context.stop)
         for path in ['opt/erpc', 'etc/sui', 'etc/erpc/sui', 'var/lib/sui', 'run']:
             (self.root / path).mkdir(parents=True, exist_ok=True)
         self.file('/etc/sui/contract.json', __import__('json').dumps(self.expected))
@@ -112,6 +122,7 @@ class ControlPaths(unittest.TestCase):
         return target
 
     def command(self, argv, **kwargs):
+        if argv == ['/usr/bin/systemctl','--version']:return subprocess.CompletedProcess(argv,0,b'systemd 255 (fixture)\n',b'')
         self.calls.append(argv)
         output = b''
         if argv[:3] == ['nft', '-j', 'list']:
@@ -144,12 +155,130 @@ class ControlPaths(unittest.TestCase):
             self.assertEqual(self.calls, [], operation)
             self.assertEqual(__import__('json').loads(self.control.path('/etc/sui/contract.json').read_text()), self.expected)
 
+    def fail_intent_write(self):
+        original = self.control.write_text
+        def write(path, *args, **kwargs):
+            if path == '/etc/erpc/sui/latest-intent':
+                raise OSError('inert cancellation persistence failure')
+            return original(path, *args, **kwargs)
+        return patch.object(self.control, 'write_text', write)
+
+    def test_first_stop_write_failure_still_attempts_shutdown_without_success(self):
+        self.file('/etc/erpc/sui/latest-intent', self.intent)
+        for operation in ('stop', 'stop-owned'):
+            self.calls.clear()
+            with self.fail_intent_write():
+                with self.assertRaisesRegex(ValueError, 'shutdown attempted but cancellation'):
+                    self.control.dispatch(operation, self.expected)
+            self.assertIn(['systemctl', 'stop', 'sui-bootstrap', 'sui-node'], self.calls)
+            self.assertFalse(any(call[:2] in (['nft','delete'], ['systemctl','start']) for call in self.calls))
+            self.assertEqual(self.control.path('/etc/erpc/sui/latest-intent').read_text(), self.intent)
+
+    def test_carried_destroy_handles_absent_partial_and_removed_services(self):
+        self.file('/etc/erpc/sui/latest-intent', self.intent)
+        original=self.control.run
+        for present in (set(),{'sui-node'},{'sui-bootstrap'},{'sui-node','sui-bootstrap'}):
+            current=set(present);self.calls.clear()
+            def run(argv,**kwargs):
+                if argv[:2]==['systemctl','show']:
+                    self.calls.append(argv)
+                    return subprocess.CompletedProcess(argv,0,b'loaded' if argv[-1] in current else b'not-found',b'')
+                if argv[:2]==['systemctl','stop'] and not set(argv[2:])<=current:
+                    raise subprocess.CalledProcessError(5,argv)  # Real systemd refuses nonexistent units.
+                return original(argv,**kwargs)
+            with patch.object(self.control,'run',side_effect=run):
+                self.control.dispatch('stop-owned',self.expected)
+                stopped=[call for call in self.calls if call[:2]==['systemctl','stop']]
+                self.assertEqual(stopped,[['systemctl','stop',*(unit for unit in ('sui-bootstrap','sui-node') if unit in present)]] if present else [])
+                # The play removes unit definitions after this successful phase.
+                current.clear();self.calls.clear();self.control.dispatch('stop-owned',self.expected)
+                self.assertFalse(any(call[:2]==['systemctl','stop'] for call in self.calls))
+
+    def test_carried_destroy_refuses_unknown_unit_state_and_loaded_shutdown_failure(self):
+        self.file('/etc/erpc/sui/latest-intent',self.intent)
+        original=self.control.run
+        def unknown(argv,**kwargs):
+            if argv[:2]==['systemctl','show']:
+                self.calls.append(argv);return subprocess.CompletedProcess(argv,0,b'unknown-fixture',b'')
+            return original(argv,**kwargs)
+        with patch.object(self.control,'run',side_effect=unknown):
+            with self.assertRaisesRegex(ValueError,'cannot verify service state'):
+                self.control.dispatch('stop-owned',self.expected)
+        self.assertFalse(any(call[:2]==['systemctl','stop'] for call in self.calls))
+        def failed(argv,**kwargs):
+            if argv[:2]==['systemctl','stop']:raise subprocess.CalledProcessError(1,argv)
+            return original(argv,**kwargs)
+        with patch.object(self.control,'run',side_effect=failed):
+            with self.assertRaisesRegex(ValueError,'owned stop or disable failed'):self.control.dispatch('stop-owned',self.expected)
+            with self.fail_intent_write():
+                with self.assertRaisesRegex(ValueError,'persistence and owned shutdown both failed'):
+                    self.control.dispatch('stop-owned',self.expected)
+
+    def test_scope_mismatch_refuses_shutdown_during_storage_failure(self):
+        self.file('/etc/erpc/sui/latest-intent', self.intent)
+        with self.fail_intent_write():
+            for operation in ('stop','stop-owned','prepare-validator','recover-bootstrap'):
+                with self.assertRaises(ValueError):
+                    self.control.dispatch(operation, dict(self.expected, genesis='c'*64))
+        self.assertFalse(self.calls)
+
+    def test_stop_error_with_or_without_storage_error_never_reports_success(self):
+        self.file('/etc/erpc/sui/latest-intent', self.intent)
+        with patch.object(self.control,'stop',side_effect=subprocess.CalledProcessError(1,['inert-owned-stop'])) as stop:
+            with self.fail_intent_write():
+                with self.assertRaisesRegex(ValueError,'persistence and owned shutdown both failed'):
+                    self.control.dispatch('stop',self.expected)
+            self.assertEqual(stop.call_count,1)
+            with self.assertRaises(subprocess.CalledProcessError):self.control.dispatch('stop',self.expected)
+            self.assertEqual(stop.call_count,2)
+
+    def test_failed_rollback_cancellation_keeps_policy_and_callback_material(self):
+        self.candidate();self.calls.clear()
+        policy=self.live
+        with self.fail_intent_write():
+            with self.assertRaisesRegex(ValueError,'shutdown attempted'):
+                self.control.dispatch('rollback',self.expected,self.intent)
+        self.assertIn(['systemctl','stop','sui-bootstrap','sui-node'],self.calls)
+        self.assertEqual(self.live,policy)
+        self.assertTrue(self.control.path('/run/erpc-sui-firewall.armed').exists())
+        self.assertTrue(self.control.path('/etc/erpc/sui/pending.json').exists())
+        # Explicit retry may finish cancellation after storage is repaired.
+        self.control.dispatch('rollback',self.expected,self.intent)
+        self.assertFalse(self.control.path('/run/erpc-sui-firewall.armed').exists())
+
+    def test_validator_first_marker_failure_still_invalidates_and_stops(self):
+        expected=dict(self.expected,role='validator')
+        self.file('/etc/sui/contract.json',__import__('json').dumps(expected))
+        self.file('/etc/erpc/sui/latest-intent',self.intent)
+        original = self.control.write_text
+        def fail_marker(path,text):
+            if path == '/etc/sui/validator-preparing': raise OSError('inert marker failure')
+            return original(path,text)
+        with patch.object(self.control,'write_text',side_effect=fail_marker):
+            with self.assertRaisesRegex(ValueError,'shutdown attempted'):
+                self.control.dispatch('prepare-validator',expected)
+        self.assertIn(['systemctl','stop','sui-bootstrap','sui-node'],self.calls)
+        self.assertTrue(self.control.path('/etc/erpc/sui/latest-intent').read_text().startswith('key-preparation:'))
+
+    def test_bootstrap_recovery_storage_failure_never_moves_retained_data(self):
+        history=self.file('/var/lib/sui/db/live/inert-history','retained history')
+        self.file('/etc/erpc/sui/latest-intent',self.intent)
+        with patch.object(self.module.shutil,'disk_usage',return_value=type('Usage',(),{'free':4_000_000_000_000})()):
+            with self.fail_intent_write():
+                with self.assertRaisesRegex(ValueError,'shutdown attempted'):
+                    self.control.dispatch('recover-bootstrap',self.expected)
+        self.assertEqual(history.read_text(),'retained history')
+        self.assertFalse(list(self.control.path('/var/lib/sui').glob('db.quarantine.*')))
+        self.assertIn(['systemctl','stop','sui-bootstrap','sui-node'],self.calls)
+
     def test_rollback_fences_listeners_and_reboot(self):
         self.candidate()
         self.calls.clear()
         self.control.dispatch('rollback', self.expected, self.intent)
-        self.assertEqual(self.calls[0], ['systemctl', 'stop', 'sui-bootstrap', 'sui-node'])
-        self.assertEqual(self.calls[1], ['nft', 'delete', 'table', 'inet', 'erpc_sui'])
+        stopped = self.calls.index(['systemctl', 'stop', 'sui-bootstrap', 'sui-node'])
+        disabled = self.calls.index(['systemctl', 'disable', 'sui-bootstrap', 'sui-node'])
+        removed = self.calls.index(['nft', 'delete', 'table', 'inet', 'erpc_sui'])
+        self.assertLess(stopped, disabled); self.assertLess(disabled, removed)
         for operation in ['runtime', 'load-firewall', 'start', 'restart']:
             self.calls.clear()
             with self.assertRaises((ValueError, OSError)):
@@ -396,10 +525,11 @@ class ControlPaths(unittest.TestCase):
             for role in ('fullnode', 'validator'):
                 with self.subTest(artifact=artifact, role=role), tempfile.TemporaryDirectory() as directory:
                     root = pathlib.Path(directory)
+                    (root / 'var/lib').mkdir(parents=True)
                     path = root / artifact.lstrip('/')
                     path.parent.mkdir(parents=True)
                     path.write_text('retained fixture')
-                    control = self.module.Control(root, self.command)
+                    control = self.module.Control(root, self.command, owner=os.getuid())
                     before = sorted(str(p.relative_to(root)) for p in root.rglob('*'))
                     self.calls.clear()
                     with self.assertRaises(ValueError):
@@ -409,7 +539,8 @@ class ControlPaths(unittest.TestCase):
                     self.assertEqual(before, sorted(str(p.relative_to(root)) for p in root.rglob('*')))
                     self.assertFalse(control.path('/etc/sui/contract.json').exists())
         with tempfile.TemporaryDirectory() as directory:
-            self.module.Control(pathlib.Path(directory), self.command).dispatch('guard-init', self.expected)
+            (pathlib.Path(directory) / 'var/lib').mkdir(parents=True)
+            self.module.Control(pathlib.Path(directory), self.command, owner=os.getuid()).dispatch('guard-init', self.expected)
 
 
 if __name__ == '__main__':

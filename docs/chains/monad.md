@@ -133,3 +133,11 @@ choosing a production version. Testnet was reset on 2025-12-16. [S4], [S5], [S1]
 [S18]: https://docs.monad.xyz/monad-arch/consensus/staking "Eligibility, authorization and slashing status; read 2026-10-26"
 [S19]: https://docs.monad.xyz/node-ops/archive-data/data-waterfall "Local retention and archive transaction/state distinction; read 2026-10-26"
 [S20]: https://docs.monad.xyz/node-ops/archive-data/configuring-rpc "Archive RPC, trace_calls and log-index configuration; read 2026-10-26"
+
+## ERPC native implementation
+
+The separate RPC and validator-intent roles implement the twelve lifecycle verbs
+with a pinned native package, explicit physical-partition initialization, original
+consensus-key custody, guarded startup and external registration. See
+[Monad node operations](../monad-node.md) for source qualification, recovery,
+financial boundaries and deferred real-host acceptance.

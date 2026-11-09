@@ -55,6 +55,7 @@ pub(crate) fn args(sub: Command, verb: &Verb) -> Command {
     }
     if verb.name == "init" {
         sub = sub
+            .arg(Arg::new("migrate-account").long("migrate-account").action(ArgAction::SetTrue).help("Explicitly bind a verified same-host legacy account and retained identity; redeploy afterward"))
             .arg(Arg::new("host").long("host"))
             .arg(Arg::new("user").long("user").default_value("ubuntu"))
             .arg(

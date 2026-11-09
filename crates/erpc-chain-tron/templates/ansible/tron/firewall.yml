@@ -41,6 +41,6 @@
       register: tron_bundle
     - name: Apply the exact candidate with automatic operation-bound rollback
       ansible.builtin.command:
-        argv: [python3, /usr/local/lib/erpc/rpc-firewall.py, tron, apply, "{{ (playbook_dir ~ '/../../..') | realpath | basename }}", "{{ tron_bundle.stat.checksum }}"]
+        argv: [/usr/bin/python3, -I, /usr/local/lib/erpc/rpc-firewall.py, tron, apply, "{{ (playbook_dir ~ '/../../..') | realpath | basename }}", "{{ tron_bundle.stat.checksum }}"]
       changed_when: true
 

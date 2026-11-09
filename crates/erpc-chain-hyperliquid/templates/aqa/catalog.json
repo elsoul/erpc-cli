@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "version": "1.2.0",
+  "source_commit": "974ee88fbfda6a6d6fb298ae30348bb4e20bd517",
+  "artifact": {
+    "url": "https://github.com/native-markets/aqa-publisher/releases/download/v1.2.0/publish_daemon-x86_64-gnu.tar.gz",
+    "size": 3378529,
+    "sha256": "56864ff5d7fd61cf8ca7be3b57ce007243ea56cb6c13a31a690a67d44f681f00",
+    "signature_url": "https://github.com/native-markets/aqa-publisher/releases/download/v1.2.0/publish_daemon-x86_64-gnu.tar.gz.asc",
+    "signature_sha256": "1b5acd882381c53857d6579b06142798df4f15393e91cb5ed1a5f8ed90e7b43d",
+    "signer": "0F2980DEE814C761B2016C2F3080B08C4722CF13",
+    "key": "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nmDMEaR3cYBYJKwYBBAHaRw8BAQdA17jI/mb6cpx/q/IMwwb9BfXfndm94t8/koTb\nt8gGotO0RGFsbC1ubSAoTmF0aXZlIE1hcmtldHMgcmVsZWFzZSBwdWJsaXNoZXIp\nIDxhbGwtbm1AbmF0aXZlbWFya2V0cy5jb20+iJMEExYKADsWIQQPKYDe6BTHYbIB\nbC8wgLCMRyLPEwUCaR3cYAIbAwULCQgHAgIiAgYVCgkICwIEFgIDAQIeBwIXgAAK\nCRAwgLCMRyLPE5mnAQCIOwaBE3HZD5WgW1upvcvyp4sXF5MHfY+zpEgOgk1nOwD/\nUa9g02/lkH3H4dsN/84iZPwtaG+y/cvDjffU9xTJ3gW4OARpHdxgEgorBgEEAZdV\nAQUBAQdAIjF591CxE5ph/AgfMZY04fEThwB91gJZMbezd/JeDAoDAQgHiHgEGBYK\nACAWIQQPKYDe6BTHYbIBbC8wgLCMRyLPEwUCaR3cYAIbDAAKCRAwgLCMRyLPE3SI\nAP9cfOW60mkIeBVzXqJ5eLjWACjeplqSE/CMAmEGUjct7wD/RNDEGdMBgbPV7J7i\nFs8Kr93A+e7D5N2fvQpsR/qojw4=\n=31Ox\n-----END PGP PUBLIC KEY BLOCK-----\n",
+    "signature": "-----BEGIN PGP SIGNATURE-----\n\niJEEABYKADkWIQQPKYDe6BTHYbIBbC8wgLCMRyLPEwUCacsrhBsUgAAAAAAEAA5t\nYW51MiwyLjUrMS4xMiwwLDMACgkQMICwjEcizxMMtAD/XbeVgySYY/3ev5uZGoiJ\nWX8Zyuip+EYvyNpMVEQ/GlgBAIwzK0lX+KDahUfQnJ0RlYBNH9BgmwSVZfztpb7J\nPCwE\n=Pepf\n-----END PGP SIGNATURE-----\n",
+    "binary_size": 8629640,
+    "binary_sha256": "dd388f2bfee35da68883e6ad82e18cecaa6b5148cbfe188ff37211153df9bf1e",
+    "keyring_base64": "mDMEaR3cYBYJKwYBBAHaRw8BAQdA17jI/mb6cpx/q/IMwwb9BfXfndm94t8/koTbt8gGotO0RGFsbC1ubSAoTmF0aXZlIE1hcmtldHMgcmVsZWFzZSBwdWJsaXNoZXIpIDxhbGwtbm1AbmF0aXZlbWFya2V0cy5jb20+iJMEExYKADsWIQQPKYDe6BTHYbIBbC8wgLCMRyLPEwUCaR3cYAIbAwULCQgHAgIiAgYVCgkICwIEFgIDAQIeBwIXgAAKCRAwgLCMRyLPE5mnAQCIOwaBE3HZD5WgW1upvcvyp4sXF5MHfY+zpEgOgk1nOwD/Ua9g02/lkH3H4dsN/84iZPwtaG+y/cvDjffU9xTJ3gW4OARpHdxgEgorBgEEAZdVAQUBAQdAIjF591CxE5ph/AgfMZY04fEThwB91gJZMbezd/JeDAoDAQgHiHgEGBYKACAWIQQPKYDe6BTHYbIBbC8wgLCMRyLPEwUCaR3cYAIbDAAKCRAwgLCMRyLPE3SIAP9cfOW60mkIeBVzXqJ5eLjWACjeplqSE/CMAmEGUjct7wD/RNDEGdMBgbPV7J7iFs8Kr93A+e7D5N2fvQpsR/qojw4=",
+    "keyring_sha256": "5da3710ed6fd79771ae46e396f4f60ecd991a7a85a0ada75920ed388bff3c7ce",
+    "signed_at": 1774922628
+  },
+  "dotenvy": {
+    "version": "0.15.7",
+    "sha256": "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
+  },
+  "sdk_commit": "2fdb18f9517675ea03695a0962bd19eece9c83f0",
+  "schedule_utc_hour": 22,
+  "native_feed_hosts": [
+    "fred.stlouisfed.org",
+    "markets.newyorkfed.org",
+    "data.financialresearch.gov"
+  ]
+}

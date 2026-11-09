@@ -43,7 +43,7 @@
         group: root
         mode: '0700'
     - name: Fence and stop listeners before removing filtering
-      ansible.builtin.command: python3 /usr/local/lib/erpc/rpc-firewall.py solana-rpc teardown
+      ansible.builtin.command: /usr/bin/python3 -I /usr/local/lib/erpc/rpc-firewall.py solana-rpc teardown
       changed_when: true
 
     - name: Stop and disable the services

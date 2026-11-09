@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import time
+import urllib.error
 import urllib.request
 from identity import address, unique_object
 
@@ -21,6 +22,20 @@ METHODS = {
 LIMIT = 16 * 1024 * 1024
 
 
+class FixedDestination(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self,request,fp,code,message,headers,newurl):
+        fp.close()
+        raise ValueError('fixed TRON observations cannot follow redirects')
+
+
+def open_fixed(request):
+    opener=urllib.request.build_opener(urllib.request.ProxyHandler({}),FixedDestination())
+    try:return opener.open(request,timeout=8)
+    except urllib.error.HTTPError as error:
+        error.close()
+        raise ValueError('fixed TRON observation failed') from None
+
+
 def request(network, method, payload=None, local=False):
     if network not in ENDPOINTS or method not in METHODS:
         raise ValueError('unsupported TRON read-only observation')
@@ -30,7 +45,7 @@ def request(network, method, payload=None, local=False):
         raise ValueError('oversized TRON observation request')
     req = urllib.request.Request(base + '/' + method, data=data,
                                  headers={'Content-Type': 'application/json'})
-    with urllib.request.urlopen(req, timeout=8) as response:
+    with open_fixed(req) as response:
         raw = response.read(LIMIT + 1)
     if len(raw) > LIMIT:
         raise ValueError('TRON observation exceeded the response limit')
@@ -167,11 +182,12 @@ def local_state(expected, query=request, sleep=time.sleep):
 def grpc(run=subprocess.run, temporary=tempfile.TemporaryDirectory):
     with temporary(prefix='tron-grpc-', dir='/run') as directory:
         header, body = Path(directory) / 'headers', Path(directory) / 'body'
-        result = run(['curl', '--silent', '--show-error', '--http2-prior-knowledge',
+        result = run(['/usr/bin/curl','--disable','--noproxy','*', '--silent', '--show-error', '--http2-prior-knowledge',
                       '--max-time', '8', '--max-filesize', str(LIMIT), '-D', str(header), '-o', str(body),
                       '-H', 'content-type: application/grpc', '-H', 'te: trailers', '--data-binary', '@-',
                       'http://127.0.0.1:50051/protocol.Wallet/GetNowBlock'],
-                     input=bytes(5), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                     input=bytes(5), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+                     env={'PATH':'/usr/sbin:/usr/bin:/sbin:/bin','HOME':'/root','LANG':'C.UTF-8'})
         if result.returncode:
             return False
         lines = header.read_text().splitlines()
@@ -185,9 +201,9 @@ def json_rpc(expected):
     request = urllib.request.Request('http://127.0.0.1:8545/jsonrpc',
         data=b'{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}',
         headers={'Content-Type': 'application/json'})
-    with urllib.request.urlopen(request, timeout=8) as response:
+    with open_fixed(request) as response:
         raw = response.read(4097)
     if len(raw) > 4096:
         return False
     value = json.loads(raw, object_pairs_hook=unique_object)
-    return value.get('jsonrpc') == '2.0' and type(value.get('id')) is int and value['id'] == 1 and value.get('result') == '0x' + expected['genesis'][-8:]
+    return 'error' not in value and value.get('jsonrpc') == '2.0' and type(value.get('id')) is int and value['id'] == 1 and value.get('result') == '0x' + expected['genesis'][-8:]

@@ -12,17 +12,24 @@
     - name: Verify the expected host contract before any mutation
       ansible.builtin.command:
         argv:
-          - python3
+          - /usr/bin/python3
+          - -I
           - "{{ sui_jinja }}/erpc-sui-control.py.j2"
-          - guard
+          - guard-account
           - "{{ sui_network }}"
           - "{{ sui_role }}"
           - "{{ sui_genesis_sha256 }}"
       changed_when: false
+    - name: Refuse a source below the original database opening history before changing deployment state
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ sui_jinja }}/erpc-sui-control.py.j2", check-source, "{{ sui_network }}", "{{ sui_role }}", "{{ sui_genesis_sha256 }}"]
+        stdin: "{{ sui_release_pin | to_json }}"
+      changed_when: false
     - name: Reject changed validator metadata before mutating this host
       ansible.builtin.command:
         argv:
-          - python3
+          - /usr/bin/python3
+          - -I
           - "{{ sui_jinja }}/erpc-sui-control.py.j2"
           - guard-metadata
           - "{{ sui_network }}"
@@ -32,10 +39,17 @@
       changed_when: false
       when: sui_role == 'validator'
 
+    - name: Explicitly retain incomplete bootstrap data before a recovery deployment
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ sui_jinja }}/erpc-sui-control.py.j2", recover-owned, "{{ sui_network }}", "{{ sui_role }}", "{{ sui_genesis_sha256 }}"]
+      changed_when: true
+      when: sui_phase in ['recover-update', 'recover-deploy']
+
     - name: Bind this mutation to its caller before changing any deployment files
       ansible.builtin.command:
         argv:
-          - python3
+          - /usr/bin/python3
+          - -I
           - "{{ sui_jinja }}/erpc-sui-control.py.j2"
           - begin-intent
           - "{{ sui_network }}"
@@ -46,7 +60,8 @@
     - name: Fence and stop validators during credential-only preparation
       ansible.builtin.command:
         argv:
-          - python3
+          - /usr/bin/python3
+          - -I
           - "{{ sui_jinja }}/erpc-sui-control.py.j2"
           - prepare-validator
           - "{{ sui_network }}"
@@ -54,6 +69,14 @@
           - "{{ sui_genesis_sha256 }}"
       changed_when: true
       when: sui_phase == 'prepare-validator'
+    - name: Read the verified original service UID and GID
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ sui_jinja }}/erpc-sui-control.py.j2", account, "{{ sui_network }}", "{{ sui_role }}", "{{ sui_genesis_sha256 }}"]
+      register: sui_original_account
+      changed_when: false
+    - name: Use the verified original service UID and GID
+      ansible.builtin.set_fact:
+        sui_runtime_account: "{{ sui_original_account.stdout | from_json }}"
     - name: Read the persistent host contract
       ansible.builtin.slurp:
         src: /etc/sui/contract.json
@@ -76,7 +99,7 @@
     - name: Require explicit update to change the release
       ansible.builtin.assert:
         that:
-          - not sui_current.stat.exists or sui_current.stat.lnk_target == sui_release_dir or sui_phase == 'update'
+          - not sui_current.stat.exists or sui_current.stat.lnk_target == sui_release_dir or sui_phase in ['update', 'recover-update']
         quiet: true
     - name: Check bootstrap completion before an update
       ansible.builtin.stat:
@@ -87,6 +110,11 @@
         that: sui_phase != 'update' or sui_update_bootstrap.stat.exists
         fail_msg: Complete or explicitly recover bootstrap before upgrading the client.
         quiet: true
+    - name: Refuse treating a completed bootstrap as an incomplete recovery
+      ansible.builtin.assert:
+        that: not sui_update_bootstrap.stat.exists
+        quiet: true
+      when: sui_phase in ['recover-update', 'recover-deploy']
     - name: Create the release directory
       ansible.builtin.file:
         path: "{{ sui_release_dir }}"
@@ -106,7 +134,7 @@
       ansible.builtin.shell:
         cmd: |
           set -euo pipefail
-          python3 - {{ sui_release_dir | quote }} <<'PY'
+          /usr/bin/python3 -I - {{ sui_release_dir | quote }} <<'PY'
           import os, pathlib, sys, tarfile
           root = pathlib.Path(sys.argv[1])
           with tarfile.open(root / 'release.tgz', 'r:gz') as archive:
@@ -123,13 +151,18 @@
           PY
         executable: /bin/bash
       changed_when: false
+    - name: Bind extracted executables to the qualified archive without claiming a database opening
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ sui_jinja }}/erpc-sui-control.py.j2", qualify-release, "{{ sui_network }}", "{{ sui_role }}", "{{ sui_genesis_sha256 }}"]
+        stdin: "{{ sui_release_pin | to_json }}"
+      changed_when: false
     - name: Fetch the immutable genesis with its independent digest
       ansible.builtin.get_url:
         url: "{{ sui_genesis_url }}"
         dest: /etc/sui/genesis.blob
         checksum: "sha256:{{ sui_genesis_sha256 }}"
         owner: root
-        group: sui
+        group: "{{ sui_runtime_account.gid }}"
         mode: "0640"
     - name: Install readiness and identity helpers
       ansible.builtin.template:
@@ -138,12 +171,16 @@
         owner: root
         group: root
         mode: "0700"
-      loop: [erpc-sui-status.py, erpc-sui-identity.py, erpc-sui-control.py, erpc-sui-validator.py]
+      loop: [erpc-sui-status.py, erpc-sui-identity.py, erpc-sui-control.py, erpc-sui-validator.py, erpc-sui-account.py, erpc-sui-release.py]
+    - name: Authenticate the installed helper bytes and retire obsolete public entrypoints
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, "{{ sui_jinja }}/erpc-sui-control.py.j2", publication, "{{ sui_network }}", "{{ sui_role }}", "{{ sui_genesis_sha256 }}"]
+      changed_when: true
     - name: Stop before changing the client without automatic database rollback
       ansible.builtin.systemd_service:
         name: sui-node
         state: stopped
-      when: sui_phase == 'update' and sui_current.stat.exists
+      when: sui_phase in ['update', 'recover-update'] and sui_current.stat.exists
     - name: Select the reviewed release
       ansible.builtin.file:
         src: "{{ sui_release_dir }}"
@@ -151,7 +188,7 @@
         state: link
         force: true
     - name: Establish or verify persistent encrypted P2P identity
-      ansible.builtin.command: /usr/local/lib/erpc/erpc-sui-identity.py {{ sui_network }} {{ sui_role }} {{ sui_genesis_sha256 }}
+      ansible.builtin.command: "{{ sui_identity_guard }} {{ sui_network }} {{ sui_role }} {{ sui_genesis_sha256 }}"
       no_log: true
       changed_when: false
       when: sui_role == 'fullnode'
@@ -161,7 +198,7 @@
         force: false
         dest: /etc/sui/validator.json
         owner: root
-        group: sui
+        group: "{{ sui_runtime_account.gid }}"
         mode: "0640"
       when: sui_role == 'validator'
     - name: Write the role-specific configuration
@@ -169,7 +206,7 @@
         src: "{{ sui_jinja }}/{{ sui_role }}.yaml.j2"
         dest: /etc/sui/node.yaml
         owner: root
-        group: sui
+        group: "{{ sui_runtime_account.gid }}"
         mode: "0640"
       register: sui_config
     - name: Write systemd units
@@ -206,4 +243,4 @@
         owner: root
         group: root
         mode: "0600"
-      when: sui_config.changed or sui_units.changed or sui_phase == 'update'
+      when: sui_config.changed or sui_units.changed or sui_phase in ['update', 'recover-update']
