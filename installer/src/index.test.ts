@@ -163,9 +163,12 @@ test("root and PowerShell select the most recently published public prerelease",
   const h = harness(t, new Map([
     [API + "/latest", new Response("missing", { status: 404 })],
     [API + "?per_page=100&page=1", Response.json([
+      { ...release("v8.0.0-rc.1"), published_at: null },
+      release("v7.0.0-rc.1", true, "invalid date"),
       release("v0.1.0-rc.2", true, "2026-11-05T10:00:00Z"),
+      release("v6.0.0", false, "2026-11-11T10:00:00Z"),
       { ...release("v9.0.0-rc.1"), draft: true }, release("bad/tag"),
-      { ...release("v8.0.0-rc.1"), published_at: null }, release("v0.1.0-rc.3"),
+      release("v0.1.0-rc.3"),
     ])], installer("v0.1.0-rc.3"), installer("v0.1.0-rc.3", "ps1"),
   ]));
   for (const path of ["/", "/ps1"]) {

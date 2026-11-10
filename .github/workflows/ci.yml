@@ -75,7 +75,7 @@ jobs:
   # release build (.github/build-setup.yml) on cargo-dist's five runners. Those
   # steps never ran in CI before the first tag, so the same script runs here,
   # on the same runner images (`dist plan` names them; rebuild-runners.test.sh
-  # checks the Linux pair). The agents' bytes are not compared across runners
+  # checks the full runner set and the Linux rebuild pair). The agents' bytes are not compared across runners
   # here; rebuild-compare does that for the Linux targets at release time.
   worker-agents:
     name: worker agents (${{ matrix.runner }})
