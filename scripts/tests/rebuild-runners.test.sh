@@ -130,5 +130,21 @@ else
       "scripts/build-worker-agents.sh must run in rebuild-compare and in the generated release.yml"
 fi
 
+# The worker-agent preflight must exercise every runner in the release plan,
+# including the supported Apple Silicon image.
+release_runners=$(printf '%s' "$plan" | jq -r '.ci.github.artifacts_matrix.include[].runner' | sort -u)
+ci_runners=$(sed -n 's/.*runner: \[\(.*\)\].*/\1/p' "$repo_root/.github/workflows/ci.yml" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | sort -u)
+if [ -n "$release_runners" ] && [ "$release_runners" = "$ci_runners" ]; then
+  ok "worker-agent CI covers the exact release runner set"
+else
+  bad "worker-agent CI covers the exact release runner set" "CI and cargo-dist runner sets differ"
+fi
+apple_runner=$(printf '%s' "$plan" | jq -r '.ci.github.artifacts_matrix.include[] | select(.targets[] == "aarch64-apple-darwin") | .runner')
+if [ "$apple_runner" = macos-15 ]; then
+  ok "Apple Silicon releases use the supported macos-15 image"
+else
+  bad "Apple Silicon releases use the supported macos-15 image" "$apple_runner"
+fi
+
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

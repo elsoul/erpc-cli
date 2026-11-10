@@ -93,3 +93,136 @@ test("the installer is served with the skills step after it", async () => {
   assert.ok(ps1.includes('Join-Path $erpcDir "erpc.exe"'), "the forced directory itself");
   assert.ok(!ps1.includes('Join-Path $env:ERPC_INSTALL_DIR "bin"'), "no bin under the forced directory");
 });
+
+// Exercise the request handler, GitHub selection and executable-script fetch.
+import worker from "./index.ts";
+import type { TestContext } from "node:test";
+
+const REPO = "elsoul/erpc-cli";
+const API = `https://api.github.com/repos/${REPO}/releases`;
+const INSTALL = "https://install.erpc.global";
+
+function release(tag: string, prerelease = true, date = "2026-11-10T10:00:00Z") {
+  return { tag_name: tag, prerelease, draft: false, published_at: date };
+}
+
+function harness(t: TestContext, responses: Map<string, Response | Error>) {
+  const requests: string[] = [];
+  const entries = new Map<string, Response>();
+  const writes: Promise<unknown>[] = [];
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "caches");
+  Object.defineProperty(globalThis, "caches", { configurable: true, value: {
+    default: {
+      async match(key: Request) { return entries.get(key.url)?.clone(); },
+      async put(key: Request, value: Response) { entries.set(key.url, value); },
+    },
+  } });
+  t.after(() => {
+    if (previous) Object.defineProperty(globalThis, "caches", previous);
+    else Reflect.deleteProperty(globalThis, "caches");
+  });
+  t.mock.method(globalThis, "fetch", async (input: RequestInfo | URL) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    requests.push(url);
+    const response = responses.get(url);
+    assert.ok(response, `unexpected fetch ${url}`);
+    if (response instanceof Error) throw response;
+    return response.clone();
+  });
+  const ctx = { waitUntil(p: Promise<unknown>) { writes.push(p); }, passThroughOnException() {}, props: {} };
+  return {
+    requests, entries,
+    async get(path = "/") {
+      const result = await worker.fetch(new Request(INSTALL + path), { GITHUB_REPO: REPO }, ctx as ExecutionContext);
+      await Promise.all(writes);
+      return result;
+    },
+  };
+}
+
+function installer(tag: string, flavor = "sh"): [string, Response] {
+  return [`https://github.com/${REPO}/releases/download/${tag}/erpc-installer.${flavor}`,
+    new Response(flavor === "sh" ? REAL_SH : REAL_PS1)];
+}
+
+test("root selects a stable release and caches the GitHub installer", async t => {
+  const h = harness(t, new Map([
+    [API + "/latest", Response.json(release("v0.1.0", false))], installer("v0.1.0"),
+  ]));
+  const result = await h.get();
+  assert.equal(result.status, 200);
+  assert.equal(result.headers.get("x-erpc-tag"), "v0.1.0");
+  assert.equal(result.headers.get("x-erpc-tag-source"), "github-latest");
+  assert.ok((await result.text()).startsWith(REAL_SH));
+  assert.equal(result.headers.get("cache-control"), "public, max-age=300");
+  assert.equal((await h.get("/?ignored=yes")).status, 200);
+  assert.equal(h.requests.length, 2);
+});
+
+test("root and PowerShell select the most recently published public prerelease", async t => {
+  const h = harness(t, new Map([
+    [API + "/latest", new Response("missing", { status: 404 })],
+    [API + "?per_page=100&page=1", Response.json([
+      release("v0.1.0-rc.2", true, "2026-11-05T10:00:00Z"),
+      { ...release("v9.0.0-rc.1"), draft: true }, release("bad/tag"),
+      { ...release("v8.0.0-rc.1"), published_at: null }, release("v0.1.0-rc.3"),
+    ])], installer("v0.1.0-rc.3"), installer("v0.1.0-rc.3", "ps1"),
+  ]));
+  for (const path of ["/", "/ps1"]) {
+    const response = await h.get(path);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("x-erpc-tag"), "v0.1.0-rc.3");
+    assert.equal(response.headers.get("x-erpc-tag-source"), "github-prerelease");
+    assert.ok((await response.text()).includes("skills install"));
+  }
+});
+
+test("prerelease selection reads every page and compares publication times", async t => {
+  const h = harness(t, new Map([
+    [API + "/latest", new Response("missing", { status: 404 })],
+    [API + "?per_page=100&page=1", Response.json(Array(100).fill(release("v0.1.0-rc.1", true, "2026-11-01T00:00:00Z")))],
+    [API + "?per_page=100&page=2", Response.json([release("v0.1.0-rc.3")])],
+    installer("v0.1.0-rc.3"),
+  ]));
+  assert.equal((await h.get()).headers.get("x-erpc-tag"), "v0.1.0-rc.3");
+});
+
+test("versioned URLs fetch exactly that tag without release discovery", async t => {
+  const h = harness(t, new Map([installer("v0.1.0-rc.2"), installer("v0.1.0-rc.2", "ps1")]));
+  for (const path of ["/v0.1.0-rc.2", "/v0.1.0-rc.2/ps1"]) {
+    const response = await h.get(path);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("x-erpc-tag-source"), "pinned");
+  }
+  assert.equal(h.requests.length, 2);
+});
+
+test("GitHub failures and malformed stable metadata never fall back to prereleases", async t => {
+  for (const response of [new Response("limited", { status: 403 }), new Response("down", { status: 500 }),
+    new Error("network"), new Response("bad JSON"), Response.json({ tag_name: "v0.1.0" }),
+    Response.json(release("v0.1.0-rc.3"))]) {
+    await t.test(String(response), async child => {
+      const h = harness(child, new Map([[API + "/latest", response]]));
+      const result = await h.get();
+      assert.equal(result.status, 502);
+      assert.equal(result.headers.get("cache-control"), "no-store");
+      assert.equal(h.requests.length, 1);
+      assert.equal(h.entries.size, 0);
+    });
+  }
+});
+
+test("empty releases, broken pagination, and unavailable installers fail closed", async t => {
+  for (const listing of [Response.json([]), Response.json({ bad: true }), new Response("down", { status: 503 }),
+    Response.json([release("v0.1.0-rc.3")])]) {
+    await t.test(String(listing), async child => {
+      const h = harness(child, new Map([
+        [API + "/latest", new Response("missing", { status: 404 })],
+        [API + "?per_page=100&page=1", listing],
+        [`https://github.com/${REPO}/releases/download/v0.1.0-rc.3/erpc-installer.sh`, new Response("missing", { status: 404 })],
+      ]));
+      assert.equal((await h.get()).status, 502);
+      assert.equal(h.entries.size, 0);
+    });
+  }
+});
