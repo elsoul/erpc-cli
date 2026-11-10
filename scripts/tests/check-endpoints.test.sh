@@ -2104,7 +2104,7 @@ only_wired_hook_config() {
   ! grep -iE '^(\.config|(\.config/)?\.?lefthook(-local)?\.[a-z]+)$' | grep -qvx 'lefthook\.yml'
 }
 
-if git -C "$repo_root" ls-files | only_wired_hook_config; then
+if git -C "$source_root" ls-files | only_wired_hook_config; then
   pass=$((pass + 1)); printf 'ok   lefthook.yml is the only hook configuration tracked\n'
 else
   fail=$((fail + 1)); printf 'FAIL lefthook.yml must be the only hook configuration tracked\n'
