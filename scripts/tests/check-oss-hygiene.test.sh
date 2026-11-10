@@ -943,7 +943,7 @@ expect_outcome "a file named - is read after --, not standard input" block
 # The real hook, where lefthook is installed. CI has none and pre-push does.
 lefthook_run() {
   mkdir -p scripts
-  cp "$repo_root/lefthook.yml" lefthook.yml
+  cp "$source_root/lefthook.yml" lefthook.yml
   cp "$gate" scripts/check-oss-hygiene.sh
   # lefthook saves unstaged changes with git stash create, which needs a commit.
   commit_staged

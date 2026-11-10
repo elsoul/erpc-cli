@@ -2099,7 +2099,7 @@ else
 fi
 
 hygiene_run='scripts/check-oss-hygiene.sh --staged'
-if hook_wiring_ok "$repo_root/lefthook.yml" oss-hygiene "$hygiene_run"; then
+if hook_wiring_ok "$source_root/lefthook.yml" oss-hygiene "$hygiene_run"; then
   pass=$((pass + 1)); printf 'ok   the pre-commit hook runs the hygiene gate on what is staged\n'
 else
   fail=$((fail + 1)); printf 'FAIL the pre-commit hook must run scripts/check-oss-hygiene.sh --staged, and nothing in lefthook.yml may switch it off\n'
