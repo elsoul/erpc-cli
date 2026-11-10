@@ -11,8 +11,8 @@ rules:
       - release.yml
   secrets-inherit:
     ignore:
-      # The generated workflow passes secrets to release-publish.yml, which is
-      # the only consumer and lives in this repository.
+      # The generated workflow calls release-publish.yml and installer-worker.yml.
+      # Both are repository-owned workflows with protected release environments.
       - release.yml
   unpinned-images:
     ignore:

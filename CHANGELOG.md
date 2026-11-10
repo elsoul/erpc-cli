@@ -12,6 +12,12 @@ whose version has no entry below.
 
 ## [Unreleased]
 
+### Fixed
+
+- The installer selects the published release in GitHub Actions using its
+  workflow token, avoiding anonymous GitHub API limits on shared edge IPs.
+  Completed release workflows refresh the deployed selection automatically.
+
 ## [0.1.0-rc.3] - 2026-11-10
 
 ### Added

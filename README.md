@@ -64,7 +64,9 @@ irm https://install.erpc.global/ps1 | iex
 These URLs select the latest stable release. While the project has only
 prereleases, they select the most recently published prerelease. To pin a
 version, use `https://install.erpc.global/v0.1.0-rc.3` or
-`https://install.erpc.global/v0.1.0-rc.3/ps1`. Release lookups and installer responses each use a five-minute cache.
+`https://install.erpc.global/v0.1.0-rc.3/ps1`. The release workflow updates the selected version after publication and approval
+of the protected installer deployment. Edge and client caches may delay what
+clients see.
 
 The installer puts `erpc` in `~/.erpc/bin` and writes the assistant's skills
 to `~/.erpc/skills`. Builds are published for Linux (x86_64, arm64), macOS

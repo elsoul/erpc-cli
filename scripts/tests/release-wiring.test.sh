@@ -220,5 +220,19 @@ else
   esac
 fi
 
+# Version selection is refreshed after the release has actually been published.
+installer_job=$(awk '
+  /^  custom-installer-worker:/ { inside=1; next }
+  inside && /^  [a-z]/ { exit }
+  inside { print }
+' "$generated")
+if printf '%s\n' "$installer_job" | grep -q '^      - announce$' \
+   && printf '%s\n' "$installer_job" | grep -q 'uses: ./.github/workflows/installer-worker.yml' \
+   && grep -q '^  workflow_call:' "$repo_root/.github/workflows/installer-worker.yml"; then
+  ok "completed announcements refresh the installer selection"
+else
+  bad "completed announcements refresh the installer selection" "missing post-announce reusable installer job"
+fi
+
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
