@@ -833,7 +833,7 @@ checksum = "00d174d5400e5e8fd687ad1049e2f578285fa914201b1af7e8b112a4546bd826"
 
 [[package]]
 name = "erpc"
-version = "0.1.0-rc.2"
+version = "0.1.0-rc.3"
 dependencies = [
  "aws-lc-rs",
  "base64 0.22.1",
@@ -893,7 +893,7 @@ dependencies = [
 
 [[package]]
 name = "erpc-ai"
-version = "0.1.0-rc.2"
+version = "0.1.0-rc.3"
 dependencies = [
  "erpc-api",
  "erpc-auth",
@@ -914,7 +914,7 @@ dependencies = [
 
 [[package]]
 name = "erpc-api"
-version = "0.1.0-rc.2"
+version = "0.1.0-rc.3"
 dependencies = [
  "erpc-auth",
  "erpc-core",
@@ -928,7 +928,7 @@ dependencies = [
 
 [[package]]
 name = "erpc-auth"
-version = "0.1.0-rc.2"
+version = "0.1.0-rc.3"
 dependencies = [
  "dbus-secret-service",
  "erpc-core",
@@ -950,7 +950,7 @@ dependencies = [
 
 [[package]]
 name = "erpc-chain"
-version = "0.1.0-rc.2"
+version = "0.1.0-rc.3"
 dependencies = [
  "erpc-auth",
  "erpc-chain-hyperliquid",
@@ -970,7 +970,7 @@ dependencies = [
 
 [[package]]
 name = "erpc-chain-arc"
-version = "0.1.0-rc.2"
+version = "0.1.0-rc.3"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",
@@ -992,7 +992,7 @@ dependencies = [
 
 [[package]]
 name = "erpc-chain-avax"
-version = "0.1.0-rc.2"
+version = "0.1.0-rc.3"
 dependencies = [
  "erpc-core",
  "include_dir",
@@ -1006,7 +1006,7 @@ dependencies = [
 
 [[package]]
 name = "erpc-chain-bitcoin"
-version = "0.1.0-rc.2"
+version = "0.1.0-rc.3"
 dependencies = [
  "erpc-core",
  "include_dir",
@@ -1019,7 +1019,7 @@ dependencies = [
 
 [[package]]
 name = "erpc-chain-bsc"
-version = "0.1.0-rc.2"
+version = "0.1.0-rc.3"
 dependencies = [
  "blst",
  "erpc-core",
@@ -1031,7 +1031,7 @@ dependencies = [
 
 [[package]]
 name = "erpc-chain-eth"
-version = "0.1.0-rc.2"
+version = "0.1.0-rc.3"
 dependencies = [
  "blst",
  "erpc-core",
@@ -1046,7 +1046,7 @@ dependencies = [
 
 [[package]]
 name = "erpc-chain-hyperliquid"
-version = "0.1.0-rc.2"
+version = "0.1.0-rc.3"
 dependencies = [
  "include_dir",
  "k256",
@@ -1060,7 +1060,7 @@ dependencies = [
 
 [[package]]
 name = "erpc-chain-kaia"
-version = "0.1.0-rc.2"
+version = "0.1.0-rc.3"
 dependencies = [
  "blst",
  "erpc-core",
@@ -1076,7 +1076,7 @@ dependencies = [
 
 [[package]]
 name = "erpc-chain-monad"
-version = "0.1.0-rc.2"
+version = "0.1.0-rc.3"
 dependencies = [
  "erpc-core",
  "erpc-secret",
@@ -1089,7 +1089,7 @@ dependencies = [
 
 [[package]]
 name = "erpc-chain-near"
-version = "0.1.0-rc.2"
+version = "0.1.0-rc.3"
 dependencies = [
  "ed25519-dalek",
  "erpc-core",
@@ -1102,7 +1102,7 @@ dependencies = [
 
 [[package]]
 name = "erpc-chain-nitro"
-version = "0.1.0-rc.2"
+version = "0.1.0-rc.3"
 dependencies = [
  "erpc-core",
  "include_dir",
@@ -1113,7 +1113,7 @@ dependencies = [
 
 [[package]]
 name = "erpc-chain-op"
-version = "0.1.0-rc.2"
+version = "0.1.0-rc.3"
 dependencies = [
  "erpc-chain-rollup",
  "erpc-core",
@@ -1127,7 +1127,7 @@ dependencies = [
 
 [[package]]
 name = "erpc-chain-polygon"
-version = "0.1.0-rc.2"
+version = "0.1.0-rc.3"
 dependencies = [
  "erpc-core",
  "include_dir",
@@ -1139,7 +1139,7 @@ dependencies = [
 
 [[package]]
 name = "erpc-chain-rollup"
-version = "0.1.0-rc.2"
+version = "0.1.0-rc.3"
 dependencies = [
  "include_dir",
  "reqwest",
@@ -1151,7 +1151,7 @@ dependencies = [
 
 [[package]]
 name = "erpc-chain-solana"
-version = "0.1.0-rc.2"
+version = "0.1.0-rc.3"
 dependencies = [
  "ed25519-dalek",
  "erpc-auth",
@@ -1173,7 +1173,7 @@ dependencies = [
 
 [[package]]
 name = "erpc-chain-solana-native"
-version = "0.1.0-rc.2"
+version = "0.1.0-rc.3"
 dependencies = [
  "include_dir",
  "serde",
@@ -1183,7 +1183,7 @@ dependencies = [
 
 [[package]]
 name = "erpc-chain-sui"
-version = "0.1.0-rc.2"
+version = "0.1.0-rc.3"
 dependencies = [
  "base64 0.22.1",
  "erpc-auth",
@@ -1197,7 +1197,7 @@ dependencies = [
 
 [[package]]
 name = "erpc-chain-tron"
-version = "0.1.0-rc.2"
+version = "0.1.0-rc.3"
 dependencies = [
  "erpc-core",
  "erpc-secret",
@@ -1210,7 +1210,7 @@ dependencies = [
 
 [[package]]
 name = "erpc-core"
-version = "0.1.0-rc.2"
+version = "0.1.0-rc.3"
 dependencies = [
  "serde",
  "serde_json",
@@ -1219,11 +1219,11 @@ dependencies = [
 
 [[package]]
 name = "erpc-mcp-server"
-version = "0.1.0-rc.2"
+version = "0.1.0-rc.3"
 
 [[package]]
 name = "erpc-ops"
-version = "0.1.0-rc.2"
+version = "0.1.0-rc.3"
 dependencies = [
  "erpc-ssh",
  "flate2",
@@ -1236,15 +1236,15 @@ dependencies = [
 
 [[package]]
 name = "erpc-release"
-version = "0.1.0-rc.2"
+version = "0.1.0-rc.3"
 
 [[package]]
 name = "erpc-secret"
-version = "0.1.0-rc.2"
+version = "0.1.0-rc.3"
 
 [[package]]
 name = "erpc-skills"
-version = "0.1.0-rc.2"
+version = "0.1.0-rc.3"
 dependencies = [
  "serde_json",
  "sha2 0.10.9",
@@ -1253,7 +1253,7 @@ dependencies = [
 
 [[package]]
 name = "erpc-ssh"
-version = "0.1.0-rc.2"
+version = "0.1.0-rc.3"
 dependencies = [
  "base64 0.22.1",
  "flate2",
@@ -1265,7 +1265,7 @@ dependencies = [
 
 [[package]]
 name = "erpc-wallet"
-version = "0.1.0-rc.2"
+version = "0.1.0-rc.3"
 dependencies = [
  "getrandom 0.4.3",
  "k256",
@@ -1277,7 +1277,7 @@ dependencies = [
 
 [[package]]
 name = "erpc-worker"
-version = "0.1.0-rc.2"
+version = "0.1.0-rc.3"
 dependencies = [
  "erpc-core",
  "erpc-secret",
@@ -1292,7 +1292,7 @@ dependencies = [
 
 [[package]]
 name = "erpc-worker-agent"
-version = "0.1.0-rc.2"
+version = "0.1.0-rc.3"
 dependencies = [
  "clap",
  "erpc-worker",
@@ -1307,7 +1307,7 @@ dependencies = [
 
 [[package]]
 name = "erpc-x402"
-version = "0.1.0-rc.2"
+version = "0.1.0-rc.3"
 dependencies = [
  "base64 0.22.1",
  "erpc-wallet",

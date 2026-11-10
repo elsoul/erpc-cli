@@ -12,7 +12,19 @@ whose version has no entry below.
 
 ## [Unreleased]
 
+## [0.1.0-rc.3] - 2026-11-10
+
 ### Added
+
+- `erpc rpc call` sends JSON-RPC to shared Solana and Ethereum mainnet
+  endpoints or an operator-provided URL. The x402 option quotes and signs a
+  Base EURC payment after terminal confirmation.
+- `erpc webhook` manages local subscriptions and delivers matching
+  WebSocket notifications to HTTP callbacks. `erpc completions` generates
+  shell completion scripts.
+- The unversioned installer URLs prefer the latest stable release and select
+  the most recently published prerelease when no stable release exists.
+  Versioned installer URLs keep selecting the requested tag.
 
 - The `solana/pumpfun` template trades pump.fun graduations as well as
   pools made by hand. It reads a graduation's `create_pool` where it
@@ -185,6 +197,12 @@ whose version has no entry below.
   (`"backend": null` in `--json`), whose other commands say that the init
   that registered it resumes it, and, when there is no node, point to
   `init --help` and `docs/solana-native.md`.
+
+### Fixed
+
+- Apple Silicon worker-agent CI and release builds use the supported
+  `macos-15` runner. GitHub rejected the former `macos-14` image before
+  executing a job.
 
 ## [0.1.0-rc.2] - 2026-11-05
 
@@ -393,7 +411,8 @@ version.
 - `docs/verify-release.md`: verify signatures against a key saved once from
   `main`, not against `pubkey.txt` at the tag being checked.
 
-[Unreleased]: https://github.com/elsoul/erpc-cli/compare/v0.1.0-rc.2...HEAD
+[Unreleased]: https://github.com/elsoul/erpc-cli/compare/v0.1.0-rc.3...HEAD
+[0.1.0-rc.3]: https://github.com/elsoul/erpc-cli/releases/tag/v0.1.0-rc.3
 [0.1.0-rc.2]: https://github.com/elsoul/erpc-cli/releases/tag/v0.1.0-rc.2
 [0.1.0-rc.1]: https://github.com/elsoul/erpc-cli/releases/tag/v0.1.0-rc.1
 [0.0.1]: https://github.com/elsoul/erpc-cli/tree/964b507d0276254aeec4451cfbdecc8effd83724

@@ -4,8 +4,8 @@
 /**
  * install.erpc.global
  *
- *   GET /            -> shell installer for the latest stable release
- *   GET /ps1         -> PowerShell installer for the latest stable release
+ *   GET /            -> shell installer for the latest release (stable preferred)
+ *   GET /ps1         -> PowerShell installer for the latest release (stable preferred)
  *   GET /vX.Y.Z      -> shell installer pinned to that tag
  *   GET /vX.Y.Z/ps1  -> PowerShell installer pinned to that tag
  *   GET /healthz     -> 200
@@ -234,24 +234,60 @@ async function fetchInstaller(
 }
 
 /**
- * Latest stable tag, from GitHub only.
+ * Latest stable tag, or newest published prerelease while no stable release exists.
  *
  * GitHub is the only place release artifacts are published, so there is no
  * second source to consult. If GitHub is unreachable we serve an error
  * rather than a version we cannot vouch for.
  */
+interface Release {
+  tag_name: string;
+  draft: boolean;
+  prerelease: boolean;
+  published_at: string;
+}
+
+function publishedRelease(value: unknown): value is Release {
+  if (!value || typeof value !== "object") return false;
+  const release = value as Partial<Release>;
+  return typeof release.tag_name === "string" && TAG_RE.test(release.tag_name)
+    && release.draft === false && typeof release.prerelease === "boolean"
+    && typeof release.published_at === "string"
+    && Number.isFinite(Date.parse(release.published_at));
+}
+
 async function resolveLatest(env: Env): Promise<{ tag: string; source: string } | null> {
+  const headers = { "user-agent": UA, accept: "application/vnd.github+json" };
+  const base = `https://api.github.com/repos/${env.GITHUB_REPO}/releases`;
   try {
-    const r = await fetch(`https://api.github.com/repos/${env.GITHUB_REPO}/releases/latest`, {
-      headers: { "user-agent": UA, accept: "application/vnd.github+json" },
-      cf: { cacheTtl: CACHE_TTL },
-    });
-    if (r.ok) {
-      const j = (await r.json()) as { tag_name?: string };
-      if (j.tag_name && TAG_RE.test(j.tag_name)) return { tag: j.tag_name, source: "github-latest" };
+    const stable = await fetch(`${base}/latest`, { headers, cf: { cacheTtl: CACHE_TTL } });
+    if (stable.ok) {
+      const release: unknown = await stable.json();
+      return publishedRelease(release) && !release.prerelease
+        ? { tag: release.tag_name, source: "github-latest" } : null;
     }
+    // Only a missing stable release enables the prerelease fallback. Outages
+    // and rate limits must not silently change the version selected.
+    if (stable.status !== 404) return null;
+
+    let newest: Release | null = null;
+    for (let page = 1; ; page++) {
+      const response = await fetch(`${base}?per_page=100&page=${page}`, {
+        headers, cf: { cacheTtl: CACHE_TTL },
+      });
+      if (!response.ok) return null;
+      const releases: unknown = await response.json();
+      if (!Array.isArray(releases)) return null;
+      for (const release of releases) {
+        if (publishedRelease(release) && release.prerelease
+          && (!newest || Date.parse(release.published_at) > Date.parse(newest.published_at))) {
+          newest = release;
+        }
+      }
+      if (releases.length < 100) break;
+    }
+    return newest ? { tag: newest.tag_name, source: "github-prerelease" } : null;
   } catch {
-    // fall through
+    return null;
   }
-  return null;
 }

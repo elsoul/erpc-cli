@@ -10,6 +10,8 @@ members = ["cargo:."]
 [dist]
 cargo-dist-version = "0.32.0"
 ci = "github"
+# Keep the Apple Silicon release on a supported image, aligned with CI.
+github-custom-runners = { "aarch64-apple-darwin" = "macos-15" }
 # Five release targets: static musl on Linux (rustls, no OpenSSL).
 targets = [
   "x86_64-unknown-linux-musl",

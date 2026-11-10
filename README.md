@@ -52,17 +52,19 @@ its data; a key backup alone does not establish safe validator recovery.
 **macOS and Linux**
 
 ```bash
-curl -fsSL https://install.erpc.global/v0.1.0-rc.2 | sh
+curl -fsSL https://install.erpc.global | sh
 ```
 
 **Windows** (PowerShell)
 
 ```powershell
-irm https://install.erpc.global/v0.1.0-rc.2/ps1 | iex
+irm https://install.erpc.global/ps1 | iex
 ```
 
-These name a version because every release so far is a pre-release, and the
-unversioned `install.erpc.global` serves only the latest stable one.
+These URLs select the latest stable release. While the project has only
+prereleases, they select the most recently published prerelease. To pin a
+version, use `https://install.erpc.global/v0.1.0-rc.3` or
+`https://install.erpc.global/v0.1.0-rc.3/ps1`. Release lookups and installer responses each use a five-minute cache.
 
 The installer puts `erpc` in `~/.erpc/bin` and writes the assistant's skills
 to `~/.erpc/skills`. Builds are published for Linux (x86_64, arm64), macOS
@@ -386,7 +388,7 @@ The rules for these, and for writing a message, are in
 
 ## Status
 
-Pre-release (`v0.1.0-rc.2`). The commands above exist and pass their offline
+Pre-release (`v0.1.0-rc.3`). The commands above exist and pass their offline
 checks; acceptance on real hosts is still under way for most chains, and each
 chain's guide says where it stands. erpc is the Rust successor of
 [SLV](https://github.com/ValidatorsDAO/slv).
