@@ -96,6 +96,7 @@ test("the installer is served with the skills step after it", async () => {
 
 // Exercise the request handler, GitHub selection and executable-script fetch.
 import worker from "./index.ts";
+import { resolveLatest } from "./releases.ts";
 import type { TestContext } from "node:test";
 
 const REPO = "elsoul/erpc-cli";
@@ -106,7 +107,7 @@ function release(tag: string, prerelease = true, date = "2026-11-10T10:00:00Z") 
   return { tag_name: tag, prerelease, draft: false, published_at: date };
 }
 
-function harness(t: TestContext, responses: Map<string, Response | Error>) {
+function harness(t: TestContext, responses: Map<string, Response | Error>, selection?: { tag: string; source: string }) {
   const requests: string[] = [];
   const entries = new Map<string, Response>();
   const writes: Promise<unknown>[] = [];
@@ -130,10 +131,17 @@ function harness(t: TestContext, responses: Map<string, Response | Error>) {
     return response.clone();
   });
   const ctx = { waitUntil(p: Promise<unknown>) { writes.push(p); }, passThroughOnException() {}, props: {} };
+  let selected: { tag: string; source: string } | null | undefined = selection;
   return {
     requests, entries,
     async get(path = "/") {
-      const result = await worker.fetch(new Request(INSTALL + path), { GITHUB_REPO: REPO }, ctx as ExecutionContext);
+      // Selection happens once in the deploy workflow, before serving requests.
+      if (selected === undefined && ["/", "/ps1"].includes(path.split("?")[0])) {
+        selected = await resolveLatest(REPO);
+      }
+      const result = await worker.fetch(new Request(INSTALL + path), {
+        GITHUB_REPO: REPO, LATEST_RELEASE: selected?.tag, LATEST_RELEASE_SOURCE: selected?.source,
+      }, ctx as ExecutionContext);
       await Promise.all(writes);
       return result;
     },
@@ -227,5 +235,49 @@ test("empty releases, broken pagination, and unavailable installers fail closed"
       assert.equal((await h.get()).status, 502);
       assert.equal(h.entries.size, 0);
     });
+  }
+});
+
+
+test("a deployed selection serves installers without any GitHub API request", async t => {
+  const h = harness(t, new Map([installer("v0.1.0-rc.3"), installer("v0.1.0-rc.3", "ps1")]),
+    { tag: "v0.1.0-rc.3", source: "github-prerelease" });
+  for (const path of ["/", "/ps1"]) {
+    const r = await h.get(path);
+    assert.equal(r.status, 200);
+    assert.equal(r.headers.get("x-erpc-tag"), "v0.1.0-rc.3");
+  }
+  assert.ok(h.requests.every(url => url.startsWith("https://github.com/elsoul/erpc-cli/releases/download/")));
+  assert.equal(h.requests.length, 2);
+});
+
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+test("the deployment selector authenticates metadata reads and fails before publishing outputs on errors", t => {
+  const dir = mkdtempSync(join(tmpdir(), "erpc-selector-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const preload = join(dir, "fetch.mjs");
+  const script = fileURLToPath(new URL("../scripts/select-release.mjs", import.meta.url).href);
+  for (const available of [true, false]) {
+    const output = join(dir, String(available));
+    writeFileSync(preload, `import assert from 'node:assert/strict';
+      globalThis.fetch=async (url,init)=>{
+        assert.equal(new URL(url).hostname,'api.github.com');
+        assert.equal(init.redirect,'error');
+        assert.equal(init.headers.authorization,'Bearer fixture-token');
+        return ${available ? "Response.json({tag_name:'v0.1.0',prerelease:false,draft:false,published_at:'2026-11-10T00:00:00Z'})" : "new Response('limited',{status:403})"};
+      };
+    `);
+    const result = spawnSync(process.execPath, ["--import", preload, script], {
+      encoding: "utf8", env: { ...process.env, GH_TOKEN: "fixture-token", GITHUB_OUTPUT: output },
+    });
+    assert.equal(result.status, available ? 0 : 1, result.stderr);
+    assert.ok(!result.stdout.includes("fixture-token") && !result.stderr.includes("fixture-token"));
+    if (available) assert.equal(readFileSync(output, "utf8"), "tag=v0.1.0\nsource=github-latest\n");
+    else assert.equal(existsSync(output), false);
   }
 });

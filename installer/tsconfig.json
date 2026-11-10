@@ -7,8 +7,9 @@
     "lib": ["ES2022"],
     "types": ["@cloudflare/workers-types"],
     "strict": true,
+    "allowImportingTsExtensions": true,
     "noEmit": true,
     "skipLibCheck": true
   },
-  "include": ["src/index.ts"]
+  "include": ["src/index.ts", "src/releases.ts"]
 }

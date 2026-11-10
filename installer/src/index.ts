@@ -15,8 +15,8 @@
  * cannot be checked here.
  *
  * Because it cannot verify anything, **everything it serves comes from GitHub
- * Releases and nothing else** — both the tag it resolves and the installer
- * body it returns. There is deliberately no R2 fallback: the body is piped
+ * Releases and nothing else**. GitHub Actions resolves the tag before deploying
+ * the worker, and the worker fetches the installer body for that tag. There is deliberately no R2 fallback: the body is piped
  * straight into a shell, so serving it from a source this worker cannot
  * verify would hand arbitrary code execution to anyone able to write to that
  * bucket or interpose on it. When GitHub is unreachable, this worker fails.
@@ -32,11 +32,14 @@
  * a call to the binary the GitHub installer installed.
  */
 
+import { TAG_RE } from "./releases.ts";
+
 export interface Env {
   GITHUB_REPO: string; // "elsoul/erpc-cli"
+  LATEST_RELEASE?: string;
+  LATEST_RELEASE_SOURCE?: string;
 }
 
-const TAG_RE = /^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 const CACHE_TTL = 300;
 const UA = "erpc-installer-worker (+https://github.com/elsoul/erpc-cli)";
 
@@ -75,15 +78,12 @@ export default {
 
     let tagSource = "pinned";
     if (!tag) {
-      const latest = await resolveLatest(env);
-      if (!latest) {
-        return text(
-          "could not determine the latest release from GitHub; retry, or install a pinned version with https://install.erpc.global/vX.Y.Z",
-          502,
-        );
+      if (!env.LATEST_RELEASE || !TAG_RE.test(env.LATEST_RELEASE)
+        || !["github-latest", "github-prerelease"].includes(env.LATEST_RELEASE_SOURCE ?? "")) {
+        return text("no published release was selected during deployment; use a pinned version", 502);
       }
-      tag = latest.tag;
-      tagSource = latest.source;
+      tag = env.LATEST_RELEASE;
+      tagSource = env.LATEST_RELEASE_SOURCE!;
     }
 
     const file = flavor === "sh" ? "erpc-installer.sh" : "erpc-installer.ps1";
@@ -231,63 +231,4 @@ async function fetchInstaller(
     // fall through to the error below
   }
   return null;
-}
-
-/**
- * Latest stable tag, or newest published prerelease while no stable release exists.
- *
- * GitHub is the only place release artifacts are published, so there is no
- * second source to consult. If GitHub is unreachable we serve an error
- * rather than a version we cannot vouch for.
- */
-interface Release {
-  tag_name: string;
-  draft: boolean;
-  prerelease: boolean;
-  published_at: string;
-}
-
-function publishedRelease(value: unknown): value is Release {
-  if (!value || typeof value !== "object") return false;
-  const release = value as Partial<Release>;
-  return typeof release.tag_name === "string" && TAG_RE.test(release.tag_name)
-    && release.draft === false && typeof release.prerelease === "boolean"
-    && typeof release.published_at === "string"
-    && Number.isFinite(Date.parse(release.published_at));
-}
-
-async function resolveLatest(env: Env): Promise<{ tag: string; source: string } | null> {
-  const headers = { "user-agent": UA, accept: "application/vnd.github+json" };
-  const base = `https://api.github.com/repos/${env.GITHUB_REPO}/releases`;
-  try {
-    const stable = await fetch(`${base}/latest`, { headers, cf: { cacheTtl: CACHE_TTL } });
-    if (stable.ok) {
-      const release: unknown = await stable.json();
-      return publishedRelease(release) && !release.prerelease
-        ? { tag: release.tag_name, source: "github-latest" } : null;
-    }
-    // Only a missing stable release enables the prerelease fallback. Outages
-    // and rate limits must not silently change the version selected.
-    if (stable.status !== 404) return null;
-
-    let newest: Release | null = null;
-    for (let page = 1; ; page++) {
-      const response = await fetch(`${base}?per_page=100&page=${page}`, {
-        headers, cf: { cacheTtl: CACHE_TTL },
-      });
-      if (!response.ok) return null;
-      const releases: unknown = await response.json();
-      if (!Array.isArray(releases)) return null;
-      for (const release of releases) {
-        if (publishedRelease(release) && release.prerelease
-          && (!newest || Date.parse(release.published_at) > Date.parse(newest.published_at))) {
-          newest = release;
-        }
-      }
-      if (releases.length < 100) break;
-    }
-    return newest ? { tag: newest.tag_name, source: "github-prerelease" } : null;
-  } catch {
-    return null;
-  }
 }

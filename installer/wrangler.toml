@@ -18,6 +18,8 @@ routes = [
 [vars]
 # GitHub Releases is the only source this worker serves from; see src/index.ts.
 GITHUB_REPO = "elsoul/erpc-cli"
+# LATEST_RELEASE and LATEST_RELEASE_SOURCE are selected by installer-worker.yml
+# using its workflow token and supplied to wrangler at deployment.
 
 [observability]
 enabled = true
