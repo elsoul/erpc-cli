@@ -68,14 +68,6 @@ export default {
       return text("not found", 404);
     }
 
-    // Normalise the cache key to the path: a query string changes nothing in
-    // the response, and keying on it would let `?x=1`, `?x=2`, … miss the
-    // cache and amplify requests to api.github.com.
-    const cache = caches.default;
-    const cacheKey = new Request(new URL(url.pathname, url.origin).toString(), { method: "GET" });
-    const cached = await cache.match(cacheKey);
-    if (cached) return cached;
-
     let tagSource = "pinned";
     if (!tag) {
       if (!env.LATEST_RELEASE || !TAG_RE.test(env.LATEST_RELEASE)
@@ -85,6 +77,16 @@ export default {
       tag = env.LATEST_RELEASE;
       tagSource = env.LATEST_RELEASE_SOURCE!;
     }
+
+    // Ignore user queries, but separate releases so an approved selection
+    // update takes effect even when the previous installer is still cached.
+    const cache = caches.default;
+    const cacheUrl = new URL(url.pathname, url.origin);
+    cacheUrl.searchParams.set("release", tag);
+    cacheUrl.searchParams.set("source", tagSource);
+    const cacheKey = new Request(cacheUrl.toString(), { method: "GET" });
+    const cached = await cache.match(cacheKey);
+    if (cached) return cached;
 
     const file = flavor === "sh" ? "erpc-installer.sh" : "erpc-installer.ps1";
     const got = await fetchInstaller(env, tag, file, flavor);

@@ -107,7 +107,7 @@ function release(tag: string, prerelease = true, date = "2026-11-10T10:00:00Z") 
   return { tag_name: tag, prerelease, draft: false, published_at: date };
 }
 
-function harness(t: TestContext, responses: Map<string, Response | Error>, selection?: { tag: string; source: string }) {
+function harness(t: TestContext, responses: Map<string, Response | Error>, selection?: { tag?: string; source?: string }) {
   const requests: string[] = [];
   const entries = new Map<string, Response>();
   const writes: Promise<unknown>[] = [];
@@ -131,9 +131,10 @@ function harness(t: TestContext, responses: Map<string, Response | Error>, selec
     return response.clone();
   });
   const ctx = { waitUntil(p: Promise<unknown>) { writes.push(p); }, passThroughOnException() {}, props: {} };
-  let selected: { tag: string; source: string } | null | undefined = selection;
+  let selected: { tag?: string; source?: string } | null | undefined = selection;
   return {
     requests, entries,
+    select(value: { tag?: string; source?: string }) { selected = value; },
     async get(path = "/") {
       // Selection happens once in the deploy workflow, before serving requests.
       if (selected === undefined && ["/", "/ps1"].includes(path.split("?")[0])) {
@@ -280,4 +281,29 @@ test("the deployment selector authenticates metadata reads and fails before publ
     if (available) assert.equal(readFileSync(output, "utf8"), "tag=v0.1.0\nsource=github-latest\n");
     else assert.equal(existsSync(output), false);
   }
+});
+
+
+test("invalid deployed selections fail before any asset fetch", async t => {
+  for (const selection of [ {}, { tag: "bad/tag", source: "github-latest" },
+    { tag: "v1.2.3\n", source: "github-latest" }, { tag: "v1.2.3", source: "unknown" },
+    { tag: "v1.2.3" }]) {
+    await t.test(JSON.stringify(selection), async child => {
+      const h = harness(child, new Map(), selection);
+      assert.equal((await h.get()).status, 502);
+      assert.deepEqual(h.requests, []);
+      assert.equal(h.entries.size, 0);
+    });
+  }
+});
+
+test("a newly deployed release does not reuse the previous release cache", async t => {
+  const h = harness(t, new Map([installer("v0.1.0-rc.2"), installer("v0.1.0-rc.3")]),
+    { tag: "v0.1.0-rc.2", source: "github-prerelease" });
+  assert.equal((await h.get()).headers.get("x-erpc-tag"), "v0.1.0-rc.2");
+  h.select({ tag: "v0.1.0-rc.3", source: "github-prerelease" });
+  assert.equal((await h.get()).headers.get("x-erpc-tag"), "v0.1.0-rc.3");
+  h.select({});
+  assert.equal((await h.get()).status, 502);
+  assert.equal(h.requests.length, 2);
 });
