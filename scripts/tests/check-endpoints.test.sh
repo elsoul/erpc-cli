@@ -2055,14 +2055,17 @@ fi
 
 # --- the hook's wiring ----------------------------------------------------------
 
-# The gate protects nothing unless the hook runs it, and a grep for the expected
+# A gate protects nothing unless the hook runs it, and a grep for the expected
 # line is satisfied by a decoy command holding it, or by `skip: true` beside it.
 # So the real command must be the expected line and nothing else, and no key that
 # can switch off a command may sit above it. A new key here fails loudly; add it
 # to this list if it cannot stop the hook. An untracked lefthook-local.yml is a
 # developer's own, and is not seen here; CI's no-argument scan does not use a hook.
+#
+# Both gates that list what is staged themselves are pinned. $2 is the command and
+# $3 what it runs; endpoints is the default.
 hook_wiring_ok() {
-  awk '
+  awk -v want_command="    ${2:-endpoints}:" -v want_run="      run: ${3:-scripts/check-endpoints.sh --staged}" '
     /^[[:space:]]*(#.*)?$/ { next }
     /^[^ ]/ {
       hook = $0; section = ""; command = ""
@@ -2078,12 +2081,12 @@ hook_wiring_ok() {
     section != "  commands:" { bad = 1; next }
     /^    [^ ]/ {
       command = $0
-      if (command == "    endpoints:") found++
+      if (command == want_command) found++
       next
     }
-    command == "    endpoints:" {
+    command == want_command {
       lines++
-      if ($0 != "      run: scripts/check-endpoints.sh --staged") bad = 1
+      if ($0 != want_run) bad = 1
     }
     END { exit !(found == 1 && lines == 1 && !bad) }
   ' "$1"
@@ -2093,6 +2096,13 @@ if hook_wiring_ok "$source_root/lefthook.yml"; then
   pass=$((pass + 1)); printf 'ok   the pre-commit hook runs the gate on what is staged\n'
 else
   fail=$((fail + 1)); printf 'FAIL the pre-commit hook must run scripts/check-endpoints.sh --staged, and nothing in lefthook.yml may switch it off\n'
+fi
+
+hygiene_run='scripts/check-oss-hygiene.sh --staged'
+if hook_wiring_ok "$source_root/lefthook.yml" oss-hygiene "$hygiene_run"; then
+  pass=$((pass + 1)); printf 'ok   the pre-commit hook runs the hygiene gate on what is staged\n'
+else
+  fail=$((fail + 1)); printf 'FAIL the pre-commit hook must run scripts/check-oss-hygiene.sh --staged, and nothing in lefthook.yml may switch it off\n'
 fi
 
 # lefthook-local.yml overrides lefthook.yml, so committing one with `skip: true`
@@ -2124,7 +2134,7 @@ wiring_fixture="$(mktemp)"
 expect_wiring_refused() {
   local name="$1"
   printf '%s\n' "$2" > "$wiring_fixture"
-  if hook_wiring_ok "$wiring_fixture"; then
+  if hook_wiring_ok "$wiring_fixture" ${3+"$3"} ${4+"$4"}; then
     fail=$((fail + 1)); printf 'FAIL the wiring check accepted %s\n' "$name"
   else
     pass=$((pass + 1)); printf 'ok   the wiring check refuses %s\n' "$name"
@@ -2185,6 +2195,34 @@ pre-commit:
   commands:
     endpoints:
 $good_run"
+good_hygiene_run="      run: $hygiene_run"
+expect_wiring_refused "the hygiene command with nothing to run" "pre-commit:
+  commands:
+    oss-hygiene:" oss-hygiene "$hygiene_run"
+expect_wiring_refused "the names lefthook passes to the hygiene gate" "pre-commit:
+  commands:
+    oss-hygiene:
+      run: scripts/check-oss-hygiene.sh {staged_files}" oss-hygiene "$hygiene_run"
+expect_wiring_refused "a decoy command holding the hygiene line" "pre-commit:
+  commands:
+    decoy:
+$good_hygiene_run
+    oss-hygiene:
+      run: 'true'" oss-hygiene "$hygiene_run"
+expect_wiring_refused "skip on the hygiene command" "pre-commit:
+  commands:
+    oss-hygiene:
+$good_hygiene_run
+      skip: true" oss-hygiene "$hygiene_run"
+expect_wiring_refused "a glob on the hygiene command" "pre-commit:
+  commands:
+    oss-hygiene:
+      glob: '*.rs'
+$good_hygiene_run" oss-hygiene "$hygiene_run"
+expect_wiring_refused "the endpoints line on the hygiene command" "pre-commit:
+  commands:
+    oss-hygiene:
+$good_run" oss-hygiene "$hygiene_run"
 rm -f "$wiring_fixture"
 
 # --- the harness itself ---------------------------------------------------------
