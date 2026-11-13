@@ -7,7 +7,7 @@ members = ["crates/*"]
 default-members = ["crates/erpc"]
 
 [workspace.package]
-version = "0.1.0-rc.3"
+version = "0.1.0-rc.4"
 edition = "2024"
 rust-version = "1.98"
 license = "Apache-2.0"
@@ -20,39 +20,39 @@ authors = ["ELSOUL LABO B.V. <oss@elsoul.nl>"]
 libc = "=0.2.191"
 
 # Internal crates (path for development; versions for crates.io publishing)
-erpc-core = { path = "crates/erpc-core", version = "0.1.0-rc.3" }
-erpc-auth = { path = "crates/erpc-auth", version = "0.1.0-rc.3" }
-erpc-api = { path = "crates/erpc-api", version = "0.1.0-rc.3" }
-erpc-secret = { path = "crates/erpc-secret", version = "0.1.0-rc.3" }
-erpc-ssh = { path = "crates/erpc-ssh", version = "0.1.0-rc.3" }
-erpc-ops = { path = "crates/erpc-ops", version = "0.1.0-rc.3" }
-erpc-chain = { path = "crates/erpc-chain", version = "0.1.0-rc.3" }
-erpc-chain-solana = { path = "crates/erpc-chain-solana", version = "0.1.0-rc.3" }
-erpc-chain-solana-native = { path = "crates/erpc-chain-solana-native", version = "0.1.0-rc.3" }
-erpc-chain-arc = { path = "crates/erpc-chain-arc", version = "0.1.0-rc.3" }
-erpc-chain-avax = { path = "crates/erpc-chain-avax", version = "0.1.0-rc.3" }
-erpc-chain-monad = { path = "crates/erpc-chain-monad", version = "0.1.0-rc.3" }
-erpc-chain-polygon = { path = "crates/erpc-chain-polygon", version = "0.1.0-rc.3" }
-erpc-chain-tron = { path = "crates/erpc-chain-tron", version = "0.1.0-rc.3" }
-erpc-chain-sui = { path = "crates/erpc-chain-sui", version = "0.1.0-rc.3" }
-erpc-chain-near = { path = "crates/erpc-chain-near", version = "0.1.0-rc.3" }
-erpc-chain-kaia = { path = "crates/erpc-chain-kaia", version = "0.1.0-rc.3" }
-erpc-chain-nitro = { path = "crates/erpc-chain-nitro", version = "0.1.0-rc.3" }
-erpc-chain-eth = { path = "crates/erpc-chain-eth", version = "0.1.0-rc.3" }
-erpc-chain-rollup = { path = "crates/erpc-chain-rollup", version = "0.1.0-rc.3" }
-erpc-chain-bsc = { path = "crates/erpc-chain-bsc", version = "0.1.0-rc.3" }
-erpc-chain-bitcoin = { path = "crates/erpc-chain-bitcoin", version = "0.1.0-rc.3" }
-erpc-chain-op = { path = "crates/erpc-chain-op", version = "0.1.0-rc.3" }
+erpc-core = { path = "crates/erpc-core", version = "0.1.0-rc.4" }
+erpc-auth = { path = "crates/erpc-auth", version = "0.1.0-rc.4" }
+erpc-api = { path = "crates/erpc-api", version = "0.1.0-rc.4" }
+erpc-secret = { path = "crates/erpc-secret", version = "0.1.0-rc.4" }
+erpc-ssh = { path = "crates/erpc-ssh", version = "0.1.0-rc.4" }
+erpc-ops = { path = "crates/erpc-ops", version = "0.1.0-rc.4" }
+erpc-chain = { path = "crates/erpc-chain", version = "0.1.0-rc.4" }
+erpc-chain-solana = { path = "crates/erpc-chain-solana", version = "0.1.0-rc.4" }
+erpc-chain-solana-native = { path = "crates/erpc-chain-solana-native", version = "0.1.0-rc.4" }
+erpc-chain-arc = { path = "crates/erpc-chain-arc", version = "0.1.0-rc.4" }
+erpc-chain-avax = { path = "crates/erpc-chain-avax", version = "0.1.0-rc.4" }
+erpc-chain-monad = { path = "crates/erpc-chain-monad", version = "0.1.0-rc.4" }
+erpc-chain-polygon = { path = "crates/erpc-chain-polygon", version = "0.1.0-rc.4" }
+erpc-chain-tron = { path = "crates/erpc-chain-tron", version = "0.1.0-rc.4" }
+erpc-chain-sui = { path = "crates/erpc-chain-sui", version = "0.1.0-rc.4" }
+erpc-chain-near = { path = "crates/erpc-chain-near", version = "0.1.0-rc.4" }
+erpc-chain-kaia = { path = "crates/erpc-chain-kaia", version = "0.1.0-rc.4" }
+erpc-chain-nitro = { path = "crates/erpc-chain-nitro", version = "0.1.0-rc.4" }
+erpc-chain-eth = { path = "crates/erpc-chain-eth", version = "0.1.0-rc.4" }
+erpc-chain-rollup = { path = "crates/erpc-chain-rollup", version = "0.1.0-rc.4" }
+erpc-chain-bsc = { path = "crates/erpc-chain-bsc", version = "0.1.0-rc.4" }
+erpc-chain-bitcoin = { path = "crates/erpc-chain-bitcoin", version = "0.1.0-rc.4" }
+erpc-chain-op = { path = "crates/erpc-chain-op", version = "0.1.0-rc.4" }
 # Without its templates by default: the agent on a server has no use for them.
-erpc-worker = { path = "crates/erpc-worker", version = "0.1.0-rc.3", default-features = false }
-erpc-ai = { path = "crates/erpc-ai", version = "0.1.0-rc.3" }
-erpc-wallet = { path = "crates/erpc-wallet", version = "0.1.0-rc.3" }
-erpc-x402 = { path = "crates/erpc-x402", version = "0.1.0-rc.3" }
-erpc-skills = { path = "crates/erpc-skills", version = "0.1.0-rc.3" }
-erpc-mcp-server = { path = "crates/erpc-mcp-server", version = "0.1.0-rc.3" }
-erpc-release = { path = "crates/erpc-release", version = "0.1.0-rc.3" }
+erpc-worker = { path = "crates/erpc-worker", version = "0.1.0-rc.4", default-features = false }
+erpc-ai = { path = "crates/erpc-ai", version = "0.1.0-rc.4" }
+erpc-wallet = { path = "crates/erpc-wallet", version = "0.1.0-rc.4" }
+erpc-x402 = { path = "crates/erpc-x402", version = "0.1.0-rc.4" }
+erpc-skills = { path = "crates/erpc-skills", version = "0.1.0-rc.4" }
+erpc-mcp-server = { path = "crates/erpc-mcp-server", version = "0.1.0-rc.4" }
+erpc-release = { path = "crates/erpc-release", version = "0.1.0-rc.4" }
 
-erpc-chain-hyperliquid = { path = "crates/erpc-chain-hyperliquid", version = "0.1.0-rc.3" }
+erpc-chain-hyperliquid = { path = "crates/erpc-chain-hyperliquid", version = "0.1.0-rc.4" }
 
 # Third-party. Rule: a new crate must be at least 14 days old before it enters Cargo.lock.
 clap_complete = "4.6"
