@@ -705,13 +705,77 @@ fn a_solana_verb_without_its_network_or_name_is_a_usage_error() {
     }
 }
 
+/// Help erpc prints itself -- a role with no verb, and Japanese help, which
+/// it wraps itself -- is coloured when clap's own help is: plain off a
+/// terminal, as scripts and logs read it; coloured when `CLICOLOR_FORCE`
+/// asks for colour anyway; plain again when `NO_COLOR` is set as well.
+#[test]
+fn help_erpc_prints_itself_is_coloured_when_clap_help_is() {
+    let home = tempfile::tempdir().expect("isolated configuration");
+    let commands: [(&[&str], &str); 3] = [
+        (&["--help"], "Usage: erpc"),
+        (&["v", "--chain", "solana"], "Usage: erpc validator"),
+        (&["--lang", "ja", "--help"], "使い方: erpc"),
+    ];
+    let settings: [(&[(&str, &str)], bool); 3] = [
+        (&[], false),
+        (&[("CLICOLOR_FORCE", "1")], true),
+        (&[("CLICOLOR_FORCE", "1"), ("NO_COLOR", "1")], false),
+    ];
+    for (arguments, usage) in commands {
+        for (variables, coloured) in settings {
+            let output =
+                isolated_with(home.path(), arguments, variables).expect("isolated command route");
+            assert_eq!(output.status.code(), Some(0), "{arguments:?} {variables:?}");
+            let help = String::from_utf8(output.stdout).expect("UTF-8 help");
+            assert_eq!(
+                help.contains('\x1b'),
+                coloured,
+                "{arguments:?} {variables:?}: {help:?}"
+            );
+            assert!(
+                without_escapes(&help).contains(usage),
+                "{arguments:?} {variables:?}: {help:?}"
+            );
+        }
+    }
+}
+
+/// `text` without its escape sequences.
+fn without_escapes(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            for e in chars.by_ref() {
+                if e.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// erpc, isolated: no configuration, no PATH, nothing on standard input.
 fn isolated(home: &std::path::Path, arguments: &[&str]) -> std::io::Result<std::process::Output> {
+    isolated_with(home, arguments, &[])
+}
+
+/// erpc, isolated, with only `variables` set besides its own.
+fn isolated_with(
+    home: &std::path::Path,
+    arguments: &[&str],
+    variables: &[(&str, &str)],
+) -> std::io::Result<std::process::Output> {
     let mut command = Command::new(env!("CARGO_BIN_EXE_erpc"));
     command.env_clear().env("ERPC_HOME", home).env("PATH", home);
     if let Some(root) = std::env::var_os("SYSTEMROOT") {
         command.env("SYSTEMROOT", root);
     }
+    command.envs(variables.iter().copied());
     command.args(arguments).stdin(Stdio::null()).output()
 }
 
