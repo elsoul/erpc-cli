@@ -23,8 +23,8 @@ use crate::commands::Outcome;
 use crate::error::{CliError, Code};
 use crate::worker_secrets::StoreFlag;
 use crate::{
-    worker_backup, worker_bench, worker_build, worker_deploy, worker_firewall, worker_keys,
-    worker_remote, worker_run,
+    worker_backup, worker_bench, worker_build, worker_deploy, worker_firewall, worker_import,
+    worker_keys, worker_remote, worker_run,
 };
 
 /// Where the app is: its name, or its directory.
@@ -61,7 +61,6 @@ impl From<DirFlag> for Dir {
 
 impl Dir {
     /// The app at `dir`.
-    #[cfg(test)]
     pub(crate) fn at(dir: &Path) -> Self {
         Self {
             name: None,
@@ -100,6 +99,15 @@ impl Dir {
             (None, None) => String::new(),
         }
     }
+}
+
+/// How a hint names an app erpc knows as `name`: after a verb that takes
+/// the app as its argument (`check`, `run`, `deploy`), and after one whose
+/// own arguments come first and which takes the app by `--dir` only
+/// (`secret put`, `secret rm`, `key import`, `firewall allow`, `api`).
+pub(crate) fn name_scopes(name: &str) -> (String, String) {
+    let name = shell_word(name);
+    (format!(" {name}"), format!(" --dir {name}"))
 }
 
 /// The scope of an app given by `name`, which `found` resolved: its
@@ -149,7 +157,7 @@ pub(crate) fn env_of<'m>(
 
 /// `word` as a shell reads it back: as it is when it is plain, else in
 /// single quotes.
-fn shell_word(word: &str) -> String {
+pub(crate) fn shell_word(word: &str) -> String {
     let plain = !word.is_empty()
         && word
             .chars()
@@ -212,12 +220,13 @@ pub(crate) enum Action {
         /// The chain the app is for.
         #[arg(long, value_parser = parse_chain, default_value = "solana")]
         chain: Chain,
-        /// What to make, without asking: hft or pumpfun-bot, or a template id
-        /// such as pumpfun (default: pick with the arrow keys).
+        /// What to make, without asking: helloworld, hft or pumpfun-bot, or a
+        /// template id such as pumpfun (default: pick with the arrow keys; in
+        /// a script, helloworld).
         #[arg(long, short = 't')]
         template: Option<String>,
         /// The app's name, and its directory's (default: the choice's own,
-        /// such as hft-bot, with -2, -3… when that directory is taken).
+        /// such as hello-world, with -2, -3… when that directory is taken).
         #[arg(long, short = 'n')]
         name: Option<String>,
         /// Where to make the app's directory (default: the current directory).
@@ -230,6 +239,33 @@ pub(crate) enum Action {
         #[arg(long, short = 'y')]
         yes: bool,
     },
+    /// Take an app you already have into erpc worker: write its erpc.toml
+    /// from what its directory holds, without changing its code.
+    Import {
+        /// The app's directory (default: the current directory).
+        #[arg(value_name = "DIR")]
+        dir: Option<PathBuf>,
+        /// The app's name (default: the package's, or the binary's).
+        #[arg(long, short = 'n')]
+        name: Option<String>,
+        /// A Linux binary already built, by any toolchain, to ship as it is:
+        /// its path inside the app (default: build the Cargo package there).
+        #[arg(long, value_name = "PATH", conflicts_with = "bin")]
+        binary: Option<String>,
+        /// The binary cargo builds, when the package has several.
+        #[arg(long, value_name = "NAME")]
+        bin: Option<String>,
+        /// The TCP port the app listens on (default: the one its .env files
+        /// or its Dockerfile name).
+        #[arg(long, value_name = "PORT")]
+        port: Option<u16>,
+        /// A path that answers 2xx once the app is ready, such as /healthz.
+        #[arg(long, value_name = "PATH")]
+        health: Option<String>,
+        /// The chain the app is for.
+        #[arg(long, value_parser = parse_chain, default_value = "solana")]
+        chain: Chain,
+    },
     /// Check erpc.toml and say what it describes, without changing anything.
     Check {
         #[command(flatten)]
@@ -238,12 +274,12 @@ pub(crate) enum Action {
         #[arg(long, short = 'e', value_name = "NAME")]
         env: Option<String>,
     },
-    /// The trading key: kept in 1Password or the keychain, never in a file.
+    /// The trading key: kept in 1Password, the keychain or erpc's encrypted keystore, never in a file unencrypted.
     Key {
         #[command(subcommand)]
         action: KeyAction,
     },
-    /// Secret settings: kept in 1Password or the keychain, named in erpc.toml.
+    /// Secret settings: kept in 1Password, the keychain or erpc's encrypted keystore, named in erpc.toml.
     Secret {
         #[command(subcommand)]
         action: SecretAction,
@@ -347,7 +383,13 @@ pub(crate) enum Action {
         /// outside erpc (in the dashboard) that deploy waits for. Repeatable.
         #[arg(long, value_name = "LINE_ID")]
         forget_line: Vec<String>,
-        /// Go ahead without asking (a new VPS's or line's price is asked all the same).
+        /// Do everything that needs neither the key nor a secret (the
+        /// server, its firewall, the lines, the release on the server) and
+        /// start nothing; the next deploy hands them over and starts it.
+        #[arg(long)]
+        prepare: bool,
+        /// Go ahead without asking: a new VPS's or line's price is said, not
+        /// asked (it is paid from ERPC Credit; ending one is always asked).
         #[arg(long, short = 'y')]
         yes: bool,
     },
@@ -367,7 +409,7 @@ pub(crate) enum Action {
         #[arg(long, default_value_t = 0, value_name = "MS")]
         interval: u32,
         /// Another endpoint to compare, such as an RPC from another
-        /// provider: NAME=URL, NAME=op://… or NAME=keychain:… (where the URL
+        /// provider: NAME=URL, NAME=op://…, NAME=keychain:… or NAME=keystore:… (where the URL
         /// is kept, so a key in it stays out of shell history), or NAME=-
         /// to type it unseen. Only its scheme, host and port are shown.
         #[arg(long = "url", value_name = "NAME=URL")]
@@ -391,9 +433,13 @@ pub(crate) enum Action {
         /// How many recent lines to show.
         #[arg(long, short = 'n', default_value_t = 100)]
         lines: u32,
+        /// Show the WAF's log instead: each request it refused, and when it started and stopped.
+        #[arg(long)]
+        waf: bool,
     },
-    /// One request to the app's API on its server, over SSH, with the app's
-    /// `API_TOKEN` read here and never shown; prints the answer.
+    /// One request to the app's API on its server, over SSH; the app's
+    /// `API_TOKEN`, when it has one, is read here and never shown; prints the
+    /// answer.
     Api {
         /// The path, such as /api/trade/status.
         path: String,
@@ -498,14 +544,14 @@ pub(crate) enum Action {
 /// What `erpc worker key` does.
 #[derive(Subcommand, Debug)]
 pub(crate) enum KeyAction {
-    /// Make a new key in memory and keep it only in 1Password or the keychain.
+    /// Make a new key in memory and keep it only in 1Password, the keychain or erpc's encrypted keystore.
     New {
         #[command(flatten)]
         dir: Dir,
         #[command(flatten)]
         store: StoreArgs,
     },
-    /// Move a key file into 1Password or the keychain, then offer to wipe the file.
+    /// Move a key file into 1Password, the keychain or erpc's encrypted keystore, then offer to wipe the file.
     Import {
         #[command(flatten)]
         dir: DirFlag,
@@ -553,8 +599,10 @@ pub(crate) enum KeyAction {
 /// Where a new key or secret is kept.
 #[derive(Args, Debug, Clone, Default)]
 pub(crate) struct StoreArgs {
-    /// 1Password or the keychain (default: 1Password when `erpc login`
-    /// keeps the session there, else the keychain).
+    /// 1Password, the keychain or the keystore (default: 1Password when
+    /// `erpc login` keeps the session there, else the keychain, else, where
+    /// the keychain forgets at a reboot, the keystore: an encrypted file on
+    /// this machine).
     #[arg(long, value_enum)]
     store: Option<StoreFlag>,
     /// The 1Password vault, by id (default: the session's).
@@ -562,10 +610,38 @@ pub(crate) struct StoreArgs {
     vault: Option<String>,
 }
 
+/// Where a new secret's value comes from, when it is neither typed nor
+/// piped in. One of the two at most: clap refuses both together.
+#[derive(Args, Debug, Clone, Copy, Default)]
+pub(crate) struct ValueArgs {
+    /// Make the value here instead of asking for it: 64 random
+    /// hexadecimal characters, for a token of the app's own such as
+    /// `API_TOKEN`.
+    #[arg(long, conflicts_with = "from_account")]
+    generate: bool,
+    /// Take the value from the signed-in ERPC account instead of asking
+    /// for it: its RPC API key, for `ERPC_API_KEY`.
+    #[arg(long)]
+    from_account: bool,
+}
+
+impl ValueArgs {
+    /// The source the flags name: the account, here, or the person.
+    const fn value(self) -> worker_keys::Value {
+        if self.from_account {
+            worker_keys::Value::Account
+        } else if self.generate {
+            worker_keys::Value::Generated
+        } else {
+            worker_keys::Value::Typed
+        }
+    }
+}
+
 /// What `erpc worker secret` does.
 #[derive(Subcommand, Debug)]
 pub(crate) enum SecretAction {
-    /// Keep a secret setting, piped in or typed unseen, and name it in [secrets].
+    /// Keep a secret setting and name it in [secrets]: its value piped in, typed unseen, made by erpc (`--generate`) or read from your account (`--from-account`).
     Put {
         #[command(flatten)]
         dir: DirFlag,
@@ -576,19 +652,25 @@ pub(crate) enum SecretAction {
         /// Keep a new value for a name that is set already.
         #[arg(long)]
         replace: bool,
+        #[command(flatten)]
+        value: ValueArgs,
     },
     /// List the secret settings by name and where each is kept.
     List {
         #[command(flatten)]
         dir: Dir,
     },
-    /// Remove a secret setting from erpc.toml; its value stays where it is kept.
+    /// Remove a secret setting from erpc.toml; its value stays in 1Password or the keychain, and is deleted from the keystore.
     Rm {
         #[command(flatten)]
         dir: DirFlag,
         /// The setting's name.
         name: String,
     },
+    /// Unlock this machine's keystore: type its passphrase once, and the commands after it do not ask (Linux: kept in the kernel keyring until it is locked, the machine restarts or the keyring's idle expiry).
+    Unlock,
+    /// Lock this machine's keystore: drop the unlock, so the next command that needs it asks for the passphrase.
+    Lock,
 }
 
 /// Which firewall list an address goes in.
@@ -596,7 +678,7 @@ pub(crate) enum SecretAction {
 pub(crate) enum Port {
     /// SSH.
     Ssh,
-    /// The app's own port.
+    /// The app's own port, or its WAF's when it is behind one.
     App,
 }
 
@@ -651,7 +733,7 @@ pub(crate) enum FirewallAction {
         /// Which port it may reach.
         #[arg(long, value_enum, default_value = "ssh")]
         to: Port,
-        /// The addresses, such as 198.51.100.7; a network such as 198.51.100.0/24 only with --to app, since SSH is allowed from single addresses.
+        /// The addresses, such as 198.51.100.7; a network such as 198.51.100.0/24 only with --to app, since SSH is allowed from single addresses; everyone (`0.0.0.0/0`, `::/0`) only with --to app of an app behind a WAF.
         #[arg(required = true)]
         addresses: Vec<String>,
         /// Go ahead without asking.
@@ -711,6 +793,26 @@ pub(crate) async fn run(json: bool, action: Action) -> Outcome {
                 ask: !yes && !json && crate::session::has_terminal(),
             },
         ),
+        Action::Import {
+            dir,
+            name,
+            binary,
+            bin,
+            port,
+            health,
+            chain,
+        } => worker_import::import(
+            json,
+            &worker_import::Request {
+                dir: dir.as_deref(),
+                name: name.as_deref(),
+                binary: binary.as_deref(),
+                bin: bin.as_deref(),
+                port,
+                health: health.as_deref(),
+                chain,
+            },
+        ),
         Action::Check { dir, env } => check(json, &dir, env.as_deref()),
         Action::Key { action } => match action {
             KeyAction::New { dir, store } => {
@@ -747,16 +849,23 @@ pub(crate) async fn run(json: bool, action: Action) -> Outcome {
                 name,
                 store,
                 replace,
-            } => worker_keys::put(
-                json,
-                &dir.into(),
-                &name,
-                store.store,
-                store.vault.as_deref(),
-                replace,
-            ),
+                value,
+            } => {
+                worker_keys::put(
+                    json,
+                    &dir.into(),
+                    &name,
+                    store.store,
+                    store.vault.as_deref(),
+                    replace,
+                    value.value(),
+                )
+                .await
+            }
             SecretAction::List { dir } => worker_keys::list(json, &dir),
             SecretAction::Rm { dir, name } => worker_keys::remove(json, &dir.into(), &name),
+            SecretAction::Unlock => crate::worker_keystore::unlock_command(json),
+            SecretAction::Lock => crate::worker_keystore::lock_command(json),
         },
         Action::Run {
             dir,
@@ -802,6 +911,7 @@ pub(crate) async fn run(json: bool, action: Action) -> Outcome {
             vault,
             inline,
             forget_line,
+            prepare,
             yes,
         } => {
             let at = worker_deploy::Where {
@@ -825,6 +935,8 @@ pub(crate) async fn run(json: bool, action: Action) -> Outcome {
                 vault,
                 inline,
                 forget_lines: forget_line,
+                starts: worker_deploy::Starts::from_yes(yes),
+                upto: worker_deploy::Upto::from_prepare(prepare),
             };
             worker_deploy::deploy(json, &app, &at, yes).await
         }
@@ -845,8 +957,13 @@ pub(crate) async fn run(json: bool, action: Action) -> Outcome {
             };
             worker_bench::bench(json, &app, &asked).await
         }
-        Action::Status { app } => worker_remote::status(json, &app),
-        Action::Logs { app, follow, lines } => worker_remote::logs(&app, lines, follow),
+        Action::Status { app } => worker_remote::status(json, &app).await,
+        Action::Logs {
+            app,
+            follow,
+            lines,
+            waf,
+        } => worker_remote::logs(&app, lines, follow, waf),
         Action::Api {
             path,
             app,
@@ -1026,7 +1143,7 @@ fn locate(dir: &Dir) -> Result<PathBuf, CliError> {
 
 /// The directory of the app erpc knows as `name`, from the list `erpc
 /// worker list` reads.
-fn by_name(name: &str) -> Result<PathBuf, CliError> {
+pub(crate) fn by_name(name: &str) -> Result<PathBuf, CliError> {
     let index =
         index_path().and_then(|p| Index::load(&p).map_err(|e| CliError::new(Code::Failed, e)))?;
     named(&index, name)
@@ -1037,7 +1154,7 @@ fn by_name(name: &str) -> Result<PathBuf, CliError> {
 /// The name is the one in each app's erpc.toml, as `erpc worker list`
 /// shows it, not the one the list was written with: an app renamed in its
 /// erpc.toml is found by its new name only.
-fn named(index: &Index, name: &str) -> Result<PathBuf, CliError> {
+pub(crate) fn named(index: &Index, name: &str) -> Result<PathBuf, CliError> {
     let dirs: Vec<&PathBuf> = index
         .workers
         .iter()
@@ -1046,9 +1163,11 @@ fn named(index: &Index, name: &str) -> Result<PathBuf, CliError> {
         .collect();
     match dirs.as_slice() {
         [dir] => Ok((*dir).clone()),
-        [] => Err(CliError::new(Code::Failed, t!("worker.find.unknown", name))
-            .hint(t!("worker.find.unknown_hint"))
-            .mark("🔎")),
+        [] => Err(unread(index, name).unwrap_or_else(|| {
+            CliError::new(Code::Failed, t!("worker.find.unknown", name))
+                .hint(t!("worker.find.unknown_hint"))
+                .mark("🔎")
+        })),
         many => Err(CliError::new(
             Code::Failed,
             t!(
@@ -1063,6 +1182,29 @@ fn named(index: &Index, name: &str) -> Result<PathBuf, CliError> {
         )
         .hint(t!("worker.find.ambiguous_hint"))),
     }
+}
+
+/// Why no app is named `name` when `index` has one that was added under
+/// that name and whose erpc.toml no longer says a name: a file that does
+/// not parse, or one that is gone. erpc knows the app; it cannot read it.
+fn unread(index: &Index, name: &str) -> Option<CliError> {
+    let entry = index
+        .workers
+        .iter()
+        .find(|e| e.name == name && manifest_name(&e.dir).is_none())?;
+    let path = entry.dir.join(manifest::FILE_NAME);
+    let dir_scope = manifest_scope(&path);
+    Some(
+        CliError::new(
+            Code::Failed,
+            t!("worker.find.unreadable", name, path = path.display()),
+        )
+        .hint(t!(
+            "worker.manifest.fix",
+            file = manifest::FILE_NAME,
+            dir_scope
+        )),
+    )
 }
 
 /// The `name` in the erpc.toml in `dir`, when it can be read.
@@ -1106,6 +1248,13 @@ fn check(json: bool, dir: &Dir, env: Option<&str>) -> Outcome {
         return problems_found(json, &path, &[message]);
     }
     let mut warnings = manifest.warnings();
+    // A credential written under [vars] is in the file that is committed
+    // and reaches the server as text: said, and the app still deploys.
+    let dir_scope = manifest_scope(&path);
+    for (name, kind) in manifest.credentials_in_vars() {
+        let what = credential_said(kind);
+        warnings.push(t!("worker.check.var_credential", name, what, dir_scope));
+    }
     // What a deploy from this machine would lack, said now rather than
     // after a server is bought.
     let root = path
@@ -1113,17 +1262,18 @@ fn check(json: bool, dir: &Dir, env: Option<&str>) -> Outcome {
         .map_or_else(|| PathBuf::from("."), Path::to_owned);
     // Looked for, not run: `check` runs nothing in the app's directory.
     let probe = crate::worker_build::Probe::Look;
-    for (what, hint) in
-        crate::worker_build::missing_tools(manifest.build.target.triple(), &root, probe)
-    {
-        warnings.push(t!(
-            "worker.check.deploy_needs",
-            what = format!("{what}; {hint}")
-        ));
+    for (what, hint) in crate::worker_build::missing_tools(&manifest, &root, probe) {
+        let what = if hint.is_empty() {
+            what
+        } else {
+            format!("{what}; {hint}")
+        };
+        warnings.push(t!("worker.check.deploy_needs", what));
     }
     if let Err(no_key) = crate::vps_access::login_key() {
         warnings.push(t!("worker.check.deploy_needs", what = no_key));
     }
+    warnings.extend(keystore_warnings(&manifest));
     if json {
         crate::print_json(&json!({
             "path": path,
@@ -1137,6 +1287,48 @@ fn check(json: bool, dir: &Dir, env: Option<&str>) -> Outcome {
         describe_drawn(&path, &manifest, &warnings, &manifest_scope(&path))
             .or_plain(describe(&path, &manifest, &warnings)),
     )
+}
+
+/// A warning for each `keystore:` reference this machine's keystore has no
+/// entry for: the value was kept on another machine, and nothing here can
+/// start the app with it. Looked for, not read: no passphrase is asked.
+fn keystore_warnings(m: &Manifest) -> Vec<String> {
+    m.secrets
+        .iter()
+        .map(|(name, r)| (format!("secrets.{name}"), r))
+        .chain(
+            m.wallet
+                .iter()
+                .map(|w| ("wallet.source".to_owned(), &w.source)),
+        )
+        .filter_map(|(at, reference)| {
+            let manifest::SecretRef::Keystore { service, account } = reference else {
+                return None;
+            };
+            match crate::worker_keystore::has(service, account) {
+                Ok(true) => None,
+                Ok(false) => Some(t!("worker.check.keystore_missing", at, reference)),
+                Err(error) => Some(t!("worker.check.keystore_unread", at, reference, error)),
+            }
+        })
+        .collect()
+}
+
+/// What kind of credential a `[vars]` value carries, in the words of the
+/// run.
+fn credential_said(kind: manifest::Credential) -> String {
+    use manifest::Credential;
+    match kind {
+        Credential::UrlUserinfo => t!("worker.check.credential.url_userinfo"),
+        Credential::PrivateKey => t!("worker.check.credential.private_key"),
+        Credential::Authorization => t!("worker.check.credential.authorization"),
+        Credential::Jwt => t!("worker.check.credential.jwt"),
+        Credential::Token => t!("worker.check.credential.token"),
+        Credential::Parameter => t!("worker.check.credential.parameter"),
+        Credential::WalletKey => t!("worker.check.credential.wallet_key"),
+        Credential::Phrase => t!("worker.check.credential.phrase"),
+        Credential::UrlPath => t!("worker.check.credential.url_path"),
+    }
 }
 
 fn problems_found(json: bool, path: &Path, problems: &[String]) -> Outcome {
@@ -1199,7 +1391,10 @@ fn describe_drawn(
     }
     fields.push((
         "build".into(),
-        format!("{}  → {}", m.build.command.join(" "), m.bin()),
+        match &m.build.prebuilt {
+            Some(prebuilt) => t!("worker.check.prebuilt_drawn", prebuilt, bin = m.bin()),
+            None => format!("{}  → {}", m.build.command.join(" "), m.bin()),
+        },
     ));
     if !m.vars.is_empty() {
         fields.push((
@@ -1213,6 +1408,10 @@ fn describe_drawn(
     }
     if let Some(services) = services_named(m) {
         fields.push(("services".into(), services));
+    }
+    if let Some([listens, limits]) = crate::worker_waf::described(m) {
+        fields.push(("waf".into(), listens));
+        fields.push((String::new(), limits));
     }
     for (name, reference) in &m.secrets {
         fields.push(("secret".into(), format!("{name} ← {reference}")));
@@ -1248,13 +1447,56 @@ fn describe_drawn(
         report = report.warning(warning.clone());
     }
     let mut next = Vec::new();
-    if m.wallet.is_none() {
+    if lacks_its_key(m) {
         next.push(format!("erpc worker key new{dir_scope}"));
     }
     if m.env.is_empty() {
         next.push(format!("erpc worker deploy{scope}"));
     }
     report.next(next)
+}
+
+/// Whether the app trades with a key and has none yet: one made from a
+/// template that does. An app that needs no key (the hello app, one made by
+/// hand) is not told to make one.
+pub(crate) fn lacks_its_key(m: &Manifest) -> bool {
+    m.wallet.is_none()
+        && m.template
+            .as_deref()
+            .and_then(template::of_tag)
+            .is_some_and(|made_from| made_from.wallet)
+}
+
+/// The flag `erpc worker secret put` takes for `setting` of app `m`, with
+/// its leading space, when the value need not be typed: what the template
+/// the app was made from says of the setting ([`Template::secret_flag`]),
+/// which is the choice `init`'s next steps make. Empty for a secret the
+/// operator has to give, and for an app made by hand or from a template
+/// this erpc does not carry.
+pub(crate) fn secret_flag(m: &Manifest, setting: &str) -> &'static str {
+    m.template
+        .as_deref()
+        .and_then(template::of_tag)
+        .map_or("", |made_from| made_from.secret_flag(setting))
+}
+
+/// How the app's binary comes to be, as `check` says it: the command that
+/// builds it, or the prebuilt binary shipped as it is.
+fn built_as(m: &Manifest) -> String {
+    match &m.build.prebuilt {
+        Some(prebuilt) => t!(
+            "worker.check.prebuilt",
+            prebuilt,
+            bin = m.bin(),
+            target = m.build.target.triple()
+        ),
+        None => t!(
+            "worker.check.build",
+            command = m.build.command.join(" "),
+            bin = m.bin(),
+            target = m.build.target.triple()
+        ),
+    }
 }
 
 /// The human-readable summary `check` prints.
@@ -1268,21 +1510,17 @@ fn describe(path: &Path, m: &Manifest, warnings: &[String]) -> String {
     if let Some(template) = &m.template {
         lines.push(format!("  template  {template}"));
     }
-    lines.push(format!(
-        "  build     {}",
-        t!(
-            "worker.check.build",
-            command = m.build.command.join(" "),
-            bin = m.bin(),
-            target = m.build.target.triple()
-        )
-    ));
+    lines.push(format!("  build     {}", built_as(m)));
     if !m.vars.is_empty() {
         let names: Vec<&str> = m.vars.keys().map(String::as_str).collect();
         lines.push(format!("  vars      {}", names.join(", ")));
     }
     if let Some(services) = services_named(m) {
         lines.push(format!("  services  {services}"));
+    }
+    if let Some([listens, limits]) = crate::worker_waf::described(m) {
+        lines.push(format!("  waf       {listens}"));
+        lines.push(format!("            {limits}"));
     }
     for (name, reference) in &m.secrets {
         lines.push(format!("  secret    {name} ← {reference}"));
@@ -1296,10 +1534,11 @@ fn describe(path: &Path, m: &Manifest, warnings: &[String]) -> String {
                 .unwrap_or_else(|| t!("worker.check.no_pubkey")),
             wallet.source
         )),
-        None => lines.push(format!(
+        None if lacks_its_key(m) => lines.push(format!(
             "  wallet    {}",
             t!("worker.check.no_wallet", dir_scope)
         )),
+        None => {}
     }
     if m.env.is_empty() {
         lines.push(format!("  env       {}", t!("worker.check.no_env", scope)));
@@ -1421,12 +1660,13 @@ fn init(json: bool, req: &InitRequest<'_>) -> Outcome {
     // Each step names the new app, wherever it is run from: by its name
     // when erpc knows it, else by its directory.
     let by_its_name = indexed.is_none() && by_name(&name).is_ok_and(|d| d == dest);
-    let dir_scope = if by_its_name {
-        format!(" {}", shell_word(&name))
+    let (dir_scope, flag_scope) = if by_its_name {
+        name_scopes(&name)
     } else {
-        dir_scope_of(&dest)
+        let by_dir = dir_scope_of(&dest);
+        (by_dir.clone(), by_dir)
     };
-    let next = next_steps(&dest, &dir_scope);
+    let next = next_steps(&dest, &dir_scope, &flag_scope, &template);
     if json {
         crate::print_json(&json!({
             "name": name,
@@ -1439,7 +1679,13 @@ fn init(json: bool, req: &InitRequest<'_>) -> Outcome {
         }));
         return Outcome::Done(String::new());
     }
-    let funds = t!("worker.init.funds", dir_scope);
+    // An app that trades is warned about its funds; one with nothing to set
+    // up is told so, since that is the news.
+    let closing = if template.wallet {
+        Closing::Funds(t!("worker.init.funds", dir_scope))
+    } else {
+        Closing::Ready(t!("worker.init.ready"))
+    };
     if let Some(spinner) = spinner {
         spinner.stop(&tn!(
             "worker.init.made",
@@ -1448,7 +1694,7 @@ fn init(json: bool, req: &InitRequest<'_>) -> Outcome {
             template = template.tag()
         ));
         crate::prompt::info(&t!("worker.init.at", dir = near(&dest).display()));
-        draw_made(&git, indexed.as_ref(), &next, &funds);
+        draw_made(&git, indexed.as_ref(), &next, &closing);
         return Outcome::Done(String::new());
     }
     let made = tn!(
@@ -1469,8 +1715,24 @@ fn init(json: bool, req: &InitRequest<'_>) -> Outcome {
     lines.push("Next:".to_owned());
     lines.extend(next.iter().map(|step| format!("  {step}")));
     lines.push(String::new());
-    lines.push(funds);
+    lines.push(closing.text().to_owned());
     Outcome::Done(lines.join("\n"))
+}
+
+/// The last word `init` has on the app it made.
+enum Closing {
+    /// It trades: what that means for the funds in its wallet.
+    Funds(String),
+    /// It needs nothing set up first.
+    Ready(String),
+}
+
+impl Closing {
+    fn text(&self) -> &str {
+        match self {
+            Self::Funds(text) | Self::Ready(text) => text,
+        }
+    }
 }
 
 /// `dir` as short as it can be said from here: relative when it is under
@@ -1484,15 +1746,22 @@ fn near(dir: &Path) -> PathBuf {
 }
 
 /// What to do next, from what the new app's erpc.toml says it lacks: the
-/// key, a `secret put` for each setting nothing provides, the check, then a
-/// run with the flag of each line whose setting it needs. The same order as
+/// key when its template trades with one, a `secret put` for each setting
+/// nothing provides (with the flag that gives its value, when nobody has
+/// to type it), the check, a run with the flag of each line whose setting
+/// it needs, then the deploy with the same flags. The same order as
 /// `docs/worker.md` and the erpc-worker skill give.
-fn next_steps(dest: &Path, dir_scope: &str) -> Vec<String> {
+///
+/// `dir_scope` names the app after a verb that takes it as its argument,
+/// and `flag_scope` after `secret put`, whose own argument comes first and
+/// which takes the app by `--dir` only.
+fn next_steps(dest: &Path, dir_scope: &str, flag_scope: &str, made_from: &Template) -> Vec<String> {
+    let trades = made_from.wallet;
     let manifest = std::fs::read_to_string(dest.join(manifest::FILE_NAME))
         .ok()
         .and_then(|text| Manifest::parse(&text).ok());
     let mut next = vec![format!("cd {}", shell_word(&near(dest).to_string_lossy()))];
-    if manifest.as_ref().is_none_or(|m| m.wallet.is_none()) {
+    if trades && manifest.as_ref().is_none_or(|m| m.wallet.is_none()) {
         next.push(format!("erpc worker key new{dir_scope}"));
     }
     let mut run_flags = String::new();
@@ -1506,7 +1775,11 @@ fn next_steps(dest: &Path, dir_scope: &str) -> Vec<String> {
                 run_flags.push_str(" --");
                 run_flags.push_str(kind.flag());
             }
-            None => next.push(format!("erpc worker secret put {}{dir_scope}", req.first())),
+            None => {
+                let dir_scope = flag_scope;
+                let (setting, how) = (req.first(), made_from.secret_flag(req.first()));
+                next.push(format!("erpc worker secret put {setting}{how}{dir_scope}"));
+            }
         }
     }
     next.push(format!("erpc worker check{dir_scope}"));
@@ -1515,13 +1788,19 @@ fn next_steps(dest: &Path, dir_scope: &str) -> Vec<String> {
     } else {
         next.push(format!("erpc worker run{dir_scope}{run_flags} --ip <IPV4>"));
     }
+    // With no server named, deploy lists the account's and offers a new
+    // hourly one, its price asked first. A new app has no environment but
+    // the default one, which a deploy without `--env` means: its scope is
+    // the app's.
+    let scope = dir_scope;
+    next.push(format!("erpc worker deploy{scope}{run_flags}"));
     next
 }
 
 /// The rest of `init`'s exchange at a terminal, once the spinner stopped:
 /// the repository, a list that could not be updated, the next steps in a
 /// box, and the warning about funds.
-fn draw_made(git: &Repository, indexed: Option<&CliError>, next: &[String], funds: &str) {
+fn draw_made(git: &Repository, indexed: Option<&CliError>, next: &[String], closing: &Closing) {
     match git {
         Repository::Failed(why) => {
             crate::prompt::warning(&t!("worker.init.git.failed_drawn", why));
@@ -1532,7 +1811,10 @@ fn draw_made(git: &Repository, indexed: Option<&CliError>, next: &[String], fund
         crate::prompt::warning(&t!("worker.init.unlisted", error = e.message));
     }
     crate::prompt::note("Next", &next.join("\n"));
-    crate::prompt::warning(funds);
+    match closing {
+        Closing::Funds(text) => crate::prompt::warning(text),
+        Closing::Ready(text) => crate::prompt::info(text),
+    }
     crate::prompt::outro(&t!("worker.init.done"));
 }
 
@@ -1577,7 +1859,8 @@ fn parent_dir(req: &InitRequest<'_>) -> Result<PathBuf, CliError> {
 
 /// The template to make the app from, and the name it is given: what
 /// `--template` names (a choice, such as hft, or a template id), the one
-/// picked with the arrow keys, or, with nobody to ask, the only template.
+/// picked with the arrow keys, or, with nobody to ask, the first template:
+/// the one to start from, which needs nothing set up.
 fn choose(req: &InitRequest<'_>) -> Result<(Template, &'static str), CliError> {
     if let Some(asked) = req.template {
         if let Some(kind) = template::find_kind(req.chain, asked) {
@@ -1612,22 +1895,15 @@ fn choose(req: &InitRequest<'_>) -> Result<(Template, &'static str), CliError> {
     if req.ask && !kinds.is_empty() {
         return pick_kind(&kinds);
     }
-    let templates = template::for_chain(req.chain);
-    match templates.as_slice() {
-        [] => Err(CliError::new(
-            Code::Failed,
-            t!("worker.init.no_templates", chain = req.chain),
-        )),
-        [only] => Ok((*only, only.default_name)),
-        _ => {
-            let ids: Vec<&str> = templates.iter().map(|t| t.id).collect();
-            Err(CliError::new(
-                Code::Usage,
-                t!("worker.init.many_templates", chain = req.chain),
+    template::for_chain(req.chain)
+        .first()
+        .map(|first| (*first, first.default_name))
+        .ok_or_else(|| {
+            CliError::new(
+                Code::Failed,
+                t!("worker.init.no_templates", chain = req.chain),
             )
-            .hint(format!("--template {}", ids.join(" | --template "))))
-        }
-    }
+        })
 }
 
 /// What to make, picked with the arrow keys. One that is coming soon says
@@ -2048,6 +2324,30 @@ mod tests {
         // Unknown, two of one name, or an app no longer there: an error,
         // never a guess.
         assert!(super::named(&one, "nothing").is_err());
+        // An app erpc knows whose erpc.toml no longer parses is not an
+        // unknown app: the error names the file and how to see what is
+        // wrong with it.
+        std::fs::write(a.join("erpc.toml"), "name = \"hft-bot\"\n[run\n").expect("broken");
+        let broken = super::named(&one, "hft-bot").expect_err("unreadable");
+        assert!(
+            broken.message.contains("cannot be read") && broken.message.contains("erpc.toml"),
+            "{}",
+            broken.message
+        );
+        assert!(
+            broken
+                .hint
+                .as_deref()
+                .is_some_and(|h| h.contains("erpc worker check")),
+            "{:?}",
+            broken.hint
+        );
+        assert!(
+            !broken.message.contains("knows no app"),
+            "{}",
+            broken.message
+        );
+        std::fs::write(a.join("erpc.toml"), "name = \"hft-bot\"\n").expect("restored");
         let two = Index {
             workers: vec![
                 entry("hft-bot", &a),
@@ -2070,14 +2370,18 @@ mod tests {
             ("worker_backup.rs", include_str!("worker_backup.rs")),
             ("worker_bench.rs", include_str!("worker_bench.rs")),
             ("worker_build.rs", include_str!("worker_build.rs")),
+            ("worker_charges.rs", include_str!("worker_charges.rs")),
             ("worker_deploy.rs", include_str!("worker_deploy.rs")),
             ("worker_firewall.rs", include_str!("worker_firewall.rs")),
+            ("worker_import.rs", include_str!("worker_import.rs")),
             ("worker_inventory.rs", include_str!("worker_inventory.rs")),
             ("worker_keys.rs", include_str!("worker_keys.rs")),
+            ("worker_keystore.rs", include_str!("worker_keystore.rs")),
             ("worker_remote.rs", include_str!("worker_remote.rs")),
             ("worker_run.rs", include_str!("worker_run.rs")),
             ("worker_secrets.rs", include_str!("worker_secrets.rs")),
             ("worker_vps.rs", include_str!("worker_vps.rs")),
+            ("worker_waf.rs", include_str!("worker_waf.rs")),
             ("node_common.rs", include_str!("node_common.rs")),
             (
                 "erpc-worker/manifest.rs",
@@ -2181,7 +2485,10 @@ mod tests {
         "releases", "bench", "backup", "api", "trades",
     ];
     const DIR_VERBS: [&str; 5] = ["check", "key", "secret", "run", "build"];
-    const NO_APP_VERBS: [&str; 2] = ["init", "list"];
+    const NO_APP_VERBS: [&str; 3] = ["init", "import", "list"];
+    /// The verbs under `secret` that act on this machine's keystore, not
+    /// on an app: they take no `--dir`.
+    const MACHINE_VERBS: [&str; 2] = ["secret unlock", "secret lock"];
 
     #[test]
     fn every_command_a_hint_names_is_scoped_to_its_app() {
@@ -2204,7 +2511,12 @@ mod tests {
                     .next()
                     .unwrap_or_default();
                 let (env, dir) = (c.contains("{scope}"), c.contains("{dir_scope}"));
-                if ENV_VERBS.contains(&verb) {
+                let of_the_machine = MACHINE_VERBS
+                    .iter()
+                    .any(|m| c.trim_start_matches("erpc worker ") == *m);
+                if of_the_machine {
+                    env || dir
+                } else if ENV_VERBS.contains(&verb) {
                     !env || dir
                 } else if DIR_VERBS.contains(&verb) {
                     env || !dir
@@ -2220,6 +2532,47 @@ mod tests {
             })
             .collect();
         assert!(wrong.is_empty(), "hints with the wrong scope: {wrong:#?}");
+    }
+
+    #[test]
+    fn check_warns_of_what_this_machines_keystore_does_not_hold() {
+        use crate::worker_keystore::fake::{FakeDesk, PASSPHRASE, set_up};
+        let desk = FakeDesk::typing(&[PASSPHRASE, PASSPHRASE]);
+        let _kept = set_up(&desk);
+        crate::worker_keystore::write(
+            "erpc-worker",
+            "bot.API_TOKEN",
+            erpc_auth::store::keystore::Kind::Secret,
+            "tok-1",
+            true,
+        )
+        .expect("kept");
+        desk.lock();
+        desk.terminal.set(false);
+        let m = erpc_worker::manifest::Manifest::parse(
+            "name = \"bot\"\nchain = \"solana\"\n[secrets]\n\
+             API_TOKEN = \"keystore:erpc-worker/bot.API_TOKEN\"\n\
+             X_TOKEN = \"keystore:erpc-worker/bot.X_TOKEN\"\n\
+             Y_TOKEN = \"keychain:erpc-worker/bot.Y_TOKEN\"\n\
+             [wallet]\nsource = \"keystore:erpc-worker/bot.wallet\"\n",
+        )
+        .expect("manifest");
+        // What is here is not warned about; what is not is named, the key
+        // too. Looked for, never read: locked, with nobody to ask.
+        let warnings = super::keystore_warnings(&m);
+        assert_eq!(warnings.len(), 2, "{warnings:#?}");
+        assert!(
+            warnings[0].starts_with(
+                "secrets.X_TOKEN is keystore:erpc-worker/bot.X_TOKEN, which this machine's \
+                 keystore does not hold"
+            ),
+            "{warnings:#?}"
+        );
+        assert!(
+            warnings[1].starts_with("wallet.source is keystore:erpc-worker/bot.wallet"),
+            "{warnings:#?}"
+        );
+        assert_eq!(desk.asked(), 2);
     }
 
     #[test]
@@ -2244,6 +2597,7 @@ mod tests {
                 "erpc-worker/lib.rs",
                 "erpc-worker/net.rs",
                 "erpc-worker/server.rs",
+                "erpc-worker/waf.rs",
             ];
             assert!(
                 scanned.contains(&name.as_str()) || skipped.contains(&name.as_str()),
@@ -2276,8 +2630,11 @@ mod tests {
             "deploy --vps 100001",
             "delete --release-server --forget --forget-line 100002",
             "logs",
+            "logs --waf",
             "rollback",
             "firewall sync",
+            "firewall list",
+            "firewall allow --to app 0.0.0.0/0",
             "status",
             "start",
             "stop",
@@ -2308,6 +2665,47 @@ mod tests {
         assert!(parses("erpc worker init"));
         assert!(!parses(&format!("erpc worker init{}", app.dir.scope())));
         assert!(parses("erpc worker list"));
+    }
+
+    /// `erpc worker secret put`'s value comes from one place: the flags
+    /// name the account or erpc itself, neither names the person, and both
+    /// together are a usage error (exit 2) before anything is read.
+    #[test]
+    fn secret_put_takes_its_value_from_one_place() {
+        use crate::worker_keys::Value;
+        let parsed = |flags: &str| {
+            let line = format!("erpc worker secret put API_TOKEN {flags}");
+            <crate::Cli as clap::Parser>::try_parse_from(line.split_whitespace()).map(|cli| {
+                match cli.command {
+                    Some(crate::Command::Worker { action }) => match *action {
+                        super::Action::Secret {
+                            action: super::SecretAction::Put { value, .. },
+                        } => value.value(),
+                        other => panic!("not secret put: {other:?}"),
+                    },
+                    _ => panic!("not a worker command"),
+                }
+            })
+        };
+        assert_eq!(parsed("").ok(), Some(Value::Typed));
+        assert_eq!(parsed("--replace --dir apps/bot").ok(), Some(Value::Typed));
+        assert_eq!(parsed("--generate").ok(), Some(Value::Generated));
+        assert_eq!(parsed("--generate --replace").ok(), Some(Value::Generated));
+        assert_eq!(parsed("--from-account").ok(), Some(Value::Account));
+        assert_eq!(
+            parsed("--from-account --store keystore").ok(),
+            Some(Value::Account)
+        );
+        for both in [
+            "--generate --from-account",
+            "--from-account --generate",
+            "--from-account --replace --generate",
+        ] {
+            let e = parsed(both).expect_err("both flags");
+            assert_eq!(e.kind(), clap::error::ErrorKind::ArgumentConflict, "{both}");
+            assert_eq!(e.exit_code(), 2, "{both}");
+            assert!(e.to_string().contains("cannot be used with"), "{e}");
+        }
     }
 
     fn request(template: Option<&str>) -> super::InitRequest<'_> {
@@ -2342,10 +2740,20 @@ mod tests {
         );
         assert_eq!(
             made(Some("solana/pumpfun")).ok(),
-            Some((pumpfun.clone(), "pumpfun-bot"))
+            Some((pumpfun, "pumpfun-bot"))
         );
-        // Nobody to ask and nothing named: the one template there is.
-        assert_eq!(made(None).ok(), Some((pumpfun, "pumpfun-bot")));
+        // The one to start from, under its choice's name or its id.
+        let hello = "solana/hello@1".to_owned();
+        assert_eq!(
+            made(Some("HelloWorld")).ok(),
+            Some((hello.clone(), "hello-world"))
+        );
+        assert_eq!(
+            made(Some("hello")).ok(),
+            Some((hello.clone(), "hello-world"))
+        );
+        // Nobody to ask and nothing named: the one to start from.
+        assert_eq!(made(None).ok(), Some((hello, "hello-world")));
         // Coming soon, and nothing: a usage error that says which.
         let soon = made(Some("stablecoin")).expect_err("coming soon");
         assert_eq!(soon.code, super::Code::Usage);
@@ -2353,10 +2761,136 @@ mod tests {
         let unknown = made(Some("nothing")).expect_err("unknown");
         assert_eq!(unknown.code, super::Code::Usage);
         assert!(
-            unknown.message.contains("HFT or pumpfun-bot"),
+            unknown.message.contains("HelloWorld or HFT or pumpfun-bot"),
             "{}",
             unknown.message
         );
+    }
+
+    #[test]
+    fn check_names_a_key_only_to_an_app_that_trades() {
+        use erpc_worker::template;
+        let rendered = |id: &str| {
+            let files = template::find(super::Chain::Solana, id)
+                .expect("template")
+                .render("my-app")
+                .expect("renders");
+            let (_, text) = files
+                .into_iter()
+                .find(|(p, _)| p.as_os_str() == "erpc.toml")
+                .expect("erpc.toml");
+            super::Manifest::parse(&String::from_utf8(text).expect("utf8")).expect("valid")
+        };
+        let path = std::path::Path::new("/apps/my-app/erpc.toml");
+        // The bot is told how to make its key; the hello app, which needs
+        // none, is not, and neither is an app made by hand.
+        let bot = rendered("pumpfun");
+        assert!(super::lacks_its_key(&bot));
+        assert!(super::describe(path, &bot, &[]).contains("erpc worker key new"));
+        let hello = rendered("hello");
+        assert!(!super::lacks_its_key(&hello));
+        assert!(!super::describe(path, &hello, &[]).contains("key new"));
+        let by_hand =
+            super::Manifest::parse("name = \"mine\"\nchain = \"solana\"\n").expect("valid");
+        assert!(!super::lacks_its_key(&by_hand));
+    }
+
+    #[test]
+    fn the_next_steps_ask_for_a_key_only_of_an_app_that_trades() {
+        use super::next_steps;
+        use erpc_worker::template;
+        let root = std::env::temp_dir().join(format!("erpc-w-next-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("root");
+        let steps = |id: &str, name: &str| {
+            let made = template::find(super::Chain::Solana, id).expect("template");
+            let dest = root.join(name);
+            made.write(name, &dest).expect("writes");
+            next_steps(&dest, &format!(" {name}"), &format!(" --dir {name}"), &made)
+        };
+        // Nothing to set up: check, run, deploy.
+        let hello = steps("hello", "my-api");
+        assert_eq!(
+            hello[1..],
+            [
+                "erpc worker check my-api",
+                "erpc worker run my-api",
+                "erpc worker deploy my-api"
+            ],
+            "{hello:?}"
+        );
+        // A bot: its key and its settings first, and the line it needs on
+        // the run and the deploy alike.
+        let bot = steps("pumpfun", "my-bot");
+        assert_eq!(bot[1], "erpc worker key new my-bot", "{bot:?}");
+        // `secret put` takes the app by --dir: its own argument comes
+        // first. Neither value has to be typed: the bot's own token is
+        // made, and the RPC key is the account's.
+        assert_eq!(
+            bot[2..4],
+            [
+                "erpc worker secret put API_TOKEN --generate --dir my-bot",
+                "erpc worker secret put ERPC_API_KEY --from-account --dir my-bot"
+            ],
+            "{bot:?}"
+        );
+        for step in &bot {
+            let words: Vec<String> = std::iter::once("erpc".to_owned())
+                .chain(step.split_whitespace().skip(1).map(ToOwned::to_owned))
+                .collect();
+            if step.starts_with("erpc ") && !step.contains('<') {
+                assert!(
+                    <crate::Cli as clap::Parser>::try_parse_from(&words).is_ok(),
+                    "`{step}` does not parse"
+                );
+            }
+        }
+        assert_eq!(
+            bot[bot.len() - 2..],
+            [
+                "erpc worker run my-bot --grpc --ip <IPV4>",
+                "erpc worker deploy my-bot --grpc"
+            ],
+            "{bot:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The flag a hint names for a secret is the one `init` named when it
+    /// made the app: the template's, found again from what erpc.toml says
+    /// the app was made from.
+    #[test]
+    fn a_hint_keeps_a_secret_with_the_flag_the_apps_template_names() {
+        use super::{Manifest, secret_flag};
+        use erpc_worker::template;
+        let app = |template: &str| {
+            Manifest::parse(&format!("name = \"bot\"\nchain = \"solana\"\n{template}"))
+                .expect("valid")
+        };
+        let bot = app("template = \"solana/pumpfun@1\"\n");
+        assert_eq!(secret_flag(&bot, "API_TOKEN"), " --generate");
+        assert_eq!(secret_flag(&bot, "ERPC_API_KEY"), " --from-account");
+        // A secret the operator has to give is typed.
+        assert_eq!(secret_flag(&bot, "X_TOKEN"), "");
+        // A template with no token of its own: only the account's key
+        // need not be typed.
+        let hello = app("template = \"solana/hello@1\"\n");
+        assert_eq!(secret_flag(&hello, "API_TOKEN"), "");
+        assert_eq!(secret_flag(&hello, "ERPC_API_KEY"), " --from-account");
+        // An app made by hand, or from a template this erpc does not
+        // carry: nothing is known of its settings, so each is typed.
+        for by_hand in [app(""), app("template = \"solana/nope@1\"\n")] {
+            for setting in ["API_TOKEN", "ERPC_API_KEY"] {
+                assert_eq!(secret_flag(&by_hand, setting), "", "{:?}", by_hand.template);
+            }
+        }
+        // For every template, the choice `init`'s next steps make.
+        for made_from in template::ALL {
+            let m = app(&format!("template = \"{}\"\n", made_from.tag()));
+            for setting in ["API_TOKEN", "ERPC_API_KEY", "X_TOKEN"] {
+                assert_eq!(secret_flag(&m, setting), made_from.secret_flag(setting));
+            }
+        }
     }
 
     #[test]
@@ -2467,6 +3001,43 @@ mod tests {
     }
 
     #[test]
+    fn check_says_what_the_waf_will_do_and_what_is_wrong_with_it() {
+        crate::ui::force_drawn(false);
+        let app = "name = \"bot\"\nchain = \"solana\"\n[run]\nport = 3000\n";
+        let root = app_dir("waf", &format!("{app}[waf]\nport = 8080\n"));
+        let Outcome::Done(report) = check(false, &Dir::at(&root), None) else {
+            panic!("a report");
+        };
+        assert!(
+            report.contains("\n  waf       port 8080, in front of the app on 127.0.0.1:3000: "),
+            "{report}"
+        );
+        assert!(
+            report.contains("\n            per address: 50 requests a second (burst 100), "),
+            "{report}"
+        );
+        let _ = std::fs::remove_dir_all(root);
+        // An app without the table is told nothing of one.
+        let root = app_dir("plain", app);
+        let Outcome::Done(report) = check(false, &Dir::at(&root), None) else {
+            panic!("a report");
+        };
+        assert!(!report.contains("\n  waf "), "{report}");
+        let _ = std::fs::remove_dir_all(root);
+        // What is wrong with the table is a finding that names its key.
+        let root = app_dir(
+            "waf-bad",
+            &format!("{app}[waf]\nport = 80\nrate = {{ per_second = 0, burst = 1 }}\n"),
+        );
+        let Outcome::Problems(report) = check(false, &Dir::at(&root), None) else {
+            panic!("a finding");
+        };
+        assert!(report.contains("waf.port 80 is below 1024"), "{report}");
+        assert!(report.contains("waf.rate.per_second is 0"), "{report}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn check_says_its_findings_in_the_language_of_the_run() {
         use crate::i18n::speaking;
         use erpc_core::i18n::Lang;
@@ -2485,6 +3056,101 @@ mod tests {
         let ru = said(Lang::Ru);
         assert!(ru.contains(": 1 проблема"), "{ru}");
         assert!(said(Lang::En).contains(": 1 problem\n"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// What a deploy would find only after it bought a server: `check`
+    /// reads the binary `build.prebuilt` names, and says what it is.
+    #[test]
+    fn check_warns_of_a_prebuilt_binary_no_server_can_run() {
+        use crate::i18n::speaking;
+        use erpc_core::i18n::Lang;
+        crate::ui::force_drawn(false);
+        let root = app_dir(
+            "prebuilt",
+            "name = \"bot\"\nchain = \"solana\"\n[build]\nprebuilt = \"dist/bot\"\n",
+        );
+        std::fs::create_dir_all(root.join("dist")).expect("dist");
+        let dir = Dir::at(&root);
+        let said = || match speaking(Lang::En, || check(false, &dir, None)) {
+            Outcome::Done(said) => said,
+            _ => panic!("a warning, not a finding"),
+        };
+        let absent = said();
+        assert!(
+            absent.contains("before a deploy from this machine: build.prebuilt names dist/bot"),
+            "{absent}"
+        );
+        for (bytes, why) in [
+            (&b"#!/bin/sh\nexec python3 bot.py\n"[..], "it is a script"),
+            (
+                &[0xcf, 0xfa, 0xed, 0xfe, 7, 0, 0, 1][..],
+                "it is a macOS binary",
+            ),
+            (&b"just some text"[..], "it is not a Linux (ELF) binary"),
+        ] {
+            std::fs::write(root.join("dist/bot"), bytes).expect("a file");
+            let said = said();
+            let warned = said
+                .lines()
+                .find(|line| line.contains("before a deploy from this machine"))
+                .unwrap_or_else(|| panic!("no warning: {said}"));
+            assert!(warned.contains("cannot run on a server"), "{said}");
+            assert!(warned.contains(why), "{said}");
+        }
+        // What it is, is said in the language of the run.
+        let Outcome::Done(ja) = speaking(Lang::Ja, || check(false, &dir, None)) else {
+            panic!("a warning, not a finding");
+        };
+        assert!(ja.contains("Linux（ELF）のバイナリではありません"), "{ja}");
+        // A program for the servers' machine is not warned of.
+        let program = {
+            use crate::elf::fixture::{GLIBC_X86_64, X86_64, linked};
+            linked(X86_64, GLIBC_X86_64, b"\0GLIBC_2.31\0")
+        };
+        std::fs::write(root.join("dist/bot"), program).expect("a binary");
+        let said = said();
+        assert!(!said.contains("build.prebuilt"), "{said}");
+        assert!(!said.contains("cannot run on a server"), "{said}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn check_warns_of_a_credential_under_vars_and_the_app_still_passes() {
+        use crate::i18n::speaking;
+        use erpc_core::i18n::Lang;
+        crate::ui::force_drawn(false);
+        // Joined from parts: no file holds a URL with a password whole.
+        let url = ["postgres", "://app:devpass", "@", "db/app"].concat();
+        let root = app_dir(
+            "cred",
+            &format!(
+                "name = \"bot\"\nchain = \"solana\"\n\
+                 [vars]\nDATABASE_URL = \"{url}\"\nLOG_LEVEL = \"info\"\n"
+            ),
+        );
+        let dir = Dir::at(&root);
+        // A warning, in the language of the run, on an app that is valid:
+        // one deployed before the rule was there still deploys.
+        for (lang, words) in [
+            (
+                Lang::En,
+                "carries a credential in its value (a URL with a password",
+            ),
+            (Lang::Ja, "認証情報が含まれています"),
+            (Lang::Zh, "带有凭据"),
+            (Lang::Ru, "содержит учётные данные"),
+        ] {
+            let Outcome::Done(said) = speaking(lang, || check(false, &dir, None)) else {
+                panic!("a warning, not a finding");
+            };
+            assert!(said.contains(words), "{said}");
+            assert!(
+                said.contains("`erpc worker secret put DATABASE_URL --dir "),
+                "{said}"
+            );
+            assert!(!said.contains("LOG_LEVEL carries"), "{said}");
+        }
         let _ = std::fs::remove_dir_all(root);
     }
 }

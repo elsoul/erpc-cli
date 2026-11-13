@@ -3,9 +3,33 @@
 no_session = "セッションがありません"
 login_hint = "`erpc login` を実行してください"
 api_silent = "user-api から応答がありませんでした：{error}"
+accepted = "--yes の指定により、確認なしで進めます"
+needs_yes = "アカウントに時間課金が発生するものを開始しますが、端末で確認できる人がいません"
+needs_yes_hint = "表示される料金を受け入れるには --yes を付けてください（ERPC クレジットから支払われ、残高が足りなければ開始は拒否されます）。または端末で実行してください"
+needs_terminal_hint = "端末で実行してください。料金を表示して確認します"
 no_api_key = "このアカウントには共有 RPC 用の API キーがありません"
 no_api_key_hint = "ERPC ダッシュボードで作成できます"
+keys_refused = "共有 RPC は、このマシンから試したアカウントの API キーをどれも受け付けません（{count} 個を試しました）"
+keys_refused_hint = "キーはこのマシンから試しました。接続元のアドレスが制限されたキーは、許可されたアドレスからは使えても、このマシンからは拒否されます。また、キーには期限を設定でき、アカウントの RPC プランが終了していることもあります。この 2 点は ERPC ダッシュボードで確認でき、新しいキーも作れます"
 no_reason = "理由は示されていません"
+
+[login]
+needs_yes = "erpc はまだこのサーバーを鍵認証のみにしていません。サーバーのパスワードで一度ログインして、あなたの鍵を登録し、パスワードログインを無効にする必要がありますが、端末で確認できる人がいません"
+needs_yes_hint = "このログインに同意するには --yes を付けてください（何も開始されず、料金もかかりません）。または端末で実行してください"
+needs_terminal_hint = "端末で実行してください。ログインの内容を表示して確認します"
+
+[start]
+again = "以前の実行でこの開始リクエストを送信しましたが、結果を確認できませんでした。同じキーで同じリクエストをもう一度送信します。新しいリクエストは作成しません"
+unanswered = "開始が成立したかどうか分かりません：{why}"
+answered = "user-api が HTTP {status} を返しました：{reason}"
+not_on_record = "開始リクエストを記録できなかったため、送信しませんでした：{error}"
+other = "以前の {was} の開始に応答がなく、記録に残っています。このコマンドは {now} を要求しています。以前の開始が成立している可能性があり、送信すると二重に購入するおそれがあるため、何も送信しませんでした"
+in_progress = "この購入、またはこのアカウントの別の購入がまだ処理中です（HTTP {status}：{reason}）"
+unrelated = "再送したリクエストを user-api が拒否しました（HTTP {status}：{reason}）。これは以前のリクエストについては何も示しておらず、以前のリクエストは成立している可能性があります"
+not_known = "user-api の応答からは、何かが開始されたかどうか分かりません（HTTP {status}：{reason}）"
+unmatched = "user-api にはこのリクエストによる購入がありますが、このコマンドのものとしては返されませんでした（HTTP {status}、IDEMPOTENCY_CONFLICT）。何も開始しておらず、再送もしていません"
+unnamed = "user-api は開始したと応答しましたが、どれを開始したかは示しませんでした（HTTP {status}）"
+other_purchase = "user-api によると、このリクエストのキーは別の購入に属しています。何も開始しておらず、再送もしていません"
 
 [vps]
 none = "このアカウントに VPS {id} はありません"
@@ -26,7 +50,6 @@ region_asked = "指定どおり"
 region_nearest = "このマシンのタイムゾーンから最も近いもの"
 not_started = "user-api が起動しませんでした（HTTP {status}）：{reason}"
 other_region_hint = "別の --region なら在庫があるかもしれません。`erpc worker deploy --region <name>{scope}`"
-no_id = "user-api は VPS を起動しましたが、その ID を返しませんでした"
 started = "VPS {id} を起動しました"
 
 [ready]
@@ -47,7 +70,6 @@ no_region_hint = "ERPC の VPS にデプロイしてください（`--vps <id>` 
 buying = "新しい時間課金の {kind} 回線：{name}（{product}、{how}、1 時間あたり €{price}）、{ip} 用"
 not_started = "user-api が {kind} 回線を起動しませんでした（HTTP {status}）：{reason}"
 made_anyway = "user-api はそれでも回線 {id} を作成しており、記録済みです。`erpc worker delete --release-server{scope}` かダッシュボードで終了するまで課金される可能性があります"
-no_id = "user-api は {kind} 回線を起動しましたが、その ID を返しませんでした"
 warned = "user-api からの警告：{warning}"
 started = "{kind} 回線 {id} を起動しました"
 no_endpoint = "{kind} 回線 {id} は起動しましたが、1 分たっても user-api がエンドポイントを返しません"

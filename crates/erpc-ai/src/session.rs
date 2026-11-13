@@ -15,7 +15,7 @@
 use core::future::Future;
 
 use erpc_api::ApiError;
-use erpc_api::ai::ChatRequest;
+use erpc_api::ai::{ChatRequest, Size};
 use erpc_auth::AuthClient;
 use secrecy::SecretString;
 use serde::Serialize;
@@ -88,6 +88,14 @@ pub enum SessionEvent {
     },
     /// The turn finished.
     Complete,
+    /// The service does not offer the size the person chose: the turn is
+    /// asked again at its default. After it, the turns go back to the size
+    /// each turn's words decide, or, when the service turned every size
+    /// down, to its recommended model. An erpc addition to the protocol.
+    SizeRefused {
+        /// The size turned down: `xlarge`.
+        size: String,
+    },
     /// The model declined to answer. An erpc addition to the protocol.
     Refusal {
         /// The category, when the service gave one.
@@ -108,6 +116,30 @@ pub enum SessionEvent {
         /// What went wrong, for a person.
         message: String,
     },
+}
+
+/// What a turn asks for next when the service does not offer the model it
+/// asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Retry {
+    /// It asked for the size the person chose, other than large: large
+    /// answers instead, and the person is told.
+    Large(Size),
+    /// The service does not know the sizes: its recommended model answers,
+    /// and is asked for from then on.
+    Recommended,
+    /// It already asked for the recommended model: there is nothing else.
+    Nothing,
+}
+
+/// The [`Retry`] after `asked` was turned down, with `chosen` the size the
+/// person chose.
+fn retry_after_refusal(chosen: Option<Size>, asked: &str) -> Retry {
+    match chosen {
+        Some(size) if size != Size::Large && asked == size.model() => Retry::Large(size),
+        _ if asked == erpc_api::ai::FALLBACK_MODEL => Retry::Nothing,
+        _ => Retry::Recommended,
+    }
 }
 
 /// Whether a session is working.
@@ -149,6 +181,9 @@ pub struct Session<A: Access> {
     /// Whether the service turned the model sizes down, so only its
     /// recommended model is asked for.
     sizes_refused: bool,
+    /// The size the person put the conversation on; none, and each turn's
+    /// words decide it ([`crate::policy`]).
+    size: Option<Size>,
     /// Who says yes to a tool that changes the account; none, and such a
     /// tool refuses.
     confirm: Option<Box<dyn crate::confirm::Confirm>>,
@@ -188,6 +223,7 @@ impl<A: Access> Session<A> {
             history: Vec::new(),
             settled: false,
             sizes_refused: false,
+            size: None,
             confirm: None,
             wallet: None,
             servers: None,
@@ -242,6 +278,68 @@ impl<A: Access> Session<A> {
     pub fn with_confirm(mut self, confirm: Box<dyn crate::confirm::Confirm>) -> Self {
         self.confirm = Some(confirm);
         self
+    }
+
+    /// Puts every turn from the next one on `size`, or, with none, back on
+    /// the size each turn's words decide. A change costs the next turn its
+    /// prompt cache: the whole conversation is read again at the new size.
+    /// It lasts until it is changed again, a new conversation included.
+    pub const fn set_size(&mut self, size: Option<Size>) {
+        self.size = size;
+    }
+
+    /// The size the person chose; none when each turn's words decide it.
+    #[must_use]
+    pub const fn size(&self) -> Option<Size> {
+        self.size
+    }
+
+    /// Whether the service turned the model sizes down: from then on only
+    /// its recommended model is asked for, and a size chosen is not.
+    #[must_use]
+    pub const fn sizes_refused(&self) -> bool {
+        self.sizes_refused
+    }
+
+    /// The policy for a turn whose question is `text`: the size the person
+    /// chose, or the one the words decide, and the service's recommended
+    /// model once it has turned the sizes down.
+    fn turn_policy(&self, text: &str) -> crate::policy::TurnPolicy {
+        let mut policy = match self.size {
+            Some(size) if !self.sizes_refused => crate::policy::chosen(size),
+            _ => crate::policy::policy(text, self.settled || self.sizes_refused),
+        };
+        if self.sizes_refused {
+            policy.model = erpc_api::ai::FALLBACK_MODEL;
+        }
+        policy
+    }
+
+    /// After the service turned down the model `policy` asked for, for the
+    /// question `text`: moves the session and `policy` on to what is asked
+    /// next. Returns whether to ask again, and the size the person chose
+    /// that was turned down, to tell them.
+    fn on_not_offered(
+        &mut self,
+        text: &str,
+        policy: &mut crate::policy::TurnPolicy,
+    ) -> (bool, Option<Size>) {
+        match retry_after_refusal(self.size, policy.model) {
+            Retry::Large(size) => {
+                self.size = None;
+                *policy = crate::policy::chosen(Size::Large);
+                (true, Some(size))
+            }
+            Retry::Recommended => {
+                // A size the person chose goes with the sizes, and they
+                // are told.
+                let chosen = self.size.take();
+                self.sizes_refused = true;
+                *policy = self.turn_policy(text);
+                (true, chosen)
+            }
+            Retry::Nothing => (false, None),
+        }
     }
 
     /// Forgets the conversation so far.
@@ -407,10 +505,7 @@ impl<A: Access> Session<A> {
         abort: impl Future<Output = ()>,
         emit: &mut dyn FnMut(SessionEvent),
     ) -> Turn {
-        let mut policy = crate::policy::policy(text, self.settled || self.sizes_refused);
-        if self.sizes_refused {
-            policy.model = erpc_api::ai::FALLBACK_MODEL;
-        }
+        let mut policy = self.turn_policy(text);
         let tools = crate::tools::definitions();
         tokio::pin!(abort);
         for _ in 0..MAX_ROUNDS {
@@ -599,36 +694,39 @@ impl<A: Access> Session<A> {
         emit: &mut dyn FnMut(SessionEvent),
     ) -> Option<Result<erpc_api::ai::Answer, ApiError>> {
         loop {
-            let mut on_text = |text: &str| {
-                emit(SessionEvent::TextDelta {
-                    text: text.to_owned(),
-                });
+            // The request borrows the session and `emit` until it ends here.
+            let result = {
+                let mut on_text = |text: &str| {
+                    emit(SessionEvent::TextDelta {
+                        text: text.to_owned(),
+                    });
+                };
+                let request = ChatRequest {
+                    system: &self.system,
+                    messages: &self.history,
+                    model: policy.model,
+                    max_tokens: policy.max_tokens,
+                    effort: policy.effort,
+                    thinking: policy.thinking,
+                    tools,
+                };
+                let chat = erpc_api::ai::chat(&self.client, token, &request, &mut on_text);
+                tokio::pin!(chat);
+                tokio::select! {
+                    result = &mut chat => Some(result),
+                    () = abort.as_mut() => None,
+                }
             };
-            let request = ChatRequest {
-                system: &self.system,
-                messages: &self.history,
-                model: policy.model,
-                max_tokens: policy.max_tokens,
-                effort: policy.effort,
-                thinking: policy.thinking,
-                tools,
-            };
-            let chat = erpc_api::ai::chat(&self.client, token, &request, &mut on_text);
-            tokio::pin!(chat);
-            let result = tokio::select! {
-                result = &mut chat => Some(result),
-                () = abort.as_mut() => None,
-            };
-            // A service that does not know the sizes refuses them before
-            // answering; its recommended model answers instead, and is
-            // asked for from then on.
-            if matches!(result, Some(Err(ApiError::ModelNotAllowed(_))))
-                && policy.model != erpc_api::ai::FALLBACK_MODEL
-            {
-                self.sizes_refused = true;
-                *policy = crate::policy::policy(text, true);
-                policy.model = erpc_api::ai::FALLBACK_MODEL;
-                continue;
+            if matches!(result, Some(Err(ApiError::ModelNotAllowed(_)))) {
+                let (again, turned_down) = self.on_not_offered(text, policy);
+                if let Some(size) = turned_down {
+                    emit(SessionEvent::SizeRefused {
+                        size: size.name().to_owned(),
+                    });
+                }
+                if again {
+                    continue;
+                }
             }
             self.settled |= policy.model != erpc_api::ai::QUICK_MODEL;
             return result;
@@ -825,6 +923,12 @@ mod tests {
             ),
             (SessionEvent::Complete, json!({ "type": "complete" })),
             (
+                SessionEvent::SizeRefused {
+                    size: "xlarge".into(),
+                },
+                json!({ "type": "size_refused", "size": "xlarge" }),
+            ),
+            (
                 SessionEvent::Aborted { reason: None },
                 json!({ "type": "aborted" }),
             ),
@@ -838,6 +942,96 @@ mod tests {
         for (event, expected) in cases {
             assert_eq!(serde_json::to_value(&event).expect("serialises"), expected);
         }
+    }
+
+    #[test]
+    fn a_chosen_size_turned_down_steps_down_to_large_and_only_then_to_none() {
+        use super::{Retry, retry_after_refusal};
+        use erpc_api::ai::{FALLBACK_MODEL, Size};
+        for size in [Size::Small, Size::Medium, Size::Xlarge] {
+            assert_eq!(
+                retry_after_refusal(Some(size), size.model()),
+                Retry::Large(size)
+            );
+        }
+        // Large is what a step down asks for: turned down too, the service
+        // does not know the sizes.
+        assert_eq!(
+            retry_after_refusal(Some(Size::Large), Size::Large.model()),
+            Retry::Recommended
+        );
+        assert_eq!(
+            retry_after_refusal(None, Size::Large.model()),
+            Retry::Recommended
+        );
+        assert_eq!(
+            retry_after_refusal(Some(Size::Xlarge), Size::Large.model()),
+            Retry::Recommended
+        );
+        assert_eq!(retry_after_refusal(None, FALLBACK_MODEL), Retry::Nothing);
+        assert_eq!(
+            retry_after_refusal(Some(Size::Xlarge), FALLBACK_MODEL),
+            Retry::Nothing
+        );
+    }
+
+    #[test]
+    fn a_turn_asks_for_the_chosen_size_until_the_service_turns_the_sizes_down() {
+        use erpc_api::ai::{FALLBACK_MODEL, QUICK_MODEL, Size};
+        let client = erpc_auth::AuthClient::new().expect("client");
+        let mut session = Session::new(NoAccess, client, Vec::new());
+        assert_eq!(session.turn_policy("hi").model, QUICK_MODEL);
+        session.set_size(Some(Size::Xlarge));
+        assert_eq!(session.turn_policy("hi").model, Size::Xlarge.model());
+        session.sizes_refused = true;
+        assert_eq!(session.turn_policy("hi").model, FALLBACK_MODEL);
+    }
+
+    #[test]
+    fn a_turned_down_size_steps_down_once_and_is_reported_once() {
+        use erpc_api::ai::{FALLBACK_MODEL, Size};
+        let client = erpc_auth::AuthClient::new().expect("client");
+        let mut session = Session::new(NoAccess, client, Vec::new());
+        session.set_size(Some(Size::Xlarge));
+        let mut policy = session.turn_policy("deploy");
+        // xlarge turned down: large next, xlarge reported, auto after.
+        assert_eq!(
+            session.on_not_offered("deploy", &mut policy),
+            (true, Some(Size::Xlarge))
+        );
+        assert_eq!(policy.model, Size::Large.model());
+        assert_eq!(session.size(), None);
+        assert!(!session.sizes_refused());
+        // large turned down too: the recommended model, nothing to report.
+        assert_eq!(session.on_not_offered("deploy", &mut policy), (true, None));
+        assert_eq!(policy.model, FALLBACK_MODEL);
+        assert!(session.sizes_refused());
+        // The recommended model turned down: nothing left to ask.
+        assert_eq!(session.on_not_offered("deploy", &mut policy), (false, None));
+
+        // A chosen large turned down: the sizes go, and large is reported.
+        let client = erpc_auth::AuthClient::new().expect("client");
+        let mut session = Session::new(NoAccess, client, Vec::new());
+        session.set_size(Some(Size::Large));
+        let mut policy = session.turn_policy("deploy");
+        assert_eq!(
+            session.on_not_offered("deploy", &mut policy),
+            (true, Some(Size::Large))
+        );
+        assert_eq!(policy.model, FALLBACK_MODEL);
+        assert_eq!(session.size(), None);
+    }
+
+    #[test]
+    fn a_chosen_size_lasts_through_a_new_conversation() {
+        let client = erpc_auth::AuthClient::new().expect("client");
+        let mut session = Session::new(NoAccess, client, Vec::new());
+        assert_eq!(session.size(), None);
+        session.set_size(Some(erpc_api::ai::Size::Xlarge));
+        session.reset();
+        assert_eq!(session.size(), Some(erpc_api::ai::Size::Xlarge));
+        session.set_size(None);
+        assert_eq!(session.size(), None);
     }
 
     #[test]
@@ -858,6 +1052,12 @@ mod tests {
         let next = session.next_message().expect("a guess to fetch");
         assert_eq!(next.model, erpc_api::ai::QUICK_MODEL);
         assert!(next.prompt.contains("assistant: €8.86"));
+        // A chosen size is for the conversation's turns, not the guess.
+        session.set_size(Some(erpc_api::ai::Size::Xlarge));
+        assert_eq!(
+            session.next_message().expect("a guess").model,
+            erpc_api::ai::QUICK_MODEL
+        );
         session.sizes_refused = true;
         assert_eq!(
             session.next_message().expect("a guess").model,

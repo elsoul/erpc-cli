@@ -57,6 +57,8 @@ mod config;
 mod conversations;
 mod credit_wallet;
 mod doctor;
+mod echo;
+mod elf;
 mod error;
 mod eth_authority;
 mod eth_authority_evidence;
@@ -78,6 +80,7 @@ mod kaia_rpc;
 mod kaia_signer;
 mod kaia_tree;
 mod keyless;
+mod long_commands;
 mod memory;
 mod near_rpc;
 mod near_tree;
@@ -144,14 +147,18 @@ mod worker;
 mod worker_backup;
 mod worker_bench;
 mod worker_build;
+mod worker_charges;
 mod worker_deploy;
 mod worker_firewall;
+mod worker_import;
 mod worker_inventory;
 mod worker_keys;
+mod worker_keystore;
 mod worker_remote;
 mod worker_run;
 mod worker_secrets;
 mod worker_vps;
+mod worker_waf;
 
 /// Exit statuses outside a failure's own ([`error::Code::exit`]).
 mod exit {
@@ -296,6 +303,11 @@ enum Command {
         /// `-m` or a question piped in, which is then saved to it.
         #[arg(short = 'c', long = "continue")]
         continue_last: bool,
+        /// Put every turn on one model size: small, medium, large or
+        /// xlarge, the most capable, which uses tokens at 2x. Without it,
+        /// each turn's words decide.
+        #[arg(long, value_name = "SIZE", value_parser = |text: &str| text.parse::<erpc_api::ai::Size>())]
+        model: Option<erpc_api::ai::Size>,
     },
     /// Continue a saved conversation. Without an id, pick one from a list.
     Resume {
@@ -639,7 +651,7 @@ async fn run() -> ExitCode {
 
 async fn dispatch(cli: Cli) -> ExitCode {
     let Some(command) = cli.command else {
-        let outcome = ai::run(cli.json, None, ai::Start::Fresh).await;
+        let outcome = ai::run(cli.json, None, ai::Start::Fresh, None).await;
         return finish(outcome);
     };
     // `erpc skills` is how the notice is acted on; it says nothing itself.
@@ -657,15 +669,16 @@ async fn dispatch(cli: Cli) -> ExitCode {
         Command::Ai {
             message,
             continue_last,
+            model,
         } => {
             let start = if continue_last {
                 ai::Start::Latest
             } else {
                 ai::Start::Fresh
             };
-            ai::run(cli.json, message, start).await
+            ai::run(cli.json, message, start, model).await
         }
-        Command::Resume { id } => ai::run(cli.json, None, ai::Start::Resume(id)).await,
+        Command::Resume { id } => ai::run(cli.json, None, ai::Start::Resume(id), None).await,
         Command::Validator { args } => {
             tree::run(erpc_core::chain::Role::Validator, &args, cli.json).await
         }

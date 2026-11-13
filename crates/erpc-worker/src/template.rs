@@ -37,17 +37,60 @@ pub struct Template {
     pub about: &'static str,
     /// The app name `init` gives an app made from it by its id.
     pub default_name: &'static str,
+    /// Whether an app made from it trades with a key: `init` then names
+    /// `erpc worker key new` among the next steps and warns about funds.
+    pub wallet: bool,
+    /// The secret settings that are tokens of the app's own, which nobody
+    /// has to choose: `init` names `secret put --generate` for each.
+    pub generated: &'static [&'static str],
 }
 
-/// Every template, in the order the picker shows them.
-pub const ALL: [Template; 1] = [Template {
-    chain: Chain::Solana,
-    id: "pumpfun",
-    version: 1,
-    about: "pump.fun / PumpSwap auto-trader: watches new pools over Geyser gRPC, buys and sells \
-            with a key erpc hands over on a pipe",
-    default_name: "pumpfun-bot",
-}];
+/// The setting that holds the account's own RPC API key, in every
+/// template that reads ERPC's shared RPC: `init` names
+/// `secret put --from-account` for it.
+pub const ACCOUNT_RPC_KEY: &str = "ERPC_API_KEY";
+
+impl Template {
+    /// The flag `erpc worker secret put` takes for `setting`, with its
+    /// leading space, when the value need not be typed: made here, or read
+    /// from the account. Empty for a secret the operator has to give.
+    #[must_use]
+    pub fn secret_flag(&self, setting: &str) -> &'static str {
+        if self.generated.contains(&setting) {
+            " --generate"
+        } else if setting == ACCOUNT_RPC_KEY {
+            " --from-account"
+        } else {
+            ""
+        }
+    }
+}
+
+/// Every template. The first is the one `init` makes when nobody is there
+/// to pick and none is named.
+pub const ALL: [Template; 2] = [
+    Template {
+        chain: Chain::Solana,
+        id: "hello",
+        version: 1,
+        about: "Hello, World!: a small HTTP API in Rust, with no key, secret or data line to set \
+                up first",
+        default_name: "hello-world",
+        wallet: false,
+        generated: &[],
+    },
+    Template {
+        chain: Chain::Solana,
+        id: "pumpfun",
+        version: 1,
+        about: "pump.fun / PumpSwap auto-trader: watches new pools over Geyser gRPC, buys and \
+                sells with a key erpc hands over on a pipe",
+        default_name: "pumpfun-bot",
+        wallet: true,
+        // The bearer token the bot's own API asks for.
+        generated: &["API_TOKEN"],
+    },
+];
 
 /// One thing `init` offers to make, as the picker lists it. Several can
 /// be made from one template until each has its own; one with no template
@@ -67,8 +110,16 @@ pub struct Kind {
     pub default_name: &'static str,
 }
 
-/// Everything `init` offers, in the order the picker shows it.
-pub const KINDS: [Kind; 3] = [
+/// Everything `init` offers, in the order the picker shows it: the one to
+/// start from first.
+pub const KINDS: [Kind; 4] = [
+    Kind {
+        chain: Chain::Solana,
+        label: "HelloWorld",
+        about: "a small HTTP API in Rust: nothing to set up, the place to start",
+        template: Some("hello"),
+        default_name: "hello-world",
+    },
     Kind {
         chain: Chain::Solana,
         label: "HFT",
@@ -307,9 +358,19 @@ pub fn find(chain: Chain, id: &str) -> Result<Template, String> {
         })
 }
 
+/// The template an app's `erpc.toml` names (`solana/pumpfun@1`), when this
+/// erpc has it; `None` for an app made by hand or from a template this
+/// build does not carry.
+#[must_use]
+pub fn of_tag(tag: &str) -> Option<Template> {
+    let (id, _version) = tag.rsplit_once('@').unwrap_or((tag, ""));
+    ALL.into_iter()
+        .find(|t| id == format!("{}/{}", t.chain, t.id))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ALL, KINDS, find, find_kind};
+    use super::{ALL, KINDS, find, find_kind, of_tag};
     use crate::manifest::{Chain, Manifest};
 
     #[test]
@@ -334,6 +395,82 @@ mod tests {
         assert_ne!(hft.default_name, pumpfun.default_name);
         assert!(find_kind(Chain::Solana, "Stablecoin").is_some());
         assert!(find_kind(Chain::Solana, "nothing").is_none());
+        // The one to start from is first, under either spelling of its name.
+        assert_eq!(KINDS[0].label, "HelloWorld");
+        let hello = find_kind(Chain::Solana, "helloworld").expect("helloworld");
+        assert_eq!(hello.template().expect("template").id, "hello");
+        assert_eq!(hello.default_name, "hello-world");
+    }
+
+    #[test]
+    fn only_a_template_that_trades_asks_for_a_key() {
+        let hello = find(Chain::Solana, "hello").expect("hello");
+        let pumpfun = find(Chain::Solana, "pumpfun").expect("pumpfun");
+        assert!(!hello.wallet);
+        assert!(pumpfun.wallet);
+        // What nobody picked is the first, and it needs nothing set up.
+        assert_eq!(ALL[0], hello);
+        let files = hello.render("my-api").expect("renders");
+        let (_, manifest) = files
+            .iter()
+            .find(|(p, _)| p.as_os_str() == "erpc.toml")
+            .expect("an erpc.toml");
+        let manifest =
+            Manifest::parse(std::str::from_utf8(manifest).expect("utf8")).expect("valid");
+        assert!(manifest.wallet.is_none());
+        assert!(manifest.secrets.is_empty());
+        assert!(
+            manifest.missing().is_empty(),
+            "the hello app starts with nothing set"
+        );
+    }
+
+    #[test]
+    fn a_secret_nobody_has_to_type_is_named_with_the_flag_that_gives_it() {
+        let pumpfun = find(Chain::Solana, "pumpfun").expect("pumpfun");
+        // The bot's own token is made; the account's RPC key is read from
+        // the account; anything else is the operator's to give.
+        assert_eq!(pumpfun.secret_flag("API_TOKEN"), " --generate");
+        assert_eq!(pumpfun.secret_flag("ERPC_API_KEY"), " --from-account");
+        assert_eq!(pumpfun.secret_flag("WEBHOOK_URL"), "");
+        // What a template generates is a setting its erpc.toml asks for.
+        let files = pumpfun.render("my-bot").expect("renders");
+        let (_, manifest) = files
+            .iter()
+            .find(|(p, _)| p.as_os_str() == "erpc.toml")
+            .expect("an erpc.toml");
+        let manifest =
+            Manifest::parse(std::str::from_utf8(manifest).expect("utf8")).expect("valid");
+        let asked: Vec<String> = manifest
+            .run
+            .requires
+            .iter()
+            .flat_map(|r| {
+                r.names()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        for setting in pumpfun.generated {
+            assert!(asked.iter().any(|a| a == setting), "{setting}: {asked:?}");
+        }
+        let hello = find(Chain::Solana, "hello").expect("hello");
+        assert_eq!(hello.secret_flag("API_TOKEN"), "", "not its own to make");
+    }
+
+    #[test]
+    fn an_apps_template_is_found_from_its_tag() {
+        for template in ALL {
+            assert_eq!(of_tag(&template.tag()), Some(template));
+        }
+        assert_eq!(
+            of_tag("solana/pumpfun@7").map(|t| t.id),
+            Some("pumpfun"),
+            "whatever its version"
+        );
+        assert_eq!(of_tag("solana/nope@1"), None);
+        assert_eq!(of_tag("pumpfun"), None);
     }
 
     #[test]
@@ -362,6 +499,31 @@ mod tests {
             assert!(cargo.contains("name = \"my-bot\""), "{cargo}");
             assert!(!cargo.contains("{{"), "{cargo}");
         }
+    }
+
+    #[test]
+    fn the_hello_apps_waf_is_there_to_uncomment_and_valid_once_it_is() {
+        let hello = find(Chain::Solana, "hello").expect("hello");
+        let files = hello.render("my-api").expect("renders");
+        let (_, manifest) = files
+            .iter()
+            .find(|(p, _)| p.as_os_str() == "erpc.toml")
+            .expect("an erpc.toml");
+        let text = std::str::from_utf8(manifest).expect("utf8");
+        // As made, the app has no WAF.
+        assert!(Manifest::parse(text).expect("valid").waf.is_none());
+        // Its two lines, uncommented where they stand, put it behind one.
+        let example = "# [waf]\n# port = 8080\n";
+        assert_eq!(text.matches(example).count(), 1, "{text}");
+        let with = text.replace(example, "[waf]\nport = 8080\n");
+        let behind = Manifest::parse(&with).expect("valid with its WAF");
+        let config = behind.waf_config("default").expect("a config");
+        assert_eq!(config.listen.to_string(), "0.0.0.0:8080");
+        assert_eq!(config.upstream.to_string(), "127.0.0.1:3000");
+        // The rest of the file is as it was: the tables after it are not
+        // taken into `[waf]`.
+        assert_eq!(behind.vars["API_PORT"], "3000");
+        assert_eq!(behind.run.port, Some(3000));
     }
 
     #[test]
@@ -458,7 +620,10 @@ mod tests {
     fn what_erpc_adds_to_a_new_apps_manifest_goes_after_what_is_there() {
         use crate::edit::{set_env, set_secret, set_wallet};
         use crate::manifest::{Env, Resource, ResourceKind, SecretRef};
-        let files = ALL[0].render("my-bot").expect("renders");
+        let files = find(Chain::Solana, "pumpfun")
+            .expect("pumpfun")
+            .render("my-bot")
+            .expect("renders");
         let (_, text) = files
             .iter()
             .find(|(p, _)| p.as_os_str() == "erpc.toml")

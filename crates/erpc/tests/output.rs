@@ -845,3 +845,84 @@ fn a_node_command_line_clap_refuses_is_one_json_line_with_clap_words() {
     assert!(help.lines().count() > 3, "{help}");
     assert!(help.contains("Usage: erpc validator deploy"), "{help}");
 }
+
+/// `erpc worker firewall allow` and `deny` with nothing to change: text
+/// for a person, and under `--json` one JSON record, not that text. The
+/// answer needs neither the server nor an SSH key: none is here.
+#[test]
+fn a_firewall_change_with_nothing_to_change_is_text_or_under_json_one_record() {
+    let home = tempfile::tempdir().expect("isolated configuration");
+    let app = home.path().join("bot");
+    std::fs::create_dir_all(&app).expect("the app's directory");
+    let manifest = "name = \"bot\"\nchain = \"solana\"\n[run]\nport = 3000\n\
+                    [env.default]\nhost = \"203.0.113.10\"\n\
+                    [env.default.firewall]\nssh_allow = [\"198.51.100.7\"]\n\
+                    app_allow = [\"198.51.100.7\"]\n";
+    std::fs::write(app.join("erpc.toml"), manifest).expect("erpc.toml");
+    let dir = app.to_str().expect("a UTF-8 path");
+    let run = |json: bool, verb: &str, address: &str| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_erpc"));
+        command
+            .env_clear()
+            .env("ERPC_HOME", home.path().join("erpc"))
+            .env("HOME", home.path())
+            .env("PATH", home.path());
+        if let Some(root) = std::env::var_os("SYSTEMROOT") {
+            command.env("SYSTEMROOT", root);
+        }
+        if json {
+            command.arg("--json");
+        }
+        let output = command
+            .args(["worker", "firewall", verb, "--to", "app", address])
+            .args(["--dir", dir])
+            .stdin(Stdio::null())
+            .output()
+            .expect("isolated command route");
+        let said = String::from_utf8(output.stdout).expect("UTF-8 output");
+        assert!(output.stderr.is_empty(), "{verb} json={json}");
+        assert_eq!(said.lines().count(), 1, "{verb} json={json}: {said}");
+        (output.status.code(), said)
+    };
+    for (verb, address, already) in [
+        ("allow", "198.51.100.7", "is allowed already"),
+        ("deny", "203.0.113.9", "is not allowed already"),
+    ] {
+        let (code, text) = run(false, verb, address);
+        assert_eq!(code, Some(0), "{verb}: {text}");
+        let start = format!(
+            "nothing to change: {address} {already}; `erpc worker firewall sync --env default --dir "
+        );
+        assert!(text.starts_with(&start), "{verb}: {text}");
+        assert!(
+            text.ends_with("` applies erpc.toml again\n"),
+            "{verb}: {text}"
+        );
+        let (code, said) = run(true, verb, address);
+        assert_eq!(code, Some(0), "{verb}: {said}");
+        let record: serde_json::Value = serde_json::from_str(&said).expect("one JSON record");
+        assert_eq!(
+            record,
+            serde_json::json!({
+                "worker": "bot-default",
+                "changed": false,
+                "erpc_toml": {
+                    "ssh_allow": ["198.51.100.7/32"],
+                    "app_allow": ["198.51.100.7/32"],
+                },
+            }),
+            "{verb}"
+        );
+        // What is not an address is refused as that, before the server's
+        // address, its host key or an SSH key is looked for.
+        let (code, said) = run(true, verb, "nonsense");
+        assert_eq!(code, Some(2), "{verb}: {said}");
+        let record: serde_json::Value = serde_json::from_str(&said).expect("one JSON record");
+        assert_eq!(record["error"]["code"], "usage", "{verb}: {said}");
+    }
+    // Nothing was written: erpc.toml is as it was.
+    assert_eq!(
+        std::fs::read_to_string(app.join("erpc.toml")).expect("erpc.toml"),
+        manifest
+    );
+}

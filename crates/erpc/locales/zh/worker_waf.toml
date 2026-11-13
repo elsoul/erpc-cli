@@ -1,0 +1,55 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+# `erpc worker` 关于应用 WAF 的说明。
+
+[check]
+listens = "监听端口 {port}，位于 127.0.0.1:{upstream} 上的应用之前：转发 {paths} 上的 {methods}，请求体最大 {body} 字节，且须在 {body_secs} 秒内传完（等待应用接收的时间不计入）"
+every_path = "所有路径"
+allowed = "仅 {paths}"
+denied = "{allowed}，始终拒绝 {paths}"
+limits = "每个地址：{rate}，{connections}，{ban}；{probes}；{firewall}"
+rate = "每秒 {per_second} 个请求（突发 {burst}）"
+rate_off = "不限速"
+connections = "同时最多 {n} 个连接"
+connections_off = "不限连接数"
+ban = "{window_secs} 秒内被拦截 {after} 次后封禁 {for_secs} 秒"
+ban_off = "不封禁"
+probes = "拒绝扫描器的探测请求"
+probes_off = "不检查扫描器的探测请求"
+firewall = "防火墙丢弃每秒超过 {per_second} 个的新连接（突发 {burst}）"
+firewall_off = "防火墙不限制新连接"
+
+[status]
+listening = "WAF：监听端口 {port}，转发到 {upstream}，自 {since} 起；请求 {requests}，已转发 {forwarded}，已拦截 {blocked}，已拒绝连接 {refused}，应用错误 {errors}，当前被封禁的地址 {banned}"
+no_counts = "WAF：监听端口 {port}，转发到 {upstream}；尚未写出计数"
+down = "WAF：未运行（{state}）；它应监听端口 {port}。`erpc worker logs --waf{scope}` 可查看原因，`erpc worker deploy{scope}` 会重新启动它"
+unread = "WAF：{state}，且服务器上的配置无法读取（{error}）；`erpc worker deploy{scope}` 会重新写入"
+absent = "WAF：erpc.toml 要求有一个，但服务器上还没有；`erpc worker deploy{scope}` 会部署它"
+other_rules = "WAF：它运行的规则不是 erpc.toml 的规则；`erpc worker deploy{scope}` 会换上 erpc.toml 的规则，在此之前不会把它的端口放得更宽"
+unsaid_rules = "WAF：服务器没有说明它运行的是哪些规则（其代理早于此版本的 erpc），因此不把它们当作 erpc.toml 的规则；`erpc worker deploy{scope}` 会换上 erpc.toml 的规则，在此之前不会把它的端口放得更宽"
+earlier_agent = "WAF：它是由比当前已安装的代理更早的代理启动的（或者服务器无法判断是哪个代理启动的），因此不把它运行的规则当作 erpc.toml 的规则；`erpc worker deploy{scope}` 会重启它，在此之前不会把它的端口放得更宽"
+before_config = "WAF：它是在服务器上的配置或单元最后一次变更之前启动的（或者写入它们的部署在重启 WAF 之前被中断，或者服务器无法判断它是何时启动的），因此不把它运行的规则当作 erpc.toml 的规则；`erpc worker deploy{scope}` 会重启它，在此之前不会把它的端口放得更宽"
+not_asked = "WAF：erpc.toml 中已没有 [waf]；`erpc worker deploy{scope}` 会移除服务器上的那个"
+blocked = "按规则统计的拦截数：{rules}"
+nothing_blocked = "尚未拦截任何请求"
+
+[deploy]
+applying = "正在把 WAF 放到应用之前：端口 {port}，转发到 {upstream}"
+listening = "WAF 正在监听端口 {port}"
+unchanged = "WAF 仍像之前一样监听端口 {port}"
+restarted = "WAF 正在监听端口 {port}，已重启以运行当前已安装的代理；规则与之前相同"
+restarted_config = "WAF 正在监听端口 {port}；它是在服务器上的配置或单元最后一次变更之前启动的（或者写入它们的部署在重启 WAF 之前被中断，或者服务器无法判断它是何时启动的），现已按当前的配置和单元重启"
+removed = "erpc.toml 中已没有 [waf]：已从服务器移除 WAF"
+not_removed = "无法移除之前的部署留下的 WAF：{error}"
+failed = "版本 {release} 正在运行，但它的 WAF 未能启动：{why}"
+failed_hint = "`erpc worker logs --waf{scope}` 可查看 WAF 的日志；再次运行 `erpc worker deploy{scope}` 会重新部署它"
+no_reason = "服务器上的 agent 未说明原因"
+
+[done]
+open = "它的 WAF 监听端口 {port}，并转发到 {upstream} 上的应用；该端口对 {addresses} 开放{limit}。"
+limit = "，同一地址每秒超过 {per_second} 个的新连接将被丢弃"
+nobody = "它的 WAF 监听端口 {port}，并转发到 {upstream} 上的应用；目前不放行任何人：`erpc worker firewall allow --to app <ADDRESS>{scope}` 可向某个地址开放该端口，用 0.0.0.0/0 则向所有人开放。"
+see = "`erpc worker firewall list{scope}` 按规则显示 WAF 拦截的数量；`erpc worker logs --waf{scope}` 显示它拒绝的每个请求。"
+removed = "erpc.toml 中已没有 [waf]：已从服务器移除 WAF。"
+prepared = "它的 WAF（端口 {port}）将由启动应用的那次部署来设置。"

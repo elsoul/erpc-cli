@@ -33,6 +33,10 @@ paths, ERPC, VPS, Unlimited RPC, Shreds, gRPC, ERPC Global Storage,
 | vault (1Password) | 保管庫 | 保险库 | хранилище |
 | 1Password item | アイテム | 项目 | элемент |
 | keychain | キーチェーン | 钥匙串 | связка ключей |
+| keystore (erpc's encrypted file) | キーストア | 密钥库 | хранилище ключей |
+| passphrase | パスフレーズ | 口令 | парольная фраза |
+| unlock / lock (the keystore) | ロック解除 / ロック | 解锁 / 锁定 | разблокировать / заблокировать |
+| kernel keyring | カーネルのキーリング | 内核密钥环 | связка ключей ядра |
 | wallet / hot wallet | ウォレット / ホットウォレット | 钱包 / 热钱包 | кошелёк / горячий кошелёк |
 | revoke | 取り消す | 吊销 | отозвать |
 | hourly | 時間課金 | 按小时计费 | с почасовой оплатой |

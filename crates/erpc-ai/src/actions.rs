@@ -127,8 +127,14 @@ async fn credit(client: &AuthClient, token: &SecretString) -> Result<Credit, Str
     })
 }
 
-/// A random idempotency key: one per confirmed start.
-fn idempotency_key() -> Result<String, String> {
+/// A random purchase key: the `idempotency-key` of one start. user-api
+/// takes the same key sent again as the same purchase, so a start that got
+/// no answer is retried with its key and never with a new one.
+///
+/// # Errors
+///
+/// A message when the system gives no randomness.
+pub fn purchase_key() -> Result<String, String> {
     let mut bytes = [0u8; 16];
     getrandom::fill(&mut bytes).map_err(|e| format!("no randomness for the purchase key: {e}"))?;
     Ok(bytes.iter().fold(String::with_capacity(32), |mut out, b| {
@@ -136,6 +142,58 @@ fn idempotency_key() -> Result<String, String> {
         let _ = write!(out, "{b:02x}");
         out
     }))
+}
+
+/// Why a start came back with no reply from user-api to read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StartError {
+    /// Nothing was started: refused here or by the person, never sent, or
+    /// refused by user-api before it did anything.
+    NotStarted(String),
+    /// The request left, or may have, and no answer came back: the product
+    /// may or may not have been started. Only the same key sent again is
+    /// safe; a new one could buy a second.
+    Unanswered(String),
+}
+
+impl core::fmt::Display for StartError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::NotStarted(why) => f.write_str(why),
+            Self::Unanswered(why) => write!(
+                f,
+                "the start may or may not have gone through: {why}. See what the account is \
+                 charged for by the hour before starting it again: a second start could buy a \
+                 second one"
+            ),
+        }
+    }
+}
+
+impl From<String> for StartError {
+    fn from(why: String) -> Self {
+        Self::NotStarted(why)
+    }
+}
+
+impl From<&str> for StartError {
+    fn from(why: &str) -> Self {
+        Self::NotStarted(why.to_owned())
+    }
+}
+
+/// What a start that returned no reply says of the purchase. A refused
+/// session and a request that was never sent started nothing; anything
+/// else (a timeout, a connection that broke) may have reached user-api.
+fn unanswered(e: &erpc_api::ApiError) -> StartError {
+    use erpc_api::ApiError;
+    match e {
+        ApiError::Unauthorized => StartError::NotStarted(format!("the start was refused: {e}")),
+        ApiError::Http(erpc_auth::HttpError::Allowlist(_)) | ApiError::Malformed(_) => {
+            StartError::NotStarted(format!("the start was not sent: {e}"))
+        }
+        _ => StartError::Unanswered(format!("no answer came back ({e})")),
+    }
 }
 
 const NO_ONE_TO_ASK: &str = "this changes what the account pays for, and only the person at the \
@@ -172,17 +230,42 @@ fn outcome(reply: &hourly::Reply, done: &str) -> Value {
     out
 }
 
-/// `start_hourly_product`: starts one, after the person says yes.
+/// `start_hourly_product`: starts one, after the person says yes, with a
+/// purchase key of its own. The key is made here and never comes from
+/// `input`, which a model writes.
 ///
 /// # Errors
 ///
-/// A message saying what user-api or the person refused, for the caller to show.
+/// A message saying what user-api or the person refused, or that the
+/// start got no answer and may have gone through, for the caller to show.
 pub async fn start_hourly_product(
     client: &AuthClient,
     token: &SecretString,
     input: &Value,
     confirm: Option<&dyn Confirm>,
 ) -> Result<Value, String> {
+    start_hourly_product_with_key(client, token, input, confirm, purchase_key)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// [`start_hourly_product`] with the purchase key its caller gives: `key`
+/// is called once, after the person's yes and right before the request, so
+/// a caller that keeps a record puts the key on it then and sends the same
+/// one when it carries on with a start that got no answer.
+///
+/// # Errors
+///
+/// [`StartError::NotStarted`] with what user-api, the person or `key`
+/// refused; [`StartError::Unanswered`] when the request may have reached
+/// user-api and no answer came back.
+pub async fn start_hourly_product_with_key(
+    client: &AuthClient,
+    token: &SecretString,
+    input: &Value,
+    confirm: Option<&dyn Confirm>,
+    key: impl FnOnce() -> Result<String, String>,
+) -> Result<Value, StartError> {
     let name = input
         .get("family")
         .and_then(Value::as_str)
@@ -213,7 +296,7 @@ pub async fn start_hourly_product(
             })?,
         None => match plans(entry) {
             [only] => only,
-            _ => return Err(format!("{} needs productId", family.name)),
+            _ => return Err(format!("{} needs productId", family.name).into()),
         },
     };
     let hourly_cents = plan
@@ -268,12 +351,12 @@ pub async fn start_hourly_product(
         lines,
     };
     if !confirm.confirm(&ask).await {
-        return Err("the user said no; nothing was started".to_owned());
+        return Err("the user said no; nothing was started".into());
     }
-    let key = idempotency_key()?;
+    let key = key()?;
     let reply = hourly::start(client, token, family, &body, &key)
         .await
-        .map_err(|e| format!("the start was not sent: {e}"))?;
+        .map_err(|e| unanswered(&e))?;
     let mut out = outcome(&reply, &format!("start {product}"));
     if family.name == "vps" && out["done"] == json!(true) && out.get("userVpsId").is_some() {
         out["next"] = json!(
@@ -1038,6 +1121,60 @@ mod tests {
                 .unwrap_err()
                 .contains("does not take price")
         );
+    }
+
+    #[tokio::test]
+    async fn a_purchase_key_is_asked_for_only_once_the_start_is_about_to_leave() {
+        let client = erpc_auth::AuthClient::new().expect("client");
+        let token = secrecy::SecretString::from("not-sent");
+        let start =
+            json!({ "family": "vps", "fields": { "productId": "prod_x", "region": "tokyo" } });
+        // Nobody to ask: refused before a key is made or put on record.
+        let asked = std::cell::Cell::new(false);
+        let refused = super::start_hourly_product_with_key(&client, &token, &start, None, || {
+            asked.set(true);
+            Ok("0".repeat(32))
+        })
+        .await;
+        assert_eq!(
+            refused,
+            Err(super::StartError::NotStarted(
+                super::NO_ONE_TO_ASK.to_owned()
+            ))
+        );
+        assert!(!asked.get());
+        // A key is 32 hex digits, and no two are the same.
+        let (a, b) = (
+            super::purchase_key().expect("key"),
+            super::purchase_key().expect("key"),
+        );
+        assert!(a.len() == 32 && a.bytes().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn a_start_with_no_answer_is_not_said_to_be_unsent() {
+        use super::{StartError, unanswered};
+        use erpc_api::ApiError;
+        // A timeout or a broken connection: the request may have arrived.
+        let lost = ApiError::Http(erpc_auth::HttpError::Transport {
+            host: "user-api.erpc.global",
+            reason: "operation timed out".to_owned(),
+        });
+        let said = unanswered(&lost);
+        assert!(matches!(said, StartError::Unanswered(_)), "{said:?}");
+        let said = said.to_string();
+        assert!(said.contains("may or may not have gone through"), "{said}");
+        assert!(!said.contains("not sent"), "{said}");
+        // A refused session started nothing, and neither did a request
+        // that never left.
+        for definite in [
+            ApiError::Unauthorized,
+            ApiError::Malformed("no body".to_owned()),
+        ] {
+            let said = unanswered(&definite);
+            assert!(matches!(said, StartError::NotStarted(_)), "{said:?}");
+        }
     }
 
     #[tokio::test]

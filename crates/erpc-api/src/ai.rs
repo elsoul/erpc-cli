@@ -57,23 +57,77 @@ fn parse_usage(body: &str) -> Result<Usage, ApiError> {
     serde_json::from_value(object.clone()).map_err(|e| ApiError::Malformed(e.to_string()))
 }
 
-/// The service names its models by size -- small, medium, large -- and
-/// decides itself which model each size is: this client asks for a size,
-/// never a model.
-///
+/// A model size. The service names its models by size and decides itself
+/// which model each size is: this client asks for a size, never a model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Size {
+    /// The quickest.
+    Small,
+    /// Between small and large.
+    Medium,
+    /// The one ordinary turns use.
+    Large,
+    /// The most capable, which uses more of the plan per token.
+    Xlarge,
+}
+
+impl Size {
+    /// Every size, smallest first.
+    pub const ALL: [Self; 4] = [Self::Small, Self::Medium, Self::Large, Self::Xlarge];
+
+    /// The name a person types: `small`, `medium`, `large` or `xlarge`.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Small => "small",
+            Self::Medium => "medium",
+            Self::Large => "large",
+            Self::Xlarge => "xlarge",
+        }
+    }
+
+    /// What a request's `model` says for it.
+    #[must_use]
+    pub const fn model(self) -> &'static str {
+        match self {
+            Self::Small => "erpc-ai-small",
+            Self::Medium => "erpc-ai-medium",
+            Self::Large => "erpc-ai-large",
+            Self::Xlarge => "erpc-ai-xlarge",
+        }
+    }
+}
+
+impl core::str::FromStr for Size {
+    type Err = String;
+
+    /// A size by its name, `xlarge`, or by its model, `erpc-ai-xlarge`,
+    /// in any case.
+    fn from_str(text: &str) -> Result<Self, String> {
+        let text = text.trim().to_ascii_lowercase();
+        Self::ALL
+            .into_iter()
+            .find(|size| text == size.name() || text == size.model())
+            .ok_or_else(|| {
+                let names: Vec<&str> = Self::ALL.iter().map(|size| size.name()).collect();
+                format!("{text}: not one of {}", names.join(", "))
+            })
+    }
+}
+
 /// The large model, for ordinary turns.
-pub const DEFAULT_MODEL: &str = "erpc-ai-large";
+pub const DEFAULT_MODEL: &str = Size::Large.model();
 
 /// The small model, for small talk. The large model thinks before every
 /// answer, which is wasted on a greeting; this one answers at once.
-pub const QUICK_MODEL: &str = "erpc-ai-small";
+pub const QUICK_MODEL: &str = Size::Small.model();
 
 /// No model at all, which every version of the service answers with its
 /// recommended one. Asked for when a size is turned down; the request then
 /// carries no `model` field.
 pub const FALLBACK_MODEL: &str = "";
 
-/// How hard the model works on a turn, as the Messages API names it.
+/// How hard the model works on a turn, as the chat endpoint names it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Effort {
     /// Quick replies: greetings, thanks, one-line facts.
@@ -112,9 +166,10 @@ pub struct ChatRequest<'a> {
     pub effort: Effort,
     /// Whether to think at all before answering. Off is the fastest reply.
     pub thinking: bool,
-    /// Tools the model may call, in the Messages format (`name`,
+    /// Tools the model may call, as the chat endpoint takes them (`name`,
     /// `description`, `input_schema`). Empty sends none. The gateway takes
-    /// only tools the caller runs: the provider's server tools are refused.
+    /// only tools the caller runs: tools the service would run itself are
+    /// refused.
     pub tools: &'a [Value],
 }
 
@@ -368,7 +423,7 @@ pub fn apply(
 }
 
 /// Where a tool call's input collects while it streams. Not a field of
-/// the Messages format: removed when the block ends.
+/// the chat format: removed when the block ends.
 const PARTIAL_INPUT: &str = "erpc_partial_input";
 
 /// Appends `text` to the string field `field` of a content block.
@@ -519,7 +574,7 @@ impl ChatTrouble {
         }
     }
 
-    /// From the `type` of an error in the Messages format, which user-api
+    /// From the `type` of an error in the chat format, which user-api
     /// passes on from the provider and which can end a stream.
     fn of_provider_kind(kind: &str) -> Option<Self> {
         match kind {
@@ -576,7 +631,7 @@ fn refusal(status: u16, text: &str, ray: Option<String>, model: &str) -> ApiErro
         ChatTrouble::Busy
     } else {
         // user-api's own refusals carry a code in `error`. One it passes on
-        // from the provider is in the Messages error format,
+        // from the provider is in the chat format's error shape,
         // `{"type":"error","error":{"type":…,"message":…}}`.
         field("/error")
             .and_then(ChatTrouble::of_code)
@@ -592,7 +647,7 @@ fn refusal(status: u16, text: &str, ray: Option<String>, model: &str) -> ApiErro
 
 /// Sends the conversation and streams the answer through `on_text`.
 ///
-/// `request.messages` is the conversation so far, in the Messages format,
+/// `request.messages` is the conversation so far, in the chat format,
 /// ending with the user's turn.
 ///
 /// # Errors
@@ -736,7 +791,7 @@ mod tests {
                 let (trouble, ..) = chat(&error);
                 for lang in Lang::ALL {
                     let line = trouble.line(status, Some(RAY), lang);
-                    for word in ["Provider", "Cloudflare", "Anthropic", "Attention", "<"] {
+                    for word in ["Provider", "Cloudflare", "Attention", "<"] {
                         assert!(!line.contains(word), "{line}");
                     }
                 }
@@ -761,9 +816,14 @@ mod tests {
 
     #[test]
     fn a_model_the_service_does_not_offer_is_named() {
-        let error = refusal(400, r#"{"error":"model_not_allowed"}"#, None, "claude-x");
+        let error = refusal(
+            400,
+            r#"{"error":"model_not_allowed"}"#,
+            None,
+            "erpc-ai-xlarge",
+        );
         assert!(
-            matches!(&error, ApiError::ModelNotAllowed(m) if m == "claude-x"),
+            matches!(&error, ApiError::ModelNotAllowed(m) if m == "erpc-ai-xlarge"),
             "{error:?}"
         );
     }

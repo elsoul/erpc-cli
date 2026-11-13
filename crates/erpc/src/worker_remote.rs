@@ -11,7 +11,7 @@
 //! holds neither.
 
 use erpc_ssh::worker::{Command as Worker, ReleaseId, UnitId, Verb};
-use erpc_ssh::{HostKey, RemoteCommand, Session, Target};
+use erpc_ssh::{HostKey, RemoteCommand, Session, Stream, Target};
 use erpc_worker::manifest::{Env, Line, Manifest, Resource};
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
@@ -64,6 +64,60 @@ pub(crate) fn open(target: &Target) -> Result<Session, CliError> {
     Session::open(target).map_err(|e| CliError::new(Code::Network, e.to_string()))
 }
 
+/// Text a server sent, as a terminal may be given it: a control character
+/// other than a line break or a tab, and a character that reorders the
+/// text around it, become `?` ([`crate::storage::clean`]). A server is not
+/// this machine: what runs there, an app or a proxy that faces the
+/// network, may have put an escape sequence in what it says.
+pub(crate) fn shown(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for piece in text.split_inclusive(['\n', '\t']) {
+        let (body, end) = match piece.char_indices().next_back() {
+            Some((at, '\n' | '\t')) => piece.split_at(at),
+            _ => (piece, ""),
+        };
+        out.push_str(&crate::storage::clean(body));
+        out.push_str(end);
+    }
+    out
+}
+
+/// Every string in an agent's answer, the names of its fields among them,
+/// as [`shown`] has it: what is printed from the answer, as text or as
+/// `--json`, is then nothing a terminal acts on, whatever the server sent.
+fn plain(value: &mut Value) {
+    match value {
+        Value::String(text) => *text = shown(text),
+        Value::Array(items) => items.iter_mut().for_each(plain),
+        Value::Object(fields) => {
+            for (name, mut value) in core::mem::take(fields) {
+                plain(&mut value);
+                fields.insert(shown(&name), value);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
+}
+
+/// The answer in what `ctl` printed: its last line that is a JSON object,
+/// with every string made safe to show ([`plain`]).
+pub(crate) fn answer(stdout: &[u8]) -> Result<Value, CliError> {
+    let text = String::from_utf8_lossy(stdout);
+    let line = text
+        .lines()
+        .rev()
+        .find(|l| l.trim_start().starts_with('{'))
+        .unwrap_or_default();
+    let mut answer: Value = serde_json::from_str(line).map_err(|_| {
+        failed(t!(
+            "worker_remote.agent.unreadable",
+            answer = shown(text.trim())
+        ))
+    })?;
+    plain(&mut answer);
+    Ok(answer)
+}
+
 /// Runs `ctl <verb>` and returns its answer. An answer with `ok: false`
 /// is returned too, for the caller to read; only a broken one is an error.
 pub(crate) fn ctl(
@@ -81,14 +135,7 @@ pub(crate) fn ctl(
             stdin,
         )
         .map_err(|e| failed(t!("worker_remote.agent.unreachable", error = e)))?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    let line = text
-        .lines()
-        .rev()
-        .find(|l| l.trim_start().starts_with('{'))
-        .unwrap_or_default();
-    serde_json::from_str(line)
-        .map_err(|_| failed(t!("worker_remote.agent.unreadable", answer = text.trim())))
+    answer(&out.stdout)
 }
 
 /// [`ctl`], with an answer that says it failed made an error.
@@ -100,13 +147,29 @@ pub(crate) fn ctl_ok(
 ) -> Result<Value, CliError> {
     let answer = ctl(session, id, verb, stdin)?;
     if answer["ok"].as_bool() == Some(false) {
-        return Err(failed(
-            answer["error"]
-                .as_str()
-                .map_or_else(|| t!("worker_remote.agent.refused"), str::to_owned),
-        ));
+        return Err(refusal(&answer));
     }
     Ok(answer)
+}
+
+/// An answer that says it failed, as an error: the agent's own words for
+/// why and, when the app's port is not free, what to change
+/// ([`port_hint`]).
+fn refusal(answer: &Value) -> CliError {
+    let why = answer["error"]
+        .as_str()
+        .map_or_else(|| t!("worker_remote.agent.refused"), str::to_owned);
+    match port_hint(&why) {
+        Some(hint) => failed(why).hint(hint),
+        None => failed(why),
+    }
+}
+
+/// What to change, when the agent refused a start because the app's port
+/// is not free on the server: the agent names the port and who has it,
+/// and this says where the app's own port is set.
+pub(crate) fn port_hint(refusal: &str) -> Option<String> {
+    erpc_worker::server::taken_port(refusal).map(|port| t!("worker_remote.agent.port_taken", port))
 }
 
 /// The unlock request: the secrets read from their stores and the key,
@@ -300,6 +363,20 @@ fn still_charged_line(env: &Env, scope: &str) -> Option<String> {
     })
 }
 
+/// What the status says of what the environment pays for by the hour: the
+/// account's own list when it could be read, with a price for each item,
+/// else what is on record, which is all erpc knows then.
+fn hourly_said(
+    env: Option<&Env>,
+    priced: Option<&crate::worker_charges::Charges>,
+    scope: &str,
+) -> Option<String> {
+    match priced {
+        Some(priced) => Some(priced.lines(scope).join("\n  ")),
+        None => env.and_then(|e| still_charged_line(e, scope)),
+    }
+}
+
 /// Before the app is stopped, restarted, rolled back, redeployed or
 /// removed: an app that trades with a key may hold positions, which wait
 /// while it is down.
@@ -310,52 +387,101 @@ pub(crate) fn positions_warning(m: &Manifest, app: &App, say: &Say) {
 }
 
 /// `erpc worker status`.
-pub(crate) fn status(json: bool, app: &App) -> Outcome {
-    let run = || -> Result<Outcome, CliError> {
+pub(crate) async fn status(json: bool, app: &App) -> Outcome {
+    let run = async || -> Result<Outcome, CliError> {
         let (m, id, session) = reach(app)?;
-        let mut answer = ctl(&session, &id, Verb::Status, None)?;
-        let env = m.env.get(&app.env);
-        let host = env.and_then(|e| e.host.clone()).unwrap_or_default();
-        // What the environment pays for by the hour, beside what the agent
-        // says: the server and the lines on record.
-        if let Some(env) = env {
-            answer["hourly"] = json!({
-                "server": env.resource.as_ref().filter(|r| r.hourly),
-                "lines": env.lines.iter().filter(|l| l.hourly).collect::<Vec<_>>(),
-            });
-        }
-        let charged = env.and_then(|e| still_charged_line(e, &app.scope()));
-        let none = || t!("worker_remote.status.none");
-        let mut text = format!(
-            "{}\n  {}",
-            t!(
-                "worker_remote.status.title",
-                worker = m.unit_id(&app.env),
-                host,
-                agent = answer["agent"].as_object().map_or_else(
-                    || t!(
-                        "worker_remote.status.no_answer",
-                        error = answer["error"].as_str().unwrap_or("")
-                    ),
-                    |_| describe(&answer["agent"])
-                )
-            ),
-            tn!(
-                "worker_remote.status.releases",
-                answer["releases"].as_u64().unwrap_or(0),
-                current = answer["current"].as_str().map_or_else(none, str::to_owned),
-                previous = answer["previous"].as_str().map_or_else(none, str::to_owned)
-            ),
-        );
-        if let Some(charged) = charged {
-            text.push_str("\n  ");
-            text.push_str(&charged);
-        }
+        let (answer, text) = status_from(&m, app, |verb| ctl(&session, &id, verb, None)).await?;
         Ok(done(json, &answer, text))
     };
     run()
+        .await
         .map_err(|e| unreached(app, e))
         .unwrap_or_else(Into::into)
+}
+
+/// What `status` does once the worker's server is reached: `ask` runs the
+/// agent's `ctl` there and gives its answer. The agent is asked its
+/// status; the answer gets what the environment pays for by the hour, and
+/// is said ([`status_said`]). Returns the answer, as `--json` prints it,
+/// and the text.
+async fn status_from(
+    m: &Manifest,
+    app: &App,
+    ask: impl FnOnce(Verb) -> Result<Value, CliError>,
+) -> Result<(Value, String), CliError> {
+    let mut answer = ask(Verb::Status)?;
+    let env = m.env.get(&app.env);
+    let host = env.and_then(|e| e.host.clone()).unwrap_or_default();
+    // What the environment pays for by the hour, beside what the agent
+    // says: the server and the lines on record.
+    if let Some(env) = env {
+        answer["hourly"] = json!({
+            "server": env.resource.as_ref().filter(|r| r.hourly),
+            "lines": env.lines.iter().filter(|l| l.hourly).collect::<Vec<_>>(),
+        });
+    }
+    // What each of them costs now is the account's to say; without
+    // it (not signed in, user-api away), what is on record.
+    let priced = match env {
+        Some(env) => crate::worker_charges::read(env).await,
+        None => None,
+    };
+    if let Some(priced) = &priced {
+        answer["hourly"]["charged"] = priced.json();
+    }
+    let charged = hourly_said(env, priced.as_ref(), &app.scope());
+    let text = status_said(m, &app.env, &host, &mut answer, charged, &app.scope());
+    Ok((answer, text))
+}
+
+/// What `erpc worker status` says of `m`'s environment `env_name` on
+/// `host`, from the agent's `answer`: how the worker is and which
+/// releases it has; then its WAF, as the agent reports it (`waf` in the
+/// answer, which `--json` carries as it is), where it listens, since when
+/// and what it has counted, and whether the rules it runs are erpc.toml's
+/// ([`crate::worker_waf::status_lines`]); then `charged`, what it is
+/// charged for by the hour. The answer gets `waf_rules` for `--json`
+/// ([`crate::worker_waf::rules_named`]).
+fn status_said(
+    m: &Manifest,
+    env_name: &str,
+    host: &str,
+    answer: &mut Value,
+    charged: Option<String>,
+    scope: &str,
+) -> String {
+    let none = || t!("worker_remote.status.none");
+    let mut text = format!(
+        "{}\n  {}",
+        t!(
+            "worker_remote.status.title",
+            worker = m.unit_id(env_name),
+            host,
+            agent = answer["agent"].as_object().map_or_else(
+                || t!(
+                    "worker_remote.status.no_answer",
+                    error = answer["error"].as_str().unwrap_or("")
+                ),
+                |_| describe(&answer["agent"])
+            )
+        ),
+        tn!(
+            "worker_remote.status.releases",
+            answer["releases"].as_u64().unwrap_or(0),
+            current = answer["current"].as_str().map_or_else(none, str::to_owned),
+            previous = answer["previous"].as_str().map_or_else(none, str::to_owned)
+        ),
+    );
+    for line in crate::worker_waf::status_lines(m, env_name, &answer["waf"], scope) {
+        text.push_str("\n  ");
+        text.push_str(&line);
+    }
+    answer["waf_rules"] = crate::worker_waf::rules_named(m, env_name, &answer["waf"]);
+    if let Some(charged) = charged {
+        text.push_str("\n  ");
+        text.push_str(&charged);
+    }
+    text
 }
 
 /// A string as curl's configuration file quotes it: between double quotes,
@@ -388,10 +514,48 @@ fn api_answer(out: &str) -> Result<String, (String, String)> {
     }
 }
 
+/// curl's configuration for one request to the app, read on its standard
+/// input: the method, the URL, the bearer token when the app has one, and
+/// the JSON body when there is one.
+fn api_request(
+    method: &str,
+    url: &str,
+    token: Option<&str>,
+    data: Option<&str>,
+) -> Zeroizing<String> {
+    use core::fmt::Write as _;
+    let mut config = Zeroizing::new(format!("request = \"{method}\"\nurl = \"{url}\"\n"));
+    if let Some(token) = token {
+        let _ = writeln!(
+            config,
+            "header = \"Authorization: Bearer {}\"",
+            curl_quoted(token)
+        );
+    }
+    if let Some(data) = data {
+        config.push_str("header = \"Content-Type: application/json\"\n");
+        let _ = writeln!(config, "data = \"{}\"", curl_quoted(data));
+    }
+    config
+}
+
+/// A request the app did not answer with a 2xx: its answer, and, when it
+/// refused a request that carried no token (an app whose `API_TOKEN`
+/// erpc.toml does not name), where one goes.
+fn api_refused(why: &str, body: &str, sent_token: bool, dir_scope: &str) -> CliError {
+    let refused = failed(t!("worker_remote.api.failed", why, body));
+    if !sent_token && why == "HTTP 401" {
+        refused.hint(t!("worker_remote.api.no_token", dir_scope))
+    } else {
+        refused
+    }
+}
+
 /// `erpc worker api`: one request to the app's API on its server, over the
-/// SSH session. The API token is read on this machine from `[secrets]` and
-/// reaches curl on its standard input, as part of its configuration, so it
-/// is on no command line, in no shell history and in no journal.
+/// SSH session. The API token, when the app has one (`API_TOKEN` in
+/// `[secrets]`), is read on this machine and reaches curl on its standard
+/// input, as part of its configuration, so it is on no command line, in no
+/// shell history and in no journal. An app without one is asked without.
 pub(crate) fn api(app: &App, method: &str, path: &str, data: Option<&str>) -> Outcome {
     let run = || -> Result<Outcome, CliError> {
         let method = method.to_ascii_uppercase();
@@ -418,26 +582,16 @@ pub(crate) fn api(app: &App, method: &str, path: &str, data: Option<&str>) -> Ou
             .run
             .port
             .ok_or_else(|| failed(t!("worker_remote.api.no_port")))?;
-        let token = m.secrets.get("API_TOKEN").ok_or_else(|| {
-            failed(t!(
-                "worker_remote.api.no_token",
-                dir_scope = app.dir.scope()
-            ))
-        })?;
-        let token = worker_secrets::read(token).map_err(failed)?;
+        let token = m
+            .secrets
+            .get("API_TOKEN")
+            .map(|token| worker_secrets::read(token).map_err(failed))
+            .transpose()?;
         // The URL is put together on its own, the host and port first: the
         // endpoint gate reads a host only where a port or a path ends it.
         let mut url = format!("http://127.0.0.1:{port}");
         url.push_str(path);
-        let mut config = Zeroizing::new(format!(
-            "request = \"{method}\"\nurl = \"{url}\"\nheader = \"Authorization: Bearer {}\"\n",
-            curl_quoted(&token)
-        ));
-        if let Some(data) = data {
-            use core::fmt::Write as _;
-            config.push_str("header = \"Content-Type: application/json\"\n");
-            let _ = writeln!(config, "data = \"{}\"", curl_quoted(data));
-        }
+        let config = api_request(&method, &url, token.as_deref().map(String::as_str), data);
         let out = session
             .run(
                 &RemoteCommand::Worker(Worker::Api { port }),
@@ -449,7 +603,7 @@ pub(crate) fn api(app: &App, method: &str, path: &str, data: Option<&str>) -> Ou
         // written to standard error, where ssh speaks too.
         match api_answer(&String::from_utf8_lossy(&out.stdout)) {
             Ok(body) => Ok(Outcome::Done(body)),
-            Err((why, body)) => Err(failed(t!("worker_remote.api.failed", why, body))),
+            Err((why, body)) => Err(api_refused(&why, &body, token.is_some(), &app.dir.scope())),
         }
     };
     run()
@@ -457,21 +611,58 @@ pub(crate) fn api(app: &App, method: &str, path: &str, data: Option<&str>) -> Ou
         .unwrap_or_else(Into::into)
 }
 
-/// `erpc worker logs`.
-pub(crate) fn logs(app: &App, lines: u32, follow: bool) -> Outcome {
+/// A journal from a server, line by line: `stream` runs the command that
+/// reads it and hands over each line as it arrives
+/// ([`Session::stream`]), and `print` is given each as [`shown`] has it.
+/// What an app or a proxy wrote to its journal is text here, never an
+/// escape sequence the terminal acts on.
+fn journal<E: core::fmt::Display>(
+    stream: impl FnOnce(&mut dyn FnMut(Stream, &str)) -> Result<(), E>,
+    print: &mut dyn FnMut(&str),
+) -> Result<(), CliError> {
+    stream(&mut |_, line| print(&shown(line))).map_err(|e| failed(e.to_string()))
+}
+
+/// `erpc worker logs`: the journal of the worker's unit, the app's and the
+/// agent's; with `waf`, that of its WAF's unit instead, where each request
+/// it refused is a line ([`logs_from`]).
+pub(crate) fn logs(app: &App, lines: u32, follow: bool, waf: bool) -> Outcome {
     let run = || -> Result<Outcome, CliError> {
         let (_, id, session) = reach(app)?;
-        session
-            .stream(
-                &RemoteCommand::Worker(Worker::Logs { id, lines, follow }),
-                &mut |_, line| crate::print_line(line),
-            )
-            .map_err(|e| failed(e.to_string()))?;
+        logs_from(
+            id,
+            (lines, follow),
+            waf,
+            |command, on_line| session.stream(command, on_line),
+            &mut |line| crate::print_line(line),
+        )?;
         Ok(Outcome::Done(String::new()))
     };
     run()
         .map_err(|e| unreached(app, e))
         .unwrap_or_else(Into::into)
+}
+
+/// What `logs` does once the worker's server is reached: `stream` runs a
+/// command there and hands over each line it prints
+/// ([`Session::stream`]). The journal of worker `id`'s unit is read, or
+/// with `waf` that of its WAF's unit, its last `lines` and then, with
+/// `follow`, what is added to it; and each line is given to `print` by
+/// [`journal`], which is what makes it text a terminal only shows.
+fn logs_from<E: core::fmt::Display>(
+    id: UnitId,
+    (lines, follow): (u32, bool),
+    waf: bool,
+    stream: impl FnOnce(&RemoteCommand, &mut dyn FnMut(Stream, &str)) -> Result<(), E>,
+    print: &mut dyn FnMut(&str),
+) -> Result<(), CliError> {
+    let unit = if waf {
+        Worker::WafLogs { id, lines, follow }
+    } else {
+        Worker::Logs { id, lines, follow }
+    };
+    let command = RemoteCommand::Worker(unit);
+    journal(|on_line| stream(&command, on_line), print)
 }
 
 /// Hands the key and the secrets over when the worker is locked.
@@ -690,6 +881,12 @@ pub(crate) async fn delete(json: bool, app: &App, ask: &DeleteAsk) -> Outcome {
     if let Some(asked) = forget_prompt(&forgotten) {
         say.line(&asked);
     }
+    // A start that got no answer is named by this record alone, and goes
+    // with it: said before the yes, since it may have gone through.
+    for start in env.starting.values() {
+        let what = crate::worker_vps::purchase_name(start);
+        say.line(&t!("worker_remote.delete.start_unanswered", what));
+    }
     if let Err(e) = go_ahead(ask.yes, &t!("worker_remote.delete.refused")) {
         return e.into();
     }
@@ -700,7 +897,15 @@ pub(crate) async fn delete(json: bool, app: &App, ask: &DeleteAsk) -> Outcome {
             .and_then(|t| open(&t))
             .and_then(|s| ctl_ok(&s, &id, Verb::Remove, None))
         {
-            Ok(_) => Removal::Done,
+            Ok(answer) => {
+                // The worker is gone and its port closed; a WAF the agent
+                // could not take with it is said, not passed over.
+                if let Some(error) = answer["waf_error"].as_str() {
+                    let unit = erpc_worker::server::waf_unit_name(id.as_str());
+                    say.line(&t!("worker_remote.delete.waf_left", error, unit));
+                }
+                Removal::Done
+            }
             Err(e) if release_server => {
                 say.line(&if ends_server(&env) {
                     t!("worker_remote.delete.not_removed_ending", error = e.message)
@@ -791,6 +996,7 @@ pub(crate) async fn delete(json: bool, app: &App, ask: &DeleteAsk) -> Outcome {
         "lines_forgotten": ids(&forgotten),
         "lines_left_running": left_running,
         "server_left_running": server_left_running(&env, release_server),
+        "starts_forgotten": env.starting,
         "backup": backup,
         "erpc_toml": rewritten.is_ok(),
     });
@@ -1393,6 +1599,299 @@ mod tests {
 
     use erpc_ssh::worker::UnitId;
 
+    #[test]
+    fn logs_prints_each_line_of_a_journal_without_what_a_terminal_acts_on() {
+        use erpc_ssh::Stream;
+        // What a server's journal holds is the app's, or the proxy's, to
+        // write: a title change, a screen clear, a carriage return.
+        let lines = [
+            (
+                Stream::Stdout,
+                "blocked reason=probe path=\"/x\"\tstatus=403",
+            ),
+            (Stream::Stdout, "a\u{1b}]0;owned\u{7}\u{1b}[2Jb\rc"),
+            (Stream::Stderr, "warn\u{9b}2J \u{202e}txt"),
+        ];
+        let mut printed = Vec::new();
+        super::journal(
+            |on_line| {
+                for (stream, line) in lines {
+                    on_line(stream, line);
+                }
+                Ok::<(), String>(())
+            },
+            &mut |line| printed.push(line.to_owned()),
+        )
+        .expect("read");
+        assert_eq!(
+            printed,
+            [
+                "blocked reason=probe path=\"/x\"\tstatus=403",
+                "a?]0;owned??[2Jb?c",
+                "warn?2J ?txt"
+            ]
+        );
+        // A journal that could not be read is the command's failure.
+        let failed =
+            super::journal(|_| Err("the connection was closed"), &mut |_| {}).expect_err("failed");
+        assert_eq!(failed.message, "the connection was closed");
+    }
+
+    #[test]
+    fn logs_reads_the_journal_asked_for_and_prints_each_line_as_text() {
+        use erpc_ssh::worker::Command as Worker;
+        use erpc_ssh::{RemoteCommand, Stream};
+        let id = || UnitId::new("bot-prod").expect("id");
+        // What the server streams back, whichever journal it is asked
+        // for: a line as it should be, and one a terminal would act on.
+        let read = |lines: u32, follow: bool, waf: bool| {
+            let (mut asked, mut printed) = (Vec::new(), Vec::new());
+            super::logs_from(
+                id(),
+                (lines, follow),
+                waf,
+                |command: &RemoteCommand, on_line: &mut dyn FnMut(Stream, &str)| {
+                    asked.push(command.clone());
+                    on_line(Stream::Stdout, "blocked reason=probe status=403");
+                    on_line(Stream::Stderr, "a\u{1b}]0;owned\u{7}\u{1b}[2Jb");
+                    Ok::<(), String>(())
+                },
+                &mut |line| printed.push(line.to_owned()),
+            )
+            .expect("read");
+            (asked, printed)
+        };
+        // The worker's journal, and with `--waf` its WAF's: the server is
+        // sent the command for that unit, with the lines and the
+        // following asked for.
+        let worker = Worker::Logs {
+            id: id(),
+            lines: 50,
+            follow: false,
+        };
+        let waf = Worker::WafLogs {
+            id: id(),
+            lines: 7,
+            follow: true,
+        };
+        for (unit, got) in [(worker, read(50, false, false)), (waf, read(7, true, true))] {
+            let (asked, printed) = got;
+            assert_eq!(asked, [RemoteCommand::Worker(unit)]);
+            // Each line is printed, and as text: what the server sent
+            // reaches the terminal as `?` where it would act on it.
+            assert_eq!(
+                printed,
+                ["blocked reason=probe status=403", "a?]0;owned??[2Jb"]
+            );
+        }
+        // A journal that could not be read fails the command.
+        let failed = super::logs_from(
+            id(),
+            (7, false),
+            true,
+            |_: &RemoteCommand, _: &mut dyn FnMut(Stream, &str)| Err("the connection was closed"),
+            &mut |_| {},
+        )
+        .expect_err("failed");
+        assert_eq!(failed.message, "the connection was closed");
+    }
+
+    #[tokio::test]
+    async fn status_asks_the_agent_for_its_status_and_says_the_waf_under_the_worker() {
+        use crate::worker::{App, AppFlag, DirFlag};
+        use erpc_ssh::worker::Verb;
+        let m = erpc_worker::manifest::Manifest::parse(
+            "name = \"bot\"\nchain = \"solana\"\n[run]\nport = 3000\n[waf]\nport = 8080\n\
+             [env.prod]\nhost = \"203.0.113.10\"\n",
+        )
+        .expect("valid");
+        let app = App::from(AppFlag {
+            dir: DirFlag::default(),
+            env: "prod".to_owned(),
+        });
+        // What the agent answers: the worker, and a WAF that was started
+        // before its config or its unit on the server last changed.
+        let answer = json!({
+            "ok": true,
+            "agent": { "state": "running", "release": "20261111T090000Z-1a2b3c4d" },
+            "current": "20261111T090000Z-1a2b3c4d",
+            "previous": null,
+            "releases": 1,
+            "waf": {
+                "unit": "erpc-waf-bot-prod.service",
+                "state": "active",
+                "active": true,
+                "listen": "0.0.0.0:8080",
+                "port": 8080,
+                "upstream": "127.0.0.1:3000",
+                "config": m.waf_config("prod"),
+                "started": "before_config",
+                "binary": "installed",
+                "config_error": null,
+                "stats": null,
+                "stats_error": null,
+            },
+        });
+        let mut asked = Vec::new();
+        let (reported, text) = super::status_from(&m, &app, |verb| {
+            asked.push(verb);
+            Ok(answer.clone())
+        })
+        .await
+        .expect("a status");
+        assert_eq!(asked, [Verb::Status]);
+        // The worker, its releases, and the WAF: how it is, and that the
+        // rules it runs are not taken for erpc.toml's, with the deploy
+        // for this environment.
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 4, "{text}");
+        assert_eq!(
+            lines[0],
+            "bot-prod on 203.0.113.10: running, release 20261111T090000Z-1a2b3c4d"
+        );
+        assert!(lines[1].starts_with("  current 20261111T090000Z-1a2b3c4d, "));
+        assert!(lines[2].starts_with("  WAF: listening on port 8080, "));
+        assert!(
+            lines[3].starts_with("  WAF: it was started before its config or its unit on ")
+                && lines[3].contains("`erpc worker deploy --env prod` restarts it"),
+            "{text}"
+        );
+        // What `--json` prints: the agent's answer, with whose rules the
+        // WAF runs and what is paid for by the hour, here nothing.
+        assert_eq!(reported["waf"], answer["waf"]);
+        assert_eq!(reported["waf_rules"], "before_config");
+        assert_eq!(reported["hourly"], json!({ "server": null, "lines": [] }));
+        // An agent that could not be asked fails the command.
+        let failed = super::status_from(&m, &app, |_| Err(super::failed("no answer")))
+            .await
+            .expect_err("failed");
+        assert_eq!(failed.message, "no answer");
+    }
+
+    #[test]
+    fn status_says_how_the_waf_is_under_the_worker_and_json_says_whose_rules_it_runs() {
+        let app = |waf: &str| {
+            erpc_worker::manifest::Manifest::parse(&format!(
+                "name = \"bot\"\nchain = \"solana\"\n[run]\nport = 3000\n{waf}"
+            ))
+            .expect("valid")
+        };
+        let m = app("[waf]\nport = 8080\n");
+        // The agent's answer: the worker, and a WAF that runs the config
+        // erpc.toml makes and has written no counts yet.
+        let answer = || {
+            json!({
+                "ok": true,
+                "agent": { "state": "running", "release": "20261111T090000Z-1a2b3c4d" },
+                "current": "20261111T090000Z-1a2b3c4d",
+                "previous": null,
+                "releases": 1,
+                "waf": {
+                    "unit": "erpc-waf-bot-prod.service",
+                    "state": "active",
+                    "active": true,
+                    "listen": "0.0.0.0:8080",
+                    "port": 8080,
+                    "upstream": "127.0.0.1:3000",
+                    "config": m.waf_config("prod"),
+                    "started": "after_config",
+                    "binary": "installed",
+                    "config_error": null,
+                    "stats": null,
+                    "stats_error": null,
+                },
+            })
+        };
+        let said = |m: &erpc_worker::manifest::Manifest, answer: &mut serde_json::Value| {
+            super::status_said(m, "prod", "203.0.113.10", answer, None, " --env prod")
+        };
+        let mut reported = answer();
+        assert_eq!(
+            said(&m, &mut reported),
+            "bot-prod on 203.0.113.10: running, release 20261111T090000Z-1a2b3c4d\n\
+             \x20 current 20261111T090000Z-1a2b3c4d, previous none, 1 release kept\n\
+             \x20 WAF: listening on port 8080, forwarding to 127.0.0.1:3000; it has written no \
+             counts yet"
+        );
+        assert_eq!(reported["waf_rules"], "erpc_toml");
+        // `[waf]` was tightened since the deploy: a line more, and --json
+        // says so.
+        let tightened = app("[waf]\nport = 8080\ndeny_paths = [\"/admin/*\"]\n");
+        let mut reported = answer();
+        let text = said(&tightened, &mut reported);
+        assert!(
+            text.ends_with(
+                "counts yet\n  WAF: the rules it runs are not erpc.toml's; `erpc worker deploy \
+                 --env prod` puts erpc.toml's in place, and until then its port is not opened \
+                 wider"
+            ),
+            "{text}"
+        );
+        assert_eq!(reported["waf_rules"], "other");
+        // What it is charged for comes after the WAF.
+        let mut reported = answer();
+        let charged = Some("Charged by the hour".to_owned());
+        let text = super::status_said(&m, "prod", "203.0.113.10", &mut reported, charged, "");
+        assert!(
+            text.ends_with("counts yet\n  Charged by the hour"),
+            "{text}"
+        );
+        // An app without a WAF on a server without one: no line, and null.
+        let mut plain = answer();
+        plain["waf"] = serde_json::Value::Null;
+        let text = said(&app(""), &mut plain);
+        assert!(!text.contains("WAF"), "{text}");
+        assert!(plain["waf_rules"].is_null());
+    }
+
+    #[test]
+    fn what_a_server_sent_is_shown_without_what_a_terminal_acts_on() {
+        use super::shown;
+        // A journal line, as `logs` and `logs --waf` print one: an escape
+        // sequence, a carriage return and a character that reorders text
+        // are not passed to the terminal; a tab and other scripts are.
+        assert_eq!(
+            shown("2026-11-11T09:00:00+00:00 host erpc-worker-agent[1]: blocked\tpath=\"/x\""),
+            "2026-11-11T09:00:00+00:00 host erpc-worker-agent[1]: blocked\tpath=\"/x\""
+        );
+        assert_eq!(
+            shown("a\u{1b}]0;owned\u{7}\u{1b}[2Jb\rc\u{9b}2Jd\u{7f}e\u{202e}f"),
+            "a?]0;owned??[2Jb?c?2Jd?e?f"
+        );
+        assert_eq!(shown("日本語 ✓ ünï\n\tnext\n"), "日本語 ✓ ünï\n\tnext\n");
+        assert_eq!(shown(""), "");
+
+        // An agent's answer: every string in it, and every name, whether
+        // it is then printed as text or as --json. The table keeps its
+        // line breaks and its tabs.
+        let sent = "noise\n{\"ok\":true,\"table\":\"table inet erpc_worker {\\n\\tchain input\\n}\",\
+                    \"waf\":{\"state\":\"active\\u001b[2J\",\"stats\":{\"since\":\"\\u001b]0;x\\u0007\",\
+                    \"requests\":3},\"list\":[\"a\\u009bb\"]},\"na\\u001bme\":1}\n";
+        let answer = super::answer(sent.as_bytes()).expect("an answer");
+        assert_eq!(
+            answer,
+            json!({
+                "ok": true,
+                "table": "table inet erpc_worker {\n\tchain input\n}",
+                "waf": {
+                    "state": "active?[2J",
+                    "stats": { "since": "?]0;x?", "requests": 3 },
+                    "list": ["a?b"]
+                },
+                "na?me": 1
+            })
+        );
+        // One that does not read is quoted in the error, and is shown the
+        // same way.
+        let refused =
+            super::answer(b"sudo: \x1b[2Ja password is required\n").expect_err("no answer");
+        assert!(
+            refused.message.contains("sudo: ?[2Ja password is required"),
+            "{}",
+            refused.message
+        );
+    }
+
     use super::{
         Again, LineEnd, Released, Removal, delete_prompt, ends_server, failure_details,
         forget_prompt, hourly_items, left_over, line_end, must_keep, refuse_delete, retry_hint,
@@ -1431,6 +1930,41 @@ mod tests {
                 .collect(),
             ..Env::default()
         }
+    }
+
+    #[test]
+    fn only_a_refusal_for_a_taken_port_says_where_the_port_is_set() {
+        use erpc_worker::server::port_taken;
+        // As `ctl install`, `activate` and `rollback` word it, by the
+        // neighbour's name, and as the agent does before a start.
+        for refusal in [
+            port_taken(3000, Some("api-default")),
+            port_taken(3000, None),
+        ] {
+            let hint = super::port_hint(&refusal).expect("a hint");
+            assert!(
+                hint.contains("port 3000") && hint.contains("erpc.toml"),
+                "{hint}"
+            );
+            // What `install` and `rollback` fail with carries it.
+            let failed = super::refusal(&json!({ "ok": false, "error": refusal }));
+            assert_eq!(failed.message, refusal);
+            assert_eq!(failed.hint, Some(hint));
+        }
+        // Anything else the agent refuses with gets no such hint.
+        for other in [
+            "locked: the trading key has not been handed over",
+            "release r2 was not healthy within 35s (state starting, last exit none)",
+            "another erpc is changing this worker; try again when it is done",
+            "port is taken",
+        ] {
+            assert_eq!(super::port_hint(other), None, "{other}");
+            let failed = super::refusal(&json!({ "ok": false, "error": other }));
+            assert_eq!((failed.message.as_str(), failed.hint), (other, None));
+        }
+        // An answer without words of its own.
+        let failed = super::refusal(&json!({ "ok": false }));
+        assert_eq!(failed.message, "the server's agent refused");
     }
 
     #[test]
@@ -1624,17 +2158,129 @@ mod tests {
     }
 
     #[test]
+    fn a_request_carries_a_token_only_when_the_app_has_one() {
+        let url = concat!("http://127.0.0.1", ":3000/");
+        let with = super::api_request("GET", url, Some("tok\"en"), None);
+        assert_eq!(
+            with.as_str(),
+            format!(
+                "request = \"GET\"\nurl = \"{url}\"\nheader = \"Authorization: Bearer tok\\\"en\"\n"
+            )
+        );
+        // An app with no API_TOKEN in [secrets], such as the hello app, is
+        // asked without one, and a body goes as JSON either way.
+        let without = super::api_request("POST", url, None, Some("{\"a\":1}"));
+        assert!(!without.contains("Authorization"), "{}", without.as_str());
+        assert!(
+            without.ends_with(
+                "header = \"Content-Type: application/json\"\ndata = \"{\\\"a\\\":1}\"\n"
+            ),
+            "{}",
+            without.as_str()
+        );
+    }
+
+    #[test]
+    fn an_app_that_refuses_a_request_without_a_token_is_told_where_one_goes() {
+        let refused = super::api_refused("HTTP 401", "unauthorized", false, " --dir bot");
+        let hint = refused.hint.expect("a hint");
+        assert!(
+            hint.contains("erpc worker secret put API_TOKEN --dir bot"),
+            "{hint}"
+        );
+        assert!(refused.message.contains("HTTP 401"), "{}", refused.message);
+        // A token was sent and refused, or the app said something else:
+        // the app's answer is all there is to say.
+        assert!(super::api_refused("HTTP 401", "", true, "").hint.is_none());
+        assert!(super::api_refused("HTTP 404", "", false, "").hint.is_none());
+    }
+
+    #[test]
+    fn the_status_says_the_accounts_list_when_it_has_it_and_the_record_when_not() {
+        use serde_json::json;
+        let env = env();
+        // With the account's list: a price for what is on it.
+        let priced = crate::worker_charges::from_snapshot(
+            &env,
+            &json!({ "message": {
+                "balance": { "balanceCents": 900 },
+                "hourlyResources": [
+                    { "productType": "vps", "userProductId": 100_001, "hourlyCents": 7 },
+                ],
+                "burnRateCentsPerHour": 7,
+                "timeToZeroHours": 128,
+            } }),
+        )
+        .expect("something hourly, and the list");
+        let said = super::hourly_said(Some(&env), Some(&priced), " --env prod").expect("said");
+        assert!(said.contains("€0.07 per hour"), "{said}");
+        assert!(
+            said.contains("not among the account's charges now"),
+            "{said}"
+        );
+        // Without it (no session, user-api away): what is on record, as
+        // before, and no price.
+        let said = super::hourly_said(Some(&env), None, " --env prod").expect("said");
+        assert_eq!(
+            Some(said.clone()),
+            still_charged_line(&env, " --env prod"),
+            "the record's own sentence"
+        );
+        assert!(!said.contains('€'), "{said}");
+        // Nothing on record: nothing said either way.
+        assert_eq!(super::hourly_said(None, None, ""), None);
+        assert_eq!(super::hourly_said(Some(&Env::default()), None, ""), None);
+    }
+
+    #[test]
     fn what_keeps_being_charged_is_said_with_the_way_to_end_it() {
+        use erpc_core::i18n::Lang;
         // An hourly server and hourly lines: named, with --release-server.
         let said = still_charged_line(&env(), " bot --env prod").expect("hourly things");
         assert!(said.contains("--release-server bot --env prod"), "{said}");
         for item in hourly_items(&env()) {
             assert!(said.contains(&item), "{said} lacks {item}");
         }
-        // The prompt of a plain delete says so before the yes.
+        // The prompt of a plain delete says so before the yes: that this
+        // does not end them, and that what still runs stays charged. Not
+        // that they keep running: one may have been ended elsewhere, and
+        // erpc has not looked.
         let id = UnitId::new("bot-prod").expect("unit id");
         let prompt = delete_prompt(&env(), &id, "prod", false, false);
-        assert!(prompt.contains("--release-server"), "{prompt}");
+        let items = hourly_items(&env()).join(", ");
+        assert!(
+            prompt.ends_with(&format!(
+                "; its hourly {items} are not ended by this: any that still runs stays charged \
+                 (add `--release-server` to end them)"
+            )),
+            "{prompt}"
+        );
+        assert!(!prompt.contains("keep running"), "{prompt}");
+        // In every language: its own sentence, with the flag as it is
+        // typed and the things it is about, saying that they are not
+        // ended and not that they keep running.
+        for (lang, not_ended, keep_running) in [
+            (Lang::Ja, "この操作では終了しません", "動き続け"),
+            (Lang::Zh, "这不会终止", "继续运行"),
+            (Lang::Ru, "при этом не завершаются", "продолжают работать"),
+        ] {
+            let (said, items) = crate::i18n::speaking(lang, || {
+                (
+                    delete_prompt(&env(), &id, "prod", false, false),
+                    hourly_items(&env()),
+                )
+            });
+            assert!(!said.contains("are not ended by this"), "{said}");
+            assert!(
+                said.contains("`--release-server`") && !said.contains('{'),
+                "{said}"
+            );
+            assert!(said.contains(not_ended), "{said}");
+            assert!(!said.contains(keep_running), "{said}");
+            for item in items {
+                assert!(said.contains(&item), "{said} lacks {item}");
+            }
+        }
         // Nothing hourly on record: nothing to say.
         let own = Env {
             resource: None,

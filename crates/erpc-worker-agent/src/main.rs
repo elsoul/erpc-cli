@@ -9,6 +9,10 @@
 //! - `ctl --id <id> <verb>` is what erpc runs as root over SSH: it changes
 //!   which release is current, checks a release before it runs, and
 //!   forwards the rest to `supervise` over its socket.
+//! - `waf --config <path>` is the unit of a worker's WAF: an HTTP proxy
+//!   that faces the network and forwards to the app on loopback what its
+//!   rules let through. A process of its own, with nothing of the other
+//!   two. `ctl waf-apply` writes its config and its unit and starts it.
 //!
 //! What each does, and the layout they share, is in
 //! [`erpc_worker::server`].
@@ -30,6 +34,10 @@ mod ctl;
 mod firewall;
 #[cfg(target_os = "linux")]
 mod supervise;
+#[cfg(target_os = "linux")]
+mod waf;
+#[cfg(target_os = "linux")]
+mod wafctl;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod wiped;
 
@@ -81,6 +89,12 @@ enum Command {
         #[command(subcommand)]
         verb: Verb,
     },
+    /// Run the worker's WAF: the HTTP proxy in front of its app.
+    Waf {
+        /// Its config file.
+        #[arg(long, value_name = "PATH")]
+        config: PathBuf,
+    },
 }
 
 /// What `ctl` does.
@@ -91,22 +105,35 @@ pub(crate) enum Verb {
         /// Restart the agent when it runs: its binary was just replaced.
         #[arg(long)]
         restart_agent: bool,
+        /// Leave the agent running when it runs, whatever changed: it holds
+        /// the key and the secrets, and nothing follows that hands them
+        /// back.
+        #[arg(long, conflicts_with = "restart_agent")]
+        keep_agent: bool,
     },
     /// Move a staged upload into the worker's releases, checked.
     Install {
         /// The release.
         release: String,
     },
-    /// Stop the worker and remove its unit, releases and state.
+    /// Stop the worker and remove its unit, releases and state, and its
+    /// WAF.
     Remove,
     /// Apply this worker's opening (a request on stdin) to the server's
     /// firewall, under a rollback timer.
     FirewallApply,
     /// Keep the firewall just applied: run over a fresh connection.
     FirewallConfirm,
-    /// The server's firewall table and the openings it is made from.
+    /// The server's firewall table and the openings it is made from, and
+    /// how the worker's WAF is.
     FirewallShow,
-    /// How the worker is, and its releases.
+    /// Put the worker's WAF in front of its app: its config, as JSON on
+    /// standard input, written with its unit, and the proxy started and
+    /// waited for.
+    WafApply,
+    /// Stop the worker's WAF and remove its unit and its config.
+    WafRemove,
+    /// How the worker is, its releases, and its WAF when it has one.
     Status,
     /// Hand over the key and the secrets: one JSON object on standard input.
     Unlock,
@@ -160,9 +187,13 @@ pub(crate) enum Verb {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let id = match &cli.command {
-        Command::Supervise { place, .. } | Command::Ctl { place, .. } => place.id.clone(),
+        Command::Supervise { place, .. } | Command::Ctl { place, .. } => Some(&place.id),
+        // Its config names everything it needs.
+        Command::Waf { .. } => None,
     };
-    if !erpc_worker::server::is_unit_id(&id) {
+    if let Some(id) = id
+        && !erpc_worker::server::is_unit_id(id)
+    {
         eprintln!("erpc-worker-agent: `{id}` is not a worker id");
         return ExitCode::from(2);
     }
@@ -194,6 +225,7 @@ fn run(command: Command) -> ExitCode {
                 .unwrap_or_else(|| server::socket_path(&place.id));
             ctl::run(&place.id, &dir, &socket, &verb)
         }
+        Command::Waf { config } => waf::run(&config),
     }
 }
 

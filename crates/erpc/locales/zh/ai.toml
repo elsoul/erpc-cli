@@ -16,6 +16,7 @@ sign_in_hint = "请运行 `erpc login` 登录，或运行 `erpc signup` 创建�
 empty_question = "问题为空"
 open_dashboard = "在 ERPC 仪表板购买月付或年付套餐：{url}"
 declined_because = "模型拒绝回答：{why}"
+size_refused = "ERPC AI 当前不提供 {size}：改由默认规格回答，之后将自动选择规格。"
 declined = "模型拒绝回答（未说明原因）"
 stopped = "已中断"
 

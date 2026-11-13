@@ -29,6 +29,8 @@ use erpc_worker::server::{
 };
 use serde_json::{Value, json};
 
+use crate::wafctl;
+
 const ROLLBACK_UNIT: &str = "erpc-worker-firewall-rollback";
 const BOOT_UNIT: &str = "erpc-worker-firewall.service";
 
@@ -39,6 +41,53 @@ const ROLLED_BACK: &str = "rolled-back.json";
 
 fn dir() -> PathBuf {
     PathBuf::from(FIREWALL_DIR)
+}
+
+/// What a firewall change runs on the server: `nft`, `systemctl` and
+/// `systemd-run`.
+pub(crate) trait Tools {
+    /// Runs `program` with `args`: what it printed, or why it failed.
+    fn run(&self, program: &str, args: &[&str]) -> Result<String, String>;
+    /// Whether the rollback timer of a change not yet confirmed is waiting.
+    fn armed(&self) -> Result<bool, String>;
+}
+
+/// The server's own.
+struct Real;
+
+impl Tools for Real {
+    fn run(&self, program: &str, args: &[&str]) -> Result<String, String> {
+        run(program, args)
+    }
+
+    fn armed(&self) -> Result<bool, String> {
+        armed()
+    }
+}
+
+/// A server, as far as `firewall-apply` is concerned: where the firewall's
+/// files are, what it runs, and where the workers' WAFs are, so that the
+/// tests apply a change to a directory with tools that write down what
+/// they were asked.
+pub(crate) struct Host<'a> {
+    /// What it runs.
+    pub(crate) tools: &'a dyn Tools,
+    /// Where the firewall's files are ([`FIREWALL_DIR`]).
+    pub(crate) dir: PathBuf,
+    /// The server's WAFs: the port a worker's listens on is the one port
+    /// that may be opened to everyone.
+    pub(crate) waf: wafctl::Host<'a>,
+}
+
+impl Host<'static> {
+    /// The server this runs on.
+    pub(crate) fn server() -> Self {
+        Self {
+            tools: &Real,
+            dir: dir(),
+            waf: wafctl::Host::server(),
+        }
+    }
 }
 
 /// What the rollback timer runs: take the pending change, and only then
@@ -160,12 +209,14 @@ fn write(path: &Path, text: &str) -> Result<(), String> {
         })
 }
 
-/// The openings kept, by worker; `candidate` in place of its worker's.
+/// The openings kept in `d`, by worker; `candidate` in place of its
+/// worker's.
 fn openings(
+    d: &Path,
     candidate: Option<(&str, Option<&Opening>)>,
 ) -> Result<BTreeMap<String, Opening>, String> {
     let mut all = BTreeMap::new();
-    let workers = dir().join("workers");
+    let workers = d.join("workers");
     if let Ok(entries) = std::fs::read_dir(&workers) {
         for entry in entries.filter_map(Result::ok) {
             let name = entry.file_name().to_string_lossy().into_owned();
@@ -196,11 +247,56 @@ fn openings(
 }
 
 /// Checks `table` with `nft -c`, then loads it.
-fn load(table: &str, path: &Path) -> Result<(), String> {
+fn load(tools: &dyn Tools, table: &str, path: &Path) -> Result<(), String> {
     write(path, table)?;
     let path = path.to_string_lossy();
-    run("nft", &["-c", "-f", &path])?;
-    run("nft", &["-f", &path]).map(|_| ())
+    tools.run("nft", &["-c", "-f", &path])?;
+    tools.run("nft", &["-f", &path]).map(|_| ())
+}
+
+/// Why `opening` is not one a server takes, whatever is in force there,
+/// when it is not: its port, how many addresses it names, its limit's
+/// numbers.
+fn refuse_shape(opening: &Opening, ssh_port: u16) -> Result<(), String> {
+    let o = opening;
+    if o.port == 0 || o.port == ssh_port || o.allow.is_empty() || o.allow.len() > 64 {
+        return Err("an opening is a port other than SSH's, for 1 to 64 addresses".to_owned());
+    }
+    if let Some(problem) = o
+        .limit
+        .and_then(|limit| limit.problems().into_iter().next())
+    {
+        return Err(format!("the opening's limit on new connections: {problem}"));
+    }
+    Ok(())
+}
+
+/// The refusal for an opening that names "everyone" on a port that is not
+/// the one the worker's WAF listens on (`waf_port`: none when the worker
+/// has no WAF, or one whose config does not read): only a WAF's port may
+/// be open to everyone. None for any other opening: an app's own port is
+/// open to the addresses it names, as it always was.
+fn refuse_everyone(opening: &Opening, waf_port: Option<u16>) -> Option<String> {
+    let everyone = opening.allow.iter().find(|c| c.is_everyone())?;
+    (waf_port != Some(opening.port)).then(|| {
+        format!(
+            "{everyone} is every address, and port {} is not the one this worker's WAF listens \
+             on; only a WAF's port is opened to everyone",
+            opening.port
+        )
+    })
+}
+
+/// Whether `opening` lets in nobody that `in_force`, the worker's opening
+/// in force, does not: the same port, with the same limit on new
+/// connections, to addresses that are each, as written, among the ones in
+/// force. Applying it makes nothing wider than it is.
+fn within(opening: &Opening, in_force: Option<&Opening>) -> bool {
+    in_force.is_some_and(|now| {
+        opening.port == now.port
+            && opening.limit == now.limit
+            && opening.allow.iter().all(|a| now.allow.contains(a))
+    })
 }
 
 /// `firewall-apply`: this worker's opening (stdin) applied to the table,
@@ -212,26 +308,57 @@ pub(crate) fn apply(id: &str) -> Result<Value, String> {
         .take(64 * 1024)
         .read_to_string(&mut input)
         .map_err(|e| format!("could not read standard input: {e}"))?;
+    apply_to(&Host::server(), id, &input)
+}
+
+/// [`apply`] on `host`, with the request `input`. The opening is checked
+/// ([`refuse_shape`], [`refuse_everyone`]) before the lock is taken, a
+/// file written or a tool run: whatever erpc sent, this is where
+/// "everyone" is refused to a port that is not the one the worker's WAF
+/// listens on.
+///
+/// With one exception, looked at once the lock is held: an opening that
+/// lets in nobody the worker's opening in force does not ([`within`]) is
+/// applied whatever the WAF's config reads as. It makes nothing wider,
+/// and it is what erpc asks of a server whose WAF's config does not read
+/// (an agent installed since does not take the file, say) while its port
+/// is open to everyone: the opening in force, again, on the way to the
+/// `waf-apply` that writes a config that reads. Refused, a deploy could
+/// not get that far until the port had been closed.
+fn apply_to(host: &Host<'_>, id: &str, input: &str) -> Result<Value, String> {
     let request: FirewallRequest =
         serde_json::from_str(input.trim()).map_err(|e| format!("not a firewall request: {e}"))?;
     if request.ssh_port == 0 {
         return Err("0 is not the SSH port".to_owned());
     }
-    if let Some(o) = &request.opening
-        && (o.port == 0 || o.port == request.ssh_port || o.allow.is_empty() || o.allow.len() > 64)
-    {
-        return Err("an opening is a port other than SSH's, for 1 to 64 addresses".to_owned());
+    let (d, tools) = (&host.dir, host.tools);
+    // The refusal of everyone on a port that is not known to be the
+    // WAF's, kept for under the lock where the worker has an opening in
+    // force that this one may be within. Without one it is refused here.
+    let mut everyone = None;
+    if let Some(o) = &request.opening {
+        refuse_shape(o, request.ssh_port)?;
+        if let Some(refused) = refuse_everyone(o, wafctl::listen_port(&host.waf, id)) {
+            if !d.join("workers").join(format!("{id}.json")).exists() {
+                return Err(refused);
+            }
+            everyone = Some(refused);
+        }
     }
-    let d = dir();
-    let _lock = lock(&d)?;
+    let _lock = lock(d)?;
     std::fs::create_dir_all(d.join("workers"))
         .map_err(|e| format!("could not make {}: {e}", d.display()))?;
     // Another worker's change, not yet confirmed, has its own timer:
     // stopping it would keep a table nobody proved lets erpc in.
-    refuse_while_waiting(&d, armed)?;
-    let all = openings(Some((id, request.opening.as_ref())))?;
+    refuse_while_waiting(d, || tools.armed())?;
+    if let (Some(refused), Some(o)) = (everyone, &request.opening)
+        && !within(o, openings(d, None)?.get(id))
+    {
+        return Err(refused);
+    }
+    let all = openings(d, Some((id, request.opening.as_ref())))?;
     let table = firewall_table(request.ssh_port, &all);
-    let _ = run("systemctl", &["stop", &format!("{ROLLBACK_UNIT}.timer")]);
+    let _ = tools.run("systemctl", &["stop", &format!("{ROLLBACK_UNIT}.timer")]);
     // What is in force now is what the timer goes back to.
     let previous = std::fs::read_to_string(d.join("applied.nft"))
         .unwrap_or_else(|_| "table inet erpc_worker\ndelete table inet erpc_worker\n".to_owned());
@@ -247,8 +374,8 @@ pub(crate) fn apply(id: &str) -> Result<Value, String> {
     let _ = std::fs::remove_file(d.join(CONFIRMING));
     // The timer puts the previous table back only if it takes the pending
     // change first, by a rename `confirm` races for: one of them wins.
-    let rollback = rollback_command(&d);
-    run(
+    let rollback = rollback_command(d);
+    tools.run(
         "systemd-run",
         &[
             "--quiet",
@@ -260,8 +387,8 @@ pub(crate) fn apply(id: &str) -> Result<Value, String> {
             &rollback,
         ],
     )?;
-    if let Err(e) = load(&table, &d.join("pending.nft")) {
-        let _ = run("systemctl", &["stop", &format!("{ROLLBACK_UNIT}.timer")]);
+    if let Err(e) = load(tools, &table, &d.join("pending.nft")) {
+        let _ = tools.run("systemctl", &["stop", &format!("{ROLLBACK_UNIT}.timer")]);
         return Err(e);
     }
     Ok(json!({ "ok": true, "firewall": "applied", "rollback_seconds": FIREWALL_ROLLBACK_SECONDS }))
@@ -373,8 +500,8 @@ pub(crate) fn close(id: &str, _held: &Held) -> Result<Value, String> {
             })
         })
         .unwrap_or(22);
-    let all = openings(Some((id, None)))?;
-    load(&firewall_table(ssh_port, &all), &d.join("next.nft"))?;
+    let all = openings(&d, Some((id, None)))?;
+    load(&Real, &firewall_table(ssh_port, &all), &d.join("next.nft"))?;
     std::fs::rename(d.join("next.nft"), d.join("applied.nft"))
         .map_err(|e| format!("could not keep the table: {e}"))?;
     let _ = std::fs::remove_file(&opening_path);
@@ -387,13 +514,339 @@ pub(crate) fn show() -> Result<Value, String> {
     Ok(json!({
         "ok": true,
         "table": table,
-        "openings": openings(None)?,
+        "openings": openings(&dir(), None)?,
         "pending": dir().join("pending.json").exists(),
     }))
 }
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+    use std::path::Path;
+    use std::time::Duration;
+
+    use erpc_worker::waf::WafConfig;
+
+    use super::{Host, Tools};
+    use crate::wafctl;
+
+    /// Tools that run nothing and write down what they were asked to.
+    #[derive(Default)]
+    struct Recording {
+        ran: RefCell<Vec<String>>,
+    }
+
+    impl Tools for Recording {
+        fn run(&self, program: &str, args: &[&str]) -> Result<String, String> {
+            self.ran
+                .borrow_mut()
+                .push(format!("{program} {}", args.join(" ")));
+            Ok(String::new())
+        }
+
+        fn armed(&self) -> Result<bool, String> {
+            Ok(false)
+        }
+    }
+
+    /// A systemd nothing is asked of: an opening is checked against a
+    /// WAF's config file, not against its unit.
+    struct Unasked;
+
+    impl wafctl::Systemd for Unasked {
+        fn run(&self, _args: &[&str]) -> Result<(), String> {
+            Err("not asked in this test".to_owned())
+        }
+
+        fn state(&self, _unit: &str) -> String {
+            "inactive".to_owned()
+        }
+
+        fn pid(&self, _unit: &str) -> u32 {
+            0
+        }
+
+        fn started(&self, _unit: &str) -> String {
+            String::new()
+        }
+
+        fn journal(&self, _unit: &str) -> Vec<String> {
+            Vec::new()
+        }
+    }
+
+    fn host<'a>(tools: &'a Recording, root: &Path) -> Host<'a> {
+        Host {
+            tools,
+            dir: root.join("worker-firewall"),
+            waf: wafctl::Host {
+                systemd: &Unasked,
+                units: root.join("systemd"),
+                configs: root.join("worker-waf"),
+                runtime: root.join("run"),
+                proc: root.join("proc"),
+                agent: root.join("agent"),
+                patience: Duration::ZERO,
+                pause: Duration::ZERO,
+            },
+        }
+    }
+
+    /// Puts the config of a WAF for worker `id`, listening on `port`,
+    /// where `waf-apply` writes it.
+    fn waf_on(host: &Host<'_>, id: &str, port: u16) {
+        let config = WafConfig::default_for(
+            id,
+            format!("0.0.0.0:{port}").parse().expect("listen"),
+            "127.0.0.1:3000".parse().expect("upstream"),
+        );
+        std::fs::create_dir_all(&host.waf.configs).expect("configs");
+        std::fs::write(
+            host.waf.configs.join(format!("{id}.json")),
+            serde_json::to_string(&config).expect("json"),
+        )
+        .expect("config");
+    }
+
+    #[test]
+    fn everyone_is_applied_only_to_the_port_the_workers_own_waf_listens_on() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let tools = Recording::default();
+        let host = host(&tools, tmp.path());
+        let everyone = r#"{"ssh_port":22,"opening":{"port":8080,"allow":["0.0.0.0/0","::/0"],
+            "limit":{"per_second":50,"burst":100}}}"#;
+        let untouched = |host: &Host<'_>| {
+            assert!(tools.ran.borrow().is_empty(), "{:?}", tools.ran.borrow());
+            assert!(
+                !host.dir.exists(),
+                "nothing was written, nor the lock taken"
+            );
+        };
+
+        // A worker with no WAF, whatever erpc sent: refused before a file
+        // is written or a tool run.
+        let refused = super::apply_to(&host, "bot-default", everyone).expect_err("no WAF");
+        assert!(
+            refused.contains("only a WAF's port is opened to everyone"),
+            "{refused}"
+        );
+        untouched(&host);
+        // Another worker's WAF on that port is not this worker's.
+        waf_on(&host, "api-default", 8080);
+        assert!(super::apply_to(&host, "bot-default", everyone).is_err());
+        // Its own WAF, on another port.
+        waf_on(&host, "bot-default", 9090);
+        let refused = super::apply_to(&host, "bot-default", everyone).expect_err("another port");
+        assert!(refused.contains("port 8080 is not the one"), "{refused}");
+        // And every other check of an opening is made here too.
+        for bad in [
+            r#"{"ssh_port":22,"opening":{"port":22,"allow":["198.51.100.7"]}}"#,
+            r#"{"ssh_port":22,"opening":{"port":8080,"allow":[]}}"#,
+            r#"{"ssh_port":0,"opening":null}"#,
+            "{}",
+        ] {
+            assert!(super::apply_to(&host, "bot-default", bad).is_err(), "{bad}");
+        }
+        untouched(&host);
+
+        // Its own WAF on that port: applied, the rollback armed before the
+        // table is checked and loaded.
+        waf_on(&host, "bot-default", 8080);
+        let answer = super::apply_to(&host, "bot-default", everyone).expect("applied");
+        assert_eq!(answer["firewall"], "applied", "{answer}");
+        let d = host.dir.display();
+        assert_eq!(
+            tools.ran.take(),
+            [
+                "systemctl stop erpc-worker-firewall-rollback.timer".to_owned(),
+                format!(
+                    "systemd-run --quiet --collect --unit=erpc-worker-firewall-rollback \
+                     --on-active=120 /bin/sh -c mv '{d}/pending.json' '{d}/rolled-back.json' && \
+                     /usr/sbin/nft -f '{d}/previous.nft'"
+                ),
+                format!("nft -c -f {d}/pending.nft"),
+                format!("nft -f {d}/pending.nft"),
+            ]
+        );
+        let table = std::fs::read_to_string(host.dir.join("pending.nft")).expect("the table");
+        for line in [
+            "    tcp dport 8080 meta nfproto ipv4 accept",
+            "    tcp dport 8080 meta nfproto ipv6 accept",
+            "    tcp dport 22 accept",
+        ] {
+            assert!(table.lines().any(|l| l == line), "{line} in\n{table}");
+        }
+        let pending: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(host.dir.join("pending.json")).expect("pending"),
+        )
+        .expect("json");
+        assert_eq!(pending["id"], "bot-default");
+        assert_eq!(pending["opening"]["port"], 8080);
+        // Not kept yet: that is `firewall-confirm`'s, over a fresh
+        // connection.
+        assert!(!host.dir.join("workers/bot-default.json").exists());
+
+        // Addresses, to a port with no WAF, as an app's own always were.
+        let named = r#"{"ssh_port":22,"opening":{"port":3000,"allow":["198.51.100.7"]}}"#;
+        std::fs::remove_file(host.dir.join("pending.json")).expect("removed");
+        let answer = super::apply_to(&host, "bot-default", named).expect("applied");
+        assert_eq!(answer["firewall"], "applied", "{answer}");
+    }
+
+    /// Keeps `opening` as worker `id`'s opening in force, where
+    /// `firewall-confirm` keeps it.
+    fn in_force(host: &Host<'_>, id: &str, opening: &str) {
+        std::fs::create_dir_all(host.dir.join("workers")).expect("workers");
+        std::fs::write(host.dir.join("workers").join(format!("{id}.json")), opening)
+            .expect("the opening");
+    }
+
+    #[test]
+    fn the_opening_in_force_is_applied_again_though_the_wafs_config_does_not_read() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let tools = Recording::default();
+        let host = host(&tools, tmp.path());
+        let request = |opening: &str| format!(r#"{{"ssh_port":22,"opening":{opening}}}"#);
+        let everyone =
+            r#"{"port":8080,"allow":["0.0.0.0/0","::/0"],"limit":{"per_second":50,"burst":100}}"#;
+        // The worker's WAF listened on 8080 when its port was opened to
+        // everyone, and that opening is in force. Its config no longer
+        // reads: the agent installed does not take the file.
+        waf_on(&host, "bot-default", 8080);
+        in_force(&host, "bot-default", everyone);
+        std::fs::write(host.waf.configs.join("bot-default.json"), "{}").expect("config");
+        assert_eq!(wafctl::listen_port(&host.waf, "bot-default"), None);
+        let applied = |opening: &str| {
+            let answer = super::apply_to(&host, "bot-default", &request(opening));
+            // Each on its own: not waiting on the one before.
+            let _ = std::fs::remove_file(host.dir.join("pending.json"));
+            tools.ran.take();
+            answer.map(|answer| answer["firewall"] == "applied")
+        };
+
+        // The opening in force, again: nothing becomes wider. This is what
+        // a deploy's firewall step asks before `waf-apply` can write a
+        // config that reads.
+        assert_eq!(applied(everyone), Ok(true));
+        // The same addresses in another order, and fewer of them.
+        assert_eq!(
+            applied(
+                r#"{"port":8080,"allow":["::/0","0.0.0.0/0"],"limit":{"per_second":50,"burst":100}}"#
+            ),
+            Ok(true)
+        );
+        assert_eq!(
+            applied(r#"{"port":8080,"allow":["0.0.0.0/0"],"limit":{"per_second":50,"burst":100}}"#),
+            Ok(true)
+        );
+
+        // Anything wider stays refused: an address more, another port, a
+        // looser limit or none.
+        for wider in [
+            r#"{"port":8080,"allow":["0.0.0.0/0","::/0","198.51.100.7"],"limit":{"per_second":50,"burst":100}}"#,
+            r#"{"port":9090,"allow":["0.0.0.0/0","::/0"],"limit":{"per_second":50,"burst":100}}"#,
+            r#"{"port":8080,"allow":["0.0.0.0/0","::/0"],"limit":{"per_second":500,"burst":1000}}"#,
+            r#"{"port":8080,"allow":["0.0.0.0/0","::/0"]}"#,
+        ] {
+            let refused = applied(wider).expect_err(wider);
+            assert!(
+                refused.contains("only a WAF's port is opened to everyone"),
+                "{wider}: {refused}"
+            );
+        }
+        // And everyone where the opening in force names addresses, or
+        // where none is in force.
+        in_force(
+            &host,
+            "bot-default",
+            r#"{"port":8080,"allow":["198.51.100.7/32"],"limit":{"per_second":50,"burst":100}}"#,
+        );
+        assert!(applied(everyone).is_err());
+        // Another worker's opening is not this one's. Where this worker
+        // has one in force, it is its own that the request is held to,
+        // under the lock: the very opening asked for, in force for
+        // another worker, lets nothing through.
+        in_force(&host, "api-default", everyone);
+        let refused = applied(everyone).expect_err("another worker's");
+        assert!(
+            refused.contains("only a WAF's port is opened to everyone"),
+            "{refused}"
+        );
+        // And where this worker has none, it is refused before the lock.
+        std::fs::remove_file(host.dir.join("workers/bot-default.json")).expect("removed");
+        assert!(applied(everyone).is_err());
+    }
+
+    #[test]
+    fn an_opening_is_checked_before_it_reaches_the_table() {
+        use erpc_worker::server::{NewConnections, Opening};
+        let opening = |json: &str| serde_json::from_str::<Opening>(json).expect("an opening");
+        // Every check of an opening, as `firewall-apply` makes them.
+        let refuse_opening = |o: &Opening, ssh_port: u16, waf_port: Option<u16>| {
+            super::refuse_shape(o, ssh_port)?;
+            super::refuse_everyone(o, waf_port).map_or(Ok(()), Err)
+        };
+        let plain = r#"{"port":8080,"allow":["198.51.100.7/32"]}"#;
+        assert_eq!(refuse_opening(&opening(plain), 22, None), Ok(()));
+        let limited = Opening {
+            limit: Some(NewConnections::DEFAULT),
+            ..opening(plain)
+        };
+        assert_eq!(refuse_opening(&limited, 22, None), Ok(()));
+        // Everyone, to the port the worker's WAF listens on and no other.
+        let everyone = opening(r#"{"port":8080,"allow":["0.0.0.0/0","::/0"]}"#);
+        assert_eq!(refuse_opening(&everyone, 22, Some(8080)), Ok(()));
+        let refused = refuse_opening(&everyone, 22, Some(9090)).expect_err("another port");
+        assert!(refused.contains("port 8080 is not the one"), "{refused}");
+        for (bad, says) in [
+            (
+                r#"{"port":22,"allow":["198.51.100.7/32"]}"#,
+                "other than SSH's",
+            ),
+            (
+                r#"{"port":0,"allow":["198.51.100.7/32"]}"#,
+                "other than SSH's",
+            ),
+            (r#"{"port":8080,"allow":[]}"#, "1 to 64 addresses"),
+            (
+                r#"{"port":8080,"allow":["198.51.100.7/32"],"limit":{"per_second":0,"burst":100}}"#,
+                "per_second is 0",
+            ),
+            (
+                r#"{"port":8080,"allow":["198.51.100.7/32"],"limit":{"per_second":50,"burst":100001}}"#,
+                "burst is 100001",
+            ),
+            (r#"{"port":8080,"allow":["0.0.0.0/0"]}"#, "every address"),
+            (
+                r#"{"port":8080,"allow":["198.51.100.7/32","::/0"]}"#,
+                "every address",
+            ),
+        ] {
+            let refused = refuse_opening(&opening(bad), 22, None).expect_err(bad);
+            assert!(refused.contains(says), "{bad}: {refused}");
+        }
+        // What is no wider than the opening in force: the same port and
+        // limit, to addresses that are each among those in force.
+        let within = |o: &str, now: &str| super::within(&opening(o), Some(&opening(now)));
+        let two = r#"{"port":8080,"allow":["0.0.0.0/0","198.51.100.7/32"]}"#;
+        assert!(within(two, two));
+        assert!(within(r#"{"port":8080,"allow":["198.51.100.7/32"]}"#, two));
+        assert!(!within(two, r#"{"port":8080,"allow":["0.0.0.0/0"]}"#));
+        assert!(!within(r#"{"port":8081,"allow":["0.0.0.0/0"]}"#, two));
+        // An address inside a network in force is not one of them as
+        // written, and a limit that is not the one in force is not "the
+        // same".
+        assert!(!within(
+            r#"{"port":8080,"allow":["198.51.100.7/32"]}"#,
+            r#"{"port":8080,"allow":["198.51.100.0/24"]}"#
+        ));
+        assert!(!within(
+            r#"{"port":8080,"allow":["0.0.0.0/0"],"limit":{"per_second":50,"burst":100}}"#,
+            two
+        ));
+        assert!(!super::within(&opening(two), None));
+    }
+
     #[test]
     fn confirm_and_the_rollback_cannot_both_take_the_change() {
         let tmp = tempfile::tempdir().expect("tmp");

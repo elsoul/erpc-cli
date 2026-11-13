@@ -1,0 +1,47 @@
+# {{name}}: an erpc worker app, made from the {{template}} template.
+# `erpc worker check` says what this file describes and what is missing.
+# It holds no secret values, only references, so it can be committed.
+
+name     = "{{name}}"
+chain    = "solana"
+template = "{{template}}"
+
+[run]
+# How a fresh start is judged healthy. Keep the port in step with API_PORT
+# below.
+health = { http = "http://127.0.0.1:3000/healthz", timeout_secs = 30 }
+# The API's port, which [env.<name>.firewall] app_allow opens on the server.
+# It stays closed until app_allow lists someone (`erpc worker firewall allow
+# --to app <ADDRESS>`); the API also listens on loopback only until
+# API_BIND = "0.0.0.0" is set in [vars]. `erpc worker api /` reaches it
+# without either.
+port   = 3000
+
+# To serve the API to the public, put the WAF in front of it: deploy then
+# runs an HTTP proxy on this port that refuses scanner probes, an address
+# over its request rate, and requests that are oversized, malformed or too
+# slow to arrive, and forwards the rest to the app, which stays on
+# loopback. app_allow then opens this port instead of the app's
+# (`erpc worker firewall allow --to app 0.0.0.0/0` lets everyone in).
+# [waf]
+# port = 8080
+
+# What else an app can have, each a table of its own:
+#
+# [secrets]    secret settings, as references to 1Password, the OS
+#              keychain or erpc's encrypted keystore, never the values
+#              themselves. `erpc worker secret put <NAME>` keeps a value
+#              and writes the reference; the app reads it as an
+#              environment variable.
+# [services]   `redis = true` or `postgres = true`: a local Redis or
+#              PostgreSQL on the server, installed and started by deploy
+#              (REDIS_URL, DATABASE_URL).
+# [wallet]     a trading key, made by `erpc worker key new` and handed to
+#              the app on a pipe when it starts.
+# [env.<name>] where it is deployed; written by `erpc worker deploy`.
+
+# Plain settings, given to the app as environment variables.
+[vars]
+API_PORT = "3000"
+# API_BIND = "0.0.0.0"
+GREETING = "Hello"

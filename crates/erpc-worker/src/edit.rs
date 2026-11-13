@@ -143,6 +143,19 @@ pub fn set_env(text: &str, name: &str, env: &crate::manifest::Env) -> Result<Str
             );
         }
     }
+    // A start on record is one entry of `[env.<name>.starting]`, on one
+    // line: `server = { key = "…", … }`.
+    if let Some(starting) = fresh.get_mut("starting").and_then(Item::as_table_mut) {
+        let slots: Vec<String> = starting.iter().map(|(key, _)| key.to_owned()).collect();
+        for slot in slots {
+            if let Some(start) = starting.remove(&slot).and_then(|i| i.into_table().ok()) {
+                starting.insert(
+                    &slot,
+                    Item::Value(toml_edit::Value::InlineTable(start.into_inline_table())),
+                );
+            }
+        }
+    }
     // `inventory = { vault = "…" }` on one line, as it is written by hand.
     if let Some(inventory) = fresh.remove("inventory").and_then(|i| i.into_table().ok()) {
         fresh.insert(
@@ -243,6 +256,55 @@ mod tests {
         assert_eq!(m.env["default"], env);
         // A pending line sets nothing the app gets.
         assert_eq!(m.env["default"].line_vars().count(), 0);
+    }
+
+    #[test]
+    fn a_start_on_record_is_written_on_one_line_and_goes_when_it_is_settled() {
+        use crate::manifest::{Env, Resource, ResourceKind, Start, StartOf};
+        let key = "0a".repeat(16);
+        let start = |family: &str, region: Option<&str>, ip: Option<&str>| Start {
+            key: key.clone(),
+            family: family.to_owned(),
+            product: "prod_One".to_owned(),
+            region: region.map(ToOwned::to_owned),
+            ip: ip.map(ToOwned::to_owned),
+        };
+        let env = Env {
+            host: Some("203.0.113.10".to_owned()),
+            resource: Some(Resource {
+                kind: ResourceKind::Vps,
+                id: "100001".to_owned(),
+                region: Some("amsterdam".to_owned()),
+                hourly: true,
+            }),
+            starting: [
+                (StartOf::Server, start("vps", Some("amsterdam"), None)),
+                (StartOf::Grpc, start("grpc", None, Some("203.0.113.10"))),
+            ]
+            .into(),
+            ..Env::default()
+        };
+        let text = super::set_env(TEXT, "default", &env).expect("set");
+        assert!(
+            text.contains(&format!(
+                "[env.default.starting]\nserver = {{ key = \"{key}\", family = \"vps\", \
+                 product = \"prod_One\", region = \"amsterdam\" }}\ngrpc = {{ key = "
+            )),
+            "{text}"
+        );
+        assert!(!text.contains("[env.default.starting."), "{text}");
+        assert_eq!(Manifest::parse(&text).expect("valid").env["default"], env);
+        // Settled, the table goes with its last entry, and the rest stays.
+        let settled = Env {
+            starting: std::collections::BTreeMap::new(),
+            ..env
+        };
+        let text = super::set_env(&text, "default", &settled).expect("replace");
+        assert!(!text.contains("starting"), "{text}");
+        assert_eq!(
+            Manifest::parse(&text).expect("valid").env["default"],
+            settled
+        );
     }
 
     #[test]

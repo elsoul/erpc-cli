@@ -17,6 +17,7 @@ hint = " enter send · shift+enter new line · esc stop · pgup/pgdn scroll · /
 
 [commands]
 new = "start a new conversation"
+model = "pick the model size: /model xlarge · /model auto"
 help = "keys and commands"
 exit = "leave the console"
 
@@ -75,3 +76,14 @@ said_own_words = "Type your answer below."
 hint_yes_no = " ↑ to go ahead · enter decide · n/esc no"
 hint_one = " ↑↓ choose · enter decide · 1-9 pick · esc type my own"
 hint_several = " ↑↓ move · space mark · enter decide · esc type my own"
+
+# `/model`: the size every turn goes to.
+[size]
+current = "Model size: {size}"
+choices = "small · medium · large · xlarge (the most capable; uses tokens at 2x) · auto (small for a greeting, large for the rest)"
+set = "Every turn now goes to {size}."
+xlarge = "Every turn now goes to xlarge, the most capable size. It uses your tokens at 2x."
+auto = "Each turn's size is chosen for you again: small for a greeting, large for the rest."
+unknown = "Unknown size: {size} · small, medium, large, xlarge or auto"
+refused = "ERPC AI does not offer {size} right now: its default size answers instead, and later turns are sized for you again."
+unavailable = "ERPC AI does not offer model sizes right now: its default answers every turn."

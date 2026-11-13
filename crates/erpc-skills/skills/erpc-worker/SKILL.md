@@ -1,6 +1,6 @@
 ---
 name: erpc-worker
-description: Running the user's own app on a server with `erpc worker` (`erpc w`): making it from a template (the pump.fun trading bot), keys and secrets in 1Password or the keychain, deploying it to an ERPC VPS with gRPC, Shreds or Unlimited RPC lines, running, firewalling and removing it, what it costs per hour and how to stop paying, trade history in Redis, backups, its API from here, getting the SOL out.
+description: Running the user's app on a server with `erpc worker` (`erpc w`): making it from a template (HelloWorld, pump.fun bot), keys and secrets (1Password, keychain, keystore), deploying it to an ERPC VPS with gRPC, Shreds or Unlimited RPC lines, running, firewalling and removing it, what it costs per hour and how to stop paying, trade history in Redis, backups, its API from here, getting the SOL out.
 ---
 
 # Worker apps on the user's server
@@ -11,44 +11,188 @@ in the erpc repository.
 
 ## What to know before acting
 
-- **The key never touches a disk.** An app's trading key lives in 1Password or the OS keychain,
-  and reaches the server's agent on a pipe, in memory only. Never suggest a `wallet.json`, a
-  `.env` file, or pasting a key into a command line. `erpc worker key new` makes one,
-  `erpc worker key import <FILE> --wipe` takes an existing file in and removes it.
+- **The key never touches the server's disk, and no disk unencrypted.** An app's trading key
+  lives in 1Password or the OS keychain, or, on a machine with neither (see **Without
+  1Password**), in erpc's keystore: a file on the user's machine, encrypted under their
+  passphrase. It reaches the server's agent on a pipe, in memory only. Never suggest a
+  `wallet.json`, a `.env` file, or pasting a key into a command line. `erpc worker key new`
+  makes one, `erpc worker key import <FILE> --wipe` takes an existing file in and removes it.
 - **Secrets** go through `erpc worker secret put <NAME>`, which asks for the value without
   showing it, or reads it from a pipe. `[secrets]` in erpc.toml holds only references. In a
   shell that is not a terminal the hidden prompt cannot be shown: it reads standard input and
-  moves on, so the user runs it in a real terminal.
+  moves on, so the user runs it in a real terminal. With `--generate` (a token of the app's
+  own, which erpc makes) or `--from-account` (the account's RPC API key) it asks for no value
+  and shows none.
 - **After a reboot** the worker is **locked** on purpose: `erpc worker start` sends the key
-  again. Do not treat locked as broken.
+  again. Do not treat locked as broken. An agent that failed or was killed (out of memory,
+  say) is started again by systemd and is locked the same way.
 - **Money:** `--new-vps`, `--grpc`, `--shreds` and `--unlimited` (on `deploy`, and `--grpc`,
-  `--shreds` on `run`) start hourly products. erpc
-  shows each price and asks; `-y` never answers that question. Start one only when the user
-  asked for it, and say what it costs per hour and that `erpc worker delete --release-server`
-  ends it all.
+  `--shreds` on `run`) start hourly products. erpc shows each price and asks at a terminal;
+  on `deploy`, `--yes` answers it (the price is still printed), since an hourly product is
+  paid from prepaid ERPC Credit and refused when the credit does not cover it. Start one only
+  when the user asked for it, and say what it costs per hour and that `erpc worker delete
+  --release-server` ends it all. Ending is always the user's to say, at a terminal.
 - **1Password approvals:** reading a secret or using an SSH key in 1Password may show an
   approval prompt in the 1Password app. "authorization timeout" means nobody allowed it.
 
 ## From erpc ai: run it, or hand it over
 
-`run_command` runs erpc with no terminal attached and stops a command after five minutes, so
-some steps are yours and some are the user's. Name the app in every command (`erpc worker
-check <app>`): `run_command` cannot change directory.
+`run_command` runs erpc with no terminal attached and stops a command that runs too long, so
+some steps are yours and some are the user's. A command that only looks (the first list
+below) is stopped after 30 seconds, and any other, which runs once the user has agreed to
+it, after five minutes. `erpc worker deploy`, `erpc worker build` and `erpc worker run
+--check` have 90 minutes instead, when you give them as `argv`, as they are: inside a
+`shell` script they keep the five minutes, so never run them there, nor in the background.
+Name the app in every command (`erpc worker check <app>`): `run_command` cannot change
+directory.
 
 - **Run yourself**, without asking: `check`, `list`, `status`, `logs -n <N>`, `releases`,
   `key show`, `key balance`, `secret list`, `firewall list`, `backup status`. Also `init
   --template <id> --name <name> --yes`, `key new`, `firewall allow/deny`, `stop`, `backup
-  on/off`, which ask the user through erpc's own prompts or need none.
+  on/off`, which ask the user through erpc's own prompts or need none. And `build`, which
+  buys nothing and has the 90 minutes: one that was stopped all the same is run again, and
+  cargo carries on from what it has compiled. And `erpc worker secret put <NAME>
+  --generate` and `erpc worker secret put <NAME> --from-account`, which ask for no value:
+  erpc makes it, or reads the account's RPC API key, and shows it to nobody. They need the
+  store open (the keystore unlocked, or 1Password answering); for the keystore see the
+  hand-over below.
 - **Hand over**, with the exact line for the user to type in their terminal, then read the
   result with `status`/`logs`:
-  - `erpc worker secret put <NAME>`: the hidden prompt needs a terminal. Never pipe a secret
-    into it from `run_command`, and never ask the user to paste a secret into the chat.
+  - `erpc worker secret put <NAME>` for a value the user has to give (neither `--generate`
+    nor `--from-account`): the hidden prompt needs a terminal. Never pipe a secret into it
+    from `run_command`, and never ask the user to paste a secret into the chat.
+  - `erpc worker secret unlock`, and the first `key new` or `secret put` on a machine that
+    uses the keystore: the keystore's passphrase is typed at a terminal, by the user. Never
+    ask for it in the chat, and never look for a way to pass it to erpc: there is none.
+    "the keystore is locked" from a command you ran means the user runs
+    `erpc worker secret unlock`, then you run the command again.
   - For an app with a `[wallet]`: `run`, `deploy`, `start`, `restart`, `rollback`. The key
     gate needs a person at a terminal; from `run_command` it refuses with "no terminal is
-    attached".
-  - Anything that buys or ends an hourly product (`--new-vps`, `--grpc`, `--shreds`,
-    `--unlimited`, `delete --release-server`): the price prompt needs the user's yes.
-  - `logs -f`, `build`, `backup now`, a first `deploy`: longer than five minutes.
+    attached". What you can do for such an app is everything but the key: once `erpc worker
+    build <app>` has finished, `erpc worker deploy <app> --new-vps --grpc --yes --prepare`
+    gets the server, the firewall, the lines and a release in place and starts, stops and
+    restarts nothing: an app that runs there runs on, under the agent it had, even when a
+    newer agent was installed (the command says so). Then hand over one line, `erpc worker
+    deploy <app>`, which hands the key over and starts the app: it builds and installs a
+    release of its own, from the cached build, and starts that one.
+  - Anything that ends an hourly product (`delete --release-server`, `run`'s lines when it
+    ends): the user's yes at a terminal. `run --grpc`/`--shreds` has no `--yes`: its price
+    prompt needs the terminal too.
+  - `logs -f`, `backup now`: longer than five minutes.
+- **Build before you buy:** before a deploy that starts something, run `erpc worker build
+  <app>` and wait until it has finished. A deploy buys the server first and builds after:
+  a build that fails then leaves a VPS charged by the hour with nothing on it. With the
+  build done, the deploy's own build is cached and short. Give the deploy as `argv`, as it
+  is, so that it has its 90 minutes: inside a script it is stopped after five, with the
+  server bought. A deploy that was stopped all the same has its server on record: the same
+  command again takes it up.
+- **Starting hourly products yourself:** when the user asked for a server or a line, and the
+  build is done, run the deploy with the flags that name them and `--yes` (`erpc worker
+  deploy <app> --new-vps --yes`, `--vps <ID>`, `--grpc`, …). Say first what each costs per
+  hour (`hourly_catalog`) and what the credit is; read the price lines the command prints
+  back to the user after. Without `--yes` the command refuses from `run_command` and says
+  so. Never add `--yes` to a start the user did not ask for. `--yes` also answers the first
+  login to a server erpc has not made key-only yet (a new one, or `--vps <ID>`): its key
+  goes in and password logins go off.
+- **A start with no outcome:** when a deploy says a start "may or may not have gone
+  through", that the purchase "is still being made", or that the answer "says nothing
+  about the earlier one", its request stays on record. Run the same command again, with
+  the same flags (shortly, when it is still being made): it sends the same request and
+  makes no other. Do not change the flags, do not try another region, and do not start
+  it another way (`start_hourly_product`): each could buy a second.
+- **A purchase erpc cannot put on record:** when a deploy says user-api "has a purchase
+  under this request and does not give it to this command", or "did not say which" it
+  started, run nothing again: the server or line may well have been started already.
+  Show the user what the account runs (`my_services`, `credit_balance`) and the hint the
+  command printed. A server is taken up with `erpc worker deploy <app> --vps <ID>`; a
+  line that is not on record is ended (`end_hourly_product`, the user's yes). Removing
+  the request from erpc.toml afterwards is the user's to do, and to decide.
+
+## The first app: HelloWorld
+
+A user who has never deployed anything, or who wants to see erpc worker work before any money or
+key is involved, starts here. `erpc worker init --template helloworld --name <name> --yes` makes
+a small HTTP API in Rust that needs no key, no secret and no data line; `init` with no
+`--template` and nobody to ask makes it too.
+
+```bash
+erpc worker init --template helloworld   # makes ./hello-world
+erpc worker run hello-world              # builds and runs it here: http://127.0.0.1:3000/
+erpc worker deploy hello-world           # a VPS of the account, or a new hourly one, price asked
+erpc worker api / --dir hello-world      # the answer from the server, over SSH
+erpc worker delete hello-world --release-server   # removes it and ends the hourly server
+```
+
+- It has no `[wallet]`, so the key gate does not apply: you can run `run --check`, `status`,
+  `logs` and `api` for it yourself, and the whole deploy too: after `erpc worker build
+  <app>`, `erpc worker deploy <app> --new-vps --yes` (or `--vps <ID> --yes`) buys the
+  server, logs in to it and starts the app with nobody at a terminal, printing the price it
+  accepted. It takes about two minutes.
+- `erpc worker api <PATH>` sends no token for an app with no `API_TOKEN` in `[secrets]`.
+- Suggest it as the first step to a beginner who asks for a bot: the bot is deployed with the
+  same commands, plus its key, its settings and its lines.
+
+## A public API: the WAF
+
+An app the public calls goes behind a WAF: `[waf]` with `port = 8080` in erpc.toml, then
+`erpc worker deploy`. The server then runs an HTTP proxy on that port which refuses scanner
+probes, an address over its request rate (429, and a ban once it keeps being refused),
+oversized and malformed requests and ones too slow to arrive, and forwards the rest to the
+app on loopback; `firewall.app_allow` opens the WAF's port, never the app's.
+
+- Nobody is let in until the user says who: `erpc worker firewall allow --to app <ADDRESS>
+  --dir <app>`, or `0.0.0.0/0` for everyone, which erpc accepts only behind a WAF. Opening an
+  API to everyone is the user's decision: ask before you run it.
+- `erpc worker check <app>` says what the WAF will do; `status` and `firewall list` show what
+  it counted and blocked, `logs --waf -n <N>` each request it refused. You can run those.
+- After a change to `[waf]`, the server still runs the rules of the last deploy, and `status`
+  says so. `firewall allow --to app` then lets nobody new in: it fails, with the change kept
+  in erpc.toml, and names `erpc worker deploy`, which puts the new rules in place and opens
+  the port after. Closing the port (`firewall deny` of every address) works at once. The same
+  holds while the WAF is still a process of an agent from before the one installed (after a
+  `deploy --prepare` with a newer erpc, say), or was started before its config or its unit on
+  the server last changed (one was written there and no deploy has restarted the WAF since):
+  `status` says so, and a deploy restarts it.
+- Say what it is not: plain HTTP/1.1 (no TLS, no HTTP/2, no WebSocket), no look inside
+  bodies, no authentication; bans and counts are forgotten when it restarts. It holds each
+  address to a request rate and a number of connections, and holds 1024 connections in all:
+  it is no shield against a flood from many addresses, or one that fills the server's link.
+  The keys and their defaults are in `docs/worker.md`, "The WAF".
+
+## An app the user already has
+
+A user with a bot or service that runs today (under systemd, Docker, another language) does
+not start from a template: `erpc worker import` in its directory writes the `erpc.toml` it
+describes, and changes nothing else in the app.
+
+- A Cargo package: `erpc worker import` (add `--bin <NAME>` when it builds several binaries,
+  `--name` to name the app otherwise). Anything else: the user builds the Linux binary their
+  own way, then `erpc worker import --binary <PATH> --port <PORT> --health /healthz`; erpc
+  ships that binary as it is and refuses one a server cannot run, which `erpc worker check`
+  says before a deploy buys a server.
+- You can run `import` yourself: it reads the directory, runs nothing in it, and writes one
+  new file, `erpc.toml` (it refuses when anything is at that path), besides adding the app
+  to erpc's own list. It copies values from `.env.example` and its like; from `.env` it
+  takes names, and a port number under a port's name, nothing else (an example that is a
+  link is not read at all, and one that is one file with another name gives names only).
+  It copies none it takes for a secret, by the setting's name or by a credential in the
+  value. Those are named in its
+  output with `erpc worker secret put <NAME> --dir <app>` for the user to type, and in
+  `erpc.toml` as comments; a key file, by its whole path, with
+  `erpc worker key import <FILE> --wipe --dir <app>`. Use the steps as printed.
+- Relay what `import` warns of: a file it would not read (a link out of the directory, an
+  example that is a link, a pipe, one over 1 MiB), a quote that never closes, lines it left
+  out because they name no setting (it says how many, never what they hold; the app is
+  deployed without them), a port it did not use, a key file to rename. Tell the user to read
+  `erpc.toml` before committing it: a secret in a shape erpc does not know is copied as
+  written. `erpc worker check` warns under `[vars]` of the shapes that are seldom anything
+  else; it does not warn of a long part of a URL's path (an RPC URL with its key there) nor
+  of words shaped like a recovery phrase, both of which `import` holds back.
+- Tell the user what a server changes for an app not written for one: settings arrive as
+  environment variables (no `.env` there); the app's own directory is read-only, so it
+  writes under `ERPC_WORKER_STATE_DIR`; a trading key arrives as 64 bytes on the file
+  descriptor `ERPC_WORKER_KEY_FD` names, not as a file; Docker is not used.
+- Then the same commands as any app: `check`, `run` (a Cargo app), `deploy`.
 
 ## Getting an app running
 
@@ -58,22 +202,37 @@ README. Ask first, one question at a time (`ask_choice`): do they use the 1Passw
 `my_services`, `--host <ADDRESS>`), or a new hourly one? SOL they can afford to lose?
 
 ```bash
-erpc login                             # once per machine; 1Password or the keychain
-erpc worker init                       # arrow keys: HFT, Stablecoin (soon), pumpfun-bot; --template hft skips it
+erpc login                             # once per machine; the session in 1Password or the keychain
+erpc worker init                       # arrow keys: HelloWorld, HFT, Stablecoin (soon), pumpfun-bot; --template hft skips it
 erpc worker key new                    # the trading key; prints the public key to fund
-erpc worker secret put API_TOKEN       # the bot's own API token: 16+ random characters
-erpc worker secret put ERPC_API_KEY    # the account's RPC key (dashboard), or SOLANA_RPC_ENDPOINT in [vars]
+erpc worker secret put API_TOKEN --generate          # the bot's own API token, made and shown to nobody
+erpc worker secret put ERPC_API_KEY --from-account   # the account's RPC key, read from the account; or SOLANA_RPC_ENDPOINT in [vars]
 erpc worker check                      # what is missing, every problem at once
 erpc worker run --grpc --ip <IPV4>     # here, with an hourly gRPC line that lets this machine in
 erpc worker deploy --new-vps --grpc    # a new hourly VPS and gRPC line, prices asked
 ```
 
-- `API_TOKEN` is any 16 or more random characters; `openssl rand -hex 24` makes one.
+- `API_TOKEN` is any 16 or more random characters: `--generate` makes 64 and shows them to
+  nobody. `--from-account` reads the signed-in account's RPC API key. Neither asks for
+  anything, so you can run both yourself when the store is open (the keystore unlocked, or
+  1Password answering); only a secret the user has to supply is handed over to type.
+- `--from-account` tries the account's keys from this machine and keeps the first the shared
+  RPC takes; what it prints says whether that is the account's primary key or another
+  (`account_key` in `--json`). `the shared RPC takes none of the account's API keys from this
+  machine` means each was answered 401 or 403 here: ended, no plan, or limited to other
+  addresses (a key limited to the server's address works there and not here). Nothing was
+  kept. Tell the user, and have them run `erpc worker secret put ERPC_API_KEY` themselves to
+  type the key they mean. `the shared RPC could not be asked about the account's API keys
+  just now` means it took none and gave no answer about one, or an answer that is not about
+  the key (a rate limit, a failure of its own): nothing was kept either, so run the same
+  command again.
 - A setting a line provides (`GRPC_ENDPOINT`, `SHREDS_ENDPOINT`, `SOLANA_SEND_RPC_ENDPOINT`)
   is not a secret: `--grpc`/`--shreds`/`--unlimited` set it. The RPC for reads is one of
   `ERPC_API_KEY` or `SOLANA_RPC_ENDPOINT`; `check` names the set when neither is there.
-- Before the first `deploy` from a Mac: `rustup target add x86_64-unknown-linux-gnu`, `zig`,
-  `cargo-zigbuild`, and an SSH key; `deploy` says which is missing.
+- Before the first `deploy`: an SSH key, and from a Mac or Windows the cross-build (`rustup
+  target add x86_64-unknown-linux-gnu`, `zig`, `cargo-zigbuild`). A Linux x86-64 machine needs
+  only cargo: without those tools the app is built with its own toolchain. `check` and
+  `deploy` say what is missing.
 
 - The server: `[env.<name>]` in erpc.toml, else `--vps <ID>` (an ERPC VPS of the account),
   `--new-vps` (cheapest, nearest region; `--region`, `--plan`), or `--host <ADDRESS>` (a server
@@ -249,17 +408,36 @@ postgres = true    # the app gets DATABASE_URL over the local socket, no passwor
 ## Without 1Password
 
 `erpc login` offers the stores this machine has; without the 1Password desktop app it keeps the
-session in the OS keychain, and `key new` and `secret put` then use the keychain too
-(`--store keychain` says so outright). What that means, said before the first command:
+session in the OS keychain. `key new` and `secret put` then keep the key and the secrets on
+this machine: in the OS keychain where it lasts past a reboot (macOS, Windows, a Linux desktop
+session with GNOME Keyring or KWallet), else in **erpc's keystore** (`--store keychain` and
+`--store keystore` say which outright). What that means, said before the first command:
 
-- The key exists on this one machine only, in its keychain; there is no copy and no sync, and
-  another machine cannot read it (`keychain:` references are refused there). A lost or wiped
-  machine means the wallet is gone: keep little in it, or use 1Password.
-- Linux needs a desktop keyring (a Secret Service: GNOME Keyring, KWallet) in a logged-in
-  session. A headless server, WSL or an SSH login has none, and erpc refuses to keep the key
-  there; the way out is 1Password through `op` (`erpc login --store 1password-desktop` or a
-  service account), not a file.
-- `--store file` for the session leaves a secret on disk; never suggest it for a key.
+- Either way the key exists on this one machine only; there is no copy and no sync, and another
+  machine cannot read it (a command that needs a `keychain:` or `keystore:` reference fails
+  there). A lost or wiped machine means the wallet is gone: keep little in it, or use
+  1Password (`erpc login --store 1password-desktop`; a service account works for secrets, not
+  for the trading key).
+- **The keystore** is where it goes on a headless Linux server, WSL or an SSH login, which
+  have no desktop keyring: files under `~/.erpc/keystore`, each value encrypted under a key
+  that only the user's passphrase opens. The first `key new` or `secret put` there explains
+  it and has the user choose the passphrase (12 characters or more, typed twice, at a
+  terminal). Tell the user, in these words or their own: back the `~/.erpc/keystore`
+  directory up and remember the passphrase, because erpc can recover neither and without both
+  the wallet is gone; anyone who has the files and the passphrase has the key; a weak
+  passphrase protects a stolen file only weakly.
+- After the passphrase is typed once on Linux, the keystore stays unlocked (in the kernel
+  keyring) until the machine restarts, the keyring goes unused for its idle expiry (three days
+  by default), or `erpc worker secret lock`. While it is unlocked, programs running as the
+  user can read it. `erpc worker secret unlock` unlocks it ahead of a command run without a
+  terminal. The key `[wallet]` names is still read only for a person at a terminal, unlocked
+  or not, and a key kept in the keystore does not open as a secret.
+- The trading key is named by `[wallet]` alone. Never add a `[secrets]` line that names the
+  wallet's reference or a `keychain:`/`keystore:` account ending in `.wallet`: erpc refuses the
+  whole `erpc.toml` (`erpc worker check` says which line). A setting cannot be called `WALLET`
+  in the keychain or the keystore; pick another name.
+- `--store file` for the session leaves a secret on disk unencrypted; never suggest it for a
+  key, and never suggest writing a key to a file of the user's own.
 
 ## Another machine, 1Password inventory
 
@@ -268,19 +446,33 @@ item instead of erpc.toml: any machine signed in to the vault, with the app's re
 run every command. A new environment becomes one when `erpc login` keeps the session in
 1Password; `erpc worker deploy --vault <VAULT_ID>` chooses a vault, `--inline` keeps erpc.toml.
 `erpc worker list` also shows worker items in the login vault that no app here names. In such an
-app, keys in the keychain cannot be read elsewhere: suggest 1Password for them.
+app, keys in the keychain or the keystore cannot be read elsewhere: suggest 1Password for them.
 
 ## When something fails
 
 - "cannot start without <SETTING>": `erpc worker secret put <SETTING>`, a `[vars]` entry, or the
-  line flag that sets it.
+  line flag that sets it. The hint names the command, with `--generate` or `--from-account`
+  where the app's template has the setting made or read from the account: run that one.
 - "your key was added but does not get in": 1Password did not sign; unlock it, allow the
   request, run the same command again.
 - "release … failed …; the server went back to …": the previous release still runs; read the
   log.
-- "locked": `erpc worker start`. A reboot locks the worker on purpose, and nobody is told: the
-  hourly server and lines keep charging while it sits locked, so after a reboot the user runs
-  `erpc worker start` or `erpc worker delete --release-server`.
+- "the keystore is locked, and nobody is at a terminal": the user runs
+  `erpc worker secret unlock` in their terminal; then run the command again. Not the same as a
+  locked worker, below.
+- "nothing is kept under keystore:… on this machine": the value was kept in another machine's
+  keystore. A secret is put again here (`erpc worker secret put <NAME> --replace`); the key
+  needs that machine's whole `~/.erpc/keystore` directory and its passphrase, or 1Password.
+- "locked": `erpc worker start`. A reboot locks the worker on purpose, and so does an agent
+  that systemd started again after it failed or was killed. Nobody is told: the hourly server
+  and lines keep charging while it sits locked, so the user then runs `erpc worker start` or
+  `erpc worker delete --release-server`. A package run on the server does not restart a
+  worker (deploy tells `needrestart` to leave worker units alone, and says so when it could
+  not).
+- "port … is taken": another worker on the server that is kept running has the same
+  health-check port, or another program listens on it. Give the app a port of its own in
+  erpc.toml (`port` and the health URL under `[run]`, and the `[vars]` setting the app reads
+  its port from), then deploy again.
 - "Is my bot still trading?": `erpc worker status` (the agent's state and what is charged),
   `erpc worker api /api/trade/status` (`running`, `active_positions`), `erpc worker logs -n 50`.
   With Redis on the server the bot comes back trading as it was after a restart; without it,

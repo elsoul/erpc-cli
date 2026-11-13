@@ -10,7 +10,7 @@
 //! history away, so once a conversation has reached the main model it
 //! stays there, at one effort, for the rest of it.
 
-use erpc_api::ai::{DEFAULT_MODEL, Effort, QUICK_MODEL};
+use erpc_api::ai::{Effort, QUICK_MODEL, Size};
 
 /// What a turn is allowed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -176,19 +176,38 @@ pub fn policy(text: &str, settled: bool) -> TurnPolicy {
             max_tokens: 4096,
         }
     } else {
-        TurnPolicy {
-            model: DEFAULT_MODEL,
-            thinking: true,
-            effort: CONVERSATION_EFFORT,
-            max_tokens: 16_000,
-        }
+        chosen(Size::Large)
+    }
+}
+
+/// The policy for every turn of a conversation the person put on one
+/// size: that size answers each turn, small talk included, at the one
+/// conversation effort, so the prompt cache stays with it.
+#[must_use]
+pub const fn chosen(size: Size) -> TurnPolicy {
+    TurnPolicy {
+        model: size.model(),
+        thinking: true,
+        effort: CONVERSATION_EFFORT,
+        max_tokens: 16_000,
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{CONVERSATION_EFFORT, is_small_talk, policy};
-    use erpc_api::ai::{DEFAULT_MODEL, QUICK_MODEL};
+    use super::{CONVERSATION_EFFORT, chosen, is_small_talk, policy};
+    use erpc_api::ai::{DEFAULT_MODEL, QUICK_MODEL, Size};
+
+    #[test]
+    fn a_chosen_size_answers_small_talk_too_at_the_conversation_effort() {
+        for size in Size::ALL {
+            let p = chosen(size);
+            assert_eq!(p.model, size.model());
+            assert_eq!(p.effort, CONVERSATION_EFFORT);
+            assert!(p.thinking);
+        }
+        assert_eq!(chosen(Size::Large), policy("restart the validator", false));
+    }
 
     #[test]
     fn small_talk_before_the_conversation_settles_is_quick() {

@@ -2,13 +2,17 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! `erpc worker key` and `erpc worker secret`: an app's trading key and
-//! its secret settings, kept in 1Password or the keychain (see
-//! [`crate::worker_secrets`]) and named in `erpc.toml` by reference.
+//! its secret settings, kept in 1Password, the keychain or erpc's
+//! encrypted keystore (see [`crate::worker_secrets`]) and named in
+//! `erpc.toml` by reference.
 //!
 //! A key is made in memory, or read from a key file the operator already
 //! has, and goes straight to the store. A secret is read from standard
-//! input when it is piped in, or asked for without echo. Neither is ever
-//! printed, logged or written to a file by erpc.
+//! input when it is piped in, or asked for without echo; or, with a flag,
+//! it is made here (`--generate`) or is the signed-in account's RPC API
+//! key (`--from-account`), and then nothing is read or asked. Neither a
+//! key nor a secret is ever printed or logged by erpc, and the only file
+//! erpc writes one to is its keystore entry, sealed.
 
 use std::io::{IsTerminal as _, Read as _};
 use std::path::Path;
@@ -19,11 +23,12 @@ use erpc_worker::manifest::{self, Manifest, SecretRef};
 use serde_json::json;
 use zeroize::Zeroizing;
 
-use crate::commands::Outcome;
+use crate::commands::{Outcome, Said};
 use crate::error::{CliError, Code};
 use crate::ui::Report;
 use crate::worker::{Dir, load};
 use crate::worker_secrets::{self, Store, StoreFlag};
+use crate::worker_vps::{AccountKey, Tried};
 
 /// The biggest secret or key file read.
 const MAX_SECRET: u64 = 64 * 1024;
@@ -49,14 +54,30 @@ fn rewrite(
 }
 
 /// A warning when the app's servers are in 1Password and the store is the
-/// keychain, which only this machine has.
+/// keychain or the keystore, which only this machine has.
 fn portability(m: &Manifest, store: &Store) -> Report {
     let report = Report::new();
-    if matches!(store, Store::Keychain) && m.env.values().any(|e| e.inventory.is_some()) {
-        report.warning(t!("worker_keys.portability"))
-    } else {
-        report
+    if !m.env.values().any(|e| e.inventory.is_some()) {
+        return report;
     }
+    match store {
+        Store::Keychain => report.warning(t!("worker_keys.portability")),
+        Store::Keystore { .. } => report.warning(t!("worker_keys.portability_keystore")),
+        Store::OnePassword { .. } => report,
+    }
+}
+
+/// What to heed about a trading key kept in `store`: in the keystore, its
+/// file is the only copy there is.
+fn key_cautions(m: &Manifest, store: &Store) -> Report {
+    let report = match store {
+        Store::Keystore { .. } => Report::new().warning(t!(
+            "worker_keys.kept.keystore_backup",
+            path = crate::worker_keystore::place_here()
+        )),
+        Store::OnePassword { .. } | Store::Keychain => Report::new(),
+    };
+    report.extend(portability(m, store))
 }
 
 /// `erpc worker key new`: a new key, made in memory and kept only in the store.
@@ -315,7 +336,7 @@ fn keep(
     rewrite(&path, |text| edit::set_wallet(text, &source, &pubkey))
         .map_err(|e| e.hint(t!("worker_keys.kept.by_hand", source, pubkey)))?;
     Ok(Keeping::Kept(Kept {
-        warning: portability(&m, &store),
+        warning: key_cautions(&m, &store),
         app: m.name,
         pubkey,
         source,
@@ -335,25 +356,47 @@ pub(crate) fn show(json: bool, dir: &Dir) -> Outcome {
             .mark("🔑")
             .into();
     };
+    // A key in the keystore is a file on the machine that kept it: where,
+    // and whether this is that machine. Asks for no passphrase.
+    let in_keystore = match &wallet.source {
+        SecretRef::Keystore { service, account } => {
+            let found = crate::worker_keystore::file_of(service, account)
+                .and_then(|file| Ok((file, crate::worker_keystore::has(service, account)?)));
+            match found {
+                Ok(found) => Some(found),
+                Err(e) => return failed(e).into(),
+            }
+        }
+        SecretRef::OnePassword(_) | SecretRef::Keychain { .. } => None,
+    };
     if json {
-        crate::print_json(&json!({ "pubkey": wallet.pubkey, "source": wallet.source }));
+        let mut body = json!({ "pubkey": wallet.pubkey, "source": wallet.source });
+        if let Some((file, here)) = &in_keystore {
+            body["keystore"] = json!({ "file": file, "here": here });
+        }
+        crate::print_json(&body);
         return Outcome::Done(String::new());
     }
-    Outcome::Done(
-        Report::new()
-            .marked(
-                "🔑",
-                format!(
-                    "{}  {}",
-                    m.name,
-                    wallet
-                        .pubkey
-                        .unwrap_or_else(|| t!("worker_keys.show.no_pubkey"))
-                ),
-            )
-            .detail(t!("worker_keys.show.kept_at", source = wallet.source))
-            .text(),
-    )
+    let mut report = Report::new()
+        .marked(
+            "🔑",
+            format!(
+                "{}  {}",
+                m.name,
+                wallet
+                    .pubkey
+                    .unwrap_or_else(|| t!("worker_keys.show.no_pubkey"))
+            ),
+        )
+        .detail(t!("worker_keys.show.kept_at", source = wallet.source));
+    match in_keystore.map(|(file, here)| (crate::ui::tidy(&file), here)) {
+        Some((file, true)) => report = report.detail(t!("worker_keys.show.keystore_file", file)),
+        Some((file, false)) => {
+            report = report.warning(t!("worker_keys.show.keystore_missing", file));
+        }
+        None => {}
+    }
+    Outcome::Done(report.text())
 }
 
 /// `erpc worker key balance`: the key's SOL, from the app's own RPC
@@ -867,69 +910,266 @@ pub(crate) fn read_secret(name: &str) -> Result<Zeroizing<String>, CliError> {
     Ok(value)
 }
 
+/// Where the value `erpc worker secret put` keeps comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Value {
+    /// Typed without echo, or piped in on standard input.
+    Typed,
+    /// `--generate`: made here, for a token of the app's own that nobody
+    /// has to know (the bot's `API_TOKEN`).
+    Generated,
+    /// `--from-account`: the signed-in account's RPC API key, read from
+    /// the account once the rest of the command is known to hold.
+    Account,
+}
+
+/// Where the value `secret put` kept came from, for what it says after:
+/// [`Value`], and of a value read from the account, which of its keys it
+/// is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Came {
+    Typed,
+    Generated,
+    Account(AccountKey),
+}
+
+impl Came {
+    /// As `--json` names it, under `from`.
+    const fn word(self) -> &'static str {
+        match self {
+            Self::Typed => "typed",
+            Self::Generated => "generated",
+            Self::Account(_) => "account",
+        }
+    }
+
+    /// As `--json` names which of the account's keys it is, under
+    /// `account_key`: `primary` or `other`, and null for a value that is
+    /// not the account's.
+    const fn account_key(self) -> Option<&'static str> {
+        match self {
+            Self::Account(which) => Some(which.word()),
+            Self::Typed | Self::Generated => None,
+        }
+    }
+}
+
+/// What `secret put` takes from outside itself, each asked for only once
+/// the command has got that far: the store a new secret goes in on this
+/// machine, a value from the person, and the signed-in account's key. The
+/// real one is [`Outside`]; a test brings its own, which answers from a
+/// script and keeps what it was asked.
+trait Sources {
+    /// The store a new secret goes in, from `--store` and `--vault`.
+    fn store(&self, flag: Option<StoreFlag>, vault: Option<&str>) -> Result<Store, String>;
+
+    /// The value of `name`, typed without echo or piped in on standard
+    /// input.
+    fn typed(&self, name: &str) -> Result<Zeroizing<String>, CliError>;
+
+    /// The signed-in account's API keys for the shared RPC, tried from
+    /// this machine.
+    async fn account(&self) -> Result<Tried, CliError>;
+}
+
+/// This machine, the person at it and the signed-in account.
+struct Outside;
+
+impl Sources for Outside {
+    fn store(&self, flag: Option<StoreFlag>, vault: Option<&str>) -> Result<Store, String> {
+        worker_secrets::choose(flag, vault)
+    }
+
+    fn typed(&self, name: &str) -> Result<Zeroizing<String>, CliError> {
+        read_secret(name)
+    }
+
+    async fn account(&self) -> Result<Tried, CliError> {
+        crate::worker_vps::account_keys_tried().await
+    }
+}
+
+/// How many random bytes a generated secret is made of: 64 hexadecimal
+/// characters.
+const GENERATED_BYTES: usize = 32;
+
+/// A new random secret, as hexadecimal.
+fn generate() -> Result<Zeroizing<String>, CliError> {
+    use core::fmt::Write as _;
+    let mut bytes = Zeroizing::new([0_u8; GENERATED_BYTES]);
+    aws_lc_rs::rand::fill(bytes.as_mut()).map_err(|_| failed(t!("worker_keys.put.no_random")))?;
+    let mut text = Zeroizing::new(String::with_capacity(GENERATED_BYTES * 2));
+    for byte in bytes.iter() {
+        let _ = write!(text, "{byte:02x}");
+    }
+    Ok(text)
+}
+
+/// What `secret put` kept, for what it says after. The value is not in
+/// it: it is never shown, so a value nobody typed is said to be what it
+/// is.
+struct PutSecret {
+    name: String,
+    reference: SecretRef,
+    /// What the name was set to before this, with `--replace`.
+    old: Option<SecretRef>,
+    came: Came,
+    store: Store,
+    /// What to heed about where it is kept.
+    cautions: Report,
+}
+
+impl PutSecret {
+    /// What `--json` prints.
+    fn body(&self) -> serde_json::Value {
+        json!({
+            "name": self.name,
+            "source": self.reference,
+            "replaced": self.old,
+            "from": self.came.word(),
+            "account_key": self.came.account_key(),
+        })
+    }
+
+    /// What a person is told.
+    fn text(self) -> String {
+        let mut report = Report::new().done(t!(
+            "worker_keys.put.done",
+            name = self.name,
+            source = self.reference,
+            store = self.store.describe()
+        ));
+        report = match self.came {
+            Came::Generated => report.info(t!("worker_keys.put.generated")),
+            Came::Account(AccountKey::Primary) => report.info(t!("worker_keys.put.from_account")),
+            Came::Account(AccountKey::Other) => {
+                report.info(t!("worker_keys.put.from_account_other"))
+            }
+            Came::Typed => report,
+        };
+        // A keychain or keystore entry under the same account was overwritten
+        // in place.
+        if let Some(old) = self.old.filter(|o| *o != self.reference) {
+            report = report.info(t!("worker_keys.put.old_kept", old));
+        }
+        report.extend(self.cautions).text()
+    }
+
+    /// What the command says: the JSON under `--json`, the text otherwise.
+    fn said(self, json: bool) -> Said {
+        if json {
+            Said::Json(self.body())
+        } else {
+            Said::Text(self.text())
+        }
+    }
+}
+
 /// `erpc worker secret put`: keeps a value and names it in `[secrets]`.
-pub(crate) fn put(
+pub(crate) async fn put(
     json: bool,
     dir: &Dir,
     name: &str,
     store: Option<StoreFlag>,
     vault: Option<&str>,
     replace: bool,
+    value: Value,
 ) -> Outcome {
-    if let Err(e) = manifest::check_setting_name(name) {
-        return CliError::new(Code::Usage, format!("{name}: {e}")).into();
+    match put_from(&Outside, dir, name, (store, vault), replace, value).await {
+        Ok(kept) => kept.said(json).done(),
+        Err(e) => e.into(),
     }
-    let (path, m) = match load(dir) {
-        Ok(found) => found,
-        Err(e) => return e.into(),
-    };
+}
+
+/// The command that keeps `name` by hand, typed or piped in, for the app
+/// at `dir`: what a hint names when `--from-account` kept nothing. It
+/// carries `--replace` when the command had it: without, following the
+/// hint would be refused for a name that is set already.
+fn by_hand(name: &str, replace: bool, dir: &Dir) -> String {
+    let (replace, dir_scope) = (if replace { " --replace" } else { "" }, dir.scope());
+    format!("erpc worker secret put {name}{replace}{dir_scope}")
+}
+
+/// [`put`], taking from `from` what it does not have itself.
+///
+/// Everything that can refuse the command comes before its value: the
+/// name, the app's `erpc.toml`, a name set already without `--replace`,
+/// the store, and the keystore's passphrase. Only then is the value
+/// typed, made, or read from the account, so a command that is going to
+/// be refused costs nobody a value, and asks nothing of user-api or the
+/// RPC.
+///
+/// Of the account's keys, only one the shared RPC accepted is kept. The
+/// value is seen by nobody, so a key that then fails on the server would
+/// be found out only there: nothing is kept when every key was refused,
+/// and nothing when none was accepted and the RPC could not be asked
+/// about one, which the same command run again settles.
+async fn put_from(
+    from: &impl Sources,
+    dir: &Dir,
+    name: &str,
+    (store, vault): (Option<StoreFlag>, Option<&str>),
+    replace: bool,
+    value: Value,
+) -> Result<PutSecret, CliError> {
+    manifest::check_setting_name(name)
+        .map_err(|e| CliError::new(Code::Usage, format!("{name}: {e}")))?;
+    let (path, m) = load(dir)?;
     if m.vars.contains_key(name) {
-        return failed(t!("worker_keys.put.in_vars", name)).into();
+        return Err(failed(t!("worker_keys.put.in_vars", name)));
     }
     let old = m.secrets.get(name).cloned();
-    if old.is_some() && !replace {
-        return failed(t!(
-            "worker_keys.put.already",
-            name,
-            source = old.as_ref().map(ToString::to_string).unwrap_or_default()
-        ))
-        .hint(t!("worker_keys.put.replace_hint"))
-        .mark("🔑")
-        .into();
+    if let Some(source) = old.as_ref().filter(|_| !replace) {
+        return Err(failed(t!("worker_keys.put.already", name, source))
+            .hint(t!("worker_keys.put.replace_hint"))
+            .mark("🔑"));
     }
-    let store = match worker_secrets::choose(store, vault) {
-        Ok(store) => store,
-        Err(e) => return failed(e).into(),
+    let store = from.store(store, vault).map_err(failed)?;
+    // A name the store cannot keep is said before anything is typed.
+    worker_secrets::may_keep(&store, &m.name, name).map_err(|e| CliError::new(Code::Usage, e))?;
+    // A keystore is opened, or made, before the value is typed: a
+    // passphrase that does not open it must not cost the value.
+    worker_secrets::ready(&store).map_err(failed)?;
+    let (secret, came) = match value {
+        Value::Typed => (from.typed(name)?, Came::Typed),
+        Value::Generated => (generate()?, Came::Generated),
+        Value::Account => match from.account().await? {
+            Tried::Usable {
+                key,
+                accepted: true,
+                which,
+            } => (key, Came::Account(which)),
+            // Not kept: the RPC accepted no key, and of this one it said
+            // nothing. Run again, the command asks again.
+            Tried::Usable {
+                accepted: false, ..
+            } => {
+                let command = by_hand(name, replace, dir);
+                return Err(failed(t!("worker_keys.put.account_unasked"))
+                    .hint(t!("worker_keys.put.account_unasked_hint", command)));
+            }
+            // Not kept either. The key may still be a good one for the
+            // server (one limited to its address), so the hint is how to
+            // keep that one by hand.
+            Tried::Refused { tried, .. } => {
+                let command = by_hand(name, replace, dir);
+                return Err(crate::worker_vps::keys_refused(tried)
+                    .hint(t!("worker_keys.put.account_refused_hint", command)));
+            }
+        },
     };
-    let value = match read_secret(name) {
-        Ok(v) => v,
-        Err(e) => return e.into(),
-    };
-    let reference = match worker_secrets::put(&store, &m.name, name, &value) {
-        Ok(r) => r,
-        Err(e) => return failed(e).into(),
-    };
-    drop(value);
-    if let Err(e) = rewrite(&path, |text| edit::set_secret(text, name, &reference)) {
-        return e
-            .hint(t!("worker_keys.put.by_hand", source = reference, name))
-            .into();
-    }
-    if json {
-        crate::print_json(&json!({ "name": name, "source": reference, "replaced": old }));
-        return Outcome::Done(String::new());
-    }
-    let mut report = Report::new().done(t!(
-        "worker_keys.put.done",
-        name,
-        source = reference,
-        store = store.describe()
-    ));
-    // A keychain entry under the same account was overwritten in place.
-    if let Some(old) = old.filter(|o| *o != reference) {
-        report = report.info(t!("worker_keys.put.old_kept", old));
-    }
-    Outcome::Done(report.extend(portability(&m, &store)).text())
+    let reference = worker_secrets::put(&store, &m.name, name, &secret).map_err(failed)?;
+    drop(secret);
+    rewrite(&path, |text| edit::set_secret(text, name, &reference))
+        .map_err(|e| e.hint(t!("worker_keys.put.by_hand", source = reference, name)))?;
+    Ok(PutSecret {
+        name: name.to_owned(),
+        cautions: portability(&m, &store),
+        reference,
+        old,
+        came,
+        store,
+    })
 }
 
 /// `erpc worker secret list`: every secret by name and reference, and the
@@ -975,9 +1215,12 @@ pub(crate) fn list(json: bool, dir: &Dir) -> Outcome {
     Outcome::Done(report.or_plain(lines.join("\n")))
 }
 
-/// `erpc worker secret rm`: removes a secret's reference. The value stays
-/// where it is kept; erpc does not delete from 1Password or the keychain.
+/// `erpc worker secret rm`: removes a secret's reference. A value kept in
+/// 1Password or the keychain stays there, which erpc does not delete from;
+/// one kept in the keystore is deleted with it, unless another setting of
+/// the app names the same entry.
 pub(crate) fn remove(json: bool, dir: &Dir, name: &str) -> Outcome {
+    use crate::worker_secrets::Fate;
     let (path, m) = match load(dir) {
         Ok(found) => found,
         Err(e) => return e.into(),
@@ -985,26 +1228,55 @@ pub(crate) fn remove(json: bool, dir: &Dir, name: &str) -> Outcome {
     let Some(reference) = m.secrets.get(name).cloned() else {
         return failed(t!("worker_keys.rm.not_there", name)).into();
     };
+    // erpc.toml first: a value deleted and still named would be worse than
+    // one named no longer and still kept.
     if let Err(e) = rewrite(&path, |text| {
         edit::remove_secret(text, name).map(|(t, _)| t)
     }) {
         return e.into();
     }
+    let fate = worker_secrets::forget(&m, name, &reference);
     if json {
-        crate::print_json(&json!({ "name": name, "removed": true, "still_kept_at": reference }));
+        let still_kept = !matches!(fate, Fate::Deleted | Fate::Absent);
+        crate::print_json(&json!({
+            "name": name,
+            "removed": true,
+            "still_kept_at": still_kept.then_some(&reference),
+            "deleted": fate == Fate::Deleted,
+        }));
         return Outcome::Done(String::new());
     }
-    Outcome::Done(
-        Report::new()
-            .done(t!("worker_keys.rm.done", name))
-            .info(t!("worker_keys.rm.still_kept", source = reference))
-            .or_plain(t!("worker_keys.rm.plain", name, source = reference)),
-    )
+    let done = Report::new().done(t!("worker_keys.rm.done", name));
+    let source = &reference;
+    Outcome::Done(match fate {
+        Fate::Kept => done
+            .info(t!("worker_keys.rm.still_kept", source))
+            .or_plain(t!("worker_keys.rm.plain", name, source)),
+        Fate::Deleted => done.info(t!("worker_keys.rm.deleted", source)).text(),
+        Fate::Absent => done.info(t!("worker_keys.rm.absent", source)).text(),
+        Fate::Shared(other) => done.info(t!("worker_keys.rm.shared", source, other)).text(),
+        Fate::Key => done.info(t!("worker_keys.rm.is_key", source)).text(),
+        Fate::NotDeleted(error) => done
+            .warning(t!("worker_keys.rm.not_deleted", source, error))
+            .text(),
+    })
 }
 
 #[cfg(test)]
 mod tests {
+
+    /// A made-up 1Password vault id, of the shape a real one has.
+    const OP_VAULT: &str = "abcdefghijklmnopqrstuvwxyz";
+    use erpc_auth::store::keystore::Kind;
+    use erpc_chain_solana::identity::Keypair;
+
+    use serde_json::json;
+    use zeroize::Zeroizing;
+
     use super::{read_key_file, wipe_file};
+    use crate::error::CliError;
+    use crate::worker_secrets;
+    use crate::worker_vps::fake::Scripted;
 
     /// An app directory with `manifest` as its erpc.toml.
     fn app(tag: &str, manifest: &str) -> std::path::PathBuf {
@@ -1023,6 +1295,871 @@ mod tests {
             crate::commands::Outcome::Done(text) => text,
             other => panic!("not done: {:?}", other.error()),
         }
+    }
+
+    /// The key the scripted account gives, and the shared RPC takes.
+    const ACCOUNT_KEY: &str = "the-accounts-rpc-key";
+
+    /// What a test gives `secret put` in place of this machine, the person
+    /// at it and the account: the store, what the person types, and an
+    /// account whose user-api and RPC answer from a script. It keeps what
+    /// it was asked.
+    struct Given {
+        store: Result<super::Store, String>,
+        types: Option<&'static str>,
+        account: Scripted,
+        stores: std::cell::RefCell<Vec<(Option<super::StoreFlag>, Option<String>)>>,
+        typed: std::cell::RefCell<Vec<String>>,
+    }
+
+    /// What a [`Given`] was asked: how many times for the store, the names
+    /// the person was asked to type a value for, how many times user-api
+    /// was read, and the keys the shared RPC was asked about.
+    #[derive(Debug, Default, PartialEq, Eq)]
+    struct Asked {
+        stores: usize,
+        typed: Vec<String>,
+        account_reads: usize,
+        keys_tried: Vec<String>,
+    }
+
+    impl Given {
+        /// The thread's keystore, a person who types nothing, and an
+        /// account with one key, which the shared RPC takes.
+        fn keystore() -> Self {
+            Self {
+                store: Ok(super::Store::Keystore { by_default: false }),
+                types: None,
+                account: Scripted::account(&json!({ "apiKey": ACCOUNT_KEY })),
+                stores: std::cell::RefCell::new(Vec::new()),
+                typed: std::cell::RefCell::new(Vec::new()),
+            }
+        }
+
+        fn asked(&self) -> Asked {
+            Asked {
+                stores: self.stores.borrow().len(),
+                typed: self.typed.borrow().clone(),
+                account_reads: self.account.reads.get(),
+                keys_tried: self.account.asked(),
+            }
+        }
+    }
+
+    impl super::Sources for Given {
+        fn store(
+            &self,
+            flag: Option<super::StoreFlag>,
+            vault: Option<&str>,
+        ) -> Result<super::Store, String> {
+            self.stores
+                .borrow_mut()
+                .push((flag, vault.map(ToOwned::to_owned)));
+            self.store.clone()
+        }
+
+        fn typed(&self, name: &str) -> Result<Zeroizing<String>, CliError> {
+            self.typed.borrow_mut().push(name.to_owned());
+            self.types
+                .map(|value| Zeroizing::new(value.to_owned()))
+                .ok_or_else(|| super::failed("the test has nobody typing"))
+        }
+
+        fn account(&self) -> impl Future<Output = Result<super::Tried, CliError>> {
+            crate::worker_vps::keys_tried(&self.account)
+        }
+    }
+
+    /// What is kept under `reference`, read back from the store.
+    fn kept_at(reference: &erpc_worker::manifest::SecretRef) -> Zeroizing<String> {
+        worker_secrets::read(reference).expect("read back")
+    }
+
+    const PUT_KEPT_IN_KEYSTORE: &str = "kept in the encrypted keystore on this machine";
+
+    /// What is said of a value that is the account's primary key, and of
+    /// one that is another of its keys.
+    const FROM_THE_PRIMARY_KEY: &str = "Its value is the signed-in account's primary RPC API key, \
+                                        read from the account and shown to nobody.";
+    const FROM_ANOTHER_KEY: &str = "Its value is one of the signed-in account's other RPC API \
+                                    keys, not its primary one, read from the account and shown \
+                                    to nobody.";
+
+    /// `erpc worker secret put ERPC_API_KEY --from-account` for the app at
+    /// `root`, with `--replace` or without.
+    async fn put_account(
+        given: &Given,
+        root: &std::path::Path,
+        replace: bool,
+    ) -> Result<super::PutSecret, CliError> {
+        super::put_from(
+            given,
+            &dir_of(root),
+            "ERPC_API_KEY",
+            (None, None),
+            replace,
+            super::Value::Account,
+        )
+        .await
+    }
+
+    /// The same, where the command is to keep nothing: its error.
+    async fn not_kept(given: &Given, root: &std::path::Path, replace: bool) -> CliError {
+        match put_account(given, root, replace).await {
+            Ok(kept) => panic!("kept at {}", kept.reference),
+            Err(e) => e,
+        }
+    }
+
+    /// An account with `keys`, the first its primary one, of which the
+    /// shared RPC makes `verdicts`: it takes a key that none is given for.
+    fn account_of(keys: &[&str], verdicts: &[(&'static str, crate::worker_vps::Verdict)]) -> Given {
+        let mut account = Scripted::account(&json!({ "apiKey": keys[0], "activeApiKeys": keys }));
+        for (key, verdict) in verdicts {
+            account = account.with(key, *verdict);
+        }
+        Given {
+            account,
+            ..Given::keystore()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_generated_secret_is_64_hex_characters_shown_to_nobody_and_new_each_time() {
+        use crate::worker_keystore::fake::{FakeDesk, PASSPHRASE, set_up};
+        crate::ui::force_drawn(false);
+        let desk = FakeDesk::typing(&[PASSPHRASE, PASSPHRASE]);
+        let _keystore = set_up(&desk);
+        let root = app("put-generated", "name = \"bot\"\nchain = \"solana\"\n");
+        let given = Given::keystore();
+        let put = async |replace| {
+            super::put_from(
+                &given,
+                &dir_of(&root),
+                "API_TOKEN",
+                (Some(super::StoreFlag::Keystore), None),
+                replace,
+                super::Value::Generated,
+            )
+            .await
+            .expect("kept")
+        };
+        let first = put(false).await;
+        let source = "keystore:erpc-worker/bot.API_TOKEN";
+        assert_eq!(first.reference.to_string(), source);
+        let value = kept_at(&first.reference);
+        // 32 random bytes, as lowercase hexadecimal.
+        assert_eq!(value.len(), 64, "64 characters");
+        assert!(
+            value
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+            "lowercase hexadecimal"
+        );
+        let mut shown = vec![first.body().to_string()];
+        assert_eq!(
+            first.body(),
+            json!({
+                "name": "API_TOKEN", "source": source, "replaced": null,
+                "from": "generated", "account_key": null,
+            })
+        );
+        let said = first.text();
+        assert_eq!(
+            said,
+            format!(
+                "API_TOKEN ← {source}, {PUT_KEPT_IN_KEYSTORE}\nIts value was made here: 64 random \
+                 hexadecimal characters, shown to nobody."
+            )
+        );
+        shown.push(said);
+        assert!(
+            std::fs::read_to_string(root.join("erpc.toml"))
+                .expect("toml")
+                .contains(&format!("API_TOKEN = \"{source}\"")),
+        );
+        // Made again in its place: another value, of the same shape.
+        let second = put(true).await;
+        let again = kept_at(&second.reference);
+        assert_eq!(again.len(), 64);
+        assert_ne!(again.as_str(), value.as_str(), "a new value each time");
+        assert_eq!(
+            second.body(),
+            json!({
+                "name": "API_TOKEN", "source": source, "replaced": source,
+                "from": "generated", "account_key": null,
+            })
+        );
+        shown.push(second.body().to_string());
+        shown.push(second.text());
+        // Neither value is in anything the command says.
+        for said in &shown {
+            assert!(!said.contains(value.as_str()), "{said}");
+            assert!(!said.contains(again.as_str()), "{said}");
+        }
+        // The store was chosen from the flags, and nothing else was asked:
+        // nobody typed, and neither user-api nor the RPC was reached.
+        assert_eq!(
+            *given.stores.borrow(),
+            vec![(Some(super::StoreFlag::Keystore), None); 2]
+        );
+        assert_eq!(
+            given.asked(),
+            Asked {
+                stores: 2,
+                ..Asked::default()
+            }
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn a_secret_from_the_account_is_the_key_the_account_gives_shown_to_nobody() {
+        use crate::worker_keystore::fake::{FakeDesk, PASSPHRASE, set_up};
+        use crate::worker_vps::Verdict;
+        crate::ui::force_drawn(false);
+        let desk = FakeDesk::typing(&[PASSPHRASE, PASSPHRASE]);
+        let _keystore = set_up(&desk);
+        let root = app("put-account", "name = \"bot\"\nchain = \"solana\"\n");
+        // An account whose primary key has run out, and whose second works.
+        let given = Given {
+            account: Scripted::account(&json!({
+                "apiKey": "a-key-that-ended",
+                "activeApiKeys": ["a-key-that-ended", ACCOUNT_KEY],
+            }))
+            .with("a-key-that-ended", Verdict::Refused),
+            ..Given::keystore()
+        };
+        let Ok(kept) = put_account(&given, &root, false).await else {
+            panic!("not kept");
+        };
+        let source = "keystore:erpc-worker/bot.ERPC_API_KEY";
+        // Exactly the key the account gave, and the one the RPC takes:
+        // not the account's primary one, which is said.
+        assert_eq!(kept_at(&kept.reference).as_str(), ACCOUNT_KEY);
+        let body = kept.body();
+        assert_eq!(
+            body,
+            json!({
+                "name": "ERPC_API_KEY", "source": source, "replaced": null,
+                "from": "account", "account_key": "other",
+            })
+        );
+        let said = kept.text();
+        assert_eq!(
+            said,
+            format!("ERPC_API_KEY ← {source}, {PUT_KEPT_IN_KEYSTORE}\n{FROM_ANOTHER_KEY}")
+        );
+        for said in [said, body.to_string()] {
+            assert!(!said.contains(ACCOUNT_KEY), "{said}");
+            assert!(!said.contains("a-key-that-ended"), "{said}");
+        }
+        // The account was read once, and nobody was asked to type.
+        assert_eq!(
+            given.asked(),
+            Asked {
+                stores: 1,
+                typed: Vec::new(),
+                account_reads: 1,
+                keys_tried: vec!["a-key-that-ended".to_owned(), ACCOUNT_KEY.to_owned()],
+            }
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `--from-account` keeps a key the shared RPC accepted, and says which
+    /// of the account's keys it is, in the text and as `account_key`.
+    #[tokio::test]
+    async fn a_key_kept_from_the_account_is_said_to_be_the_primary_one_or_another() {
+        use crate::i18n::speaking;
+        use crate::worker_keystore::fake::{FakeDesk, PASSPHRASE, set_up};
+        use crate::worker_vps::Verdict;
+        use erpc_core::i18n::Lang;
+        use futures_util::FutureExt as _;
+        crate::ui::force_drawn(false);
+        let desk = FakeDesk::typing(&[PASSPHRASE, PASSPHRASE]);
+        let _keystore = set_up(&desk);
+        let root = app("put-account-which", "name = \"bot\"\nchain = \"solana\"\n");
+        let source = "keystore:erpc-worker/bot.ERPC_API_KEY";
+        // The primary key accepted: kept, and no other is asked about.
+        let primary = || account_of(&[ACCOUNT_KEY, "another-key"], &[]);
+        // The primary key not to be asked about, and the second accepted:
+        // the second is kept, though the first was not refused.
+        let away = "not-to-be-asked-about";
+        let other = || account_of(&[away, ACCOUNT_KEY], &[(away, Verdict::Unknown)]);
+        for (given, which, sentence, tried) in [
+            (
+                primary(),
+                "primary",
+                FROM_THE_PRIMARY_KEY,
+                vec![ACCOUNT_KEY],
+            ),
+            (other(), "other", FROM_ANOTHER_KEY, vec![away, ACCOUNT_KEY]),
+        ] {
+            // Each in place of what the round before kept (--replace).
+            let Ok(kept) = put_account(&given, &root, true).await else {
+                panic!("{which}: not kept");
+            };
+            assert_eq!(kept_at(&kept.reference).as_str(), ACCOUNT_KEY, "{which}");
+            let body = kept.body();
+            assert_eq!(body["from"], "account", "{which}");
+            assert_eq!(body["account_key"], which);
+            let said = kept.text();
+            assert_eq!(
+                said,
+                format!("ERPC_API_KEY ← {source}, {PUT_KEPT_IN_KEYSTORE}\n{sentence}")
+            );
+            for said in [said, body.to_string()] {
+                for key in [ACCOUNT_KEY, "another-key", away] {
+                    assert!(!said.contains(key), "{said}");
+                }
+            }
+            assert_eq!(given.asked().keys_tried, tried, "{which}");
+        }
+        // Said in the language of the run, and the two apart.
+        for lang in [Lang::Ja, Lang::Zh, Lang::Ru] {
+            let said = |given: Given| {
+                speaking(lang, || {
+                    let put = put_account(&given, &root, true).now_or_never();
+                    let Some(Ok(kept)) = put else {
+                        panic!("{lang:?}: not kept");
+                    };
+                    kept.text()
+                })
+            };
+            let (of_primary, of_other) = (said(primary()), said(other()));
+            assert_ne!(of_primary, of_other, "{lang:?}");
+            for (said, english) in [
+                (&of_primary, FROM_THE_PRIMARY_KEY),
+                (&of_other, FROM_ANOTHER_KEY),
+            ] {
+                assert_ne!(said.lines().last(), Some(english), "{lang:?}");
+                assert!(!said.contains('{'), "{said}");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// No key accepted, and one the shared RPC could not be asked about:
+    /// `--from-account` keeps nothing, and says to run it again.
+    #[tokio::test]
+    async fn an_account_the_shared_rpc_could_not_be_asked_about_keeps_nothing() {
+        use crate::error::Code;
+        use crate::worker_keystore::fake::{FakeDesk, PASSPHRASE, set_up};
+        use crate::worker_vps::Verdict;
+        crate::ui::force_drawn(false);
+        let desk = FakeDesk::typing(&[PASSPHRASE, PASSPHRASE]);
+        let (_home, keystore) = set_up(&desk);
+        let manifest = "name = \"bot\"\nchain = \"solana\"\n";
+        let root = app("put-account-unasked", manifest);
+        let scope = dir_of(&root).scope();
+        let unasked = format!(
+            "error: the shared RPC could not be asked about the account's API keys just now (it \
+             took none, and for one at least it gave no answer, or one that says nothing of the \
+             key), so nothing was kept\nhint: run the same command again in a while; or keep the \
+             key you mean by hand with `erpc worker secret put ERPC_API_KEY{scope}`, typed unseen \
+             or piped in"
+        );
+        // An account alone with its primary key; and one whose primary
+        // key is refused beside another that could not be asked about.
+        let (only, ended, second) = ("the-only-key", "a-key-that-ended", "the-second-key");
+        for (keys, verdicts) in [
+            (vec![only], vec![(only, Verdict::Unknown)]),
+            (
+                vec![ended, second],
+                vec![(ended, Verdict::Refused), (second, Verdict::Unknown)],
+            ),
+        ] {
+            let given = account_of(&keys, &verdicts);
+            let e = not_kept(&given, &root, false).await;
+            assert_eq!(e.text(), unasked);
+            assert_eq!(e.code, Code::Failed);
+            // No key is in what is said, and none was kept: no entry, and
+            // erpc.toml as it was.
+            let said = format!("{} {}", e.text(), e.json());
+            for key in &keys {
+                assert!(!said.contains(key), "{said}");
+            }
+            assert!(
+                !keystore
+                    .entry_path("erpc-worker", "bot.ERPC_API_KEY")
+                    .expect("named")
+                    .exists()
+            );
+            assert_eq!(
+                std::fs::read_to_string(root.join("erpc.toml")).expect("toml"),
+                manifest
+            );
+            // Every key was asked about, once, before it gave up.
+            assert_eq!(given.asked().account_reads, 1);
+            assert_eq!(given.asked().keys_tried, keys);
+        }
+        // The command the hint names is one erpc takes.
+        let words = format!("erpc worker secret put ERPC_API_KEY{scope}");
+        assert!(
+            <crate::Cli as clap::Parser>::try_parse_from(words.split_whitespace()).is_ok(),
+            "{words}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `--from-account --replace` that keeps nothing leaves what was kept
+    /// before as it was, and the command its hint names carries
+    /// `--replace`: without, following the hint would be refused.
+    #[tokio::test]
+    async fn from_account_replace_that_keeps_nothing_leaves_the_old_value_and_hints_at_replace() {
+        use crate::i18n::speaking;
+        use crate::worker_keystore::fake::{FakeDesk, PASSPHRASE, set_up};
+        use crate::worker_vps::Verdict;
+        use erpc_core::i18n::Lang;
+        use futures_util::FutureExt as _;
+        crate::ui::force_drawn(false);
+        let desk = FakeDesk::typing(&[PASSPHRASE, PASSPHRASE]);
+        let (_home, keystore) = set_up(&desk);
+        let store = super::Store::Keystore { by_default: false };
+        let before = Zeroizing::new("the-key-kept-before".to_owned());
+        let reference = worker_secrets::put(&store, "bot", "ERPC_API_KEY", &before).expect("kept");
+        let manifest = format!(
+            "name = \"bot\"\nchain = \"solana\"\n[secrets]\nERPC_API_KEY = \"{reference}\"\n"
+        );
+        let root = app("put-account-replace", &manifest);
+        let file = keystore
+            .entry_path("erpc-worker", "bot.ERPC_API_KEY")
+            .expect("named");
+        let sealed = std::fs::read(&file).expect("the entry");
+        let command = format!(
+            "erpc worker secret put ERPC_API_KEY --replace{}",
+            dir_of(&root).scope()
+        );
+        let key = "the-accounts-key";
+        for (verdict, message) in [
+            (Verdict::Refused, "the shared RPC takes none of the account"),
+            (Verdict::Unknown, "the shared RPC could not be asked about"),
+        ] {
+            let given = || account_of(&[key], &[(key, verdict)]);
+            let e = not_kept(&given(), &root, true).await;
+            assert!(e.message.starts_with(message), "{}", e.message);
+            let hint = e.hint.clone().expect("a hint");
+            assert!(hint.contains(&format!("`{command}`")), "{hint}");
+            // The value kept before is as it was, and so is erpc.toml.
+            assert_eq!(std::fs::read(&file).expect("the entry"), sealed);
+            assert_eq!(kept_at(&reference).as_str(), before.as_str());
+            assert_eq!(
+                std::fs::read_to_string(root.join("erpc.toml")).expect("toml"),
+                manifest
+            );
+            let said = format!("{} {}", e.text(), e.json());
+            assert!(!said.contains(key), "{said}");
+            assert!(!said.contains(before.as_str()), "{said}");
+            // Said in the language of the run, with the same command.
+            for lang in [Lang::Ja, Lang::Zh, Lang::Ru] {
+                let there = speaking(lang, || not_kept(&given(), &root, true).now_or_never())
+                    .expect("the doubles answer at once");
+                assert_ne!(there.message, e.message, "{lang:?}");
+                assert_ne!(there.hint, e.hint, "{lang:?}");
+                let said = there.text();
+                assert!(said.contains(&format!("`{command}`")), "{said}");
+                assert!(!said.contains('{'), "{said}");
+            }
+        }
+        // The command the hint names is one erpc takes.
+        assert!(
+            <crate::Cli as clap::Parser>::try_parse_from(command.split_whitespace()).is_ok(),
+            "{command}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Every key of the account refused from this machine: `--from-account`
+    /// keeps nothing, and says how the key is kept by hand.
+    #[tokio::test]
+    async fn an_account_whose_keys_this_machine_is_refused_with_keeps_nothing_and_names_the_way_out()
+     {
+        use crate::worker_keystore::fake::{FakeDesk, PASSPHRASE, set_up};
+        use crate::worker_vps::Verdict;
+        crate::ui::force_drawn(false);
+        let desk = FakeDesk::typing(&[PASSPHRASE, PASSPHRASE]);
+        let (_home, keystore) = set_up(&desk);
+        let manifest = "name = \"bot\"\nchain = \"solana\"\n";
+        let root = app("put-account-refused", manifest);
+        let given = Given {
+            account: Scripted::account(&json!({
+                "apiKey": "for-the-server-only",
+                "activeApiKeys": ["a-key-that-ended", "for-the-server-only"],
+            }))
+            .with("for-the-server-only", Verdict::Refused)
+            .with("a-key-that-ended", Verdict::Refused),
+            ..Given::keystore()
+        };
+        let e = super::put_from(
+            &given,
+            &dir_of(&root),
+            "ERPC_API_KEY",
+            (None, None),
+            false,
+            super::Value::Account,
+        )
+        .await
+        .err()
+        .expect("refused");
+        let scope = dir_of(&root).scope();
+        assert_eq!(
+            e.text(),
+            format!(
+                "error: the shared RPC takes none of the account's API keys from this machine (2 \
+                 tried)\nhint: the keys were tried from this machine, where a key limited to \
+                 other addresses (the server's, say) is refused though it works from those: \
+                 keep such a key by hand with `erpc worker secret put ERPC_API_KEY{scope}`, typed \
+                 unseen or piped in; a key can also have an end date, and the account's RPC plan \
+                 can have ended, which the ERPC dashboard shows"
+            )
+        );
+        // The command the hint names is one erpc takes.
+        let words = format!("erpc worker secret put ERPC_API_KEY{scope}");
+        assert!(
+            <crate::Cli as clap::Parser>::try_parse_from(words.split_whitespace()).is_ok(),
+            "{words}"
+        );
+        // Neither key is in what is said, and neither was kept: no entry,
+        // and erpc.toml as it was.
+        let said = format!("{} {}", e.text(), e.json());
+        for key in ["for-the-server-only", "a-key-that-ended"] {
+            assert!(!said.contains(key), "{said}");
+        }
+        assert!(
+            !keystore
+                .entry_path("erpc-worker", "bot.ERPC_API_KEY")
+                .expect("named")
+                .exists()
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("erpc.toml")).expect("toml"),
+            manifest
+        );
+        assert_eq!(given.asked().account_reads, 1);
+        assert_eq!(
+            given.asked().keys_tried,
+            ["for-the-server-only", "a-key-that-ended"]
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn a_typed_secret_is_what_the_person_gave_asked_for_once() {
+        use crate::worker_keystore::fake::{FakeDesk, PASSPHRASE, set_up};
+        crate::ui::force_drawn(false);
+        let desk = FakeDesk::typing(&[PASSPHRASE, PASSPHRASE]);
+        let _keystore = set_up(&desk);
+        let root = app("put-typed", "name = \"bot\"\nchain = \"solana\"\n");
+        let given = Given {
+            types: Some("typed-by-the-person"),
+            ..Given::keystore()
+        };
+        let kept = super::put_from(
+            &given,
+            &dir_of(&root),
+            "X_TOKEN",
+            (None, None),
+            false,
+            super::Value::Typed,
+        )
+        .await
+        .expect("kept");
+        let source = "keystore:erpc-worker/bot.X_TOKEN";
+        assert_eq!(kept_at(&kept.reference).as_str(), "typed-by-the-person");
+        let body = kept.body();
+        assert_eq!(
+            body,
+            json!({
+                "name": "X_TOKEN", "source": source, "replaced": null,
+                "from": "typed", "account_key": null,
+            })
+        );
+        // Nothing is said of where a typed value came from.
+        let said = kept.text();
+        assert_eq!(said, format!("X_TOKEN ← {source}, {PUT_KEPT_IN_KEYSTORE}"));
+        for said in [said, body.to_string()] {
+            assert!(!said.contains("typed-by-the-person"), "{said}");
+        }
+        assert_eq!(
+            given.asked(),
+            Asked {
+                stores: 1,
+                typed: vec!["X_TOKEN".to_owned()],
+                ..Asked::default()
+            }
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn a_name_set_already_is_refused_before_a_value_is_typed_made_or_read() {
+        use crate::worker_keystore::fake::{FakeDesk, PASSPHRASE, set_up};
+        crate::ui::force_drawn(false);
+        let desk = FakeDesk::typing(&[PASSPHRASE, PASSPHRASE]);
+        let (_home, keystore) = set_up(&desk);
+        let store = super::Store::Keystore { by_default: false };
+        let first = Zeroizing::new("the-value-kept-first".to_owned());
+        let reference = worker_secrets::put(&store, "bot", "API_TOKEN", &first).expect("kept");
+        let manifest =
+            format!("name = \"bot\"\nchain = \"solana\"\n[secrets]\nAPI_TOKEN = \"{reference}\"\n");
+        let root = app("put-already", &manifest);
+        let file = keystore
+            .entry_path("erpc-worker", "bot.API_TOKEN")
+            .expect("named");
+        let sealed = std::fs::read(&file).expect("the entry");
+        for value in [
+            super::Value::Typed,
+            super::Value::Generated,
+            super::Value::Account,
+        ] {
+            let given = Given {
+                types: Some("another-value"),
+                ..Given::keystore()
+            };
+            let e = super::put_from(
+                &given,
+                &dir_of(&root),
+                "API_TOKEN",
+                (None, None),
+                false,
+                value,
+            )
+            .await
+            .err()
+            .expect("refused");
+            assert_eq!(
+                e.text(),
+                format!(
+                    "error: API_TOKEN is set already ({reference})\nhint: pass --replace to keep \
+                     a new value in its place"
+                ),
+                "{value:?}"
+            );
+            // Refused before the store is chosen, a value typed or made,
+            // or anything asked of the account: what was kept is as it was.
+            assert_eq!(given.asked(), Asked::default(), "{value:?}");
+            assert_eq!(std::fs::read(&file).expect("the entry"), sealed);
+            assert_eq!(kept_at(&reference).as_str(), first.as_str());
+            assert_eq!(
+                std::fs::read_to_string(root.join("erpc.toml")).expect("toml"),
+                manifest
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// What `secret put` says is chosen by `--json`: the JSON with it, the
+    /// text without.
+    #[test]
+    fn secret_put_says_json_under_json_and_text_otherwise() {
+        use crate::commands::{Outcome, Said};
+        use erpc_worker::manifest::SecretRef;
+        crate::ui::force_drawn(false);
+        let kept = || super::PutSecret {
+            name: "X_TOKEN".to_owned(),
+            reference: SecretRef::parse("keychain:erpc-worker/bot.X_TOKEN").expect("a reference"),
+            old: None,
+            came: super::Came::Generated,
+            store: super::Store::Keychain,
+            cautions: crate::ui::Report::new(),
+        };
+        let (body, text) = (kept().body(), kept().text());
+        assert_eq!(body["from"], "generated");
+        assert!(
+            text.starts_with("X_TOKEN ← keychain:erpc-worker/bot.X_TOKEN, kept in "),
+            "{text}"
+        );
+        assert_eq!(kept().said(true), Said::Json(body));
+        assert_eq!(kept().said(false), Said::Text(text.clone()));
+        // Text is handed on, to be printed where every outcome is.
+        let Outcome::Done(handed_on) = Said::Text(text.clone()).done() else {
+            panic!("not done");
+        };
+        assert_eq!(handed_on, text);
+    }
+
+    /// The store opens before a value is asked for: a keystore that does
+    /// not open costs nobody a value they typed.
+    #[tokio::test]
+    async fn a_value_is_not_asked_for_before_the_store_opens() {
+        use crate::worker_keystore::fake::{FakeDesk, PASSPHRASE, set_up};
+        crate::ui::force_drawn(false);
+        let desk = FakeDesk::typing(&[PASSPHRASE, PASSPHRASE]);
+        let (_home, keystore) = set_up(&desk);
+        let manifest = "name = \"bot\"\nchain = \"solana\"\n";
+        let root = app("put-locked", manifest);
+        let put = async |given: &Given, value| {
+            super::put_from(given, &dir_of(&root), "X_TOKEN", (None, None), false, value).await
+        };
+        let typing = || Given {
+            types: Some("typed-by-the-person"),
+            ..Given::keystore()
+        };
+        // A keystore that is there (it holds another app's secret), locked,
+        // with nobody at a terminal to open it.
+        let store = super::Store::Keystore { by_default: false };
+        let other = Zeroizing::new("kept-before".to_owned());
+        worker_secrets::put(&store, "other-app", "X_TOKEN", &other).expect("kept");
+        desk.lock();
+        desk.terminal.set(false);
+        for value in [super::Value::Typed, super::Value::Generated] {
+            let given = typing();
+            let Err(e) = put(&given, value).await else {
+                panic!("{value:?}: kept");
+            };
+            assert!(
+                e.message.contains("`erpc worker secret unlock`"),
+                "{value:?}: {}",
+                e.message
+            );
+            // The store was chosen, and nobody was asked for a value.
+            let chosen = Asked {
+                stores: 1,
+                ..Asked::default()
+            };
+            assert_eq!(given.asked(), chosen, "{value:?}");
+            assert!(
+                !keystore
+                    .entry_path("erpc-worker", "bot.X_TOKEN")
+                    .expect("named")
+                    .exists()
+            );
+            assert_eq!(
+                std::fs::read_to_string(root.join("erpc.toml")).expect("toml"),
+                manifest
+            );
+        }
+        // Once it opens, the value is asked for, and kept.
+        desk.terminal.set(true);
+        desk.will_type(&[PASSPHRASE]);
+        let given = typing();
+        let Ok(kept) = put(&given, super::Value::Typed).await else {
+            panic!("not kept");
+        };
+        assert_eq!(kept_at(&kept.reference).as_str(), "typed-by-the-person");
+        assert_eq!(given.asked().typed, ["X_TOKEN"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A generated value is random over its whole length: of sixteen made,
+    /// no position holds the same character in all.
+    ///
+    /// A position holds one of 16 characters, so sixteen values that are
+    /// random agree at a given position once in 16^15 runs, and at any of
+    /// the 64 positions less often than once in 10^16 runs.
+    #[test]
+    fn a_generated_value_is_random_at_every_position() {
+        let values: Vec<_> = (0..16)
+            .map(|_| super::generate().expect("random"))
+            .collect();
+        for value in &values {
+            assert_eq!(value.len(), 64);
+        }
+        for at in 0..64 {
+            let first = values[0].as_bytes()[at];
+            assert!(
+                values.iter().any(|value| value.as_bytes()[at] != first),
+                "position {at} holds the same character in all sixteen"
+            );
+        }
+    }
+
+    /// `--from-account` asks user-api for the account's keys and the
+    /// shared RPC about them, one request a key. None of it is sent for a
+    /// command that is going to be refused.
+    #[tokio::test]
+    async fn the_account_is_read_only_once_nothing_else_can_refuse_the_command() {
+        use crate::error::Code;
+        use crate::worker_keystore::fake::{FakeDesk, PASSPHRASE, set_up};
+        crate::ui::force_drawn(false);
+        let desk = FakeDesk::typing(&[PASSPHRASE, PASSPHRASE]);
+        let _keystore = set_up(&desk);
+        let store = super::Store::Keystore { by_default: false };
+        let kept = Zeroizing::new("kept-before".to_owned());
+        let set = worker_secrets::put(&store, "bot", "SET_ALREADY", &kept).expect("kept");
+        let root = app(
+            "put-order",
+            &format!(
+                "name = \"bot\"\nchain = \"solana\"\n[vars]\nIN_VARS = \"plain\"\n\
+                 [secrets]\nSET_ALREADY = \"{set}\"\n"
+            ),
+        );
+        let put = async |given: &Given, dir: &std::path::Path, name: &str| {
+            super::put_from(
+                given,
+                &dir_of(dir),
+                name,
+                (None, None),
+                false,
+                super::Value::Account,
+            )
+            .await
+        };
+        let refused = async |given: &Given, dir: &std::path::Path, name: &str| {
+            let e = put(given, dir, name).await.err().expect("refused");
+            // Not one request, to user-api or to the RPC.
+            let asked = given.asked();
+            assert_eq!(asked.account_reads, 0, "{name}: {}", e.text());
+            assert!(asked.keys_tried.is_empty(), "{name}: {}", e.text());
+            e
+        };
+        // A name that cannot be a setting's.
+        let e = refused(&Given::keystore(), &root, "lower-case").await;
+        assert_eq!(e.code, Code::Usage);
+        assert!(e.message.starts_with("lower-case: "), "{}", e.message);
+        // No erpc.toml where --dir says.
+        let nowhere = root.join("no-app").join("erpc.toml");
+        let e = refused(&Given::keystore(), &nowhere, "ERPC_API_KEY").await;
+        assert!(e.message.contains("erpc.toml"), "{}", e.message);
+        // A name [vars] has, and one set already, without --replace.
+        let e = refused(&Given::keystore(), &root, "IN_VARS").await;
+        assert!(
+            e.message.starts_with("IN_VARS is in [vars]"),
+            "{}",
+            e.message
+        );
+        let e = refused(&Given::keystore(), &root, "SET_ALREADY").await;
+        assert!(
+            e.message.starts_with("SET_ALREADY is set already"),
+            "{}",
+            e.message
+        );
+        // A store that cannot be used as asked.
+        let no_store = Given {
+            store: Err("--vault is for --store 1password".to_owned()),
+            ..Given::keystore()
+        };
+        let e = refused(&no_store, &root, "ERPC_API_KEY").await;
+        assert_eq!(e.message, "--vault is for --store 1password");
+        // A name the store cannot keep: it would be the trading key's entry.
+        let e = refused(&Given::keystore(), &root, "WALLET").await;
+        assert_eq!(e.code, Code::Usage);
+        // The keystore locked, with nobody at a terminal to open it.
+        desk.lock();
+        desk.terminal.set(false);
+        let e = refused(&Given::keystore(), &root, "ERPC_API_KEY").await;
+        assert!(
+            e.message.contains("`erpc worker secret unlock`"),
+            "{}",
+            e.message
+        );
+        // With all of that in order, the account is read, once.
+        desk.terminal.set(true);
+        desk.will_type(&[PASSPHRASE]);
+        let given = Given::keystore();
+        let put = put(&given, &root, "ERPC_API_KEY").await.expect("kept");
+        assert_eq!(kept_at(&put.reference).as_str(), ACCOUNT_KEY);
+        assert_eq!(
+            given.asked(),
+            Asked {
+                stores: 1,
+                typed: Vec::new(),
+                account_reads: 1,
+                keys_tried: vec![ACCOUNT_KEY.to_owned()],
+            }
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -1088,6 +2225,215 @@ mod tests {
         );
         assert!(drawn.contains("🔥 Fund only what the bot needs"), "{drawn}");
         crate::ui::force_drawn(false);
+    }
+
+    #[test]
+    fn a_key_kept_in_the_keystore_says_what_to_back_up() {
+        use crate::worker_keystore::fake::{FakeDesk, set_up};
+        crate::ui::force_drawn(false);
+        let desk = FakeDesk::nobody();
+        let (_home, keystore) = set_up(&desk);
+        let m = erpc_worker::manifest::Manifest::parse(&format!(
+            "name = \"bot\"\nchain = \"solana\"\n\
+             [env.prod]\ninventory = {{ vault = \"{OP_VAULT}\" }}\n"
+        ))
+        .expect("manifest");
+        let store = super::Store::Keystore { by_default: true };
+        let kept = super::Kept {
+            app: "bot".into(),
+            pubkey: "PK".into(),
+            source: erpc_worker::manifest::SecretRef::parse("keystore:erpc-worker/bot.wallet")
+                .expect("ref"),
+            warning: super::key_cautions(&m, &store),
+            store,
+        };
+        let place = crate::ui::tidy(keystore.dir());
+        assert_eq!(
+            done(kept.report(false, "made", None)),
+            format!(
+                "Trading key made for bot: PK\nKept in the encrypted keystore on this machine as \
+                 keystore:erpc-worker/bot.wallet; erpc.toml's [wallet] names it.\nFund only what \
+                 the bot needs: it is a hot wallet.\nwarning: This key's only copy is its \
+                 encrypted file in {place}. Back that directory up and keep its passphrase: \
+                 without both, the wallet is gone.\nwarning: this app's servers are kept in \
+                 1Password, and the keystore is only on this machine: another machine will not \
+                 be able to start it. Pass --store 1password to keep it where they are."
+            )
+        );
+        // A key kept elsewhere has no such file to back up.
+        assert_eq!(
+            super::key_cautions(&m, &super::Store::Keychain).text(),
+            format!("warning: {}", t!("worker_keys.portability"))
+        );
+        let plain = erpc_worker::manifest::Manifest::parse("name = \"bot\"\nchain = \"solana\"\n")
+            .expect("manifest");
+        assert_eq!(
+            super::key_cautions(&plain, &super::Store::Keychain).text(),
+            ""
+        );
+        assert_eq!(
+            super::portability(&plain, &super::Store::Keystore { by_default: false }).text(),
+            ""
+        );
+    }
+
+    #[test]
+    fn key_show_names_the_keystore_file_and_says_when_it_is_not_here() {
+        use crate::worker_keystore::fake::{FakeDesk, PASSPHRASE, set_up};
+        crate::ui::force_drawn(false);
+        let desk = FakeDesk::typing(&[PASSPHRASE, PASSPHRASE]);
+        let (_home, keystore) = set_up(&desk);
+        let root = app(
+            "show-keystore",
+            "name = \"bot\"\nchain = \"solana\"\n[wallet]\n\
+             source = \"keystore:erpc-worker/bot.wallet\"\n\
+             pubkey = \"7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU\"\n",
+        );
+        let file = crate::ui::tidy(
+            &keystore
+                .entry_path("erpc-worker", "bot.wallet")
+                .expect("named"),
+        );
+        // As on a machine that did not keep the key: said, and nothing is
+        // asked for.
+        assert_eq!(
+            done(super::show(false, &dir_of(&root))),
+            format!(
+                "bot  7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU\n  kept at \
+                 keystore:erpc-worker/bot.wallet\nwarning: this machine's keystore has no such \
+                 entry ({file}): the key was kept on another machine, and this one cannot start \
+                 the app with it"
+            )
+        );
+        assert_eq!(desk.asked(), 0);
+        crate::worker_keystore::write("erpc-worker", "bot.wallet", Kind::Key, "the key", false)
+            .expect("kept");
+        desk.lock();
+        // Here, locked: shown without the passphrase.
+        assert_eq!(
+            done(super::show(false, &dir_of(&root))),
+            format!(
+                "bot  7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU\n  kept at \
+                 keystore:erpc-worker/bot.wallet\n  its keystore file is {file}"
+            )
+        );
+        assert_eq!(desk.asked(), 2);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn secret_rm_deletes_a_keystore_entry_and_leaves_the_key() {
+        use crate::worker_keystore::fake::{FakeDesk, PASSPHRASE, set_up};
+        crate::ui::force_drawn(false);
+        let desk = FakeDesk::typing(&[PASSPHRASE, PASSPHRASE]);
+        let (_home, keystore) = set_up(&desk);
+        for (account, kind, value) in [
+            ("bot.X_TOKEN", Kind::Secret, "tok-1"),
+            ("bot.wallet", Kind::Key, "the key"),
+            ("bot.SHARED", Kind::Secret, "tok-2"),
+        ] {
+            crate::worker_keystore::write("erpc-worker", account, kind, value, true).expect("kept");
+        }
+        let root = app(
+            "rm-keystore",
+            "name = \"bot\"\nchain = \"solana\"\n[secrets]\n\
+             X_TOKEN = \"keystore:erpc-worker/bot.X_TOKEN\"\n\
+             A_TOKEN = \"keystore:erpc-worker/bot.SHARED\"\n\
+             B_TOKEN = \"keystore:erpc-worker/bot.SHARED\"\n\
+             [wallet]\nsource = \"keystore:erpc-worker/bot.wallet\"\n",
+        );
+        let file = |account: &str| keystore.entry_path("erpc-worker", account).expect("named");
+        // Locked, and with nobody at a terminal: removing asks for nothing.
+        desk.lock();
+        desk.terminal.set(false);
+        assert_eq!(
+            done(super::remove(false, &dir_of(&root), "X_TOKEN")),
+            "X_TOKEN is no longer in erpc.toml.\nIts value was deleted from the keystore \
+             (keystore:erpc-worker/bot.X_TOKEN)."
+        );
+        assert!(!file("bot.X_TOKEN").exists());
+        // An entry another setting names stays until the last one goes.
+        assert_eq!(
+            done(super::remove(false, &dir_of(&root), "A_TOKEN")),
+            "A_TOKEN is no longer in erpc.toml.\nIts value stays in the keystore under \
+             keystore:erpc-worker/bot.SHARED: secrets.B_TOKEN names it too."
+        );
+        assert!(file("bot.SHARED").is_file());
+        assert!(done(super::remove(false, &dir_of(&root), "B_TOKEN")).contains("was deleted from"));
+        assert!(!file("bot.SHARED").exists());
+        let left = std::fs::read_to_string(root.join("erpc.toml")).expect("toml");
+        assert!(!left.contains("TOKEN"), "{left}");
+        assert!(
+            left.contains("source = \"keystore:erpc-worker/bot.wallet\""),
+            "{left}"
+        );
+        assert!(file("bot.wallet").is_file());
+        assert_eq!(desk.asked(), 2);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The erpc.toml of a second directory, with no `[wallet]`, that names
+    /// the app's key under `[secrets]`: every command that reads the file
+    /// refuses it, so the key is neither handed over as a setting nor
+    /// removed as one.
+    #[tokio::test]
+    async fn a_setting_cannot_name_or_take_the_place_of_the_trading_key() {
+        use crate::worker_keystore::fake::{FakeDesk, PASSPHRASE, set_up};
+        crate::ui::force_drawn(false);
+        let desk = FakeDesk::typing(&[PASSPHRASE, PASSPHRASE]);
+        let (_home, keystore) = set_up(&desk);
+        let store = super::Store::Keystore { by_default: true };
+        let key = Keypair::generate().expect("random");
+        let source = worker_secrets::put_key(&store, "bot", &key).expect("kept");
+        let file = keystore
+            .entry_path("erpc-worker", "bot.wallet")
+            .expect("named");
+        let sealed = std::fs::read(&file).expect("the key's entry");
+        let unchanged = || {
+            assert_eq!(std::fs::read(&file).expect("the key's entry"), sealed);
+        };
+        for (tag, line) in [
+            ("copy", "KEY_COPY = \"keystore:erpc-worker/bot.wallet\""),
+            ("upper", "WALLET = \"keystore:erpc-worker/bot.WALLET\""),
+        ] {
+            let text = format!("name = \"bot\"\nchain = \"solana\"\n[secrets]\n{line}\n");
+            let root = app(&format!("key-as-setting-{tag}"), &text);
+            let name = line.split(' ').next().expect("a name");
+            // However the value would come: typed, made here, or read
+            // from the account. Nothing is asked for any of them.
+            let given = Given::keystore();
+            let put = async |value| {
+                super::put_from(&given, &dir_of(&root), name, (None, None), true, value)
+                    .await
+                    .err()
+            };
+            for refusal in [
+                super::remove(false, &dir_of(&root), name).error(),
+                super::list(false, &dir_of(&root)).error(),
+                put(super::Value::Typed).await,
+                put(super::Value::Generated).await,
+                put(super::Value::Account).await,
+            ] {
+                let e = refusal.expect("refused").text();
+                assert!(
+                    e.contains(&format!("secrets.{name}: keystore:erpc-worker/bot.")),
+                    "{e}"
+                );
+                assert!(e.contains("is an entry filed as a trading key"), "{e}");
+                assert!(e.contains("named under [wallet]"), "{e}");
+            }
+            assert_eq!(given.asked(), Asked::default());
+            assert_eq!(
+                std::fs::read_to_string(root.join("erpc.toml")).expect("toml"),
+                text
+            );
+            unchanged();
+            let _ = std::fs::remove_dir_all(&root);
+        }
+        // Nothing was asked of the keystore for any of it, and the key
+        // is still the one that was kept.
+        assert_eq!(desk.asked(), 2);
+        assert_eq!(source.to_string(), "keystore:erpc-worker/bot.wallet");
     }
 
     #[test]

@@ -19,6 +19,7 @@ no_host_key = "env.{env} 没有固定的主机密钥"
 unreachable = "无法询问服务器上的 agent：{error}"
 unreadable = "服务器上的 agent 返回了 erpc 无法读取的内容：{answer}"
 refused = "服务器上的 agent 拒绝了请求"
+port_taken = "同一台服务器上不能有两个程序监听端口 {port}。请在 erpc.toml 中为这个应用换一个专用端口：[run] 下的 `port` 和健康检查 URL，以及 [vars] 中应用读取端口的设置（模板中为 API_PORT）。然后重新部署。"
 
 [describe]
 unknown = "未知"
@@ -64,10 +65,12 @@ refused = "未移除任何内容"
 not_removed = "无法从服务器移除它（{error}）"
 not_removed_ending = "无法从服务器移除它（{error}）；仍将终止服务器"
 nothing_removed = "未移除任何内容；{hint}"
+start_unanswered = "之前启动 {what} 的请求没有收到答复，只有这条记录提到它：它可能已成功并在计费，而删除会连同这条记录一起移除。是否在运行可在控制面板中查看"
 removed = "{id} 已从其服务器移除。"
 skipped = "[env.{env}] 已从记录中移除；按要求未连接 {host}：如果 worker 仍在那里运行，它会继续运行。"
 forgotten = "[env.{env}] 已移除。"
 still_in_toml = "[env.{env}] 仍在 erpc.toml 中：{error}"
+waf_left = "无法从服务器移除它的 WAF（{error}）：端口已关闭，但单元 {unit} 会一直留在服务器上，直到在那里将其移除"
 
 [delete_prompt]
 forget_unreached = "按要求不连接 {host}，将 [env.{env}] 从记录中移除：{id} 不会从服务器上移除"
@@ -78,7 +81,7 @@ then_server = "，然后终止按小时计费的服务器"
 then_lines_and_server = "，然后终止其数据线路和按小时计费的服务器"
 then_lines = "，然后终止其数据线路（记录中没有按小时计费的服务器）"
 no_server_to_end = "（记录中没有需要终止的按小时计费服务器）"
-keeps_charging = "；其按小时计费的 {items} 会继续运行并继续计费（`--release-server` 可将其终止）"
+keeps_charging = "；这不会终止其按小时计费的 {items}：仍在运行的会继续计费（加上 `--release-server` 可将其终止）"
 
 [unreached]
 message = "无法连接服务器 {host}{vps}；它可能已被终止或已停机"
@@ -126,11 +129,28 @@ server = "{kind} {id}"
 line = "{kind} 线路 {id}"
 still_charged = "{items}：在终止前按小时计费。`erpc worker delete --release-server{scope}` 可将其终止；每小时价格见 `erpc ai`（信用余额）或控制面板"
 
+[charges]
+title = "按小时计费（从 ERPC Credit 扣除）："
+price = "每小时 €{price}"
+unpriced = "正在计费（未给出价格）"
+not_listed = "目前不在账户的计费列表中"
+not_looked_up = "未查询：记录中的 ID 不是数字"
+total = "合计"
+credit_alone = "账户余额为 €{balance}。"
+credit_idle = "账户余额为 €{balance}，目前没有按小时的消耗。"
+credit_rate = "账户余额为 €{balance}，所有运行中的项目每小时共消耗 €{burn}。"
+end = "`erpc worker delete --release-server{scope}` 会结束这个应用的计费项目。"
+behind = "账户的计费列表可能比启动晚一分钟左右，刚启动的项目可能还没有出现在其中。"
+forget_line = "在别处结束的线路会一直留在记录中，直到 `erpc worker deploy --forget-line <ID>{scope}` 将其移除。"
+
+[charges.credit]
+other = "账户余额为 €{balance}，所有运行中的项目每小时共消耗 €{burn}：大约还能用 {n} 小时。"
+
 [api]
 bad_method = "{method} 不是可用的方法：GET、POST、PUT 或 DELETE"
 bad_path = "{path} 不是路径：以 / 开头，且不含空格、引号或控制字符"
 no_port = "erpc.toml 中没有 run.port，无法到达应用的 API"
-no_token = "[secrets] 中没有 API_TOKEN，而每个请求都需要它：`erpc worker secret put API_TOKEN{dir_scope}`"
+no_token = "应用拒绝了请求，而 [secrets] 中没有可发送的 API_TOKEN：`erpc worker secret put API_TOKEN{dir_scope}`"
 failed = "请求未成功：{why}\n{body}"
 
 [positions]

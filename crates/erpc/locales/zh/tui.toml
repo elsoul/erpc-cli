@@ -16,6 +16,7 @@ hint = " enter 发送 · shift+enter 换行 · esc 停止 · pgup/pgdn 滚动 ·
 
 [commands]
 new = "开始新对话"
+model = "选择模型规格：/model xlarge · /model auto"
 help = "按键和命令"
 exit = "退出控制台"
 
@@ -73,3 +74,14 @@ said_own_words = "请在下方输入你的回答。"
 hint_yes_no = " ↑ 继续 · enter 确定 · n/esc 否"
 hint_one = " ↑↓ 选择 · enter 确定 · 1-9 直接选 · esc 自己输入"
 hint_several = " ↑↓ 移动 · space 选中/取消 · enter 确定 · esc 自己输入"
+
+# `/model`: the size every turn goes to.
+[size]
+current = "模型规格：{size}"
+choices = "small · medium · large · xlarge（能力最强，Token 消耗为 2 倍）· auto（问候用 small，其余用 large）"
+set = "此后每次回答都由 {size} 完成。"
+xlarge = "此后每次回答都由能力最强的 xlarge 完成，Token 消耗为 2 倍。"
+auto = "已恢复为每次回答自动选择规格：问候用 small，其余用 large。"
+unknown = "未知规格：{size} · 可选 small、medium、large、xlarge 或 auto"
+refused = "ERPC AI 当前不提供 {size}：改由默认规格回答，之后将自动选择规格。"
+unavailable = "ERPC AI 当前不提供模型规格选择：所有回答都由默认模型完成。"

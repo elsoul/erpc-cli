@@ -111,13 +111,22 @@ async fn start_and_watch(
                     dir_scope = scope
                 )
             }
-            _ => t!("worker_run.missing_hint", first, dir_scope = scope),
+            // A secret is kept with the flag that gives its value, when
+            // nobody has to type it: as `init`'s next steps name it.
+            _ => t!(
+                "worker_run.missing_hint",
+                first,
+                how = crate::worker::secret_flag(&m, first),
+                dir_scope = scope
+            ),
         };
         return Err(failed(t!("worker_run.missing", name = m.name, settings)).hint(hint));
     }
     if m.wallet.is_some() {
         worker_secrets::may_read_key().map_err(failed)?;
     }
+    // What is kept in the keystore is opened now, not after the build.
+    worker_secrets::ready_for(&m).map_err(failed)?;
     let bin = build(&m, &root, &say)?;
     let mut command = Command::new(&bin);
     command
@@ -145,8 +154,12 @@ async fn start_and_watch(
         bytes.copy_from_slice(keypair.bytes());
         Some(bytes)
     } else {
-        let dir_scope = dir.scope();
-        say.line(&t!("worker_run.watch_only", dir_scope));
+        // Said only to an app that trades with a key: the hello app, or one
+        // made by hand, has none to make.
+        if crate::worker::lacks_its_key(&m) {
+            let dir_scope = dir.scope();
+            say.line(&t!("worker_run.watch_only", dir_scope));
+        }
         None
     };
     let Some(ip) = lines.ip.filter(|_| !lines.kinds.is_empty()) else {
@@ -219,7 +232,9 @@ async fn take_lines(
                 Ok(Some((line.id, line.hourly)))
             },
             async |named| {
-                worker_vps::start_line(api, kind, ip, None, plan.as_deref(), "", say, named).await
+                let mut record = Unrecorded(named);
+                let plan = plan.as_deref();
+                worker_vps::start_line(api, kind, ip, None, plan, "", say, &mut record).await
             },
             async |id, hourly| worker_vps::wait_line(api, kind, id, ip, hourly, say).await,
         )
@@ -238,6 +253,42 @@ async fn take_lines(
 /// What a line's start is given to name the line with, as soon as the
 /// account has it.
 type Named<'a> = &'a mut dyn FnMut(&str) -> Result<(), CliError>;
+
+/// A run's lines are on no record (nothing goes into erpc.toml), so a
+/// start's request is not kept either: a start that gets no answer cannot
+/// be sent again with its key. A run is started by a person at a terminal,
+/// who is told so, and the next run takes up a line that lets its address
+/// in rather than buy one. The line user-api names goes to what the run
+/// holds.
+struct Unrecorded<'a, 'b>(&'a mut (dyn FnMut(&str) -> Result<(), CliError> + 'b));
+
+impl worker_vps::StartRecord for Unrecorded<'_, '_> {
+    fn pending(&self) -> Option<erpc_worker::manifest::Start> {
+        None
+    }
+
+    fn begin(&mut self, _: &erpc_worker::manifest::Start) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn settle(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Whatever kept an answer from settling the start, a run says the
+    /// same of it: the line may have been started, where to look, and
+    /// that the next run takes it up. No request is kept, so nothing is
+    /// said to stay on a record or to be carried on.
+    fn stays_hint(&self, _: worker_vps::Stays) -> String {
+        t!("worker_run.line.maybe_started")
+    }
+}
+
+impl worker_vps::LineRecord for Unrecorded<'_, '_> {
+    fn named(&mut self, id: &str) -> Result<(), CliError> {
+        (self.0)(id)
+    }
+}
 
 /// One line's way into `held`: the one `find` knows, else the one `start`
 /// buys, then `wait` until it is active.
@@ -407,6 +458,11 @@ async fn stop(child: &mut Child) {
 
 /// Builds the app for this machine and returns its binary.
 fn build(m: &Manifest, root: &Path, say: &Say) -> Result<PathBuf, CliError> {
+    // Built already, for the servers: run as it is where this machine is
+    // one of their kind, and said to be the servers' where it is not.
+    if let Some(path) = &m.build.prebuilt {
+        return crate::worker_build::prebuilt_here(m, root, path, say);
+    }
     let (program, args) = m
         .build
         .command
@@ -602,6 +658,62 @@ mod tests {
         ]));
     }
 
+    /// A run of an app that lacks a setting names the command that keeps
+    /// it, with the flag that gives its value when nobody has to type it:
+    /// the one `init` named for the app's template.
+    #[test]
+    fn a_run_names_a_missing_secret_with_the_flag_that_gives_its_value() {
+        use futures_util::FutureExt as _;
+        let home = tempfile::tempdir().expect("a directory");
+        let dir = crate::worker::Dir::at(home.path());
+        let scope = dir.scope();
+        let lines = super::Lines {
+            kinds: Vec::new(),
+            ip: None,
+            keep: false,
+        };
+        let hint = |template: &str, requires: &str| {
+            let text = format!(
+                "name = \"bot\"\nchain = \"solana\"\n{template}[run]\nrequires = [{requires}]\n"
+            );
+            std::fs::write(home.path().join("erpc.toml"), text).expect("erpc.toml");
+            // Refused before anything is built, started or waited for.
+            let refused = super::start_and_watch(true, &dir, true, &lines).now_or_never();
+            let e = refused.expect("refused at once").expect_err("missing");
+            assert!(e.message.contains("bot"), "{}", e.message);
+            e.hint.expect("a hint")
+        };
+        let said = |command: &str| {
+            format!("`{command}{scope}` keeps a secret; a plain setting goes in [vars]")
+        };
+        let pumpfun = "template = \"solana/pumpfun@1\"\n";
+        // The bot's own token is made, and the RPC key is the account's.
+        let made = hint(pumpfun, "\"API_TOKEN\"");
+        assert_eq!(made, said("erpc worker secret put API_TOKEN --generate"));
+        assert_eq!(
+            hint(pumpfun, "[\"ERPC_API_KEY\", \"SOLANA_RPC_ENDPOINT\"]"),
+            said("erpc worker secret put ERPC_API_KEY --from-account")
+        );
+        // A secret the operator has to give is typed, and so is every
+        // secret of an app that was made by hand.
+        assert_eq!(
+            hint(pumpfun, "\"X_TOKEN\""),
+            said("erpc worker secret put X_TOKEN")
+        );
+        assert_eq!(
+            hint("", "\"API_TOKEN\""),
+            said("erpc worker secret put API_TOKEN")
+        );
+        // Said in the language of the run, with the same command.
+        for lang in [Lang::Ja, Lang::Zh, Lang::Ru] {
+            let there = speaking(lang, || hint(pumpfun, "\"API_TOKEN\""));
+            assert_ne!(there, made, "{lang:?}");
+            let command = format!("`erpc worker secret put API_TOKEN --generate{scope}`");
+            assert!(there.contains(&command), "{there}");
+            assert!(!there.contains('{'), "{there}");
+        }
+    }
+
     fn line(kind: LineKind, id: &str) -> Line {
         Line {
             kind,
@@ -653,6 +765,86 @@ mod tests {
         assert!(!waited.get(), "the line was waited for after Ctrl-C");
         let ids: Vec<&str> = held.iter().map(|l| l.id.as_str()).collect();
         assert_eq!(ids, ["41", "77"], "both lines are there to be ended");
+    }
+
+    /// A run keeps no record of a start: what it says of one that is not
+    /// settled is that the line may have been started and where to look,
+    /// never that a request stays on record or that the same command
+    /// carries on with it. The next run makes a key of its own.
+    #[tokio::test]
+    async fn a_start_of_a_run_that_is_not_settled_says_nothing_of_a_record() {
+        use crate::node_common::Say;
+        use crate::worker_vps::{Sent, start_on_record};
+        use erpc_ai::actions::StartError;
+        use erpc_worker::manifest::Start;
+        use serde_json::json;
+        let wanted = Start {
+            key: String::new(),
+            family: "grpc".to_owned(),
+            product: "prod_Grpc1".to_owned(),
+            region: None,
+            ip: Some("203.0.113.10".to_owned()),
+        };
+        let quiet = Say { quiet: true };
+        let not_settled = [
+            Ok(
+                json!({ "done": false, "httpStatus": 409, "code": "PURCHASE_IN_PROGRESS",
+                "message": "Another purchase is already in progress. Please retry shortly." }),
+            ),
+            Ok(json!({ "done": false, "httpStatus": 409, "message": "PURCHASE_IN_PROGRESS" })),
+            Ok(json!({ "done": false, "httpStatus": 409,
+                "message": "Stored purchase identity is invalid; retry with the same key." })),
+            Ok(json!({ "done": false, "httpStatus": 502,
+                "message": "Promotion status is unknown; retry with the same key." })),
+            Ok(json!({ "done": true, "httpStatus": 202, "success": true })),
+            Err(StartError::Unanswered("it timed out".to_owned())),
+        ];
+        let mut keys = Vec::new();
+        for reply in not_settled {
+            let mut held = |_: &str| Ok(());
+            let mut record = super::Unrecorded(&mut held);
+            let error = start_on_record(&wanted, "userGrpcId", &mut record, &quiet, async |key| {
+                keys.push(key()?);
+                reply
+            })
+            .await
+            .expect_err("not settled");
+            let hint = error.hint.unwrap_or_default();
+            assert!(
+                hint.contains("may have been started") && hint.contains("dashboard"),
+                "{hint}"
+            );
+            // user-api's own words apart (its message is passed on as it
+            // is), nothing erpc says speaks of a record or of carrying on.
+            let said = format!(
+                "{} {hint}",
+                error.message.split(": ").next().unwrap_or_default()
+            );
+            for wrong in ["on record", "same command", "same request", "carries on"] {
+                assert!(!said.contains(wrong), "{wrong}: {said}");
+            }
+        }
+        // No request is kept: every run makes a key of its own.
+        keys.sort();
+        keys.dedup();
+        assert_eq!(keys.len(), 6);
+        // The line user-api names is the run's to hold.
+        let mut named = Vec::new();
+        let mut hold = |id: &str| {
+            named.push(id.to_owned());
+            Ok(())
+        };
+        let mut record = super::Unrecorded(&mut hold);
+        let made = start_on_record(&wanted, "userGrpcId", &mut record, &quiet, async |key| {
+            key()?;
+            Ok(json!({ "done": true, "httpStatus": 200, "userGrpcId": 100_002 }))
+        })
+        .await
+        .expect("made");
+        assert!(
+            matches!(made, Sent::Made { ref id, .. } if id == "100002"),
+            "{made:?}"
+        );
     }
 
     /// A purchase that fails after the account made the line all the same:

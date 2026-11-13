@@ -14,11 +14,25 @@
 
 use std::collections::BTreeMap;
 
-use crate::manifest::{Env, Firewall, Line, Resource};
+use crate::manifest::{Env, Firewall, Line, Resource, Start, StartOf};
 use crate::net::Cidr;
 
 /// The format of the item. A reader refuses another rather than guessing.
-pub const FORMAT: &str = "2";
+pub const FORMAT: &str = "3";
+
+/// The format `env`'s item is written in: the oldest that holds what it
+/// has, so that an erpc from before a field was added still reads the
+/// items without it, and refuses the ones with it rather than write them
+/// back without. Format 2 added `backup`; format 3 adds `starting`.
+fn format_for(env: &Env) -> &'static str {
+    if !env.starting.is_empty() {
+        FORMAT
+    } else if env.backup.is_some() {
+        "2"
+    } else {
+        "1"
+    }
+}
 
 /// The tag every erpc item carries.
 pub const TAG: &str = "erpc";
@@ -75,12 +89,7 @@ pub fn fields(
     deployed: Option<&Deployed>,
 ) -> Result<Vec<(&'static str, String)>, String> {
     let mut out = vec![
-        // Format 2 only where it is needed, so an erpc that reads format 1
-        // still reads the items with no backup.
-        (
-            "erpc_format",
-            if env.backup.is_some() { FORMAT } else { "1" }.to_owned(),
-        ),
+        ("erpc_format", format_for(env).to_owned()),
         (
             "resource",
             env.resource
@@ -107,6 +116,14 @@ pub fn fields(
             },
         ),
         (
+            "starting",
+            if env.starting.is_empty() {
+                String::new()
+            } else {
+                to_json(&env.starting)?
+            },
+        ),
+        (
             "backup",
             env.backup
                 .as_ref()
@@ -127,11 +144,19 @@ fn to_json<T: serde::Serialize>(value: &T) -> Result<String, String> {
     serde_json::to_string(value).map_err(|e| e.to_string())
 }
 
+/// The addresses in an item's field. `app_allow` may hold "everyone",
+/// which `erpc.toml` allows an app behind a WAF and the server refuses any
+/// other; `ssh_allow` never.
 fn cidrs(field: &str, text: &str) -> Result<Vec<Cidr>, String> {
+    let read = if field == "app_allow" {
+        Cidr::parse_any
+    } else {
+        Cidr::parse
+    };
     text.split(',')
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(|s| Cidr::parse(s).map_err(|e| format!("{field}: {e}")))
+        .map(|s| read(s).map_err(|e| format!("{field}: {e}")))
         .collect()
 }
 
@@ -144,10 +169,10 @@ fn cidrs(field: &str, text: &str) -> Result<Vec<Cidr>, String> {
 pub fn facts(fields: &BTreeMap<String, String>) -> Result<Env, String> {
     let get = |name: &str| fields.get(name).map(String::as_str).unwrap_or_default();
     match get("erpc_format") {
-        // Format 2 adds `backup`. A format 1 item has none, and is read;
-        // an erpc that reads only format 1 refuses a format 2 item rather
-        // than write it back without the backup keys.
-        FORMAT | "1" => {}
+        // Format 2 adds `backup`, format 3 `starting`. An older item has
+        // neither, and is read; an erpc that reads only an older format
+        // refuses a newer item rather than write it back without them.
+        FORMAT | "2" | "1" => {}
         "" => return Err("the item has no erpc_format; it is not erpc's".to_owned()),
         other => {
             return Err(format!(
@@ -161,6 +186,10 @@ pub fn facts(fields: &BTreeMap<String, String>) -> Result<Env, String> {
         .transpose()?;
     let lines: Vec<Line> = some("lines")
         .map(|t| serde_json::from_str(&t).map_err(|e| format!("lines: {e}")))
+        .transpose()?
+        .unwrap_or_default();
+    let starting: BTreeMap<StartOf, Start> = some("starting")
+        .map(|t| serde_json::from_str(&t).map_err(|e| format!("starting: {e}")))
         .transpose()?
         .unwrap_or_default();
     let backup = some("backup")
@@ -184,6 +213,7 @@ pub fn facts(fields: &BTreeMap<String, String>) -> Result<Env, String> {
             app_allow: cidrs("app_allow", get("app_allow"))?,
         },
         lines,
+        starting,
         backup,
     })
 }
@@ -224,7 +254,7 @@ mod tests {
 
     use super::{Deployed, facts, fields, from_tag, tag};
     use crate::manifest::{
-        Backup, Env, Firewall, Inventory, Line, LineKind, Resource, ResourceKind,
+        Backup, Env, Firewall, Inventory, Line, LineKind, Resource, ResourceKind, Start, StartOf,
     };
     use crate::net::Cidr;
 
@@ -259,12 +289,47 @@ mod tests {
                 endpoint: ["http", "203.0.113.5:8899"].join("://"),
                 hourly: true,
             }],
+            starting: BTreeMap::new(),
             backup: Some(Backup {
                 access_key: 42,
                 restic_key: "0a".repeat(32),
                 host: "erpc-worker-bot-default-0a1b2c3d".to_owned(),
             }),
         }
+    }
+
+    #[test]
+    fn a_start_with_no_outcome_yet_round_trips_in_format_3() {
+        let start = Start {
+            key: "0a".repeat(16),
+            family: "user-unlimited".to_owned(),
+            product: "prod_Unlimited1".to_owned(),
+            region: Some("amsterdam".to_owned()),
+            ip: None,
+        };
+        let unanswered = Env {
+            starting: BTreeMap::from([(StartOf::Unlimited, start)]),
+            ..env()
+        };
+        let read: BTreeMap<String, String> = fields(&unanswered, None)
+            .expect("fields")
+            .into_iter()
+            .map(|(k, v)| (k.to_owned(), v))
+            .collect();
+        // An erpc from before `starting` refuses the item, rather than
+        // write it back without the request's key.
+        assert_eq!(read["erpc_format"], "3");
+        assert!(read["starting"].contains("\"unlimited\""), "{read:?}");
+        let back = facts(&read).expect("facts");
+        assert_eq!(super::merged(&unanswered, back), unanswered);
+        // Once its outcome is on record the item is as it was before.
+        let settled: BTreeMap<String, String> = fields(&env(), None)
+            .expect("fields")
+            .into_iter()
+            .map(|(k, v)| (k.to_owned(), v))
+            .collect();
+        assert_eq!(settled["erpc_format"], "2");
+        assert_eq!(settled["starting"], "");
     }
 
     #[test]
@@ -308,11 +373,35 @@ mod tests {
     }
 
     #[test]
+    fn an_item_can_say_everyone_reaches_the_app_and_never_ssh() {
+        let open = Env {
+            firewall: Firewall {
+                ssh_allow: vec![Cidr::parse("198.51.100.7").expect("cidr")],
+                app_allow: vec![
+                    Cidr::parse_any("0.0.0.0/0").expect("everyone"),
+                    Cidr::parse_any("::/0").expect("everyone"),
+                ],
+            },
+            ..Env::default()
+        };
+        let mut read: BTreeMap<String, String> = fields(&open, None)
+            .expect("fields")
+            .into_iter()
+            .map(|(k, v)| (k.to_owned(), v))
+            .collect();
+        assert_eq!(read["app_allow"], "0.0.0.0/0,::/0");
+        assert_eq!(facts(&read).expect("facts"), open);
+        read.insert("ssh_allow".to_owned(), "0.0.0.0/0".to_owned());
+        let refused = facts(&read).expect_err("everyone to SSH");
+        assert!(refused.starts_with("ssh_allow: "), "{refused}");
+    }
+
+    #[test]
     fn an_item_of_another_format_is_refused() {
         let mut read: BTreeMap<String, String> = BTreeMap::new();
         assert!(facts(&read).is_err());
-        read.insert("erpc_format".to_owned(), "3".to_owned());
-        assert!(facts(&read).expect_err("format 3").contains("format 3"));
+        read.insert("erpc_format".to_owned(), "4".to_owned());
+        assert!(facts(&read).expect_err("format 4").contains("format 4"));
         // Format 1, before `backup`, is still read.
         read.insert("erpc_format".to_owned(), "1".to_owned());
         assert_eq!(facts(&read).expect("format 1").backup, None);

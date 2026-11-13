@@ -12,7 +12,7 @@ SPDX-License-Identifier: Apache-2.0
 One command line for your nodes, your apps and your [ERPC](https://erpc.global) account,
 and an assistant that runs it for you when you ask.
 
-[Install](#install) · [Nodes](#validators-and-rpc-nodes) · [erpc ai](#erpc-ai-just-ask) · [erpc worker](#erpc-worker-your-app-as-a-tuned-rust-binary) · [Free or with an account](#free-to-start)
+[Install](#install) · [Nodes](#validators-and-rpc-nodes) · [erpc ai](#erpc-ai-just-ask) · [erpc worker](#erpc-worker-your-app-at-full-power-on-a-server-of-its-own) · [Free or with an account](#free-to-start)
 
 </div>
 
@@ -30,11 +30,17 @@ on the chain: [Running nodes](docs/nodes.md#where-keys-are-kept) has the table.
   rules in the [node guides](docs/nodes.md).
 - **Trading bots and Web3 apps.** An `erpc worker` app gets its wallet key on
   a pipe when it starts. The worker holds it in memory only, locked and
-  undumpable; there is no `wallet.json`, no `.env`, no copy on disk. After a
-  reboot the app stays locked until you send the key again.
-- **Secrets.** API tokens and RPC keys are stored as `op://…` or `keychain:…`
-  references.
-  The values reach the server over standard input, never on a command line.
+  undumpable; there is no `wallet.json`, no `.env`, no copy on the server's
+  disk. After a reboot the app stays locked until you send the key again.
+  On your own machine the key is kept in 1Password or the OS keychain. On
+  a machine with neither (a Linux server or WSL without a desktop keyring)
+  it goes into erpc's keystore: a file encrypted under a passphrase you
+  choose, which you back up yourself
+  ([what that protects](docs/worker.md#the-keystore)).
+- **Secrets.** API tokens and RPC keys are kept the same way and named in
+  `erpc.toml` by reference (`op://…`, `keychain:…`, `keystore:…`), never by
+  value. The values reach the server over standard input, never on a
+  command line.
 - **Your team.** The node inventory lives in 1Password too. Share the vault
   and everyone on the team manages the same nodes from their own machine,
   with 1Password deciding who can do what.
@@ -241,29 +247,79 @@ single delivery or `--endpoint-url` on `run` to supply your own WebSocket RPC.
 Generate shell completions with `erpc completions zsh` (also bash, fish,
 powershell and elvish).
 
-## `erpc worker`: your app as a tuned Rust binary
+## `erpc worker`: your app at full power, on a server of its own
 
 ```bash
-erpc worker init                      # pick a template: HFT, pump.fun bot, ...
-erpc worker key new                   # the trading key, straight into 1Password
-erpc worker run                       # build and run it here first
-erpc worker deploy --new-vps --grpc   # a new hourly VPS and gRPC line, prices asked first
+erpc worker init                 # a HelloWorld API in Rust, a pump.fun bot, ... or `erpc worker import` for an app you have
+erpc worker run                  # build it and run it here first
+erpc worker deploy --new-vps     # a new hourly VPS, its price shown first, your app on it
+erpc worker status               # running? which release? what it costs per hour, how long your credit lasts
 ```
 
-`erpc worker` makes an app from a template, runs it on your machine, compiles
-it to a native Rust binary for Linux and deploys it to a latest-generation ERPC
-VPS (or a server of your own). No Docker: the binary runs under a hardened
-systemd unit with the whole machine to itself. You can also build one by
-talking to `erpc ai`.
+`erpc worker` compiles your app to a native Linux binary and runs it on a
+latest-generation ERPC VPS, or a server of your own. No Docker and no runtime
+in between: the binary runs under a hardened systemd unit with the whole
+machine to itself, which is what a trading bot's latency budget asks for. A
+release that does not come up healthy is rolled back to the one before, and
+several apps can share one server, each on a port of its own. You can also
+build one by talking to `erpc ai`.
 
-- **Locked down on the first deploy.** The firewall lets SSH in only from the
-  address you deploy from. If your address changes, add every fixed address
-  your admins use:
+| | |
+|---|---|
+| 🚀 **Start from HelloWorld** | `erpc worker init` makes a small HTTP API in Rust that deploys with one command and needs no key. The pump.fun trading bot is the next template up. |
+| 📦 **Bring the app you already have** | `erpc worker import` reads your directory (a Cargo package, `.env.example`, a Dockerfile) and writes its `erpc.toml` without changing your code. A Linux binary built anywhere, in any language, deploys the same way: `erpc worker import --binary <PATH>`. |
+| ⚡ **ERPC's lines, one flag each** | `deploy --grpc` (Geyser gRPC), `--shreds` (the Shreds stream), `--unlimited` (an Unlimited RPC). Each starts by the hour from ERPC Credit, lets your server in, and reaches the app as a setting. Nothing to copy from a dashboard. |
+| 🛡️ **A WAF in front of your API** | Add `[waf]` to `erpc.toml` and `deploy` puts a filtering proxy in front of the app: only the methods and paths you allow, size limits, a request rate per address, bans for addresses that keep being blocked, scanner probes refused. Around it the firewall drops everything else. |
+| 🔑 **Keys that never touch the server's disk** | The trading key and the secrets go from 1Password, your keychain or erpc's encrypted keystore straight into the worker's memory. No `wallet.json`, no `.env`. |
+| 🤖 **Made for scripts and agents** | `--yes` accepts the price a start shows, `--prepare` does everything but hand over the key, `--json` is on every command. `erpc ai` runs the same commands when you ask it to. |
+| 💶 **Costs in plain sight** | Every start shows its price first. `status` shows what each server and line costs per hour, your credit and how long it lasts. `erpc worker delete --release-server` ends all of it. |
+
+### The WAF
+
+```toml
+[waf]
+port = 8080                               # the public port: the app itself stays on loopback
+allow_paths = ["/api/*", "/healthz"]      # default: every path
+rate = { per_second = 50, burst = 100 }   # per client address
+```
+
+```text
+$ erpc worker status --env prod
+api-prod on 203.0.113.10: running, release 20261101T093000Z-1a2b3c4d, pid 4217, up 2h 14m
+  current 20261101T093000Z-1a2b3c4d, previous 20261028T171500Z-9f8e7d6c, 2 releases kept
+  WAF: listening on port 8080, forwarding to 127.0.0.1:3000, since 2026-11-01T09:30:12Z; requests 5120, forwarded 5043, blocked 71, connections refused 12, app errors 6, addresses banned now 1
+  Charged by the hour, from ERPC Credit:
+    VPS 100001  €0.07 per hour
+  The account has €12.00 of credit and spends €0.07 per hour on all it runs: about 171 hours.
+  `erpc worker delete --release-server --env prod` ends what this app is charged for.
+```
+
+It answers a request the app should never see itself (405, 404, 403, 413,
+429, and 408 for a head or a body that takes too long to arrive), closes
+the connections of an address it has banned, and refuses requests shaped to
+confuse a proxy and an app about where one request ends. The firewall in
+front of it limits new connections per address as well. When you change
+`[waf]`, the port is not opened to anyone new until a deploy has put the
+new rules in place. `erpc worker firewall list` shows what was blocked, by
+rule, and `erpc worker logs --waf` each refusal. It speaks plain HTTP/1.1:
+no TLS, no HTTP/2 and no WebSocket, and it does not inspect request bodies
+([all of it](docs/worker.md#the-waf-a-public-api-behind-waf)).
+
+### Locked down from the first deploy
+
+- **The firewall** lets SSH in only from the address you deploy from and
+  drops every other inbound connection. If your address changes, add every
+  fixed address your admins use:
 
   ```bash
   erpc worker firewall allow --to ssh 203.0.113.10 198.51.100.7
   ```
 
+- **A package update does not restart your app.** `deploy` tells the
+  server's `needrestart` to leave the worker alone, so an unattended
+  security update does not stop a trading bot. After a reboot, or when its
+  agent fails and systemd starts it again, an app with a key waits, locked,
+  until you send the key again.
 - **Lost access?** If the server may have been taken over, first run
   `erpc worker backup off` to revoke its backup access key, and move funds off its
   trading key and replace its secrets. `off` does not undo what the server already
@@ -364,6 +420,7 @@ The rules for these, and for writing a message, are in
 | `~/.erpc/skills/` | Skills written by `erpc skills install` |
 | `~/.erpc/storage-key` | The storage encryption key, when `erpc login` keeps the session in a file |
 | `~/.erpc/backup-password`, `~/.erpc/backup-admin-key` | The backup master password and `read_write` key, when `erpc login` keeps the session in a file |
+| `~/.erpc/keystore/` | The worker keystore: an app's secrets and trading key, each in a file encrypted under your passphrase, on a machine with neither 1Password nor a keychain that lasts ([back it up](docs/worker.md#the-keystore)) |
 | `~/.erpc/backup.env` | This machine's backup credentials (0600) |
 | `~/.erpc/bin/restic-0.19.1` | The pinned restic `erpc backup` installs |
 
