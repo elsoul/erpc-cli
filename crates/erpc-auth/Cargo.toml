@@ -25,6 +25,9 @@ thiserror = { workspace = true }
 secrecy = { workspace = true }
 zeroize = { workspace = true }
 sha2 = { workspace = true }
+# The keystore's PBKDF2, HKDF and ChaCha20-Poly1305: already in the lock
+# through rustls, and what `erpc storage` encrypts with.
+aws-lc-rs = { workspace = true }
 fs2 = { workspace = true }
 tempfile = { workspace = true }
 

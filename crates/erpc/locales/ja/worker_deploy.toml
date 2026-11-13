@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 missing = "{name} は {settings} がないと起動できません"
-missing_hint = "`erpc worker secret put {first}{dir_scope}` で保管するか、[vars] に設定してください"
+missing_hint = "`erpc worker secret put {first}{how}{dir_scope}` で保管するか、[vars] に設定してください"
 missing_line_hint = "{first} は回線が渡す設定です。`erpc worker deploy{scope} --{flag}` でサーバー用の時間課金の回線を開始します。または [vars] に設定してください"
 not_ready = "デプロイに必要なものがこのマシンにありません：{what}"
 plan = "{name} のリリース {release} を {to} に {worker} としてデプロイします"
@@ -16,6 +16,21 @@ starting = "起動して、正常な状態になるのを待っています"
 and = "、"
 and_then = "{hint}。{next}"
 
+[start]
+again_hint = "リクエストは記録に残ります。同じコマンドをもう一度実行すると、同じリクエストを送信し、別のリクエストは作成しません"
+in_progress_hint = "リクエストは記録に残ります。少し待ってから同じコマンドをもう一度実行すると、同じリクエストを送信し、別のリクエストは作成しません。いつまでも完了しない場合：{look}。何も開始されていないことを確認できたら、{remove}"
+not_known_hint = "リクエストは記録に残り、同じコマンドをもう一度実行すると、同じリクエストを送信し、別のリクエストは作成しません。手動で消す場合：{look}。何も開始されていないことを確認できたら、{remove}"
+exists_server_hint = "サーバーは以前のリクエストですでに開始されている可能性が高く、リクエストは記録に残ります。アカウントのサーバーをダッシュボードまたは `erpc ai` で確認してください。`erpc worker deploy --vps <ID>{scope}` で引き継げます。不要なものはダッシュボードで終了できます。そのあと、{remove}"
+exists_line_hint = "回線は以前のリクエストですでに開始されている可能性が高く、リクエストは記録に残ります。アカウントの回線をダッシュボードまたは `erpc ai` で確認してください。記録にない回線をデプロイで引き継ぐことはできません。そこで終了してから、{remove}。次のデプロイで新しい回線を開始します"
+unnamed_server_hint = "user-api の応答によればサーバーは開始されており、リクエストは記録に残ります。アカウントのサーバーをダッシュボードまたは `erpc ai` で確認してください。`erpc worker deploy --vps <ID>{scope}` で引き継げます。不要なものはダッシュボードで終了できます。そのあと、{remove}"
+unnamed_line_hint = "user-api の応答によれば回線は開始されており、リクエストは記録に残ります。アカウントの回線をダッシュボードまたは `erpc ai` で確認してください。記録にない回線をデプロイで引き継ぐことはできません。そこで終了してから、{remove}。次のデプロイで新しい回線を開始します"
+look = "アカウントの状況はダッシュボードで確認できます"
+look_status = "アカウントの状況はダッシュボードで、この環境の記録は `erpc worker status{scope}` で確認できます"
+left = "以前の {what} の開始に応答がなく、記録に残っています。成立して課金されている可能性がありますが、このコマンドはそれを要求していません。{clear}"
+carry_on_or_clear = "引き継ぐには、それを指定してもう一度デプロイしてください。開始されていないことをダッシュボードで確認できたら、{remove}"
+remove_toml = "erpc.toml の [env.{env}.starting] から `{slot}` を削除してください"
+remove_item = "この環境の 1Password アイテムの `starting` フィールドから `{slot}` を削除してください"
+
 [still_charged]
 other = "{names} は時間単位で課金され、記録に残っています。`erpc worker deploy{scope}` をもう一度実行すると引き継ぎ、`erpc worker delete --release-server{scope}` で終了します"
 
@@ -27,6 +42,10 @@ none_hint = "erpc のリリース版には同梱されています。自分で�
 not_installed = "エージェントをインストールできませんでした：{error}"
 installed = "エージェントをインストールしました"
 unchanged = "エージェントは変更ありません"
+kept = "新しいエージェントをインストールしましたが、実行中のエージェントはそのままにしました。--prepare は何も再起動しないため、サーバーで動いているアプリはこれまでのエージェントのもとで動き続けます"
+restarting = "新しいエージェントがインストールされているため、エージェントを再起動します。直後に鍵を渡します"
+restarted_hint = "この失敗の前に、新しいエージェントに切り替えるためエージェントを再起動しました。そのため、動いていたアプリは鍵を渡すまで停止しています。`erpc worker start{scope}` で鍵を渡せます"
+needrestart = "needrestart にワーカーを対象外とする設定を書き込めませんでした（{error}）。サーバー上でのパッケージ処理の後にワーカーが再起動されることがあり、再起動されたワーカーは `erpc worker start{scope}` で鍵を渡すまで待機します"
 
 [upload]
 failed = "{path} をアップロードできませんでした：{error}"
@@ -81,9 +100,13 @@ back_unhealthy = "。サーバーは {to} に戻りましたが、こちらも�
 no_earlier = "。戻れる以前のリリースがないため、停止しています"
 release = "リリース {release} が失敗しました：{why}{back}"
 logs = "原因は `erpc worker logs{scope}` で確認できます"
+unchanged = "。使用中のリリースがある場合は、そのまま変更していません"
 
 [done]
 runs = "{name} のリリース {release} が {host} 上で {worker} として正常に動作しています。"
+prepared = "{name} のリリース {release} を {host} に {worker} として配置しました。起動はしていません。鍵もシークレットも読んでいません。"
+prepared_next = "端末で `erpc worker deploy{scope}` を実行すると、それらを渡してアプリを起動します。そのデプロイは新しいリリースをビルドしてインストールし、それを起動します。ビルドはキャッシュ済みで、サーバーも準備できています。"
+agent_kept = "新しいエージェントをインストールしましたが、サーバーで実行中のエージェントはそのままにしました。動いているアプリはこれまでのエージェントのもとで動き続け、次に端末で `erpc worker deploy{scope}` を実行したときに新しいエージェントに切り替わります。"
 ssh_only = "SSH は {from} からのみ許可されています。"
 rollback = "`erpc worker rollback{scope}` で {previous} に戻せます。"
 in_vault = "サーバーは 1Password の保管庫 {vault} に記録されています（{title}）。erpc.toml にはその保管庫を記載しています。"

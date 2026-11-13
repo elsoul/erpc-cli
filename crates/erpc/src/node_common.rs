@@ -24,9 +24,32 @@ pub(crate) struct Say {
 impl Say {
     /// A step of the work, marked at a terminal (see [`crate::ui::step_line`]).
     pub(crate) fn line(&self, text: &str) {
+        #[cfg(test)]
+        heard::note(text);
         if !self.quiet {
             eprintln!("{}", crate::ui::step_line(text, crate::ui::stderr_drawn()));
         }
+    }
+}
+
+/// In a test: every line a [`Say`] was handed on this thread, printed or
+/// not, so that a test can hold a command to what it says of each step.
+#[cfg(test)]
+pub(crate) mod heard {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static LINES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    }
+
+    pub(super) fn note(text: &str) {
+        LINES.with(|lines| lines.borrow_mut().push(text.to_owned()));
+    }
+
+    /// The lines said on this thread since the last time this was asked,
+    /// in order.
+    pub(crate) fn take() -> Vec<String> {
+        LINES.with(|lines| core::mem::take(&mut *lines.borrow_mut()))
     }
 }
 

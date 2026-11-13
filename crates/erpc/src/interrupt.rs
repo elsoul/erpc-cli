@@ -27,7 +27,11 @@
 //! parked too. A rotation still waiting for the issuer has nothing to park.
 //!
 //! Neither way out runs destructors, so both also wipe the Solana signer
-//! files a command has on disk ([`erpc_chain_solana::cli::wipe_live`]).
+//! files a command has on disk ([`erpc_chain_solana::cli::wipe_live`]),
+//! stop a command the assistant is running, which would otherwise run on
+//! with nobody reading it ([`erpc_ai::commands::stop_live`], on Unix), and
+//! turn the terminal's echo back on where a passphrase prompt holds it off
+//! ([`crate::echo::restore`]).
 
 use std::io::Write as _;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -73,6 +77,8 @@ fn park_on_panic(fatal: bool) {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         erpc_chain_solana::cli::wipe_live();
+        erpc_ai::commands::stop_live();
+        crate::echo::restore();
         let _ = Leaving::start().park();
         previous(info);
     }));
@@ -246,8 +252,12 @@ async fn leave(signals: &mut Signals, asked: Asked, grace: Duration) {
         }
     }
     // Ending by the signal runs no destructors: the signer files a command
-    // has on disk go first.
+    // has on disk go first, a command the assistant is running is stopped
+    // rather than left to run on unread, and a terminal whose echo a
+    // passphrase prompt holds off gets it back.
     erpc_chain_solana::cli::wipe_live();
+    erpc_ai::commands::stop_live();
+    crate::echo::restore();
     end(asked);
 }
 
@@ -532,6 +542,10 @@ mod tests {
                     tokio::time::sleep(Duration::from_secs(30)).await;
                     drop(pipes);
                 }
+                "command" => commanding(&dir, false).await,
+                "command panic" => commanding(&dir, true).await,
+                "echo" => echoing(&dir, false).await,
+                "echo panic" => echoing(&dir, true).await,
                 "signer panic" => {
                     super::park_on_panic(true);
                     let key = zeroize::Zeroizing::new("[1,2,3]".to_owned());
@@ -580,6 +594,9 @@ mod tests {
         /// Closes the reading end of the child's stderr at once, as a
         /// closed terminal would.
         stderr_gone: bool,
+        /// The terminal on the child's standard input; without one it has
+        /// nothing there.
+        terminal: Option<&'a std::os::fd::OwnedFd>,
     }
 
     impl<'a> Setup<'a> {
@@ -590,6 +607,7 @@ mod tests {
                 grace: Duration::from_secs(10),
                 issuer: Duration::from_millis(300),
                 stderr_gone: false,
+                terminal: None,
             }
         }
     }
@@ -608,7 +626,9 @@ mod tests {
                 .env(DIR, setup.dir)
                 .env(GRACE_MS, setup.grace.as_millis().to_string())
                 .env(ISSUER_MS, setup.issuer.as_millis().to_string())
-                .stdin(Stdio::null())
+                .stdin(setup.terminal.map_or_else(Stdio::null, |terminal| {
+                    Stdio::from(terminal.try_clone().expect("a handle on the terminal"))
+                }))
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
@@ -870,6 +890,162 @@ mod tests {
         let child = Child::spawn(&Setup::new("signer panic", dir.path()));
         child.expect("panicked");
         assert_eq!(signer_dirs(dir.path()), 0);
+        child.signal("KILL");
+        let _ = child.ended();
+    }
+
+    /// A child's `command` cases: a command the assistant runs, as
+    /// `run_command` starts one. It says which process it is, then runs on;
+    /// with `panics`, a thread panics once it has started.
+    async fn commanding(dir: &Path, panics: bool) {
+        use erpc_ai::commands::Shell as _;
+        if panics {
+            super::park_on_panic(true);
+        }
+        let said = dir.join("pid");
+        let script = format!("echo $$ > '{}'; exec sleep 30", said.display());
+        let command = ["sh".to_owned(), "-c".to_owned(), script];
+        let shell = erpc_ai::commands::LocalShell;
+        let running = shell.run(&command, Duration::from_secs(60));
+        tokio::pin!(running);
+        let started = async {
+            while !said.exists() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            if panics {
+                let _ = std::thread::spawn(|| panic!("a bug")).join();
+                println!("panicked");
+            } else {
+                println!("ready");
+            }
+            std::future::pending::<()>().await;
+        };
+        tokio::select! {
+            _ = &mut running => {}
+            () = started => {}
+        }
+    }
+
+    /// Whether process `id` is still there.
+    fn alive(id: &str) -> bool {
+        Command::new("kill")
+            .args(["-0", id])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
+    /// The process a `command` case's command said it is.
+    fn command_of(dir: &Path) -> String {
+        std::fs::read_to_string(dir.join("pid"))
+            .expect("the command's id")
+            .trim()
+            .to_owned()
+    }
+
+    /// Waits for process `id` to be gone, for a few seconds.
+    fn gone(id: &str) -> bool {
+        let until = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < until {
+            if !alive(id) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        false
+    }
+
+    #[test]
+    fn a_signal_stops_the_command_the_assistant_is_running() {
+        for (name, signal) in [("INT", SIGINT), ("TERM", SIGTERM), ("HUP", SIGHUP)] {
+            let dir = tempfile::tempdir().expect("a temporary directory");
+            let child = Child::spawn(&Setup::new("command", dir.path()));
+            child.expect("ready");
+            let command = command_of(dir.path());
+            assert!(alive(&command), "the command runs while erpc does");
+            child.signal(name);
+            assert_eq!(child.ended().signal(), Some(signal));
+            assert!(gone(&command), "stopped with erpc on {name}");
+        }
+    }
+
+    #[test]
+    fn a_panic_stops_the_command_before_it_aborts() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let child = Child::spawn(&Setup::new("command panic", dir.path()));
+        child.expect("panicked");
+        assert!(gone(&command_of(dir.path())));
+        child.signal("KILL");
+        let _ = child.ended();
+    }
+
+    /// A child's `echo` cases: a passphrase prompt that holds the echo of
+    /// the terminal on standard input off, as the keystore's does while it
+    /// asks. The hold is never dropped, as on a way out that runs no
+    /// destructors. With `panics`, a thread panics once the test has seen
+    /// the echo off and says so (the file `go`).
+    async fn echoing(dir: &Path, panics: bool) {
+        if panics {
+            super::park_on_panic(true);
+        }
+        core::mem::forget(crate::echo::off());
+        println!("ready");
+        if panics {
+            while !dir.join("go").exists() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            let _ = std::thread::spawn(|| panic!("a bug")).join();
+            println!("panicked");
+        }
+    }
+
+    /// A child with a pseudoterminal of the test's own on standard input,
+    /// running `case`, once it holds the terminal's echo off; and the
+    /// terminal, both ends, the second being the one the child reads.
+    #[cfg(target_os = "linux")]
+    fn holding_the_echo_off(
+        case: &str,
+        dir: &Path,
+    ) -> (Child, std::fs::File, std::os::fd::OwnedFd) {
+        use crate::echo::tests::{echoes, terminal};
+        let (typed, read) = terminal();
+        assert!(echoes(&read), "a new terminal shows what is typed");
+        let child = Child::spawn(&Setup {
+            terminal: Some(&read),
+            ..Setup::new(case, dir)
+        });
+        child.expect("ready");
+        assert!(!echoes(&read), "held off while the prompt has it");
+        (child, typed, read)
+    }
+
+    /// The keystore's prompt holds the echo off across its questions, and
+    /// a signal's way out drops no guard: `leave` puts the echo back, or
+    /// the shell erpc was started from shows nothing that is typed after.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_signal_gives_back_the_echo_a_prompt_holds_off() {
+        use crate::echo::tests::echoes;
+        for (name, signal) in [("INT", SIGINT), ("TERM", SIGTERM), ("HUP", SIGHUP)] {
+            let dir = tempfile::tempdir().expect("a temporary directory");
+            let (child, _typed, read) = holding_the_echo_off("echo", dir.path());
+            child.signal(name);
+            assert_eq!(child.ended().signal(), Some(signal));
+            assert!(echoes(&read), "the echo is back on {name}");
+        }
+    }
+
+    /// A panic that aborts drops no guard either: the hook puts the echo
+    /// back before the process ends.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_panic_gives_back_the_echo_before_it_aborts() {
+        use crate::echo::tests::echoes;
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let (child, _typed, read) = holding_the_echo_off("echo panic", dir.path());
+        std::fs::write(dir.path().join("go"), b"").expect("the go-ahead");
+        child.expect("panicked");
+        assert!(echoes(&read), "the hook put the echo back");
         child.signal("KILL");
         let _ = child.ended();
     }

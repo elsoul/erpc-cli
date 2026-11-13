@@ -17,6 +17,7 @@ sign_in_hint = "`erpc login` でサインインするか、`erpc signup` でア�
 empty_question = "質問が空です"
 open_dashboard = "月額・年額プランは ERPC ダッシュボードで購入できます：{url}"
 declined_because = "モデルが回答を断りました：{why}"
+size_refused = "ERPC AI は今 {size} を提供していません。代わりに既定のサイズが答え、次からはサイズを自動で選びます。"
 declined = "モデルが回答を断りました（理由は示されていません）"
 stopped = "中断しました"
 

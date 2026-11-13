@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 missing = "缺少 {settings}，{name} 无法启动"
-missing_hint = "用 `erpc worker secret put {first}{dir_scope}` 保存，或在 [vars] 中设置"
+missing_hint = "用 `erpc worker secret put {first}{how}{dir_scope}` 保存，或在 [vars] 中设置"
 missing_line_hint = "{first} 由线路提供：`erpc worker deploy{scope} --{flag}` 为服务器启动一条按小时计费的线路；或在 [vars] 中设置"
 not_ready = "本机缺少部署所需的东西：{what}"
 plan = "将 {name} 版本 {release} 作为 {worker} 部署到 {to}"
@@ -16,6 +16,21 @@ starting = "正在启动并等待其进入健康状态"
 and = " 和 "
 and_then = "{hint}；{next}"
 
+[start]
+again_hint = "请求保留在记录中：再次运行同一命令会发送同一请求，不会生成别的请求"
+in_progress_hint = "请求保留在记录中：稍后再次运行同一命令会发送同一请求，不会生成别的请求。如果始终没有结果：{look}；确认没有启动任何东西后，{remove}"
+not_known_hint = "请求保留在记录中，再次运行同一命令会发送同一请求，不会生成别的请求。若要手动清除：{look}；确认没有启动任何东西后，{remove}"
+exists_server_hint = "服务器很可能已由之前的请求启动，请求保留在记录中。请在控制面板或 `erpc ai` 中查看账户的服务器：`erpc worker deploy --vps <ID>{scope}` 可接管其中一台，不需要的可在控制面板中终止。然后{remove}"
+exists_line_hint = "线路很可能已由之前的请求启动，请求保留在记录中。请在控制面板或 `erpc ai` 中查看账户的线路。部署无法接管不在记录中的线路：请在那里将其终止，然后{remove}，下次部署会启动新的线路"
+unnamed_server_hint = "按 user-api 的答复，服务器已经启动，请求保留在记录中。请在控制面板或 `erpc ai` 中查看账户的服务器：`erpc worker deploy --vps <ID>{scope}` 可接管其中一台，不需要的可在控制面板中终止。然后{remove}"
+unnamed_line_hint = "按 user-api 的答复，线路已经启动，请求保留在记录中。请在控制面板或 `erpc ai` 中查看账户的线路。部署无法接管不在记录中的线路：请在那里将其终止，然后{remove}，下次部署会启动新的线路"
+look = "可在控制面板中查看账户现有的资源"
+look_status = "可在控制面板中查看账户现有的资源，用 `erpc worker status{scope}` 查看此环境的记录"
+left = "之前启动 {what} 的请求没有收到答复，仍在记录中；它可能已成功并在计费，而此命令并未要求它：{clear}"
+carry_on_or_clear = "要继续使用，请指定它再次部署；或在控制面板确认它从未启动后，{remove}"
+remove_toml = "从 erpc.toml 的 [env.{env}.starting] 中删除 `{slot}`"
+remove_item = "从该环境的 1Password 条目的 `starting` 字段中删除 `{slot}`"
+
 [still_charged]
 other = "{names} 正在按小时计费且已记录：再次运行 `erpc worker deploy{scope}` 可继续使用，运行 `erpc worker delete --release-server{scope}` 可将其终止"
 
@@ -27,6 +42,10 @@ none_hint = "erpc 的正式发行版自带这些 agent；如果是自行构建�
 not_installed = "无法安装 agent：{error}"
 installed = "agent 已安装"
 unchanged = "agent 未变更"
+kept = "已安装较新的 agent，但正在运行的 agent 保持不动：--prepare 不会重启任何东西，服务器上运行的应用继续在原有 agent 下运行"
+restarting = "已安装较新的 agent，现在重启 agent；随后立即交付密钥"
+restarted_hint = "在此失败之前，已为切换到较新的 agent 而重启了 agent，因此原先运行的应用在交付密钥之前处于停止状态：`erpc worker start{scope}` 可交付密钥"
+needrestart = "无法让 needrestart 跳过 worker（{error}）：服务器上的软件包操作之后可能会重启它，而重启后的 worker 要等 `erpc worker start{scope}` 交付密钥后才会运行"
 
 [upload]
 failed = "无法上传 {path}：{error}"
@@ -81,9 +100,13 @@ back_unhealthy = "；服务器已回滚到 {to}，但它同样不健康"
 no_earlier = "；没有可回滚的更早版本，因此已停止运行"
 release = "版本 {release} 失败：{why}{back}"
 logs = "运行 `erpc worker logs{scope}` 查看原因"
+unchanged = "；正在使用的版本（如有）保持原样"
 
 [done]
 runs = "{name} 版本 {release} 正作为 {worker} 在 {host} 上运行，状态健康。"
+prepared = "{name} 的发布版本 {release} 已作为 {worker} 放到 {host} 上，尚未启动：没有读取它的密钥或任何机密。"
+prepared_next = "在终端运行 `erpc worker deploy{scope}` 即可交付它们并启动应用。该次部署会自行构建并安装一个发布版本，然后启动它：构建已有缓存，服务器也已就绪。"
+agent_kept = "已安装较新的 agent，但服务器上正在运行的 agent 保持不动：运行中的应用继续在原有 agent 下运行，下次在终端运行 `erpc worker deploy{scope}` 时由新 agent 接管。"
 ssh_only = "仅允许来自 {from} 的 SSH 连接。"
 rollback = "`erpc worker rollback{scope}` 可回滚到 {previous}。"
 in_vault = "服务器已记录在 1Password 保险库 {vault} 中（{title}）；erpc.toml 中记录了该保险库。"

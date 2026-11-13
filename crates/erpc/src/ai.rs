@@ -83,8 +83,14 @@ pub enum Start {
     Latest,
 }
 
-/// Runs `erpc ai`, bare `erpc`, and `erpc resume`.
-pub async fn run(json: bool, message: Option<String>, start: Start) -> Outcome {
+/// Runs `erpc ai`, bare `erpc`, and `erpc resume`. `size` puts every turn
+/// on one model size; none, and each turn's words decide it.
+pub async fn run(
+    json: bool,
+    message: Option<String>,
+    start: Start,
+    size: Option<erpc_api::ai::Size>,
+) -> Outcome {
     let client = match AuthClient::new() {
         Ok(client) => client,
         Err(e) => return crate::error::classify(&e).into(),
@@ -114,6 +120,7 @@ pub async fn run(json: bool, message: Option<String>, start: Start) -> Outcome {
     };
     if let Some(text) = one_shot {
         let mut session = equipped(Session::new(access, client, system));
+        session.set_size(size);
         // Asked at the terminal only when a person is there to answer: a
         // question piped in, or --json, has no one to say yes.
         // So is a browser opened: a question piped in, from a script, or
@@ -184,7 +191,7 @@ pub async fn run(json: bool, message: Option<String>, start: Start) -> Outcome {
     // panic hook aborts before the hooks behind it run, so the park goes in
     // front again.
     crate::interrupt::park_first_on_panic();
-    let outcome = console(&mut terminal, look, access, client, system, saved).await;
+    let outcome = console(&mut terminal, look, access, client, system, saved, size).await;
     // Not `ratatui::restore`, which reports its own failure with
     // `eprintln!`. Once the terminal has closed that panics, a release build
     // aborts, and a session rotation the splash started goes with it.
@@ -211,7 +218,7 @@ fn equipped(session: Session<StoreAccess>) -> Session<StoreAccess> {
     let session = session
         .with_wallet(Box::new(crate::credit_wallet::ConfigWallet))
         .with_servers(Box::new(crate::vps_access::SshServers))
-        .with_shell(Box::new(erpc_ai::commands::LocalShell));
+        .with_shell(crate::long_commands::assistants_shell());
     match crate::memory::store() {
         Ok(memory) => session.with_memory(memory),
         Err(_) => session,
@@ -375,6 +382,7 @@ async fn console(
     client: AuthClient,
     system: Vec<String>,
     saved: Option<crate::conversations::Saved>,
+    size: Option<erpc_api::ai::Size>,
 ) -> Outcome {
     use crate::tui::splash::{self, Played, Words};
 
@@ -419,6 +427,7 @@ async fn console(
     // The console is at a terminal, with someone to see a browser open.
     let mut session = equipped(Session::new(access, client, system))
         .with_browser(Box::new(LocalBrowser::default()));
+    session.set_size(size);
     let record = match &saved {
         Some(saved) => {
             if let Err(e) = session.restore(saved.messages.clone(), saved.settled) {
@@ -597,6 +606,9 @@ async fn once(session: &mut Session<StoreAccess>, json: bool, text: &str) -> Out
                     }
                 }
                 SessionEvent::Error { message } => failure = Some(message),
+                SessionEvent::SizeRefused { size } => {
+                    eprintln!("{}", t!("ai.size_refused", size));
+                }
                 SessionEvent::Refusal { explanation, .. } => {
                     failure = Some(match explanation {
                         Some(why) => t!("ai.declined_because", why),

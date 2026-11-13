@@ -45,8 +45,11 @@ const SETTLE: Duration = Duration::from_secs(5);
 
 type Asked = (Request, Sender<Reply>);
 
+/// A line in the agent's log, which `erpc worker logs` shows.
 fn say(line: &str) {
     eprintln!("erpc-worker-agent: {line}");
+    #[cfg(test)]
+    tests::SAID.with_borrow_mut(|said| said.push(line.to_owned()));
 }
 
 /// Makes this process undumpable and locks its memory, before any secret
@@ -111,7 +114,8 @@ pub(crate) fn run(dir: &Path, socket: &Path, state_dir: &Path) -> Result<(), Str
         state_dir: state_dir.to_owned(),
         secrets: BTreeMap::new(),
         key: None,
-        wanted: std::fs::read_to_string(state_dir.join("wanted")).is_ok_and(|w| w.trim() == "1"),
+        wanted: std::fs::read_to_string(server::wanted_file(state_dir))
+            .is_ok_and(|w| w.trim() == "1"),
         running: None,
         restarts: 0,
         last_exit: None,
@@ -297,7 +301,7 @@ impl Supervisor {
     fn want(&mut self, wanted: bool) {
         self.wanted = wanted;
         let _ = std::fs::write(
-            self.state_dir.join("wanted"),
+            server::wanted_file(&self.state_dir),
             if wanted { "1\n" } else { "0\n" },
         );
     }
@@ -380,6 +384,21 @@ impl Supervisor {
             }
         };
         if let Some(why) = self.missing(&launch) {
+            self.reason = Some(why);
+            return false;
+        }
+        // Nothing of ours runs now, so an answer on the health port comes
+        // from another program: the app could not listen there, and the
+        // probe would take that program's answer for the app's and call a
+        // start healthy that had already failed.
+        if let Some(port) = launch.health.http.as_deref().and_then(server::listened_on) {
+            let why = server::port_taken(port, None);
+            // Said in the log as well as in the status: once, when the
+            // reason appears or changes, since the start is tried again
+            // every minute.
+            if self.reason.as_deref() != Some(why.as_str()) {
+                say(&format!("not starting {release}: {why}"));
+            }
             self.reason = Some(why);
             return false;
         }
@@ -517,8 +536,173 @@ fn probe(running: &mut Running) {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
     use std::io::Write as _;
     use std::os::unix::net::UnixStream;
+
+    thread_local! {
+        /// What [`super::say`] said on this thread, which is one test's.
+        pub(super) static SAID: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// A worker wanted running, with nothing unlocked and no release, in
+    /// directories of its own.
+    fn wanted_worker(root: &std::path::Path) -> super::Supervisor {
+        let state_dir = root.join("state");
+        std::fs::create_dir_all(&state_dir).expect("state dir");
+        let mut worker = super::Supervisor {
+            dir: root.join("worker"),
+            state_dir,
+            secrets: std::collections::BTreeMap::new(),
+            key: None,
+            wanted: false,
+            running: None,
+            restarts: 0,
+            last_exit: None,
+            next_start: None,
+            pause: super::FIRST_PAUSE,
+            reason: None,
+        };
+        worker.want(true);
+        worker
+    }
+
+    #[test]
+    fn a_lock_keeps_the_app_stopped_until_it_is_started_again() {
+        use erpc_worker::server::Request;
+        let tmp = tempfile::tempdir().expect("tmp");
+        let mut worker = wanted_worker(tmp.path());
+        let wanted = || std::fs::read_to_string(tmp.path().join("state/wanted")).expect("wanted");
+        assert_eq!(wanted().trim(), "1");
+        // A lock is a stop that also forgets. An app that needs no key or
+        // secret is not locked out of starting, so only `wanted` keeps it
+        // down: left set, the next tick started it again, and so did the
+        // agent after a restart, which reads the same file.
+        worker.handle(Request::Lock {}).expect("locked");
+        assert!(!worker.wanted, "a locked worker is not wanted running");
+        assert_eq!(wanted().trim(), "0", "and stays so after a restart");
+        worker.tick();
+        assert!(worker.running.is_none());
+        assert!(worker.key.is_none() && worker.secrets.is_empty());
+    }
+
+    /// The agent writes the file and root's `ctl` reads a neighbour's. If
+    /// the two named different files, or disagreed on what is written,
+    /// `ctl` would see "never asked to run" for a worker that runs, and a
+    /// release on that worker's port would no longer be refused by name.
+    #[test]
+    fn what_the_agent_records_of_wanted_is_what_ctl_reads_of_a_neighbour() {
+        use erpc_worker::server::{self, Request};
+        let tmp = tempfile::tempdir().expect("tmp");
+        let state = tmp.path().join("state");
+        let kept = || crate::ctl::kept_running(&server::wanted_file(&state));
+        assert!(!kept(), "no agent has run here yet");
+        let mut worker = wanted_worker(tmp.path());
+        assert!(kept(), "asked to run");
+        worker.handle(Request::Lock {}).expect("locked");
+        assert!(!kept(), "locked, so stopped");
+        worker.want(true);
+        assert!(kept(), "and asked again");
+        // The name on disk is part of what a running agent and a newer
+        // `ctl` share across an upgrade.
+        assert!(state.join("wanted").is_file());
+    }
+
+    #[test]
+    fn an_app_whose_port_another_program_holds_is_not_started() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        use erpc_worker::server::{self, Health, Launch, Request};
+        let tmp = tempfile::tempdir().expect("tmp");
+        let mut worker = wanted_worker(tmp.path());
+        let other = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = other.local_addr().expect("address").port();
+        let url = format!("http://127.0.0.1:{port}/healthz");
+
+        let release = worker.dir.join("releases/20261029T120000Z-1a2b3c4d");
+        std::fs::create_dir_all(&release).expect("release");
+        let app = release.join("app");
+        std::fs::write(&app, "#!/bin/sh\nexec sleep 30\n").expect("app");
+        std::fs::set_permissions(&app, std::fs::Permissions::from_mode(0o755)).expect("mode");
+        let launch = Launch {
+            format: server::LAUNCH_FORMAT,
+            bin: "app".to_owned(),
+            args: Vec::new(),
+            vars: std::collections::BTreeMap::new(),
+            secrets: Vec::new(),
+            pubkey: None,
+            health: Health {
+                http: Some(url.clone()),
+                timeout_secs: 5,
+            },
+            keep_releases: 2,
+        };
+        std::fs::write(
+            release.join(server::LAUNCH_FILE),
+            serde_json::to_vec(&launch).expect("json"),
+        )
+        .expect("launch");
+        std::os::unix::fs::symlink(&release, worker.dir.join("current")).expect("current");
+
+        // The other program would answer the probe, and the start would
+        // be called healthy although the app could not listen.
+        worker.tick();
+        assert!(worker.running.is_none(), "not started");
+        let status = worker.status();
+        assert_eq!(status.state, "waiting");
+        let refused = status.reason.expect("a reason");
+        assert_eq!(server::taken_port(&refused), Some(port), "{refused}");
+
+        // The log says so once, however often the start is tried again.
+        let said = || {
+            let all = SAID.with_borrow(Clone::clone);
+            let not_starting = all.into_iter().filter(|line| line.contains(&refused));
+            not_starting.collect::<Vec<_>>()
+        };
+        let line = format!("not starting 20261029T120000Z-1a2b3c4d: {refused}");
+        let line = line.as_str();
+        assert_eq!(said(), [line]);
+        assert!(!worker.start_app(), "tried again");
+        assert_eq!(worker.handle(Request::Start {}), Err(refused.clone()));
+        assert_eq!(said(), [line]);
+
+        // With the port free it starts when asked to. It is free a moment
+        // after the listener is dropped: a program another test started
+        // just then holds a copy of it until it runs.
+        drop(other);
+        let dropped = std::time::Instant::now();
+        while server::listened_on(&url).is_some() {
+            assert!(dropped.elapsed().as_secs() < 10, "the port stays taken");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        worker.handle(Request::Start {}).expect("started");
+        assert!(worker.running.is_some());
+        assert_eq!(worker.status().reason, None);
+        worker.stop_app();
+
+        // Taken again once the app has ended: that is news, and said. The
+        // port's number was let go above, and until it is taken back here
+        // the system may give it to anyone: a listener or a connection of
+        // a test that runs beside this one. So it is waited for, as it
+        // was waited to be free.
+        let stopped = std::time::Instant::now();
+        let other = loop {
+            match std::net::TcpListener::bind(("127.0.0.1", port)) {
+                Ok(listener) => break listener,
+                Err(e) => {
+                    assert_eq!(e.kind(), std::io::ErrorKind::AddrInUse, "{e}");
+                    assert!(
+                        stopped.elapsed().as_secs() < 10,
+                        "the port stays another program's"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            }
+        };
+        assert!(!worker.start_app(), "not started");
+        assert_eq!(said(), [line, line]);
+        drop(other);
+    }
 
     #[test]
     fn only_root_is_answered() {

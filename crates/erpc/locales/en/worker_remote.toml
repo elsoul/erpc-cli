@@ -20,6 +20,7 @@ no_host_key = "env.{env} has no pinned host key"
 unreachable = "the server's agent could not be asked: {error}"
 unreadable = "the server's agent answered something erpc does not read: {answer}"
 refused = "the server's agent refused"
+port_taken = "Two programs on one server cannot listen on port {port}. Give this app a port of its own in erpc.toml: `port` and the health URL under [run], and the setting the app reads its port from under [vars] (API_PORT in the templates). Then deploy again."
 
 [describe]
 unknown = "unknown"
@@ -67,10 +68,12 @@ refused = "nothing was removed"
 not_removed = "could not remove it from the server ({error})"
 not_removed_ending = "could not remove it from the server ({error}); ending the server anyway"
 nothing_removed = "nothing was removed; {hint}"
+start_unanswered = "an earlier start of {what} got no answer, and this record is all that names it: it may have gone through and be charged, and the delete forgets it. The dashboard shows whether it runs"
 removed = "{id} is removed from its server."
 skipped = "[env.{env}] leaves the record; {host} was not reached, as asked: if the worker still runs there, it keeps running."
 forgotten = "[env.{env}] is removed."
 still_in_toml = "[env.{env}] is still in erpc.toml: {error}"
+waf_left = "its WAF could not be removed from the server ({error}): its port is closed, and its unit {unit} stays until it is removed there"
 
 [delete_prompt]
 forget_unreached = "Forget [env.{env}] without reaching {host}, as asked: {id} is not removed from it"
@@ -81,7 +84,7 @@ then_server = ", then end the hourly server"
 then_lines_and_server = ", then end its data lines and the hourly server"
 then_lines = ", then end its data lines (no hourly server is on record)"
 no_server_to_end = " (no hourly server is on record to end)"
-keeps_charging = "; its hourly {items} keep running and are charged (`--release-server` ends them)"
+keeps_charging = "; its hourly {items} are not ended by this: any that still runs stays charged (add `--release-server` to end them)"
 
 [unreached]
 message = "could not reach the server {host}{vps}; it may have been ended or be down"
@@ -129,11 +132,29 @@ server = "{kind} {id}"
 line = "{kind} line {id}"
 still_charged = "{items}: charged by the hour until ended. `erpc worker delete --release-server{scope}` ends them; `erpc ai` (the credit balance) or the dashboard shows the price per hour"
 
+[charges]
+title = "Charged by the hour, from ERPC Credit:"
+price = "€{price} per hour"
+unpriced = "charged; its price is not given"
+not_listed = "not among the account's charges now"
+not_looked_up = "not looked up: its id on record is not a number"
+total = "together"
+credit_alone = "The account has €{balance} of credit."
+credit_idle = "The account has €{balance} of credit, and nothing spends it by the hour."
+credit_rate = "The account has €{balance} of credit and spends €{burn} per hour on all it runs."
+end = "`erpc worker delete --release-server{scope}` ends what this app is charged for."
+behind = "The account's list of charges can be a minute behind a start, so what was just started may not be on it yet."
+forget_line = "A line that was ended somewhere else stays on record until `erpc worker deploy --forget-line <ID>{scope}` takes it off."
+
+[charges.credit]
+one = "The account has €{balance} of credit and spends €{burn} per hour on all it runs: about {n} hour."
+other = "The account has €{balance} of credit and spends €{burn} per hour on all it runs: about {n} hours."
+
 [api]
 bad_method = "{method} is not a method here: GET, POST, PUT or DELETE"
 bad_path = "{path} is not a path: it starts with / and has no spaces, quotes or control characters"
 no_port = "run.port is not set in erpc.toml, so the app's API has no port to reach"
-no_token = "[secrets] has no API_TOKEN, which every request needs: `erpc worker secret put API_TOKEN{dir_scope}`"
+no_token = "the app refused the request and [secrets] has no API_TOKEN to send: `erpc worker secret put API_TOKEN{dir_scope}`"
 failed = "the request did not go through: {why}\n{body}"
 
 [positions]

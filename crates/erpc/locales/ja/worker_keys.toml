@@ -2,6 +2,7 @@
 
 read_failed = "{path} を読み込めませんでした：{error}"
 portability = "このアプリのサーバーは 1Password に保管されていますが、キーチェーンはこのマシンにしかありません。別のマシンからはアプリを起動できなくなります。サーバーと同じ場所に保管するには --store 1password を指定してください。"
+portability_keystore = "このアプリのサーバーは 1Password に保管されていますが、キーストアはこのマシンにしかありません。別のマシンからはアプリを起動できなくなります。サーバーと同じ場所に保管するには --store 1password を指定してください。"
 
 [field]
 pubkey = "公開鍵"
@@ -26,6 +27,7 @@ made = "{app} の取引用の鍵を作成しました：{pubkey}"
 imported = "{app} の取引用の鍵をインポートしました：{pubkey}"
 where = "{store} に {source} として保管しました。erpc.toml の [wallet] がこれを参照しています。"
 hot_wallet = "入金はボットに必要な額だけにしてください。これはホットウォレットです。"
+keystore_backup = "この鍵の唯一のコピーは、{path} にある暗号化ファイルです。そのディレクトリをバックアップし、パスフレーズを保管してください。両方がそろわなければ、ウォレットは失われます。"
 by_hand = "鍵は {source} に保管されています。erpc.toml の [wallet] に source = \"{source}\" と pubkey = \"{pubkey}\" を手動で設定してください"
 
 [key_file]
@@ -37,6 +39,8 @@ no_wallet = "{app} にはまだウォレットがありません"
 new_hint = "`erpc worker key new{dir_scope}` で作成できます"
 no_pubkey = "（erpc.toml に公開鍵が設定されていません）"
 kept_at = "保管場所：{source}"
+keystore_file = "キーストアのファイル：{file}"
+keystore_missing = "このマシンのキーストアにはこのエントリがありません（{file}）。鍵は別のマシンで保管されたため、このマシンからはアプリを起動できません"
 
 [balance]
 no_pubkey = "{app} の erpc.toml にウォレットの公開鍵がありません"
@@ -63,6 +67,13 @@ replace_hint = "新しい値に置き換えるには --replace を指定して�
 by_hand = "値は {source} に保管されています。[secrets] に {name} = \"{source}\" を手動で追加してください"
 done = "{name} ← {source}（{store} に保管）"
 old_kept = "古い値はまだ {old} に保管されています。不要であればそちらで削除してください。"
+generated = "値はここで生成しました：ランダムな 16 進 64 文字で、誰にも表示していません。"
+from_account = "値はサインイン中のアカウントのプライマリ RPC API キーです。アカウントから読み取り、誰にも表示していません。"
+from_account_other = "値はサインイン中のアカウントの、プライマリではない別の RPC API キーの 1 つです。アカウントから読み取り、誰にも表示していません。"
+account_refused_hint = "キーはこのマシンから試しました。接続元のアドレスが制限されたキー（サーバーのアドレスのみ許可したキーなど）は、許可されたアドレスからは使えても、このマシンからは拒否されます。そのようなキーは `{command}` で手動で保管してください（非表示で入力するか、パイプで渡します）。また、キーには期限を設定でき、アカウントの RPC プランが終了していることもあります。この 2 点は ERPC ダッシュボードで確認できます"
+account_unasked = "現在、アカウントの API キーについて共有 RPC に確認できませんでした（受け付けられたキーはなく、少なくとも 1 つについては応答がないか、キーについて何も分からない応答でした）。そのため何も保管していません"
+account_unasked_hint = "しばらくしてから同じコマンドをもう一度実行してください。または、使いたいキーを `{command}` で手動で保管してください（非表示で入力するか、パイプで渡します）"
+no_random = "このマシンから値を作るための乱数を取得できませんでした"
 
 [list]
 none = "シークレットはまだありません。`erpc worker secret put <NAME>{dir_scope}` で保管できます。"
@@ -75,6 +86,11 @@ not_there = "{name} は [secrets] にありません"
 done = "{name} を erpc.toml から外しました。"
 still_kept = "値はまだ {source} に保管されています。ほかで使っていなければ、そちらで削除してください。"
 plain = "{name} を erpc.toml から外しました。値はまだ {source} に保管されています。ほかで使っていなければ、そちらで削除してください。"
+deleted = "値はキーストアから削除しました（{source}）。"
+absent = "このマシンのキーストアには {source} の値がありませんでした。"
+shared = "値はキーストアの {source} に残ります。{other} も同じ値を参照しています。"
+is_key = "値はキーストアの {source} に残ります。これは取引用の鍵のエントリで、erpc は削除しません。"
+not_deleted = "値をキーストアから削除できませんでした（{source}）：{error}"
 
 [send]
 bad_pubkey = "{to} は Solana のアドレスではありません"

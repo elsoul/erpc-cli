@@ -186,7 +186,7 @@ impl CredentialStore for OsKeychain {
 /// holds none, and is refused: told so, rather than given a session that
 /// could not be read back.
 #[cfg(target_os = "linux")]
-mod kernel {
+pub(in crate::store) mod kernel {
     use linux_keyutils::{KeyError, KeyRing, KeyRingIdentifier};
 
     /// What a refusal means here, and what to do about it.
@@ -195,9 +195,10 @@ mod kernel {
         start it from a login as yourself, or choose another store with \
         `erpc login --store`";
 
-    /// The keyring, attached to the user keyring.
-    fn ring() -> Result<KeyRing, String> {
-        KeyRing::get_persistent(KeyRingIdentifier::User).map_err(explain)
+    /// The keyring, attached to the user keyring. The keystore's unlock
+    /// is kept in it too, and says a refusal in its own words.
+    pub(in crate::store) fn ring() -> Result<KeyRing, KeyError> {
+        KeyRing::get_persistent(KeyRingIdentifier::User)
     }
 
     /// A kernel error as a sentence.
@@ -214,7 +215,7 @@ mod kernel {
     }
 
     /// A miss: no such key, or one the kernel has let go.
-    const fn missing(e: KeyError) -> bool {
+    pub(in crate::store) const fn missing(e: KeyError) -> bool {
         matches!(
             e,
             KeyError::KeyDoesNotExist | KeyError::KeyExpired | KeyError::KeyRevoked
@@ -223,8 +224,8 @@ mod kernel {
 
     /// The entry's text, or none when there is no entry.
     pub(super) fn read(service: &str, account: &str) -> Result<Option<String>, String> {
-        let bytes = match ring()?
-            .search(&description(service, account))
+        let bytes = match ring()
+            .and_then(|ring| ring.search(&description(service, account)))
             .and_then(|key| key.read_to_vec())
         {
             Ok(bytes) => bytes,
@@ -239,16 +240,16 @@ mod kernel {
     /// Writes the entry. A key with the same description is updated in
     /// place, in one call: a reader sees the old text or the new.
     pub(super) fn write(service: &str, account: &str, text: &str) -> Result<(), String> {
-        ring()?
-            .add_key(&description(service, account), text)
+        ring()
+            .and_then(|ring| ring.add_key(&description(service, account), text))
             .map(|_| ())
             .map_err(explain)
     }
 
     /// Removes the entry; one that is not there is removed already.
     pub(super) fn delete(service: &str, account: &str) -> Result<(), String> {
-        match ring()?
-            .search(&description(service, account))
+        match ring()
+            .and_then(|ring| ring.search(&description(service, account)))
             .and_then(|key| key.invalidate())
         {
             Ok(()) => Ok(()),
@@ -354,7 +355,7 @@ pub mod item {
         } else {
             Err(
                 "no Secret Service answers here, and the kernel keyring forgets what it holds \
-                 at a reboot; keep this secret in 1Password instead"
+                 at a reboot; keep this secret in 1Password or in erpc's keystore instead"
                     .to_owned(),
             )
         }

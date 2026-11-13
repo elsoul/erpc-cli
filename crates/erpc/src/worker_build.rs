@@ -45,11 +45,18 @@ fn hex(bytes: &[u8]) -> String {
         })
 }
 
+fn could_not_read(path: &Path, error: &std::io::Error) -> CliError {
+    let path = path.display();
+    failed(t!("worker_build.could_not_read", path, error))
+}
+
+/// The bytes of the file at `path`.
+fn read(path: &Path) -> Result<Vec<u8>, CliError> {
+    std::fs::read(path).map_err(|e| could_not_read(path, &e))
+}
+
 fn sha256_file(path: &Path) -> Result<(String, u64), CliError> {
-    let bytes = std::fs::read(path).map_err(|e| {
-        let path = path.display();
-        failed(t!("worker_build.could_not_read", path, error = e))
-    })?;
+    let bytes = read(path)?;
     Ok((hex(&Sha256::digest(&bytes)), bytes.len() as u64))
 }
 
@@ -58,6 +65,11 @@ pub(crate) struct Built {
     pub(crate) release: Release,
     pub(crate) binary: PathBuf,
     pub(crate) record: PathBuf,
+    /// The binary as it was read, once: the bytes that were checked for
+    /// the servers and hashed into the release. A deploy uploads these,
+    /// so what was checked, what the record names and what is shipped
+    /// cannot differ, whatever happens to the file meanwhile.
+    pub(crate) bytes: Vec<u8>,
 }
 
 /// `erpc worker build`.
@@ -133,33 +145,366 @@ pub(crate) fn for_servers(
     let root = manifest_path
         .parent()
         .map_or_else(|| PathBuf::from("."), Path::to_owned);
+    let triple = m.build.target.triple();
+    let files = shipped(m, &root)?;
+    let (binary, glibc, bytes) = binary_for_servers(m, &root, say)?;
+    let (sha256, size) = (hex(&Sha256::digest(&bytes)), bytes.len() as u64);
+    let (manifest_sha256, _) = sha256_file(manifest_path)?;
+    let built_at = erpc_ops::run::utc_now();
+    let release = Release {
+        format: release::FORMAT,
+        id: release::id(&built_at, &sha256),
+        app: m.name.clone(),
+        bin: m.bin().to_owned(),
+        target: triple.to_owned(),
+        glibc,
+        sha256,
+        size,
+        built_at,
+        source: source(&root),
+        manifest_sha256,
+        files,
+        erpc_version: env!("CARGO_PKG_VERSION").to_owned(),
+    };
+    // Beside the binary cargo built; a prebuilt binary's directory is the
+    // operator's, so its record goes with erpc's own build output.
+    let record_name = format!("{}.{}", m.bin(), release::FILE_NAME);
+    let record = if m.build.prebuilt.is_some() {
+        let dir = target_dir(&root).join("erpc");
+        std::fs::create_dir_all(&dir).map_err(|e| {
+            let path = dir.display();
+            failed(t!("worker_build.could_not_write", path, error = e))
+        })?;
+        dir.join(record_name)
+    } else {
+        binary.with_file_name(record_name)
+    };
+    let text = serde_json::to_string_pretty(&release).map_err(|e| failed(e.to_string()))?;
+    std::fs::write(&record, format!("{text}\n")).map_err(|e| {
+        let path = record.display();
+        failed(t!("worker_build.could_not_write", path, error = e))
+    })?;
+    Ok(Built {
+        release,
+        binary,
+        record,
+        bytes,
+    })
+}
+
+/// The app's binary for its servers, built or taken as it is: where it
+/// is, the glibc it needs, and its bytes. The file is read once: what is
+/// checked here is what is hashed and what a deploy uploads.
+fn binary_for_servers(
+    m: &Manifest,
+    root: &Path,
+    say: &Say,
+) -> Result<(PathBuf, Option<String>, Vec<u8>), CliError> {
+    let triple = m.build.target.triple();
+    match way(m, root, Probe::Toolchain).map_err(first_lacking)? {
+        Way::Prebuilt(path) => {
+            let (binary, elf, bytes) = prebuilt(m, root, &path, say)?;
+            Ok((binary, elf.glibc(), bytes))
+        }
+        Way::Cross => {
+            let glibc = is_gnu(m.build.target).then(|| GLIBC_FLOOR.to_owned());
+            let zig_target = glibc
+                .as_deref()
+                .map_or_else(|| triple.to_owned(), |g| format!("{triple}.{g}"));
+            let binary = cargo(m, root, "zigbuild", &zig_target, say)?;
+            let bytes = read(&binary)?;
+            Ok((binary, glibc, bytes))
+        }
+        Way::Native => {
+            let binary = cargo(m, root, "build", triple, say)?;
+            let bytes = read(&binary)?;
+            // Linked against this machine's glibc, not the floor the
+            // cross-build pins: what it needs is read from the binary.
+            let glibc = fit(&bytes, &binary, m.build.target)?.glibc();
+            say.line(&match &glibc {
+                Some(glibc) => t!("worker_build.native", glibc, floor = GLIBC_FLOOR),
+                None => t!("worker_build.native_no_glibc"),
+            });
+            Ok((binary, glibc, bytes))
+        }
+    }
+}
+
+/// How the binary for the servers comes to be.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Way {
+    /// `build.prebuilt`: built already, by any toolchain; shipped as it is.
+    Prebuilt(String),
+    /// `cargo zigbuild`: from any machine, for the oldest glibc the servers
+    /// may run ([`GLIBC_FLOOR`]).
+    Cross,
+    /// `cargo build` on a Linux machine of the servers' kind, when the
+    /// cross-build's tools are not installed: nothing to install, and the
+    /// binary needs the glibc it was linked against.
+    Native,
+}
+
+/// The way this machine builds `m` for its servers, or what it lacks for
+/// any, each with what installs it.
+pub(crate) fn way(m: &Manifest, root: &Path, probe: Probe) -> Result<Way, Vec<(String, String)>> {
+    if let Some(path) = &m.build.prebuilt {
+        return Ok(Way::Prebuilt(path.clone()));
+    }
+    let search = search_path();
+    let mut lacking = Vec::new();
+    if !on_path("cargo", &search) {
+        lacking.push((
+            t!("worker_build.no_cargo"),
+            t!("worker_build.no_cargo_hint"),
+        ));
+        return Err(lacking);
+    }
+    let (zig, zigbuild) = (on_path("zig", &search), on_path("cargo-zigbuild", &search));
+    if !(zig && zigbuild)
+        && builds_natively(m.build.target, std::env::consts::OS, std::env::consts::ARCH)
+    {
+        return Ok(Way::Native);
+    }
+    if !zig {
+        lacking.push((t!("worker_build.no_zig"), t!("worker_build.no_zig_hint")));
+    }
+    if !zigbuild {
+        lacking.push((
+            t!("worker_build.no_zigbuild"),
+            t!("worker_build.no_zigbuild_hint"),
+        ));
+    }
+    let triple = m.build.target.triple();
+    // Without rustup the toolchain is the operator's own; cargo says what
+    // is missing then.
+    if probe == Probe::Toolchain
+        && let Ok(out) = Command::new("rustup")
+            .args(["target", "list", "--installed"])
+            .current_dir(root)
+            .stdin(Stdio::null())
+            .output()
+    {
+        let installed = String::from_utf8_lossy(&out.stdout);
+        if out.status.success() && !installed.lines().any(|l| l.trim() == triple) {
+            lacking.push((
+                t!("worker_build.no_std", triple),
+                t!("worker_build.no_std_hint", triple),
+            ));
+        }
+    }
+    if lacking.is_empty() {
+        Ok(Way::Cross)
+    } else {
+        Err(lacking)
+    }
+}
+
+/// Whether a machine running `os` on `arch` builds for `target` with its
+/// own toolchain: Linux of the target's architecture, for a glibc target.
+/// A musl target needs a musl toolchain, which the cross-build brings.
+fn builds_natively(target: Target, os: &str, arch: &str) -> bool {
+    os == "linux" && is_gnu(target) && target.triple().starts_with(&format!("{arch}-"))
+}
+
+/// The first thing this machine lacks, as the build's failure.
+fn first_lacking(lacking: Vec<(String, String)>) -> CliError {
+    match lacking.into_iter().next() {
+        Some((what, hint)) => failed(what).hint(hint),
+        None => failed(t!("worker_build.no_way")),
+    }
+}
+
+/// Why a file is not a program, in the words of the run.
+fn said(why: crate::elf::NotAProgram) -> String {
+    use crate::elf::NotAProgram;
+    match why {
+        NotAProgram::MacOs => t!("worker_build.elf.macos"),
+        NotAProgram::Windows => t!("worker_build.elf.windows"),
+        NotAProgram::Script => t!("worker_build.elf.script"),
+        NotAProgram::NotElf => t!("worker_build.elf.not_elf"),
+        NotAProgram::Bits32 => t!("worker_build.elf.bits32"),
+        NotAProgram::BigEndian => t!("worker_build.elf.big_endian"),
+        NotAProgram::CutShort => t!("worker_build.elf.cut_short"),
+        NotAProgram::NotExecutable => t!("worker_build.elf.not_executable"),
+        NotAProgram::NothingToLoad => t!("worker_build.elf.nothing_to_load"),
+        NotAProgram::SharedLibrary => t!("worker_build.elf.shared_library"),
+    }
+}
+
+/// Checks that `bytes`, the binary at `binary`, are a program for
+/// `target`'s machine and C library: what the servers can run.
+fn fit(bytes: &[u8], binary: &Path, target: Target) -> Result<crate::elf::Elf, CliError> {
+    use crate::elf::Libc;
+    let path = binary.display();
+    let elf = crate::elf::inspect(bytes).map_err(|why| {
+        let refused = failed(t!("worker_build.not_for_servers", path, why = said(why)));
+        // A static program built to load anywhere is told from a library
+        // by a flag its linker writes. One without it reads as a library,
+        // though it runs: the way out is said.
+        if why == crate::elf::NotAProgram::SharedLibrary {
+            refused.hint(t!("worker_build.elf.shared_library_hint"))
+        } else {
+            refused
+        }
+    })?;
+    let triple = target.triple();
+    let arch = elf.machine.arch();
+    if !triple.starts_with(&format!("{arch}-")) {
+        return Err(failed(t!("worker_build.other_machine", path, arch, triple))
+            .hint(t!("worker_build.other_machine_hint")));
+    }
+    // A static binary runs on any of them. One linked against a C library
+    // needs the server to have that library, with its loader at the path
+    // the binary names: glibc on a `-gnu` target, which is every ERPC
+    // server; musl's loader is on none of them, nor is any other.
+    let fits = match &elf.libc {
+        Libc::Static => true,
+        Libc::Glibc(_) => is_gnu(target),
+        Libc::Musl | Libc::Other(_) => false,
+    };
+    if fits {
+        Ok(elf)
+    } else {
+        let loader = match &elf.libc {
+            Libc::Musl => "musl".to_owned(),
+            Libc::Other(path) => path.clone(),
+            Libc::Glibc(_) | Libc::Static => "glibc".to_owned(),
+        };
+        Err(failed(t!("worker_build.other_libc", path, loader, triple))
+            .hint(t!("worker_build.other_libc_hint")))
+    }
+}
+
+/// The most that is read of a binary built outside erpc: 1 GiB. `check`
+/// reads the one `build.prebuilt` names, in a directory that may be
+/// anyone's: whatever is under that name is not read without end.
+const MAX_PREBUILT: u64 = 1024 * 1024 * 1024;
+
+/// The prebuilt binary `build.prebuilt` names, read once and checked for
+/// the servers: where it is, what it is, and its bytes. Nothing of it is
+/// run. A deploy asks this before it buys anything, `check` before a
+/// deploy, and the build to ship it: each in the same words.
+fn prebuilt_read(
+    m: &Manifest,
+    root: &Path,
+    path: &str,
+) -> Result<(PathBuf, crate::elf::Elf, Vec<u8>), CliError> {
+    use std::io::Read as _;
+    let binary = root.join(path);
+    let not_there = || {
+        let full = binary.display();
+        failed(t!("worker_build.no_prebuilt", path, full)).hint(t!("worker_build.no_prebuilt_hint"))
+    };
+    let too_large = || {
+        failed(t!(
+            "worker_build.prebuilt_too_large",
+            path = binary.display()
+        ))
+    };
+    // Looked at before it is opened: opening a pipe waits for a writer.
+    if !binary.is_file() {
+        return Err(not_there());
+    }
+    // A file of the app: a link under that name that leads out of the
+    // app's directory would have `check` read, and a deploy ship, a file
+    // from elsewhere on this machine.
+    let inside = match (std::fs::canonicalize(root), std::fs::canonicalize(&binary)) {
+        (Ok(root), Ok(real)) => real.starts_with(root),
+        _ => false,
+    };
+    if !inside {
+        let full = binary.display();
+        return Err(failed(t!("worker_build.prebuilt_outside", path, full))
+            .hint(t!("worker_build.prebuilt_outside_hint")));
+    }
+    let file = std::fs::File::open(&binary).map_err(|e| could_not_read(&binary, &e))?;
+    let opened = file.metadata().map_err(|e| could_not_read(&binary, &e))?;
+    if !opened.is_file() {
+        return Err(not_there());
+    }
+    if opened.len() > MAX_PREBUILT {
+        return Err(too_large());
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_PREBUILT + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| could_not_read(&binary, &e))?;
+    if bytes.len() as u64 > MAX_PREBUILT {
+        return Err(too_large());
+    }
+    let elf = fit(&bytes, &binary, m.build.target)?;
+    Ok((binary, elf, bytes))
+}
+
+/// The prebuilt binary `build.prebuilt` names, checked for the servers
+/// and said to be shipped.
+fn prebuilt(
+    m: &Manifest,
+    root: &Path,
+    path: &str,
+    say: &Say,
+) -> Result<(PathBuf, crate::elf::Elf, Vec<u8>), CliError> {
+    let read = prebuilt_read(m, root, path)?;
+    say.line(&match read.1.glibc() {
+        Some(glibc) => t!("worker_build.prebuilt_glibc", path, glibc),
+        None => t!("worker_build.prebuilt", path),
+    });
+    Ok(read)
+}
+
+/// The prebuilt binary, for `erpc worker run` on this machine: the same
+/// file, when this machine can run what the servers run.
+pub(crate) fn prebuilt_here(
+    m: &Manifest,
+    root: &Path,
+    path: &str,
+    say: &Say,
+) -> Result<PathBuf, CliError> {
+    let (binary, ..) = prebuilt(m, root, path, say)?;
+    let triple = m.build.target.triple();
+    let here = format!("{}-", std::env::consts::ARCH);
+    if std::env::consts::OS == "linux" && triple.starts_with(&here) {
+        Ok(binary)
+    } else {
+        Err(failed(t!(
+            "worker_build.prebuilt_not_here",
+            path,
+            triple,
+            os = std::env::consts::OS,
+            arch = std::env::consts::ARCH
+        ))
+        .hint(t!("worker_build.prebuilt_not_here_hint")))
+    }
+}
+
+/// Runs `cargo <subcommand> … --target <target>` for the app and returns
+/// the binary it built. cargo's own lines (compiling, the app's warnings)
+/// are kept in a log beside the build, not shown: they are the app's, and
+/// read as erpc's trouble. A failed build shows them on stderr, with
+/// --json too, since they say what to fix.
+fn cargo(
+    m: &Manifest,
+    root: &Path,
+    subcommand: &str,
+    target: &str,
+    say: &Say,
+) -> Result<PathBuf, CliError> {
     let rest = cargo_build_args(m)?;
     let triple = m.build.target.triple();
-    let glibc = is_gnu(m.build.target).then(|| GLIBC_FLOOR.to_owned());
-    let zig_target = glibc
-        .as_deref()
-        .map_or_else(|| triple.to_owned(), |g| format!("{triple}.{g}"));
-    check_tools(triple, &root)?;
-    let files = shipped(m, &root)?;
     let args = rest.join(" ");
-    say.line(&t!("worker_build.building", target = zig_target, args));
-    // cargo's own lines (compiling, the app's warnings) are kept in a log
-    // beside the build, not shown: they are the app's, and read as erpc's
-    // trouble. A failed build shows them on stderr, with --json too, since
-    // they say what to fix.
+    say.line(&t!("worker_build.building", subcommand, target, args));
     let out = Command::new("cargo")
-        .arg("zigbuild")
+        .arg(subcommand)
         .args(&rest)
-        .args(["--target", &zig_target])
-        .current_dir(&root)
+        .args(["--target", target])
+        .current_dir(root)
         .stdin(Stdio::null())
         .output()
-        .map_err(|e| failed(t!("worker_build.could_not_run", error = e)))?;
-    let log = target_dir(&root).join(BUILD_LOG);
+        .map_err(|e| failed(t!("worker_build.could_not_run", subcommand, error = e)))?;
+    let log = target_dir(root).join(BUILD_LOG);
     let mut text = out.stdout;
     text.extend_from_slice(&out.stderr);
-    let kept =
-        std::fs::create_dir_all(target_dir(&root)).and_then(|()| std::fs::write(&log, &text));
+    let kept = std::fs::create_dir_all(target_dir(root)).and_then(|()| std::fs::write(&log, &text));
     if !out.status.success() {
         eprint!("{}", String::from_utf8_lossy(&out.stderr));
         let status = out.status;
@@ -178,42 +523,14 @@ pub(crate) fn for_servers(
     } else {
         "debug"
     };
-    let binary = target_dir(&root).join(triple).join(profile).join(m.bin());
+    let binary = target_dir(root).join(triple).join(profile).join(m.bin());
     if !binary.is_file() {
         let bin = binary.display();
         return Err(
             failed(t!("worker_build.no_binary", bin)).hint(t!("worker_build.no_binary_hint"))
         );
     }
-    let (sha256, size) = sha256_file(&binary)?;
-    let (manifest_sha256, _) = sha256_file(manifest_path)?;
-    let built_at = erpc_ops::run::utc_now();
-    let release = Release {
-        format: release::FORMAT,
-        id: release::id(&built_at, &sha256),
-        app: m.name.clone(),
-        bin: m.bin().to_owned(),
-        target: triple.to_owned(),
-        glibc,
-        sha256,
-        size,
-        built_at,
-        source: source(&root),
-        manifest_sha256,
-        files,
-        erpc_version: env!("CARGO_PKG_VERSION").to_owned(),
-    };
-    let record = binary.with_file_name(format!("{}.{}", m.bin(), release::FILE_NAME));
-    let text = serde_json::to_string_pretty(&release).map_err(|e| failed(e.to_string()))?;
-    std::fs::write(&record, format!("{text}\n")).map_err(|e| {
-        let path = record.display();
-        failed(t!("worker_build.could_not_write", path, error = e))
-    })?;
-    Ok(Built {
-        release,
-        binary,
-        record,
-    })
+    Ok(binary)
 }
 
 const fn is_gnu(target: Target) -> bool {
@@ -242,17 +559,6 @@ fn cargo_build_args(m: &Manifest) -> Result<Vec<String>, CliError> {
     }
 }
 
-/// Says what to install when a tool the cross-build needs is not here.
-fn check_tools(triple: &str, root: &Path) -> Result<(), CliError> {
-    match missing_tools(triple, root, Probe::Toolchain)
-        .into_iter()
-        .next()
-    {
-        Some((what, hint)) => Err(failed(what).hint(hint)),
-        None => Ok(()),
-    }
-}
-
 /// How far [`missing_tools`] may go to find out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Probe {
@@ -267,44 +573,30 @@ pub(crate) enum Probe {
     Toolchain,
 }
 
-/// Every tool the cross-build for `triple` needs and this machine lacks,
-/// each with what installs it: all of them at once, so that a deploy can
-/// say so before anything is bought, and `check` before a deploy.
+/// Everything this machine lacks to build `m` for its servers, each with
+/// what installs it: all of them at once, so that a deploy can say so
+/// before anything is bought, and `check` before a deploy. Nothing when
+/// this is a Linux machine of the servers' kind, which builds the app
+/// with cargo alone.
 ///
-/// `zig` and `cargo-zigbuild` are looked for on `PATH` (and in cargo's own
-/// `bin`), not run.
-pub(crate) fn missing_tools(triple: &str, root: &Path, probe: Probe) -> Vec<(String, String)> {
-    let search = search_path();
-    let mut lacking = Vec::new();
-    if !on_path("zig", &search) {
-        lacking.push((t!("worker_build.no_zig"), t!("worker_build.no_zig_hint")));
+/// An app built already (`build.prebuilt`) needs no tool, and its binary
+/// has to be one a server runs: it is read here as the build reads it
+/// ([`prebuilt_read`]), so that a script, a binary for another system or
+/// one cut short stops a deploy before a server is bought for it, not
+/// after.
+///
+/// `cargo`, `zig` and `cargo-zigbuild` are looked for on `PATH` (and in
+/// cargo's own `bin`), not run; a prebuilt binary is read, not run.
+pub(crate) fn missing_tools(m: &Manifest, root: &Path, probe: Probe) -> Vec<(String, String)> {
+    match way(m, root, probe) {
+        Ok(Way::Prebuilt(path)) => prebuilt_read(m, root, &path)
+            .err()
+            .map(|e| (e.message, e.hint.unwrap_or_default()))
+            .into_iter()
+            .collect(),
+        Ok(_) => Vec::new(),
+        Err(lacking) => lacking,
     }
-    if !on_path("cargo-zigbuild", &search) {
-        lacking.push((
-            t!("worker_build.no_zigbuild"),
-            t!("worker_build.no_zigbuild_hint"),
-        ));
-    }
-    if probe == Probe::Look {
-        return lacking;
-    }
-    // Without rustup the toolchain is the operator's own; cargo says what
-    // is missing then.
-    if let Ok(out) = Command::new("rustup")
-        .args(["target", "list", "--installed"])
-        .current_dir(root)
-        .stdin(Stdio::null())
-        .output()
-    {
-        let installed = String::from_utf8_lossy(&out.stdout);
-        if out.status.success() && !installed.lines().any(|l| l.trim() == triple) {
-            lacking.push((
-                t!("worker_build.no_std", triple),
-                t!("worker_build.no_std_hint", triple),
-            ));
-        }
-    }
-    lacking
 }
 
 /// The directories a program is looked for in: `PATH`, then cargo's
@@ -495,7 +787,225 @@ mod tests {
             _ => super::Probe::Toolchain,
         };
         let root = std::env::current_dir().expect("a directory");
-        let _ = super::missing_tools("x86_64-unknown-linux-gnu", &root, probe);
+        let m = Manifest::parse("name = \"bot\"\nchain = \"solana\"\n").expect("a manifest");
+        let _ = super::missing_tools(&m, &root, probe);
+    }
+
+    fn app(build: &str) -> Manifest {
+        Manifest::parse(&format!(
+            "name = \"bot\"\nchain = \"solana\"\n[build]\n{build}\n"
+        ))
+        .expect("a manifest")
+    }
+
+    #[test]
+    fn a_linux_machine_of_the_servers_kind_builds_without_the_cross_build() {
+        use super::builds_natively;
+        use erpc_worker::manifest::Target;
+        // The servers' own kind: cargo alone builds for it.
+        assert!(builds_natively(Target::X86_64Gnu, "linux", "x86_64"));
+        assert!(builds_natively(Target::Aarch64Gnu, "linux", "aarch64"));
+        // Another architecture, another system, or a musl target: the
+        // cross-build is what builds those.
+        assert!(!builds_natively(Target::X86_64Gnu, "linux", "aarch64"));
+        assert!(!builds_natively(Target::X86_64Gnu, "macos", "x86_64"));
+        assert!(!builds_natively(Target::X86_64Gnu, "windows", "x86_64"));
+        assert!(!builds_natively(Target::X86_64Musl, "linux", "x86_64"));
+    }
+
+    /// What the review found: before a server was bought a prebuilt
+    /// binary only had to be there. What it is was read by the build,
+    /// after the purchase.
+    #[test]
+    fn a_prebuilt_binary_is_read_before_anything_is_bought() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let m = app("prebuilt = \"dist/bot\"");
+        assert_eq!(
+            super::way(&m, dir.path(), super::Probe::Look),
+            Ok(super::Way::Prebuilt("dist/bot".to_owned()))
+        );
+        let lacking = || {
+            crate::i18n::speaking(erpc_core::i18n::Lang::En, || {
+                super::missing_tools(&m, dir.path(), super::Probe::Look)
+            })
+        };
+        // Not there yet: said, with what to do.
+        let absent = lacking();
+        assert_eq!(absent.len(), 1, "{absent:?}");
+        assert!(
+            absent[0].0.contains("build.prebuilt names dist/bot"),
+            "{absent:?}"
+        );
+        assert!(
+            absent[0].1.contains("build the app's Linux binary"),
+            "{absent:?}"
+        );
+        // There, and nothing a server runs: said for what it is, in the
+        // words the build fails with.
+        std::fs::create_dir(dir.path().join("dist")).expect("dist");
+        let binary = dir.path().join("dist/bot");
+        for (bytes, why) in [
+            (&b"#!/bin/sh\nexec python3 bot.py\n"[..], "it is a script"),
+            (
+                &[0xcf, 0xfa, 0xed, 0xfe, 7, 0, 0, 1][..],
+                "it is a macOS binary",
+            ),
+            (&b"MZ\x90\0"[..], "it is a Windows binary"),
+            (&b"anything"[..], "it is not a Linux (ELF) binary"),
+            (&b"\x7fELF\x02\x01\x01"[..], "it is cut short"),
+        ] {
+            std::fs::write(&binary, bytes).expect("a file");
+            let said = lacking();
+            assert_eq!(said.len(), 1, "{said:?}");
+            assert!(said[0].0.contains("cannot run on a server"), "{said:?}");
+            assert!(said[0].0.contains(why), "{said:?}");
+            let built = crate::i18n::speaking(erpc_core::i18n::Lang::En, || {
+                super::prebuilt_read(&m, dir.path(), "dist/bot").expect_err("refused")
+            });
+            assert_eq!(built.message, said[0].0, "the build's own words");
+        }
+        // More than is read of one: refused by its size, not read. Where
+        // a file can be that long and hold nothing.
+        #[cfg(unix)]
+        {
+            let huge = std::fs::File::create(&binary).expect("a file");
+            huge.set_len(super::MAX_PREBUILT + 1).expect("sparse");
+            let said = lacking();
+            assert!(said[0].0.contains("larger than 1 GiB"), "{said:?}");
+        }
+        // A directory under the name is not a binary that is there.
+        std::fs::remove_file(&binary).expect("removed");
+        std::fs::create_dir(&binary).expect("a directory");
+        assert!(lacking()[0].0.contains("is not a file"));
+        // A link that leads out of the app is not the app's binary: not
+        // read, whatever is there. One to a file inside the app is.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let outside = tempfile::tempdir().expect("another directory");
+            let elsewhere = outside.path().join("bot");
+            std::fs::write(
+                &elsewhere,
+                b"#!/bin/sh
+",
+            )
+            .expect("a file elsewhere");
+            std::fs::remove_dir(&binary).expect("removed");
+            symlink(&elsewhere, &binary).expect("a link out");
+            let said = lacking();
+            assert_eq!(said.len(), 1, "{said:?}");
+            assert!(
+                said[0].0.contains("leads out of the app's directory")
+                    && said[0]
+                        .1
+                        .contains("copy the binary into the app's directory"),
+                "{said:?}"
+            );
+            std::fs::remove_file(&binary).expect("removed");
+            std::fs::write(
+                dir.path().join("dist/real"),
+                b"#!/bin/sh
+",
+            )
+            .expect("a file inside");
+            symlink("real", &binary).expect("a link inside");
+            assert!(lacking()[0].0.contains("it is a script"), "{:?}", lacking());
+        }
+    }
+
+    /// The prebuilt binary is read once: the bytes checked for the
+    /// servers are the ones hashed into the release and handed to the
+    /// deploy to upload.
+    #[test]
+    fn a_prebuilt_binary_is_read_once_for_the_check_the_hash_and_the_upload() {
+        use crate::elf::fixture::{GLIBC_X86_64, X86_64, linked};
+        use sha2::{Digest as _, Sha256};
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        std::fs::create_dir(dir.path().join("dist")).expect("dist");
+        let binary = dir.path().join("dist/bot");
+        let program = linked(X86_64, GLIBC_X86_64, b"\0GLIBC_2.17\0GLIBC_2.34\0");
+        std::fs::write(&binary, &program).expect("a binary");
+        let manifest = dir.path().join("erpc.toml");
+        let text = "name = \"bot\"\nchain = \"solana\"\n[build]\nprebuilt = \"dist/bot\"\n";
+        std::fs::write(&manifest, text).expect("erpc.toml");
+        let m = Manifest::parse(text).expect("a manifest");
+        assert!(super::missing_tools(&m, dir.path(), super::Probe::Look).is_empty());
+        let say = crate::node_common::Say { quiet: true };
+        let built = super::for_servers(&m, &manifest, &say).expect("built");
+        assert_eq!(built.binary, binary);
+        // What was checked, what the record names and what a deploy
+        // uploads are the same bytes.
+        assert_eq!(built.bytes, program);
+        assert_eq!(built.release.size, program.len() as u64);
+        assert_eq!(built.release.sha256, super::hex(&Sha256::digest(&program)));
+        assert_eq!(built.release.glibc.as_deref(), Some("2.34"));
+    }
+
+    #[test]
+    fn a_prebuilt_binary_is_shipped_only_when_the_servers_can_run_it() {
+        use crate::elf::fixture::{AARCH64, GLIBC_X86_64, X86_64, elf, linked};
+        use erpc_worker::manifest::Target;
+        let path = std::path::Path::new("dist/bot");
+        let fit = |bytes: &[u8], target| {
+            crate::i18n::speaking(erpc_core::i18n::Lang::En, || {
+                super::fit(bytes, path, target)
+            })
+        };
+        // A script, and a binary for another system: refused for what
+        // they are.
+        let script = fit(b"#!/bin/sh\n", Target::X86_64Gnu).expect_err("a script");
+        assert!(script.message.contains("script"), "{}", script.message);
+        // A program linked against glibc fits a glibc target of its
+        // machine, and says the glibc it needs.
+        let glibc = linked(X86_64, GLIBC_X86_64, b"\0GLIBC_2.39\0");
+        let elf_read = fit(&glibc, Target::X86_64Gnu).expect("fits");
+        assert_eq!(elf_read.glibc().as_deref(), Some("2.39"));
+        let other = fit(&glibc, Target::Aarch64Gnu).expect_err("another machine");
+        assert!(other.message.contains("x86_64"), "{}", other.message);
+        // On a musl target there is no glibc to load it.
+        let musl = fit(&glibc, Target::X86_64Musl).expect_err("no glibc there");
+        assert!(musl.message.contains("glibc"), "{}", musl.message);
+        // A static one runs on every target of its machine.
+        let fixed = elf(2, AARCH64, None, &[], b"");
+        assert!(fit(&fixed, Target::Aarch64Gnu).is_ok());
+        assert!(fit(&fixed, Target::Aarch64Musl).is_ok());
+        // One linked against musl's loader, or glibc's somewhere a
+        // server does not have it, runs on none.
+        for loader in [
+            "/lib/ld-musl-x86_64.so.1",
+            "/store/lib/ld-linux-x86-64.so.2",
+        ] {
+            let linked = linked(X86_64, loader, b"");
+            for target in [Target::X86_64Gnu, Target::X86_64Musl] {
+                let refused = fit(&linked, target).expect_err("no such loader there");
+                assert!(
+                    refused.message.contains("is linked against"),
+                    "{}",
+                    refused.message
+                );
+            }
+        }
+        // A library and a binary cut short are no program at all.
+        let library = elf(3, X86_64, None, &[(1, 1)], b"");
+        let refused = fit(&library, Target::X86_64Gnu).expect_err("a library");
+        assert!(
+            refused.message.contains("shared library"),
+            "{}",
+            refused.message
+        );
+        // A static program without its linker's flag reads as a library:
+        // the way out is in the hint.
+        assert!(
+            refused
+                .hint
+                .as_deref()
+                .is_some_and(|hint| hint.contains("-no-pie") && hint.contains("-static-pie")),
+            "{:?}",
+            refused.hint
+        );
+        let refused = fit(&glibc[..200], Target::X86_64Gnu).expect_err("cut short");
+        assert!(refused.message.contains("cut short"), "{}", refused.message);
+        assert_eq!(refused.hint, None);
     }
 
     /// Runs the probe in a child process, as `erpc ai` would run `check`:

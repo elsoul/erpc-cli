@@ -1,0 +1,19 @@
+[package]
+name = "{{name}}"
+version = "0.1.0"
+description = "A small HTTP API, run with erpc worker"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[[bin]]
+name = "{{name}}"
+path = "src/main.rs"
+
+[dependencies]
+# Only what the API uses: HTTP/1, JSON, and the runtime under them.
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+
+[workspace]

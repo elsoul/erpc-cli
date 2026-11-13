@@ -9,6 +9,7 @@ not_readable = "エージェントの計測結果を読み取れません：{err
 one_stdin = "標準入力から読み込める --url は 1 つだけです"
 url_of = "{name} の URL"
 shared_refused = "共有 RPC がアカウントの API キーを拒否しました。アカウントに有効な共有 RPC プランがない可能性があります（ERPC ダッシュボードで確認してください）。または、アプリの ERPC_API_KEY シークレットにプランのあるキーを設定してください。"
+shared_unconfirmed = "このマシンから試したアカウントの API キーを、共有 RPC はどれも受け付けませんでした（{count} 個を試しました）。そのため `shared` はアカウントのプライマリ API キーで計測しました。サーバーのアドレスのみ許可されたキーは、このマシンからは拒否されますが、サーバーからは使えます。"
 title = "{worker} のサーバー {at} から {method} を計測：ウォームアップ {warm}の後、各エンドポイント {each}{apart}"
 apart = "、{ms} ms 間隔"
 faster = "中央値で {fastest} が {other} より {times} 倍速く応答しました（{a} 対 {b}）。"

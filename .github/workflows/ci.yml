@@ -150,6 +150,37 @@ jobs:
           cargo clippy --all-targets --locked -- -D warnings
           cargo test --locked
 
+  # The same for the template `init` makes when nothing is picked: its lock
+  # must build as written, and what it answers is pinned by its own tests.
+  # It is rendered outside the checkout, where an operator's app is: inside
+  # it, this repository's rustfmt.toml and clippy.toml would be applied to
+  # the app, which has neither.
+  template-hello:
+    name: hello template (render, clippy, test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: 1.98.0
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - name: render the template
+        run: |
+          mkdir -p "$RUNNER_TEMP/template-ci"
+          cargo run --locked -- worker init --name hello-ci --into "$RUNNER_TEMP/template-ci" --no-git --yes
+          grep -q '^template = "solana/hello@1"$' "$RUNNER_TEMP/template-ci/hello-ci/erpc.toml"
+      - name: fmt, clippy and tests
+        env:
+          RUSTUP_TOOLCHAIN: 1.98.0
+        run: |
+          cd "$RUNNER_TEMP/template-ci/hello-ci"
+          cargo fmt -- --check
+          cargo clippy --all-targets --locked -- -D warnings
+          cargo test --locked
+
   deny:
     name: cargo-deny
     runs-on: ubuntu-latest

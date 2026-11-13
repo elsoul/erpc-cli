@@ -20,7 +20,7 @@ use erpc_core::i18n::Lang;
 use secrecy::SecretString;
 use serde_json::{Map, Value, json};
 
-/// The tools, as the Messages API takes them.
+/// The tools, as the chat endpoint takes them.
 #[must_use]
 pub fn definitions() -> Vec<Value> {
     TOOLS
@@ -181,7 +181,12 @@ const TOOLS: &[Tool] = &[
                       on their yes; they may allow that exact command, or every command \
                       (scripts too), for the rest of the session. Standard input is empty, so nothing interactive works \
                       (sudo asking for a password, editors); a command is stopped after 30 \
-                      seconds, or 5 minutes once agreed. Never use it to print secrets: key \
+                      seconds, or 5 minutes once agreed; erpc worker deploy, erpc worker \
+                      build, erpc worker run --check and a node's deploy (erpc validator deploy, \
+                      erpc rpc deploy) get 90 minutes when given as argv, since a build and a \
+                      new server take longer: run those as they are, never in the background \
+                      and never inside a script, where they keep 5 minutes. Never use it to \
+                      print secrets: key \
                       files, .env files, env, shell history.",
     },
     Tool {

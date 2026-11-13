@@ -135,15 +135,28 @@ impl Digest {
     }
 }
 
+/// What `setup` does about an agent that is running. A restarted agent
+/// comes back with neither the key nor the secrets, so its app stays down
+/// until they are handed over again. A deploy asks for [`Self::Keep`]
+/// first, and for [`Self::Restart`] only right before it hands them over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunningAgent {
+    /// Restart it only when what it runs from changed: its unit, or the
+    /// agent installed since it started.
+    RestartIfChanged,
+    /// Restart it: its binary was just replaced.
+    Restart,
+    /// Leave it running, whatever changed: nothing follows that would hand
+    /// the key back.
+    Keep,
+}
+
 /// What `ctl` is asked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verb {
-    /// Writes the unit and starts the agent; restarts it when its binary
-    /// was just replaced.
-    Setup {
-        /// Restart a running agent.
-        restart_agent: bool,
-    },
+    /// Writes the unit and starts the agent; what it does about one that
+    /// is running is the [`RunningAgent`] it carries.
+    Setup(RunningAgent),
     /// Moves a staged release into the worker's releases, checked.
     Install(ReleaseId),
     /// The agent's status, and the releases.
@@ -171,8 +184,14 @@ pub enum Verb {
     FirewallApply,
     /// Keeps the firewall just applied; run over a fresh connection.
     FirewallConfirm,
-    /// The server's firewall table and its openings.
+    /// The server's firewall table and its openings, and how the worker's
+    /// WAF is.
     FirewallShow,
+    /// Puts the worker's WAF in front of its app: its config goes on
+    /// standard input.
+    WafApply,
+    /// Stops the worker's WAF and removes it.
+    WafRemove,
     /// Time JSON-RPC calls from the server; the request, which can carry
     /// keys, goes on standard input.
     BenchRpc,
@@ -227,6 +246,16 @@ pub enum Command {
     },
     /// The worker's journal.
     Logs {
+        /// The worker.
+        id: UnitId,
+        /// How many lines from the end.
+        lines: u32,
+        /// Keep printing new lines.
+        follow: bool,
+    },
+    /// The journal of the worker's WAF: a line for each request it refused,
+    /// and for when it started, stopped, and banned an address.
+    WafLogs {
         /// The worker.
         id: UnitId,
         /// How many lines from the end.
@@ -295,13 +324,9 @@ impl Command {
             }
             Self::Ctl { id, verb } => {
                 let args = match verb {
-                    Verb::Setup { restart_agent } => {
-                        if *restart_agent {
-                            "setup --restart-agent".to_owned()
-                        } else {
-                            "setup".to_owned()
-                        }
-                    }
+                    Verb::Setup(RunningAgent::RestartIfChanged) => "setup".to_owned(),
+                    Verb::Setup(RunningAgent::Restart) => "setup --restart-agent".to_owned(),
+                    Verb::Setup(RunningAgent::Keep) => "setup --keep-agent".to_owned(),
                     Verb::Install(release) => format!("install '{}'", release.as_str()),
                     Verb::Status => "status".to_owned(),
                     Verb::Unlock => "unlock".to_owned(),
@@ -317,6 +342,8 @@ impl Command {
                     Verb::FirewallApply => "firewall-apply".to_owned(),
                     Verb::FirewallConfirm => "firewall-confirm".to_owned(),
                     Verb::FirewallShow => "firewall-show".to_owned(),
+                    Verb::WafApply => "waf-apply".to_owned(),
+                    Verb::WafRemove => "waf-remove".to_owned(),
                     Verb::BenchRpc => "bench-rpc".to_owned(),
                     Verb::BackupSetup(at) => format!("backup-setup --at '{}'", at.as_str()),
                     Verb::BackupRemove => "backup-remove".to_owned(),
@@ -332,6 +359,13 @@ impl Command {
             }
             Self::Logs { id, lines, follow } => format!(
                 "sudo -n journalctl --no-pager -o short-iso -n {lines} -u 'erpc-worker-{}.service'{}",
+                id.as_str(),
+                if *follow { " -f" } else { "" }
+            ),
+            // The WAF's unit is named apart from the worker's
+            // (`erpc_worker::server::waf_unit_name`).
+            Self::WafLogs { id, lines, follow } => format!(
+                "sudo -n journalctl --no-pager -o short-iso -n {lines} -u 'erpc-waf-{}.service'{}",
                 id.as_str(),
                 if *follow { " -f" } else { "" }
             ),
@@ -367,12 +401,58 @@ mod tests {
         }
     }
 
+    #[test]
+    fn setup_says_what_happens_to_an_agent_that_runs() {
+        use super::{Command, RunningAgent, Verb};
+        let line = |agent| {
+            Command::Ctl {
+                id: UnitId::new("bot-default").expect("id"),
+                verb: Verb::Setup(agent),
+            }
+            .shell()
+        };
+        assert!(line(RunningAgent::RestartIfChanged).ends_with(" setup"));
+        assert!(line(RunningAgent::Restart).ends_with(" setup --restart-agent"));
+        assert!(line(RunningAgent::Keep).ends_with(" setup --keep-agent"));
+    }
+
+    #[test]
+    fn the_wafs_journal_is_its_own_units() {
+        use super::Command;
+        let id = UnitId::new("bot-default").expect("id");
+        let logs = |follow| Command::WafLogs {
+            id: id.clone(),
+            lines: 50,
+            follow,
+        };
+        assert_eq!(
+            logs(false).shell(),
+            "sudo -n journalctl --no-pager -o short-iso -n 50 -u 'erpc-waf-bot-default.service'"
+        );
+        assert!(
+            logs(true)
+                .shell()
+                .ends_with("'erpc-waf-bot-default.service' -f")
+        );
+        // Not the worker's own unit, whose journal `Logs` reads.
+        let worker = Command::Logs {
+            id: id.clone(),
+            lines: 50,
+            follow: false,
+        };
+        assert!(
+            worker
+                .shell()
+                .ends_with("-u 'erpc-worker-bot-default.service'")
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn every_line_is_valid_shell() {
         use std::io::Write as _;
 
-        use super::{Command, Verb};
+        use super::{Command, RunningAgent, Verb};
         let id = UnitId::new("bot-default").expect("id");
         let release = ReleaseId::new("20261029T121314Z-1a2b3c4d").expect("release");
         let mut commands = vec![
@@ -390,11 +470,16 @@ mod tests {
                 lines: 100,
                 follow: true,
             },
+            Command::WafLogs {
+                id: id.clone(),
+                lines: 100,
+                follow: true,
+            },
         ];
         for verb in [
-            Verb::Setup {
-                restart_agent: true,
-            },
+            Verb::Setup(RunningAgent::RestartIfChanged),
+            Verb::Setup(RunningAgent::Restart),
+            Verb::Setup(RunningAgent::Keep),
             Verb::Install(release.clone()),
             Verb::Status,
             Verb::Unlock,
@@ -410,6 +495,8 @@ mod tests {
             Verb::FirewallApply,
             Verb::FirewallConfirm,
             Verb::FirewallShow,
+            Verb::WafApply,
+            Verb::WafRemove,
             Verb::BenchRpc,
             Verb::BackupSetup(super::TimeOfDay::new("03:05").expect("time")),
             Verb::BackupRemove,

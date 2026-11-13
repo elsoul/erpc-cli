@@ -10,7 +10,9 @@ use core::net::IpAddr;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// One firewall entry: `198.51.100.7`, `198.51.100.0/24`, `2001:db8::/32`.
-/// A bare address is the network of that one address.
+/// A bare address is the network of that one address. `0.0.0.0/0` and
+/// `::/0` are every address of their family ([`Cidr::is_everyone`]): read
+/// only by [`Cidr::parse_any`], and allowed only where the reader says so.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Cidr {
     address: IpAddr,
@@ -28,6 +30,25 @@ impl Cidr {
     ///
     /// A message saying what is wrong with `raw`.
     pub fn parse(raw: &str) -> Result<Self, String> {
+        let cidr = Self::parse_any(raw)?;
+        if cidr.is_everyone() {
+            return Err(format!(
+                "`{}` allows every address; list the addresses that need access instead",
+                raw.trim()
+            ));
+        }
+        Ok(cidr)
+    }
+
+    /// As [`Self::parse`], and `0.0.0.0/0` or `::/0` too: every address of
+    /// its family. What reads an entry this way decides where "everyone"
+    /// may stand: `erpc.toml` allows it to reach a WAF's port and nothing
+    /// else.
+    ///
+    /// # Errors
+    ///
+    /// A message saying what is wrong with `raw`.
+    pub fn parse_any(raw: &str) -> Result<Self, String> {
         let raw = raw.trim();
         let (address, prefix) = match raw.split_once('/') {
             Some((address, prefix)) => (address, Some(prefix)),
@@ -45,11 +66,6 @@ impl Cidr {
                 .filter(|p| *p <= max)
                 .ok_or_else(|| format!("`{raw}` has a prefix that is not 0 to {max}"))?,
         };
-        if prefix == 0 {
-            return Err(format!(
-                "`{raw}` allows every address; list the addresses that need access instead"
-            ));
-        }
         let cidr = Self { address, prefix };
         if cidr.network() != address {
             return Err(format!(
@@ -70,6 +86,12 @@ impl Cidr {
     #[must_use]
     pub const fn prefix(&self) -> u8 {
         self.prefix
+    }
+
+    /// Whether this is every address of its family: `0.0.0.0/0` or `::/0`.
+    #[must_use]
+    pub const fn is_everyone(&self) -> bool {
+        self.prefix == 0
     }
 
     /// Whether `ip` is inside this network.
@@ -122,10 +144,13 @@ impl Serialize for Cidr {
     }
 }
 
+/// Read with [`Cidr::parse_any`]: a list that holds "everyone" is refused
+/// by what the list is for (`erpc.toml`'s checks, the agent's), which can
+/// say where it may stand, and not here, which cannot.
 impl<'de> Deserialize<'de> for Cidr {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let raw = String::deserialize(d)?;
-        Self::parse(&raw).map_err(serde::de::Error::custom)
+        Self::parse_any(&raw).map_err(serde::de::Error::custom)
     }
 }
 
@@ -188,6 +213,31 @@ mod tests {
         ] {
             assert!(Cidr::parse(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn everyone_is_read_only_when_asked_for_and_is_the_whole_family() {
+        for (raw, inside, outside) in [
+            ("0.0.0.0/0", "203.0.113.9", "2001:db8::1"),
+            ("::/0", "2001:db8::1", "203.0.113.9"),
+        ] {
+            assert!(Cidr::parse(raw).is_err(), "{raw}");
+            let all = Cidr::parse_any(raw).expect("everyone");
+            assert!(all.is_everyone());
+            assert_eq!(all.to_string(), raw);
+            assert!(all.contains(inside.parse().expect("ip")));
+            assert!(!all.contains(outside.parse().expect("ip")), "{raw}");
+            // As a list in a file holds it.
+            let read: Cidr = serde_json::from_str(&format!("\"{raw}\"")).expect("read");
+            assert_eq!(read, all);
+        }
+        // Only the whole family has prefix 0, and the rest reads as before.
+        for bad in ["10.0.0.0/0", "2001:db8::/0", "10.0.0.1/24", "10.0.0.0/33"] {
+            assert!(Cidr::parse_any(bad).is_err(), "{bad}");
+        }
+        let one = Cidr::parse_any("198.51.100.7").expect("valid");
+        assert!(!one.is_everyone());
+        assert_eq!(one, Cidr::parse("198.51.100.7").expect("valid"));
     }
 
     #[test]

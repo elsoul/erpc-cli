@@ -42,8 +42,9 @@ pub const PRODUCT_URL: &str = "https://user-api.erpc.global/v3/billing/get-produ
 /// Probe results by region over the last 30 days, for `service`.
 pub const HEALTH_URL: &str = "https://user-api.erpc.global/v3/system/health";
 
-/// The account's dashboard, with its primary API key for the shared RPC
-/// (`message.apiKey`).
+/// The account's dashboard, with its API keys for the shared RPC: the
+/// primary one (`message.apiKey`) and every active one
+/// (`message.activeApiKeys`).
 pub const DASHBOARD_URL: &str = "https://user-api.erpc.global/v3/user/dashboard";
 
 /// The addresses an Unlimited RPC lets in: the whole list, replaced.

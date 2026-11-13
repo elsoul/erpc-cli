@@ -19,6 +19,7 @@ no_host_key = "env.{env} には固定されたホスト鍵がありません"
 unreachable = "サーバーのエージェントに問い合わせられませんでした：{error}"
 unreadable = "サーバーのエージェントが erpc の読めない応答を返しました：{answer}"
 refused = "サーバーのエージェントが拒否しました"
+port_taken = "1 台のサーバーで 2 つのプログラムが同じポート {port} を待ち受けることはできません。erpc.toml でこのアプリ専用のポートに変えてください：[run] の `port` とヘルスチェックの URL、そして [vars] でアプリがポートを読む設定 (テンプレートでは API_PORT) です。その後、もう一度デプロイしてください。"
 
 [describe]
 unknown = "不明"
@@ -64,10 +65,12 @@ refused = "何も削除していません"
 not_removed = "サーバーから削除できませんでした（{error}）"
 not_removed_ending = "サーバーから削除できませんでした（{error}）。それでもサーバーを終了します"
 nothing_removed = "何も削除していません。{hint}"
+start_unanswered = "以前の {what} の開始に応答がなく、それを示すものはこの記録だけです。成立して課金されている可能性がありますが、削除するとこの記録も消えます。動いているかどうかはダッシュボードで確認できます"
 removed = "{id} をサーバーから削除しました。"
 skipped = "[env.{env}] を記録から外しました。指定どおり {host} には接続していません。ワーカーがまだそこで動いていれば、動き続けます。"
 forgotten = "[env.{env}] を削除しました。"
 still_in_toml = "[env.{env}] はまだ erpc.toml に残っています：{error}"
+waf_left = "WAF をサーバーから削除できませんでした（{error}）。ポートは閉じていますが、ユニット {unit} はサーバー上で削除するまで残ります"
 
 [delete_prompt]
 forget_unreached = "指定どおり {host} に接続せずに [env.{env}] を記録から外します。{id} はサーバーから削除されません"
@@ -78,7 +81,7 @@ then_server = "。その後、時間課金のサーバーを終了します"
 then_lines_and_server = "。その後、データ回線と時間課金のサーバーを終了します"
 then_lines = "。その後、データ回線を終了します（記録に時間課金のサーバーはありません）"
 no_server_to_end = "（終了する時間課金のサーバーは記録にありません）"
-keeps_charging = "。時間課金の {items} は動き続け、課金も続きます（`--release-server` で終了できます）"
+keeps_charging = "。時間課金の {items} はこの操作では終了しません。稼働中のものは課金が続きます（`--release-server` を付けると終了します）"
 
 [unreached]
 message = "サーバー {host}{vps} に接続できませんでした。終了済みか、停止している可能性があります"
@@ -126,11 +129,28 @@ server = "{kind} {id}"
 line = "{kind} 回線 {id}"
 still_charged = "{items}：終了するまで時間課金が続きます。`erpc worker delete --release-server{scope}` で終了できます。1 時間あたりの料金は `erpc ai`（クレジット残高）かダッシュボードで確認できます"
 
+[charges]
+title = "時間課金（ERPC クレジットから）："
+price = "1 時間あたり €{price}"
+unpriced = "課金中です（料金は示されていません）"
+not_listed = "現在、アカウントの課金一覧にありません"
+not_looked_up = "照会していません：記録上の ID が数値ではありません"
+total = "合計"
+credit_alone = "アカウントのクレジットは €{balance} です。"
+credit_idle = "アカウントのクレジットは €{balance} で、時間課金による消費はありません。"
+credit_rate = "アカウントのクレジットは €{balance}、稼働中のものすべてで 1 時間あたり €{burn} を消費しています。"
+end = "`erpc worker delete --release-server{scope}` で、このアプリの課金対象を終了します。"
+behind = "アカウントの課金一覧は開始から最大 1 分ほど遅れるため、開始したばかりのものはまだ載っていないことがあります。"
+forget_line = "ほかの場所で終了した回線は、`erpc worker deploy --forget-line <ID>{scope}` で外すまで記録に残ります。"
+
+[charges.credit]
+other = "アカウントのクレジットは €{balance}、稼働中のものすべてで 1 時間あたり €{burn} を消費しています：あと約 {n} 時間です。"
+
 [api]
 bad_method = "{method} はここで使えるメソッドではありません。GET、POST、PUT、DELETE のいずれかです"
 bad_path = "{path} はパスではありません。/ で始まり、空白・引用符・制御文字を含まないものを指定してください"
 no_port = "erpc.toml に run.port がないため、アプリの API に届く先がありません"
-no_token = "[secrets] に API_TOKEN がありません。すべての要求に必要です：`erpc worker secret put API_TOKEN{dir_scope}`"
+no_token = "アプリが要求を拒否しました。[secrets] に送るべき API_TOKEN がありません：`erpc worker secret put API_TOKEN{dir_scope}`"
 failed = "要求が通りませんでした：{why}\n{body}"
 
 [positions]

@@ -878,6 +878,7 @@ dependencies = [
  "libc",
  "ratatui",
  "reqwest",
+ "rustix",
  "secrecy",
  "serde",
  "serde_json",
@@ -930,6 +931,7 @@ dependencies = [
 name = "erpc-auth"
 version = "0.1.0-rc.3"
 dependencies = [
+ "aws-lc-rs",
  "dbus-secret-service",
  "erpc-core",
  "erpc-secret",
@@ -1296,12 +1298,17 @@ version = "0.1.0-rc.3"
 dependencies = [
  "clap",
  "erpc-worker",
+ "http-body-util",
+ "httparse",
+ "hyper",
+ "hyper-util",
  "reqwest",
  "rustix",
  "serde_json",
  "sha2 0.10.9",
  "signal-hook",
  "tempfile",
+ "tokio",
  "zeroize",
 ]
 
@@ -1649,6 +1656,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
+name = "httpdate"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
+
+[[package]]
 name = "hybrid-array"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1673,6 +1686,7 @@ dependencies = [
  "http",
  "http-body",
  "httparse",
+ "httpdate",
  "itoa",
  "pin-project-lite",
  "smallvec",
@@ -2776,9 +2790,9 @@ dependencies = [
 
 [[package]]
 name = "rustix"
-version = "1.1.5"
+version = "1.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "891efababe418670775f199f0d233d84843c227a0949a883ce15b37c78d6629d"
+checksum = "e5e76742e5294153d4dde1207dbec5bdd81eef6fabdc0d2118babadabfd858aa"
 dependencies = [
  "bitflags",
  "errno",

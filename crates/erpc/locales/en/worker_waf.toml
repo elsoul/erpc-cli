@@ -1,0 +1,55 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+# What `erpc worker` says about an app's WAF.
+
+[check]
+listens = "port {port}, in front of the app on 127.0.0.1:{upstream}: forwards {methods} on {paths}, bodies up to {body} bytes that arrive within {body_secs} s, not counting the time the app takes to accept them"
+every_path = "every path"
+allowed = "{paths} only"
+denied = "{allowed}, never {paths}"
+limits = "per address: {rate}, {connections}, {ban}; {probes}; {firewall}"
+rate = "{per_second} requests a second (burst {burst})"
+rate_off = "no rate limit"
+connections = "{n} connections at once"
+connections_off = "no limit on connections"
+ban = "a {for_secs} s ban after {after} blocked requests in {window_secs} s"
+ban_off = "no ban"
+probes = "scanner probes refused"
+probes_off = "scanner probes not looked for"
+firewall = "the firewall drops new connections over {per_second} a second (burst {burst})"
+firewall_off = "the firewall does not limit new connections"
+
+[status]
+listening = "WAF: listening on port {port}, forwarding to {upstream}, since {since}; requests {requests}, forwarded {forwarded}, blocked {blocked}, connections refused {refused}, app errors {errors}, addresses banned now {banned}"
+no_counts = "WAF: listening on port {port}, forwarding to {upstream}; it has written no counts yet"
+down = "WAF: not running ({state}); it is to listen on port {port}. `erpc worker logs --waf{scope}` shows why, and `erpc worker deploy{scope}` starts it again"
+unread = "WAF: {state}, and its config on the server does not read ({error}); `erpc worker deploy{scope}` writes it again"
+absent = "WAF: erpc.toml asks for one and the server has none yet; `erpc worker deploy{scope}` puts it in place"
+other_rules = "WAF: the rules it runs are not erpc.toml's; `erpc worker deploy{scope}` puts erpc.toml's in place, and until then its port is not opened wider"
+unsaid_rules = "WAF: the server does not say which rules it runs (its agent is from before this erpc), so they are not taken for erpc.toml's; `erpc worker deploy{scope}` puts erpc.toml's in place, and until then its port is not opened wider"
+earlier_agent = "WAF: it was started by an earlier agent than the one installed, or the server could not tell which, so the rules it runs are not taken for erpc.toml's; `erpc worker deploy{scope}` restarts it, and until then its port is not opened wider"
+before_config = "WAF: it was started before its config or its unit on the server last changed, or a deploy that was writing them was ended before it restarted the WAF, or the server could not tell when it was started, so the rules it runs are not taken for erpc.toml's; `erpc worker deploy{scope}` restarts it, and until then its port is not opened wider"
+not_asked = "WAF: erpc.toml has no [waf] any more; `erpc worker deploy{scope}` removes the one on the server"
+blocked = "blocked by rule: {rules}"
+nothing_blocked = "nothing blocked yet"
+
+[deploy]
+applying = "putting the WAF in front of it: port {port}, forwarding to {upstream}"
+listening = "the WAF listens on port {port}"
+unchanged = "the WAF listens on port {port}, as before"
+restarted = "the WAF listens on port {port}, restarted to run the agent installed now; its rules are as before"
+restarted_config = "the WAF listens on port {port}, restarted with its config and its unit on the server as they are now: it had been started before one of them last changed, or a deploy that was writing them had been ended before it restarted the WAF, or the server could not tell when"
+removed = "erpc.toml has no [waf] any more: the WAF is removed from the server"
+not_removed = "the WAF an earlier deploy left could not be removed: {error}"
+failed = "release {release} runs, and its WAF did not come up: {why}"
+failed_hint = "`erpc worker logs --waf{scope}` shows the WAF's journal; `erpc worker deploy{scope}` again puts it in place"
+no_reason = "the server's agent gave no reason"
+
+[done]
+open = "Its WAF listens on port {port} and forwards to the app on {upstream}; the port is open to {addresses}{limit}."
+limit = ", with new connections over {per_second} a second from one address dropped"
+nobody = "Its WAF listens on port {port} and forwards to the app on {upstream}; nobody is let in yet: `erpc worker firewall allow --to app <ADDRESS>{scope}` opens the port to an address, and to everyone with 0.0.0.0/0."
+see = "`erpc worker firewall list{scope}` shows what the WAF blocked, by rule; `erpc worker logs --waf{scope}` shows each request it refused."
+removed = "The WAF is removed from the server: erpc.toml has no [waf] any more."
+prepared = "Its WAF, on port {port}, is put in place by the deploy that starts the app."

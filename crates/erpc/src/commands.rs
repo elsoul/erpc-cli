@@ -69,6 +69,32 @@ impl From<CliError> for Outcome {
     }
 }
 
+/// What a command that worked has to say: one JSON record under `--json`,
+/// text otherwise. Which of the two it is, is chosen apart from printing
+/// it, so that a test can hold the choice.
+#[derive(Debug, PartialEq)]
+pub enum Said {
+    /// `--json`: the record, which [`Said::done`] prints.
+    Json(serde_json::Value),
+    /// The text, printed where every outcome is.
+    Text(String),
+}
+
+impl Said {
+    /// The outcome. A JSON record is printed here, on standard output,
+    /// and leaves nothing more to print; text is handed on.
+    #[must_use]
+    pub fn done(self) -> Outcome {
+        match self {
+            Self::Json(body) => {
+                crate::print_json(&body);
+                Outcome::Done(String::new())
+            }
+            Self::Text(text) => Outcome::Done(text),
+        }
+    }
+}
+
 /// Prints the approval page and waits between polls.
 struct Prompt {
     json: bool,

@@ -50,6 +50,15 @@ type Fut<'a, T> = Pin<Box<dyn Future<Output = Result<T, String>> + 'a>>;
 const LOOK_LIMIT: Duration = Duration::from_secs(30);
 /// How long a command the person agreed to may run.
 const AGREED_LIMIT: Duration = Duration::from_secs(300);
+/// How long an erpc command that builds or deploys may run, once agreed.
+/// A first `erpc worker deploy` builds the app and waits for a new server
+/// and for the lines it starts (an Unlimited RPC alone can take 50
+/// minutes), and a node's deploy fetches a snapshot: all take longer than
+/// five minutes, and one stopped halfway leaves a server bought and
+/// nothing on it. A worker's deploy ends by its own waits well inside
+/// this. A node's deploy that builds its client from source can take
+/// longer still; it picks up where it was when it is run again.
+pub const DEPLOY_LIMIT: Duration = Duration::from_mins(90);
 /// The most of each of standard output and standard error passed on.
 const MAX_OUTPUT: usize = 32 * 1024;
 /// The most arguments, and the most characters in all of them.
@@ -84,6 +93,16 @@ pub trait Shell {
     /// Runs `command`, the program then its arguments, with nothing on
     /// standard input, for at most `limit`.
     fn run<'a>(&'a self, command: &'a [String], limit: Duration) -> Fut<'a, Ran>;
+
+    /// Whether `command` is one of the shell's own program's that builds
+    /// or deploys, and so may run for [`DEPLOY_LIMIT`] once the person
+    /// agreed to it. The program that owns the shell answers by reading
+    /// the line with its own parser; this crate does not guess at another
+    /// program's command line. No, unless a shell says otherwise.
+    fn runs_long(&self, command: &[String]) -> bool {
+        let _ = command;
+        false
+    }
 }
 
 /// The computer erpc runs on, in the folder it was started in.
@@ -114,7 +133,7 @@ impl Shell for LocalShell {
                 .map_err(|e| format!("{program} could not be started: {e}"))?;
             // Until it ends by itself, the deadline or dropping this future
             // (Ctrl-C in the console) kills the whole group.
-            let mut group = Group(child.id());
+            let mut group = Group::of(child.id());
             let deadline = tokio::time::Instant::now() + limit;
             let (mut out, mut err) = (Capped::default(), Capped::default());
             let (stdout, stderr) = (child.stdout.take(), child.stderr.take());
@@ -139,7 +158,7 @@ impl Shell for LocalShell {
                     group.stop();
                 } else {
                     // Ended by itself: what it left running on purpose stays.
-                    group.0 = None;
+                    group.forget();
                 }
                 // Output still open now is held by something it left running;
                 // it is not waited for.
@@ -164,22 +183,69 @@ impl Shell for LocalShell {
 /// left running still holds it open.
 const LEFT_OPEN: Duration = Duration::from_secs(1);
 
+/// The process groups of the commands running now, for [`stop_live`].
+static LIVE: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
+
+/// Kills every command this process is running. For the ways out that run
+/// no destructors, a signal's and a panic's that aborts: a command given
+/// the long limit would otherwise run on with nobody reading it. It never waits: a
+/// list locked elsewhere is left alone.
+pub fn stop_live() {
+    stop_where(|_| true);
+}
+
+/// Kills the running commands whose process group `which` picks, and takes
+/// them off the list.
+fn stop_where(which: impl Fn(u32) -> bool) {
+    if let Ok(mut live) = LIVE.try_lock() {
+        live.retain(|&id| {
+            let picked = which(id);
+            if picked {
+                kill_group(id);
+            }
+            !picked
+        });
+    }
+}
+
+fn kill_group(id: u32) {
+    #[cfg(unix)]
+    if let Some(pid) = i32::try_from(id)
+        .ok()
+        .and_then(rustix::process::Pid::from_raw)
+    {
+        let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+    }
+    #[cfg(not(unix))]
+    let _ = id;
+}
+
 /// A running command's process group, killed when this is dropped unless
 /// the command ended by itself first.
 struct Group(Option<u32>);
 
 impl Group {
-    fn stop(&mut self) {
-        let id = self.0.take();
-        #[cfg(unix)]
-        if let Some(pid) = id
-            .and_then(|id| i32::try_from(id).ok())
-            .and_then(rustix::process::Pid::from_raw)
-        {
-            let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+    /// The group of a command just started, on the list of those running.
+    fn of(id: Option<u32>) -> Self {
+        if let (Some(id), Ok(mut live)) = (id, LIVE.lock()) {
+            live.push(id);
         }
-        #[cfg(not(unix))]
-        let _ = id;
+        Self(id)
+    }
+
+    /// Takes the group off the list of those running.
+    fn forget(&mut self) -> Option<u32> {
+        let id = self.0.take()?;
+        if let Ok(mut live) = LIVE.lock() {
+            live.retain(|kept| *kept != id);
+        }
+        Some(id)
+    }
+
+    fn stop(&mut self) {
+        if let Some(id) = self.forget() {
+            kill_group(id);
+        }
     }
 }
 
@@ -402,8 +468,9 @@ pub(crate) async fn run_command(
             }
         }
     }
-    let limit = if looks { LOOK_LIMIT } else { AGREED_LIMIT };
-    let ran = shell.run(&asked.argv, limit).await?;
+    let ran = shell
+        .run(&asked.argv, limit_of(&asked, looks, shell))
+        .await?;
     Ok(json!({
         "command": asked.shown,
         "exitCode": ran.status,
@@ -412,6 +479,21 @@ pub(crate) async fn run_command(
         "truncated": ran.truncated,
         "timedOut": ran.timed_out,
     }))
+}
+
+/// How long `asked` may run: a command that only looks, one the person
+/// agreed to, or one the shell says builds or deploys. A look is asked
+/// first: it runs without a yes, so it never gets the long limit. A script
+/// is not asked about: what it runs inside is not a command line the shell
+/// can read.
+fn limit_of(asked: &Asked, looks: bool, shell: &dyn Shell) -> Duration {
+    if looks {
+        LOOK_LIMIT
+    } else if !asked.script && shell.runs_long(&asked.argv) {
+        DEPLOY_LIMIT
+    } else {
+        AGREED_LIMIT
+    }
 }
 
 /// The second question before every command is allowed.
@@ -560,8 +642,8 @@ const READABLE_FILES: &[&str] = &[
 /// The `erpc worker` verbs that only look: the app's state, its log (not
 /// followed), what it keeps and what it lacks. With them may come the
 /// global flags, `--dir`/`--env` and their values, `-n`/`--lines` for the
-/// log, and the app's name. Not `list --prune`, which drops entries from
-/// the app index.
+/// log and `--waf` for its WAF's, and the app's name. Not `list --prune`,
+/// which drops entries from the app index.
 fn erpc_looks(args: &[&str]) -> bool {
     const VERBS: &[&[&str]] = &[
         &["worker", "check"],
@@ -576,7 +658,7 @@ fn erpc_looks(args: &[&str]) -> bool {
         &["worker", "backup", "status"],
     ];
     const WITH_VALUE: &[&str] = &["--dir", "--env", "-e", "-n", "--lines", "--lang"];
-    const ALONE: &[&str] = &["--json"];
+    const ALONE: &[&str] = &["--json", "--waf"];
     // Global flags before the verb are fine; `--help` is a look too.
     let mut words = args.iter().copied().filter(|a| *a != "--json");
     let mut verb = Vec::new();
@@ -1299,6 +1381,47 @@ mod tests {
         ran: core::cell::RefCell<Vec<Vec<String>>>,
     }
 
+    /// A shell that runs nothing, keeps the limit each command was given,
+    /// says a command builds or deploys when its second word is `deploy`,
+    /// and keeps what it was asked that about.
+    #[derive(Default)]
+    struct Timed(
+        core::cell::RefCell<Vec<core::time::Duration>>,
+        core::cell::RefCell<Vec<Vec<String>>>,
+    );
+
+    impl super::Shell for Timed {
+        fn folder(&self) -> String {
+            "/work".to_owned()
+        }
+
+        fn run<'a>(
+            &'a self,
+            _: &'a [String],
+            limit: core::time::Duration,
+        ) -> super::Fut<'a, super::Ran> {
+            self.0.borrow_mut().push(limit);
+            Box::pin(async { Ok(super::Ran::default()) })
+        }
+
+        fn runs_long(&self, command: &[String]) -> bool {
+            self.1.borrow_mut().push(command.to_vec());
+            command.get(1).is_some_and(|word| word == "deploy")
+        }
+    }
+
+    /// Says yes to everything it is asked.
+    struct Yes;
+
+    impl crate::confirm::Confirm for Yes {
+        fn confirm<'a>(
+            &'a self,
+            _: &'a crate::confirm::Confirmation,
+        ) -> core::pin::Pin<Box<dyn Future<Output = bool> + 'a>> {
+            Box::pin(async { true })
+        }
+    }
+
     impl super::Shell for Fake {
         fn folder(&self) -> String {
             "/work".to_owned()
@@ -1333,6 +1456,144 @@ mod tests {
             let yes = self.0;
             Box::pin(async move { yes })
         }
+    }
+
+    #[tokio::test]
+    async fn a_command_the_shell_calls_a_deploy_is_given_the_long_limit() {
+        use super::{AGREED_LIMIT, DEPLOY_LIMIT, LOOK_LIMIT, run_command};
+        // The limit is read where the command is run: through the tool,
+        // with a person who says yes to whatever is asked.
+        let given = async |input: serde_json::Value| {
+            let shell = Timed::default();
+            run_command(&input, Some(&Yes), Some(&shell), None)
+                .await
+                .expect("ran");
+            let limits = shell.0.borrow();
+            assert_eq!(limits.len(), 1, "run once");
+            (limits[0], shell.1.borrow().clone())
+        };
+        let argv = |words: &[&str]| json!({ "argv": words });
+        // What the shell says builds or deploys runs for the long limit,
+        // and what it does not, for the one an agreed command has.
+        let (limit, asked) = given(argv(&["tool", "deploy", "--now"])).await;
+        assert_eq!(limit, DEPLOY_LIMIT);
+        assert_eq!(asked, [["tool", "deploy", "--now"].map(str::to_owned)]);
+        let (limit, _) = given(argv(&["tool", "status"])).await;
+        assert_eq!(limit, AGREED_LIMIT);
+        // A command that only looks keeps its own limit whatever the shell
+        // would say: it runs without a yes, and is not asked about.
+        let look = ["cat", "/etc/os-release"];
+        assert!(super::only_looks(&look.map(str::to_owned)));
+        let (limit, asked) = given(argv(&look)).await;
+        assert_eq!(limit, LOOK_LIMIT);
+        assert!(asked.is_empty(), "a look is not asked about: {asked:?}");
+        // A script is not a command line the shell can read: it keeps the
+        // agreed limit, and the shell is not asked about it.
+        let (limit, asked) = given(json!({ "shell": "tool deploy && echo done" })).await;
+        assert_eq!(limit, AGREED_LIMIT);
+        assert!(asked.is_empty(), "a script is not asked about: {asked:?}");
+        // A shell that says nothing (the trait's own answer) gives no
+        // command the long limit.
+        let plain = Fake {
+            ran: core::cell::RefCell::default(),
+        };
+        assert!(!super::Shell::runs_long(
+            &plain,
+            &["tool", "deploy"].map(str::to_owned)
+        ));
+        assert!(DEPLOY_LIMIT > AGREED_LIMIT && AGREED_LIMIT > LOOK_LIMIT);
+        // Long enough for the longest wait a deploy has of its own, which
+        // the `erpc` crate holds it to.
+        assert_eq!(DEPLOY_LIMIT, core::time::Duration::from_mins(90));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_command_still_running_is_stopped_when_erpc_ends_without_destructors() {
+        use std::os::unix::process::CommandExt as _;
+        // A command in a process group of its own, as the shell starts one,
+        // on the list of those running.
+        let mut child = std::process::Command::new("sleep")
+            .arg("60")
+            .process_group(0)
+            .spawn()
+            .expect("sleep");
+        let id = child.id();
+        let group = super::Group::of(Some(id));
+        let listed = || super::LIVE.lock().expect("list").contains(&id);
+        assert!(listed());
+        // What the signal's way out does, for this command alone: the other
+        // tests' commands are on the same list.
+        super::stop_where(|running| running == id);
+        let status = child.wait().expect("ended");
+        assert_eq!(status.code(), None, "killed, not ended by itself");
+        assert!(!listed());
+        drop(group);
+        // One that ended by itself is off the list and is not killed.
+        let mut child = std::process::Command::new("true")
+            .process_group(0)
+            .spawn()
+            .expect("true");
+        let mut group = super::Group::of(Some(child.id()));
+        assert!(child.wait().expect("ended").success());
+        assert_eq!(group.forget(), Some(child.id()));
+        assert!(!super::LIVE.lock().expect("list").contains(&child.id()));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_shell_lists_a_command_while_it_runs_and_not_after() {
+        use core::time::Duration;
+
+        use super::Shell as _;
+        let tmp = tempfile::tempdir().expect("tmp");
+        // A command that says which process group it is, then runs on.
+        let said = tmp.path().join("pid");
+        let command: Vec<String> = [
+            "sh",
+            "-c",
+            &format!("echo $$ > '{}'; exec sleep 30", said.display()),
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        let shell = super::LocalShell;
+        let running = shell.run(&command, Duration::from_secs(60));
+        tokio::pin!(running);
+        let id = loop {
+            let read = std::fs::read_to_string(&said).ok();
+            if let Some(id) = read.and_then(|text| text.trim().parse::<u32>().ok()) {
+                break id;
+            }
+            let waited = tokio::time::timeout(Duration::from_millis(20), &mut running).await;
+            assert!(waited.is_err(), "it ended before it said its id");
+        };
+        let listed = |id: u32| super::LIVE.lock().expect("list").contains(&id);
+        assert!(listed(id), "on the list while it runs");
+        // Stopped from the list, as the signal's way out does, this one
+        // alone: the other tests' commands are on the same list.
+        super::stop_where(|running| running == id);
+        let ran = running.await.expect("ended");
+        assert_eq!(ran.status, None, "killed, not ended by itself");
+        assert!(!ran.timed_out);
+        assert!(!listed(id));
+
+        // One that ends by itself is off the list, so its id, which the
+        // system gives to another process later, is never killed.
+        let said = tmp.path().join("pid2");
+        let command: Vec<String> = ["sh", "-c", &format!("echo $$ > '{}'", said.display())]
+            .map(str::to_owned)
+            .to_vec();
+        let ran = shell
+            .run(&command, Duration::from_secs(10))
+            .await
+            .expect("ran");
+        assert_eq!(ran.status, Some(0));
+        let id: u32 = std::fs::read_to_string(&said)
+            .expect("its id")
+            .trim()
+            .parse()
+            .expect("a number");
+        assert!(!listed(id));
     }
 
     #[tokio::test]
@@ -1648,6 +1909,7 @@ mod erpc_looks_tests {
             "erpc worker status --dir /apps/bot -e prod",
             "erpc worker logs -n 50 bot",
             "erpc worker logs --lines=200 --env prod",
+            "erpc worker logs --waf -n 50 bot",
             "erpc worker releases bot",
             "erpc worker key show",
             "erpc worker key balance bot",
@@ -1666,6 +1928,7 @@ mod erpc_looks_tests {
         for command in [
             "erpc worker logs -f bot",
             "erpc worker logs --follow",
+            "erpc worker logs --waf -f bot",
             // Drops entries from the app index.
             "erpc worker list --prune",
             "erpc --json worker list --prune",
