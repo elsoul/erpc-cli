@@ -323,7 +323,7 @@ mod tests {
     }
 
     /// Every file in `dir` and the directories under it that `wanted`
-    /// picks, but for what is under a directory called `plans`.
+    /// picks.
     fn files(
         dir: &std::path::Path,
         wanted: &dyn Fn(&std::path::Path) -> bool,
@@ -331,9 +331,7 @@ mod tests {
     ) {
         for entry in listed(dir) {
             if entry.is_dir() {
-                if entry.file_name().is_some_and(|name| name != "plans") {
-                    files(&entry, wanted, found);
-                }
+                files(&entry, wanted, found);
             } else if wanted(&entry) {
                 found.push(entry);
             }
@@ -346,9 +344,7 @@ mod tests {
     /// skill, the assistant's base prompt and the READMEs that go out
     /// with a crate's templates (a worker app's, a chain's operations
     /// guide). Each with its path from the repository's root. Not the
-    /// dated plans under `docs/plans`, which record what was planned on
-    /// their day, nor the catalogs, whose lines are filled in when erpc
-    /// prints them.
+    /// catalogs, whose lines are filled in when erpc prints them.
     fn documents() -> Vec<(String, String)> {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let mut paths = vec![

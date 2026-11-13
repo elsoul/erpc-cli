@@ -5,6 +5,8 @@ SPDX-License-Identifier: Apache-2.0
 
 <div align="center">
 
+<img src="docs/assets/erpc-header.jpg" alt="ERPC: Global Edge Blockchain Infrastructure" width="100%">
+
 # erpc
 
 **Run validators, RPC nodes and your own apps on 18 chains, with 1Password-backed access and key management.**
@@ -69,8 +71,8 @@ irm https://install.erpc.global/ps1 | iex
 
 These URLs select the latest stable release. While the project has only
 prereleases, they select the most recently published prerelease. To pin a
-version, use `https://install.erpc.global/v0.1.0-rc.3` or
-`https://install.erpc.global/v0.1.0-rc.3/ps1`. The release workflow updates the selected version after publication and approval
+version, use `https://install.erpc.global/v0.1.0-rc.4` or
+`https://install.erpc.global/v0.1.0-rc.4/ps1`. The release workflow updates the selected version after publication and approval
 of the protected installer deployment. Edge and client caches may delay what
 clients see.
 
@@ -447,7 +449,7 @@ The rules for these, and for writing a message, are in
 
 ## Status
 
-Pre-release (`v0.1.0-rc.3`). The commands above exist and pass their offline
+Pre-release (`v0.1.0-rc.4`). The commands above exist and pass their offline
 checks; acceptance on real hosts is still under way for most chains, and each
 chain's guide says where it stands. erpc is the Rust successor of
 [SLV](https://github.com/ValidatorsDAO/slv).
@@ -468,4 +470,7 @@ rotate it before rewriting any history.
 
 Apache-2.0. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE). Chain logos come
 from [web3icons](https://github.com/0xa3k5/web3icons) (MIT); each is a
-trademark of its own project.
+trademark of its own project. The ERPC header image
+([`docs/assets/erpc-header.jpg`](docs/assets/erpc-header.jpg)) is ELSOUL LABO
+B.V.'s brand material and is not under the Apache License: see
+[`LICENSES/LicenseRef-ELSOUL-LABO-Brand.txt`](LICENSES/LicenseRef-ELSOUL-LABO-Brand.txt).
