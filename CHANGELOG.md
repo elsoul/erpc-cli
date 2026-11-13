@@ -12,6 +12,8 @@ whose version has no entry below.
 
 ## [Unreleased]
 
+## [0.1.0-rc.4] - 2026-11-13
+
 ### Added
 
 - `erpc ai --model <SIZE>` and `/model <SIZE>` in the console put every
@@ -137,7 +139,9 @@ whose version has no entry below.
   says, in `--json` as `agent.kept`. The next deploy at a terminal hands
   the key and the secrets over and starts the app: it builds and installs
   a release of its own and starts that one (the build is cached, and the
-  server is ready), not the one `--prepare` installed.
+  server is ready), not the one `--prepare` installed. It asks for no
+  passphrase: it looks that the entries the app names in the keystore are
+  there, and opens nothing.
 - `erpc worker init` offers **HelloWorld** first: a small HTTP API in Rust
   (`GET /`, `GET /hello/{name}`, `GET /healthz`) that needs no key, no
   secret and no data line, so `init`, `run` and `deploy` work as they come.
@@ -226,10 +230,6 @@ whose version has no entry below.
   they keep five); every other command keeps the limit it had. A command
   still running when erpc is ended by Ctrl-C, a termination or a hangup,
   or by a panic that aborts, is stopped with it (on Unix).
-- `erpc worker deploy --prepare` asked for the keystore's passphrase,
-  though it reads neither the key nor a secret, and so stopped on a
-  machine whose keystore was locked with nobody at a terminal. It now
-  looks that the entries the app names are there and opens nothing.
 - A package run on the server restarted the workers on it: Ubuntu's and
   Debian's `needrestart` restarts a service whose binary was replaced or
   whose libraries were upgraded, after a deploy that installs a local
@@ -317,9 +317,6 @@ whose version has no entry below.
 - `erpc worker check` and `run` no longer tell an app that needs no key to
   make one with `erpc worker key new`: only an app made from a template
   that trades is told.
-- `erpc worker stop --lock` keeps an app that needs no key or secret
-  stopped. The agent started it again at its next tick, and after a
-  restart of the agent.
 
 ## [0.1.0-rc.3] - 2026-11-10
 
@@ -720,7 +717,8 @@ version.
 - `docs/verify-release.md`: verify signatures against a key saved once from
   `main`, not against `pubkey.txt` at the tag being checked.
 
-[Unreleased]: https://github.com/elsoul/erpc-cli/compare/v0.1.0-rc.3...HEAD
+[Unreleased]: https://github.com/elsoul/erpc-cli/compare/v0.1.0-rc.4...HEAD
+[0.1.0-rc.4]: https://github.com/elsoul/erpc-cli/releases/tag/v0.1.0-rc.4
 [0.1.0-rc.3]: https://github.com/elsoul/erpc-cli/releases/tag/v0.1.0-rc.3
 [0.1.0-rc.2]: https://github.com/elsoul/erpc-cli/releases/tag/v0.1.0-rc.2
 [0.1.0-rc.1]: https://github.com/elsoul/erpc-cli/releases/tag/v0.1.0-rc.1

@@ -330,8 +330,8 @@ Ending something is asked at a terminal whatever the flags.
 
 ### Without a person: `--yes` and `--prepare`
 
-A script, or an agent such as `erpc ai` or Claude Code, has no terminal to
-answer at. Two flags let it do the work all the same:
+A script, or an agent such as `erpc ai` or another coding agent, has no
+terminal to answer at. Two flags let it do the work all the same:
 
 ```bash
 erpc worker deploy hello-world --new-vps --yes                     # no key: all the way, unattended
