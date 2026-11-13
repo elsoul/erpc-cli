@@ -79,7 +79,7 @@ zeroize = { version = "1.8", features = ["zeroize_derive"] }
 aws-lc-rs = { version = "1.18.2", default-features = false, features = ["aws-lc-sys"] }
 # Already in the lock through dbus-secret-service; the parked file uses it to
 # name the session a rotation replaced without writing that token down.
-sha2 = { version = "0.10.9", default-features = false }
+sha2 = { version = "0.11.1", default-features = false }
 # Hidden input (`erpc worker secret put`); asked only at a terminal.
 dialoguer = { version = "0.12.0", default-features = false }
 # Arrow-key choices, drawn with a description beside each option; asked only
