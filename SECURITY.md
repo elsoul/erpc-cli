@@ -50,8 +50,8 @@ On the operator's machine `erpc` keeps these secrets:
   through the OAuth device authorization grant, in the store described below;
 - the storage and backup secrets listed under the storage section below, in the
   same store, and a machine's own backup keys in `~/.erpc/backup.env`;
-- an `erpc worker` app's trading key and secret settings, in 1Password or the
-  keychain.
+- an `erpc worker` app's trading key and secret settings, in 1Password, the
+  keychain or, on a machine with neither, the worker keystore described below.
 
 Node keys that erpc holds for you, and the `erpc wallet` key, are made or read in
 memory and stored in 1Password; `docs/nodes.md` lists the keys that stay on node
@@ -179,6 +179,81 @@ they are in.
 - The restic program is a pinned version. Both the release archive and the
   program inside it are checked against SHA-256 digests compiled into erpc,
   and a newer digest is never read from the network.
+
+### The worker keystore
+
+`erpc worker key new`, `key import` and `secret put` keep an app's trading
+key and secret settings in 1Password or the operating system's keychain.
+Where `erpc login` does not keep the session in 1Password and the keychain
+cannot keep a value past a reboot (Linux with no Secret Service), and
+wherever `--store keystore` asks for it, they write them to disk instead,
+encrypted: the keystore, the directory `keystore` beside `config.toml`
+(`~/.erpc/keystore`). No key or secret value in it is in cleartext. Its
+format is set out at the top of `crates/erpc-auth/src/store/keystore.rs`,
+and `docs/worker.md` ("The keystore") says how it is used.
+
+- **What is written.** `master.json`: a random 32-byte master key, sealed
+  with ChaCha20-Poly1305 under a key that PBKDF2-HMAC-SHA256 (600,000
+  iterations, a random 32-byte salt) derives from a passphrase the operator
+  chooses. One file per value: the value sealed with ChaCha20-Poly1305
+  under a key that HKDF-SHA256 derives from the master key and a salt of
+  the entry's own, with the entry's name and its kind (a trading key, or a
+  secret) in the associated data. On Unix the directories are created with
+  mode `0700` and the files with `0600`; on Windows `erpc` sets no
+  permissions of its own. Each file is written under a temporary name and
+  renamed into place; a crash between the two steps leaves the temporary
+  file, which holds the same sealed text.
+- **The passphrase** is read from a hidden prompt at a terminal and from
+  nowhere else: not from an argument, an environment variable or a pipe. It
+  is not stored. `erpc` cannot recover it, or a keystore whose files are
+  lost. On Unix the terminal's echo is held off from the first prompt until
+  the last attempt has been checked, so an attempt typed ahead while one is
+  checked is not shown; what was typed and not read is discarded.
+- **The unlock.** On Linux the unwrapped master key is kept in the kernel's
+  persistent keyring for the user, in memory, so that the passphrase is not
+  asked for by every command. It stays until a reboot, until that keyring
+  has gone unused for the time in
+  `/proc/sys/kernel/keys/persistent_keyring_expiry`, or until `erpc worker
+  secret lock`, which drops every unlock `erpc` keeps for the user,
+  whichever keystore it opens. While it is there, any process running as
+  the same user can read it (one whose session does not hold the user's
+  keyring can link it in), and with it open every entry. On other systems
+  nothing is kept, and each command asks.
+- **What it does not protect against.** Someone who has the files and the
+  passphrase. A passphrase that can be guessed: PBKDF2 makes each guess
+  slow, and no more. A process running as the operator while the keystore
+  is unlocked, or one that reads the terminal the passphrase is typed at.
+  The names of the entries and the lengths of their values are not hidden,
+  and an entry replaced by an older copy of itself opens.
+- **The trading key's gate is separate.** `erpc` reads the key that
+  `[wallet]` names only for a person at a terminal, and not for an AI tool
+  or with a 1Password service account, in whichever store it is kept
+  (`crates/erpc-secret/src/gate.rs`). An unlocked keystore does not change
+  that. A secret setting is read with no such gate, so a key is kept from
+  being read as one:
+  - In the keystore, each entry is sealed as a trading key or as a secret.
+    One kept as a key (by `key new` or `key import`) opens only as the key
+    `[wallet]` names, and not as a secret, whatever names it; a secret does
+    not open as a key.
+  - `erpc.toml` is refused when a `[secrets]` line names the entry
+    `[wallet]` names, or a keychain or keystore account ending in `.wallet`
+    (where `erpc` files a key), and `erpc worker bench --url` refuses such
+    a reference too.
+  - That leaves a key in 1Password, or under a keychain account that does
+    not end in `.wallet`: nothing in such a reference says that it is a
+    key's. An `erpc.toml` with no `[wallet]` that names it under
+    `[secrets]` has it read as a secret, with no gate.
+
+  The gate and the kinds are what `erpc` does; they do not bind other
+  programs.
+- **One spelling of a name.** An entry's file is named after its service
+  and account as they are written. Where file names ignore case (the
+  defaults of macOS and Windows) `<app>.WALLET.json` is the file of
+  `<app>.wallet.json`, the trading key's. So `erpc worker secret put` keeps
+  no setting called `WALLET`, in any case, in the keychain or the keystore,
+  `secret rm` removes none, and the keystore reads its directory before
+  every read, write and removal: where it holds another spelling of the
+  name, it does none of them.
 
 ### What the assistant reads
 

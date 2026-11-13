@@ -80,6 +80,13 @@ erpc-worker = { workspace = true, features = ["templates"] }
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 signal-hook.workspace = true
+# The terminal's echo, held off across the keystore's passphrase prompts
+# (src/echo.rs).
+rustix = { workspace = true, features = ["std", "termios"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# A pseudoterminal, for the test of src/echo.rs.
+rustix = { workspace = true, features = ["std", "termios", "pty"] }
 
 [dev-dependencies]
 

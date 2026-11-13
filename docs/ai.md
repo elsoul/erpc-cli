@@ -34,6 +34,13 @@ says what each of its tools passes on.
 
 More about conversations:
 
+- **Model size**: each turn's words decide it, small for a greeting and
+  large for the rest. `erpc ai --model xlarge` (also with `-m` or `-c`)
+  or `/model xlarge` in the console puts every turn on one size instead:
+  `small`, `medium`, `large` or `xlarge`, the most capable, which uses
+  your tokens at 2x. `/model auto` goes back, and `/model` alone says
+  which size is in use. Changing it in a conversation reads the whole
+  conversation again at the new size once.
 - **Conversations** are saved under `~/.erpc/conversations/`, readable by
   you alone. `erpc ai -c` continues the last one (also with `-m` or a
   question piped in), and `erpc resume` picks any of them.

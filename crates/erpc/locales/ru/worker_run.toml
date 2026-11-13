@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 missing = "Приложение {name} не запустится без {settings}"
-missing_hint = "секрет сохраняется через `erpc worker secret put {first}{dir_scope}`, обычная настройка задаётся в [vars]"
+missing_hint = "секрет сохраняется через `erpc worker secret put {first}{how}{dir_scope}`, обычная настройка задаётся в [vars]"
 missing_line_hint = "{first} даёт линия: `erpc worker run{dir_scope} --{flag} --ip <IPV4>` запускает почасовую линию, пропускающую эту машину; или задайте его в [vars]"
 watch_only = "нет [wallet]: приложение запускается только для наблюдения (ключ создаёт `erpc worker key new{dir_scope}`)"
 positions_kept = "то, что держало приложение, остаётся в его кошельке; следующий запуск это подхватит (`erpc worker key send{dir_scope} --to <PUBKEY> --all` выводит SOL)"
@@ -34,6 +34,7 @@ interrupted = "остановлено по Ctrl-C"
 taking_up = "используется линия {kind} {id}, которая уже пускает {ip}"
 active = "линия {kind} {id} активна: {setting} = {endpoint}"
 made_anyway = "user-api всё же создал линию; она будет завершена вместе с этим запуском"
+maybe_started = "линия могла запуститься: линии аккаунта видны в панели управления. Следующий запуск подхватит линию, пропускающую этот адрес, как только она станет активной, поэтому подождите минуту перед повтором; ненужную линию завершите в панели управления"
 not_hourly = "линия {kind} {id} оплачивается не почасово и остаётся как есть"
 kept = "линия {kind} {id} оставлена и оплачивается почасово: `erpc worker run{dir_scope} --{flag} --ip {ip}` снова возьмёт её, завершить её можно в панели управления"
 ended = "линия {kind} {id} завершена"

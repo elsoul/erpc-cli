@@ -20,9 +20,16 @@
 //! Validator keys and wallet keys do not come through here. This trait is
 //! for session tokens only; key material goes through `erpc-secret` and
 //! 1Password, which is a different path with a different gate.
+//!
+//! [`keystore`] is not a session store either. It is where `erpc worker`
+//! keeps an app's secrets and its trading key on a machine with neither
+//! 1Password nor a keychain that lasts: files sealed under a passphrase.
+//! It lives here, beside [`keychain`], because it is unlocked through the
+//! same kernel keyring the session falls back to.
 
 pub mod file;
 pub mod keychain;
+pub mod keystore;
 pub mod one_password;
 #[cfg(target_os = "macos")]
 pub mod security_cli;

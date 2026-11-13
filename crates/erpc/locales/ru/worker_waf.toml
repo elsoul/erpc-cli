@@ -1,0 +1,55 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+# Что `erpc worker` говорит о WAF приложения.
+
+[check]
+listens = "порт {port}, перед приложением на 127.0.0.1:{upstream}: пропускает {methods} на {paths}, тело запроса до {body} байт, которое должно прийти целиком за {body_secs} с, не считая времени, пока приложение принимает уже присланное"
+every_path = "любой путь"
+allowed = "только {paths}"
+denied = "{allowed}, но никогда {paths}"
+limits = "на один адрес: {rate}, {connections}, {ban}; {probes}; {firewall}"
+rate = "{per_second} запросов в секунду (всплеск {burst})"
+rate_off = "без ограничения частоты"
+connections = "одновременных соединений: {n}"
+connections_off = "без ограничения числа соединений"
+ban = "бан на {for_secs} с после {after} заблокированных запросов за {window_secs} с"
+ban_off = "без бана"
+probes = "запросы сканеров отклоняются"
+probes_off = "запросы сканеров не проверяются"
+firewall = "файрвол отбрасывает новые соединения сверх {per_second} в секунду (всплеск {burst})"
+firewall_off = "файрвол не ограничивает новые соединения"
+
+[status]
+listening = "WAF: слушает порт {port}, передаёт на {upstream}, с {since}; запросов {requests}, передано {forwarded}, заблокировано {blocked}, отклонено соединений {refused}, ошибок приложения {errors}, адресов в бане сейчас {banned}"
+no_counts = "WAF: слушает порт {port}, передаёт на {upstream}; счётчики ещё не записаны"
+down = "WAF: не работает ({state}); он должен слушать порт {port}. Причину покажет `erpc worker logs --waf{scope}`, а `erpc worker deploy{scope}` запустит его снова"
+unread = "WAF: {state}, а его конфигурация на сервере не читается ({error}); `erpc worker deploy{scope}` запишет её заново"
+absent = "WAF: erpc.toml требует его, а на сервере его ещё нет; `erpc worker deploy{scope}` установит его"
+other_rules = "WAF: он работает по правилам, которые не совпадают с erpc.toml; `erpc worker deploy{scope}` установит правила из erpc.toml, а до тех пор его порт шире не открывается"
+unsaid_rules = "WAF: сервер не сообщает, по каким правилам он работает (его агент старше этой версии erpc), поэтому они не считаются правилами из erpc.toml; `erpc worker deploy{scope}` установит правила из erpc.toml, а до тех пор его порт шире не открывается"
+earlier_agent = "WAF: он запущен более ранним агентом, чем установленный сейчас (или сервер не смог определить, каким), поэтому его правила не считаются правилами из erpc.toml; `erpc worker deploy{scope}` перезапустит его, а до тех пор его порт шире не открывается"
+before_config = "WAF: он запущен раньше, чем в последний раз менялись его конфигурация или юнит на сервере (или деплой, который их записывал, был прерван до перезапуска WAF, или сервер не смог определить, когда он запущен), поэтому его правила не считаются правилами из erpc.toml; `erpc worker deploy{scope}` перезапустит его, а до тех пор его порт шире не открывается"
+not_asked = "WAF: в erpc.toml больше нет [waf]; `erpc worker deploy{scope}` уберёт тот, что на сервере"
+blocked = "заблокировано по правилам: {rules}"
+nothing_blocked = "пока ничего не заблокировано"
+
+[deploy]
+applying = "ставим WAF перед приложением: порт {port}, передача на {upstream}"
+listening = "WAF слушает порт {port}"
+unchanged = "WAF слушает порт {port}, как и прежде"
+restarted = "WAF слушает порт {port}; он перезапущен, чтобы работать от установленного сейчас агента, правила прежние"
+restarted_config = "WAF слушает порт {port}; он был запущен раньше, чем в последний раз менялись его конфигурация или юнит на сервере (или деплой, который их записывал, был прерван до перезапуска WAF, или сервер не смог определить, когда), и перезапущен с ними в нынешнем виде"
+removed = "в erpc.toml больше нет [waf]: WAF удалён с сервера"
+not_removed = "не удалось удалить WAF, оставшийся от прежнего деплоя: {error}"
+failed = "релиз {release} работает, но его WAF не поднялся: {why}"
+failed_hint = "`erpc worker logs --waf{scope}` покажет журнал WAF; повторный `erpc worker deploy{scope}` установит его заново"
+no_reason = "агент на сервере не назвал причину"
+
+[done]
+open = "Его WAF слушает порт {port} и передаёт запросы приложению на {upstream}; порт открыт для {addresses}{limit}."
+limit = ", новые соединения сверх {per_second} в секунду с одного адреса отбрасываются"
+nobody = "Его WAF слушает порт {port} и передаёт запросы приложению на {upstream}; пока никого не пускают: `erpc worker firewall allow --to app <ADDRESS>{scope}` откроет порт для адреса, а с 0.0.0.0/0 — для всех."
+see = "`erpc worker firewall list{scope}` показывает, что WAF заблокировал, по правилам; `erpc worker logs --waf{scope}` показывает каждый отклонённый запрос."
+removed = "В erpc.toml больше нет [waf]: WAF удалён с сервера."
+prepared = "Его WAF (порт {port}) установит деплой, который запускает приложение."

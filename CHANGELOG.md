@@ -12,8 +12,205 @@ whose version has no entry below.
 
 ## [Unreleased]
 
+### Added
+
+- `erpc ai --model <SIZE>` and `/model <SIZE>` in the console put every
+  turn of the conversation on one model size: `small`, `medium`, `large`
+  or `xlarge`, the most capable, which uses tokens at 2x. `/model auto`
+  goes back to letting each turn's words decide (small for a greeting,
+  large for the rest), as before; `/model` alone says which is in use.
+  The choice lasts until erpc ai ends, `/new` included, and the console
+  names the size under each answer. A size the service does not offer is
+  answered at its default size instead, and the console says so. The suggested next
+  message and the summary of a long conversation stay on the small size.
+- `erpc worker secret put <NAME> --generate` makes the value itself (64
+  random hexadecimal characters, shown to nobody), for a token of the
+  app's own such as the bot's `API_TOKEN`, and `--from-account` keeps the
+  signed-in account's RPC API key, for `ERPC_API_KEY`: the first of its
+  keys the shared RPC takes, said to be the account's primary key or one
+  of its other keys (`account_key` with `--json`). Neither asks for a
+  value, so a script or an agent can run them once the store is open (the
+  keystore unlocked, or 1Password answering): the first use of the
+  keystore, or a locked one, still needs a person at a terminal (`erpc
+  worker secret unlock`). A command that is going to be refused (a name
+  set already without `--replace`, an `erpc.toml` that is not there, a
+  store that cannot be opened) is refused before a value is made and
+  before anything is asked of the account. `erpc worker init` names them
+  in its next steps: the pumpfun bot is set up with no value typed and
+  nothing copied from the dashboard. `erpc worker deploy` and `erpc worker
+  run` name them too where such a setting is missing, for an app made
+  from a template: the hint's command carries the flag `init` named.
+- `[waf]` in `erpc.toml` puts an app behind a WAF: `erpc worker deploy`
+  runs an HTTP reverse proxy on the server, in a hardened unit of its own,
+  on `waf.port`, and forwards to the app on loopback what its rules let
+  through. It refuses methods and paths not allowed, oversized heads and
+  bodies, a head or a body that takes too long to arrive, scanner probes,
+  malformed and smuggling-shaped requests, and an address over its rate
+  (429) or its connection limit; an address that keeps being blocked is
+  banned for a while. Only `port` is required;
+  `rate`, `ban`, `max_connections_per_address` and `new_connections` are
+  turned off with `false`. `erpc worker check` says what it will do. It
+  speaks plain HTTP/1.1: no TLS, HTTP/2 or WebSocket.
+- With `[waf]`, `firewall.app_allow` opens the WAF's port, never the
+  app's own, and only once the WAF listens on it; the server's firewall
+  also drops new connections over 50 a second from one address
+  (`new_connections`). `erpc worker firewall allow --to app 0.0.0.0/0`
+  (and `::/0`) lets everyone in to an app behind a WAF; it stays refused
+  for an app's own port and for SSH. The port is opened wider only under
+  the rules `erpc.toml` makes: while the WAF on the server runs another
+  config, or was started by an earlier agent than the one installed
+  there, or before its config or its unit there last changed, `firewall allow`
+  and `sync` hold a change that would let someone new in and fail saying
+  so, a change that only narrows is applied at once, with the limit on
+  new connections that is in force, and `deploy` opens the port as
+  `erpc.toml` asks, that limit included, after it has put the new rules
+  in place. A deploy restarts a WAF that an earlier agent started, or
+  that was started before its config or its unit last changed, whether or not
+  `[waf]` changed. A deploy that is ended on the server while it writes
+  those two files leaves a note there
+  (`/etc/erpc/worker-waf/<id>.applying`): until a deploy has restarted
+  the WAF it counts as started before them, also when systemd started it
+  again by itself in between.
+- `erpc worker status` and `erpc worker firewall list` show the WAF: its
+  port, where it forwards, since when, requests, forwarded and blocked,
+  addresses banned now, in `firewall list` what was blocked by rule, and
+  in both whether the rules it runs are `erpc.toml`'s, whether an
+  earlier agent started it and whether it was started before its config
+  or its unit last changed. `erpc worker logs
+  --waf` shows its journal, a line for each request it refused. `--json`
+  has the same under `waf` and `waf_rules`.
+- `erpc worker import` takes in an app you already have: it reads the
+  directory (a Cargo package, its `.env.example` and `.env`, a Dockerfile,
+  a compose file, key files) and writes the `erpc.toml` it describes,
+  without changing the app. Values are copied from the example files;
+  from `.env` only a port number is taken. A line that names no setting
+  is left out and counted; its text is not shown. A setting that looks
+  like a
+  secret, by its name or by a credential in its example's value, and a
+  key file, are named with the command that keeps them, and the setting
+  is named in `erpc.toml` as a comment. The
+  directory may be anyone's: `erpc.toml` is made new and never written
+  over a file or through a link, what is read is a regular file inside the
+  directory of at most 1 MiB, an example file that is a link is not read
+  (its values would be another file's, the app's `.env` among them), one
+  that is one file with another name is read for its names only, a quoted
+  dotenv value is read through its closing quote, and the next steps are
+  quoted for a shell.
+- `build.prebuilt` in `erpc.toml` (`erpc worker import --binary <PATH>`)
+  ships a Linux binary built by any toolchain as it is, so an app need not
+  be written in Rust. erpc reads its header, refuses one a server cannot
+  run (a script, a binary for another system or machine, a shared library,
+  a file cut short, a loader the servers lack, a link that leads out of
+  the app) and says which glibc it needs: in `check`, and in `deploy`
+  before a server is bought.
+- `erpc worker check` warns of a `[vars]` value that carries a credential,
+  in the language of the run: a URL with a password or a token before its
+  host, a parameter named for a key, a token, a password or a signature,
+  `Bearer` or `Basic` before a token, a private key's header, a JSON Web
+  Token, a wallet's key (64 bytes in base58, a keypair's numbers), and a
+  service's token by its shape (such as Stripe's, an AWS access key id,
+  GitHub's, Slack's, GitLab's `glpat-…`, Google's `AIza…`, `sk-…`, a
+  Telegram bot's, a Slack or Discord webhook). `import` also holds back a
+  long part of a URL's path and words shaped like a recovery phrase;
+  `check` does not warn of those two, which are too often something
+  else. The reading goes by shapes: it is a net, not a proof. It warned of `api-key=`
+  and `token=` only.
+- On a Linux machine of the servers' kind, `erpc worker deploy` needs no
+  zig and no cargo-zigbuild: without them the app is built with the
+  machine's own toolchain, and the glibc the binary needs is read from it
+  and said. With them it is built for glibc 2.31 and up, as before.
+- `erpc worker deploy --yes` starts what the command names without asking:
+  the price of a new VPS or line, the credit and how long it lasts are
+  printed (on standard error, with `--json` too) and the start goes ahead.
+  So does the first login to a server erpc has not made key-only yet, a
+  new one or one named with `--vps`: your key goes in and password logins
+  go off. An hourly product is paid from ERPC Credit, bought beforehand,
+  and user-api refuses a start the credit does not cover. A script or an
+  agent can so deploy an app with nobody at a terminal. Ending something
+  is still asked at a terminal.
+- `erpc worker deploy --prepare` does everything that needs neither the
+  trading key nor a secret (the server, its firewall, the lines, the
+  release installed on the server) and starts, stops and restarts nothing.
+  An app already running there runs on, under the agent it had: an agent
+  that runs is left running even when a newer one is installed (it holds
+  the key, and a restarted one comes back without it), which `--prepare`
+  says, in `--json` as `agent.kept`. The next deploy at a terminal hands
+  the key and the secrets over and starts the app: it builds and installs
+  a release of its own and starts that one (the build is cached, and the
+  server is ready), not the one `--prepare` installed.
+- `erpc worker init` offers **HelloWorld** first: a small HTTP API in Rust
+  (`GET /`, `GET /hello/{name}`, `GET /healthz`) that needs no key, no
+  secret and no data line, so `init`, `run` and `deploy` work as they come.
+  `--template helloworld` (or `hello`) names it, and it is what `init`
+  makes when nobody is there to pick and no `--template` is given, where
+  the pumpfun bot used to be. `init`'s next steps end with the deploy.
+- `erpc worker api` calls an app that has no `API_TOKEN` in `[secrets]`
+  without one, instead of refusing; an app that answers 401 then is told
+  where its token goes.
+- `erpc worker key new`, `key import` and `secret put` on a Linux machine
+  with no Secret Service (a headless server, WSL, an SSH login) and no
+  1Password no longer refuse: they keep the trading key and the secrets in
+  erpc's keystore, files under `~/.erpc/keystore` encrypted under a
+  passphrase you choose (PBKDF2-HMAC-SHA256, ChaCha20-Poly1305), named in
+  `erpc.toml` as `keystore:<service>/<account>`. `--store keystore` asks for
+  it on any machine. Back the directory up and remember the passphrase:
+  erpc can recover neither, and 1Password stays the store that also works
+  from another machine. The format and what it does not protect against
+  are in `docs/worker.md` and `SECURITY.md`. `erpc worker secret rm`
+  deletes a secret's keystore entry with its line in `erpc.toml` (values in
+  1Password and the keychain stay, as before), and `erpc worker check`
+  warns of a `keystore:` reference this machine's keystore does not hold.
+- `erpc worker secret unlock` and `erpc worker secret lock`: on Linux the
+  keystore's passphrase is typed once and the unlock kept in the kernel
+  keyring until a reboot, its idle expiry, or `lock`; a command with nobody
+  at a terminal uses it, and otherwise fails naming `secret unlock`. `lock`
+  drops every unlock erpc keeps for you, also that of a keystore under
+  another `ERPC_HOME` or one whose files are gone. The key `[wallet]` names
+  is still read only for a person at a terminal: each keystore entry is
+  sealed as a trading key or as a secret, and one kept as a key does not
+  open as a secret, whatever names it.
+- The trading key is named by `[wallet]` alone. `erpc.toml` is refused
+  (`erpc worker check` says why) when a `[secrets]` line names the entry
+  `[wallet]` names, or a `keychain:` or `keystore:` account ending in
+  `.wallet`; `erpc worker bench --url` refuses such a reference too. A
+  setting cannot be called `WALLET`, in any case, in the keychain or the
+  keystore: where file names ignore case (macOS, Windows) its entry would
+  be the key's. The keystore holds one spelling of a name, and where its
+  directory has a second it reads, writes and removes neither.
+
 ### Changed
 
+- `erpc worker status` shows what the environment costs now, not only
+  what is on record: each hourly item (the server, each line) with the
+  price per hour the account is charged for it, the total, and the
+  account's credit with how long it lasts at what all it runs spends. An
+  item that is not among the account's charges is said to be not among
+  them, and not called ended: that list can be a minute behind a start.
+  For a line that was ended somewhere else (the dashboard, `erpc ai`) it
+  names `--forget-line`, which takes it off the record. `--json` carries
+  the same under `hourly.charged`. Without a session, or when user-api
+  does not answer, it says what is on record, as before.
+- `-y`/`--yes` on `erpc worker deploy` means more than it did. It used to
+  skip only the "Go ahead?" before a deploy: the price of a new VPS or
+  line, and the first login to a server, were still asked at a terminal.
+  Now it answers those too, and the start goes ahead at the price it
+  prints. A command line that passed `-y` and counted on the price being
+  asked starts what it names: leave out the flag, or the flags that start
+  something (`--new-vps`, `--grpc`, `--shreds`, `--unlimited`).
+- `erpc worker deploy` restarts the worker's agent, when a newer one is
+  installed or its unit changed, only once it has read the key and is
+  about to hand it over, not before the firewall, the lines and the
+  upload. A deploy that fails in those leaves a running app running, where
+  it used to leave it stopped and locked until `erpc worker start`. In
+  `--json`, `agent.restarted` says whether it did; a failure after the
+  restart has it in the error's `details`, and says how the key is handed
+  over.
+- A start that nobody can answer (no terminal, no `--yes`) is refused in
+  words for whoever ran the command, naming `--yes`, with the
+  `needs_terminal` code and exit status 3, before anything is bought. It
+  used to fail as a plain failure with a sentence written for `erpc ai`.
+  The first login to a server erpc has not made key-only yet is refused
+  the same way, in its own words: it starts nothing and has no price.
 - The `solana/pumpfun` template is on `solana-stream-sdk` 4.0.0
   (Yellowstone gRPC client 17, Agave 4.4.1 crates), vendored again from
   solana-stream's `trade-app` at `32dabe7c`, and an app made from it needs
@@ -27,6 +224,109 @@ whose version has no entry below.
 - The installer selects the published release in GitHub Actions using its
   workflow token, avoiding anonymous GitHub API limits on shared edge IPs.
   Completed release workflows refresh the deployed selection automatically.
+- `erpc ai` stopped every command it ran after five minutes, an `erpc
+  worker deploy` included: a first deploy builds the app and waits for a
+  new server, which takes longer, and one stopped halfway left a server
+  bought with nothing on it. `erpc worker deploy`, `erpc worker build`,
+  `erpc worker run --check` and a node's deploy now get 90 minutes once
+  the person has agreed to them, when run as they are (inside a script
+  they keep five); every other command keeps the limit it had. A command
+  still running when erpc is ended by Ctrl-C, a termination or a hangup,
+  or by a panic that aborts, is stopped with it (on Unix).
+- `erpc worker deploy --prepare` asked for the keystore's passphrase,
+  though it reads neither the key nor a secret, and so stopped on a
+  machine whose keystore was locked with nobody at a terminal. It now
+  looks that the entries the app names are there and opens nothing.
+- A package run on the server restarted the workers on it: Ubuntu's and
+  Debian's `needrestart` restarts a service whose binary was replaced or
+  whose libraries were upgraded, after a deploy that installs a local
+  service (Redis) and after an unattended security update alike. A
+  restarted agent has forgotten the key and the secrets, so a trading app
+  stayed down, locked, until `erpc worker start`. `deploy` now tells
+  `needrestart` to leave worker units alone
+  (`/etc/needrestart/conf.d/50-erpc-worker.conf`), so a package run does
+  not restart a worker: in its automatic mode `needrestart` defers them,
+  and asked at a terminal its default answer for them is no. A deploy that
+  cannot write the rule says so and goes on, without this protection; in
+  `--json`, `agent.needrestart_error` has why. An agent that fails or is
+  killed (out of memory, say) is still started again by systemd, and comes
+  back locked, as after a reboot, until `erpc worker start` hands the key
+  over.
+- Two apps on one server that were given the same port: the second one's
+  deploy was reported healthy, because the health check was answered by
+  the first app while the second could not listen and was restarted over
+  and over. A deploy now refuses a release whose health-check port is that
+  of another worker on the server that is kept running, naming that
+  worker, before the key or a secret is read, and `erpc worker rollback`
+  refuses to go back to such a release; an app without a health URL is
+  not compared. The agent does not start an app while another program
+  listens on its health-check port, and says so in `erpc worker status`
+  and `erpc worker logs`; and a start the agent refused ends the deploy at
+  once instead of after the health timeout.
+- `erpc worker bench`, `erpc rpc call` and `erpc webhook run` took the
+  account's primary API key on trust. An account can have several keys,
+  and a key can be given an end date: with the primary one run out, the
+  shared RPC refused all three although another key of the account
+  worked. They, and the new `erpc worker secret put --from-account`, now
+  try the account's keys in order, the primary one first, and use the
+  first the shared RPC takes. A key it does not refuse and does not take
+  either (no answer, a rate limit, a failure of its own) is passed over
+  for one it takes. Where it takes none, the three go on with the first
+  key it did not refuse, which their own call then tells about, and
+  `--from-account` keeps nothing and says to run it again: a key kept
+  unseen for a server is kept only once the RPC took it.
+  That costs requests: each of the four reads the account's keys from
+  user-api and then makes one `getHealth` call to the shared RPC for each
+  key it tries, before any call of its own, so `erpc rpc call` sends one
+  request more when the primary key is taken. `erpc worker bench` does so
+  only once its own arguments hold (the `--url` values, the method, the
+  rounds, the interval, the names and their count). The key is judged at the
+  shared Solana RPC (`edge.erpc.global`) whatever chain is then called: a
+  call or a webhook for Ethereum goes to `eth.erpc.global` with the key
+  chosen at the Solana RPC.
+  The keys are tried from the machine erpc runs on, and a key can be
+  limited to the addresses it is used from, so one that works from the
+  app's server may be refused here. When every key is refused, the error
+  says that they were tried from this machine. `--from-account` then
+  keeps nothing and names the way to keep the key by hand (`erpc worker
+  secret put <NAME>`, typed or piped in, with `--replace` when the
+  command had it); `erpc worker bench`, whose calls are made from the
+  server, goes on with the account's primary key and says so under its
+  table, and as `shared_key_refused_here` with `--json`.
+- `erpc worker init`'s next steps name the app after `secret put` with
+  `--dir`, as that verb takes it: `erpc worker secret put API_TOKEN
+  --dir <app>`. The line it printed, with the name alone, was refused.
+- `erpc worker firewall allow` and `deny` with `--json` printed plain
+  text on standard output when there was nothing to change (the address
+  let in already, or not on the list). They now answer with JSON, as
+  their other answers are: `{"worker": …, "changed": false, "erpc_toml":
+  {…}}`, the lists `erpc.toml` asks for and nothing of the server, which
+  is not asked; and an `allow` or `deny` that changed the list says
+  `"changed": true`. That answer no longer needs the server's address,
+  its host key or an SSH key on this machine, and an address that is none
+  is refused before they are looked for.
+- A start of an hourly product by `erpc worker deploy` (`--new-vps`,
+  `--grpc`, `--shreds`, `--unlimited`) that gets no answer is sent again
+  with the same request key when the command is run again, never with a
+  new one. The key goes into `[env.<name>.starting]` before the request
+  leaves, and stays there until the start is settled: a request sent again
+  leaves the record only when user-api answers with the purchase itself,
+  and a first request also on a refusal that is certain. On no answer, 409
+  `PURCHASE_IN_PROGRESS`, a 409 erpc cannot read, or any refusal of a
+  request sent again, the entry stays and the error says which it was and
+  what to do. A request sent again and answered 409 `IDEMPOTENCY_CONFLICT`
+  starts nothing: the server or line may well have been started by the
+  earlier request, and the error says how to look, to take a server up
+  with `--vps <ID>` or end what is not wanted, and that the entry is then
+  removed by hand. A start with no answer used to be reported as "not
+  sent", and a rerun sent a new request; `erpc ai`'s start says it may or
+  may not have gone through, too.
+- `erpc worker check` and `run` no longer tell an app that needs no key to
+  make one with `erpc worker key new`: only an app made from a template
+  that trades is told.
+- `erpc worker stop --lock` keeps an app that needs no key or secret
+  stopped. The agent started it again at its next tick, and after a
+  restart of the agent.
 
 ## [0.1.0-rc.3] - 2026-11-10
 

@@ -18,7 +18,7 @@ use erpc_core::chain::{Chain, Role};
 
 /// Every code span in `text`, inline and fenced, with line breaks inside a
 /// span turned into spaces.
-fn spans(text: &str) -> Vec<String> {
+pub(crate) fn spans(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut fenced = false;
     let mut prose = String::new();

@@ -1,0 +1,63 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+# What `erpc worker import` says.
+
+done = "{name} を取り込みました：erpc.toml を書きました"
+exists = "{path} は既にあります。このアプリは erpc worker がそのまま動かせます"
+exists_hint = "`erpc worker check{dir_scope}` で内容を確認できます"
+in_the_way = "{path} には既に通常のファイルではないもの（リンクやディレクトリなど）があります。erpc は erpc.toml を新規に作成し、その場所にあるものを通して書き込むことはありません"
+in_the_way_hint = "それが何かを確認して取り除いてから、もう一度実行してください"
+no_dir = "{dir} は erpc が読めるディレクトリではありません：{error}"
+no_cargo = "{dir} に Cargo.toml がありません。erpc は cargo でアプリをビルドするか、別の方法でビルドしたバイナリをそのまま配置します"
+no_cargo_hint = "お使いの方法で Linux 用バイナリをビルドしてから、`erpc worker import --binary <PATH>` で指定してください"
+no_binary = "--binary は {path} を指していますが、{full} はアプリ内のファイルではありません"
+no_binary_hint = "アプリのディレクトリからのパスで指定してください（例：dist/my-app）"
+no_name = "`{from}` からはアプリ名を作れません"
+no_name_hint = "--name で指定してください：小文字・数字・単独のハイフンで 1〜32 文字、先頭は文字"
+bad_health = "--health には / で始まるパス（例：/healthz）を指定し、ポート（--port）も必要です。指定された値：`{path}`"
+invalid = "読み取った内容からは erpc が受け付ける erpc.toml を作れませんでした（{error}）。何も書いていません"
+not_written = "{path} に書き込めませんでした：{error}"
+secrets = "名前、または例ファイルの値に含まれる認証情報から、シークレットと思われます。値はコピーしていません。erpc.toml にはコメントとして名前を残しています。それぞれ erpc worker が読む場所に保管してください：{names}"
+unclosed = "{file} で、{name} の値を開く引用符が閉じられていません。{name} の値は読み込まれず、そのファイルのそれ以降も読み込んでいません"
+unclosed_line = "{file} で、設定名にならない行の引用符が閉じられていません。そのファイルのそれ以降は読み込んでいません"
+unset = "erpc が値を読まない場所にだけ書かれている設定です（.env、または別の名前と同じファイルである例ファイル）。erpc.toml にコメントとして入れてあるので、値を設定するか保管してください：{names}"
+unset_example = "{files} に書かれていますが、コピーできる値がありません（値が空、複数行、または 4096 バイトを超える）。erpc.toml にコメントとして入れてあるので、値を設定するか保管してください：{names}"
+names_only = "{file} は別の名前と同じファイルです（ハードリンク、またはアプリの別の dotenv ファイルからリンクされている）。.env と同じ扱いで、名前だけを読み込みました"
+bad_port = "{file} の {name} は 1〜65535 のポート番号ではありません。アプリのポートとしては使っていません"
+bad_port_flag = "--port には 1〜65535 のポート番号を指定してください"
+key_files = "鍵ファイルと思われます：{files}。`erpc worker key import <FILE> --wipe{dir_scope}` で erpc worker が読む場所に保管し、ファイルを消去できます"
+key_files_odd = "鍵ファイルと思われますが、名前に erpc が表示しない文字が含まれているため（? と表示）、以下の手順には入れていません：{files}。名前を変更してから、`erpc worker key import <FILE> --wipe{dir_scope}` で取り込んでください"
+lines = "ERPC の回線が提供する設定なので、ここでは設定しません：{names}"
+served = "[services] のサービスがサーバー上で設定するので、ここでは設定しません：{names}"
+docker = "Dockerfile と compose ファイルは使いません。erpc worker は、強化した systemd ユニットの下でバイナリを直接動かします"
+prebuilt_note = "ビルド済みバイナリはそのまま配置します。変更を反映するには、デプロイの前にビルドし直してください"
+state = "サーバー上ではアプリ自身のディレクトリは読み取り専用です。ファイルは ERPC_WORKER_STATE_DIR が示すディレクトリに書いてください（デプロイをまたいで残ります）"
+
+[skipped]
+other = "{file} には、設定名にならない行が {n} 行あります（`=` の前が、設定名として使える形ではありません。設定名は大文字・数字・`_` のみで、数字では始まらず、erpc やサーバーが自分で設定する名前は使えません）。これらは除外しました。これらを読むアプリは、その設定なしでデプロイされます"
+
+[unread]
+link = "{file} は、アプリのディレクトリの外を指すリンクか、リンク先のないリンクです。読み込んでいません"
+linked_example = "{file} はリンクです。例ファイルは、それ自体が通常のファイルである場合にのみ読み込みます。読み込んでおらず、リンク先の内容もコピーしていません"
+not_a_file = "{file} は通常のファイルではありません（パイプ・デバイス・ディレクトリなど）。読み込んでいません"
+too_large = "{file} は 1 MiB を超えています。読み込んでいません"
+not_text = "{file} は UTF-8 のテキストではありません。読み込んでいません"
+failed = "{file} を読めませんでした：{error}"
+
+[cargo]
+unreadable = "Cargo.toml を読めませんでした：{error}"
+workspace = "この Cargo.toml はパッケージではなくワークスペースです。アプリのあるパッケージに対して `erpc worker import <DIR>` を実行してください"
+no_package = "Cargo.toml にパッケージ名がありません"
+no_bin = "パッケージ {package} はバイナリをビルドしません（src/main.rs も [[bin]] もありません）"
+several_bins = "このパッケージは複数のバイナリをビルドします（{bins}）。--bin でアプリのものを指定してください"
+no_such_bin = "このパッケージに `{asked}` というバイナリはありません。あるのは {bins} です"
+
+[built]
+cargo = "cargo build --release → {bin}"
+prebuilt = "そのまま配置：{binary}"
+
+[field]
+build = "ビルド"
+port = "ポート"
+vars = "設定"

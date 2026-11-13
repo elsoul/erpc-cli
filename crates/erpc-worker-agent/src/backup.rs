@@ -29,7 +29,7 @@ fn units() -> PathBuf {
 /// Writes `text` to `path` with `mode` through a temporary file beside it,
 /// made with that mode before anything is written, then renamed. Says
 /// whether the file changed.
-fn put(path: &Path, text: &str, mode: u32) -> Result<bool, String> {
+pub(crate) fn put(path: &Path, text: &str, mode: u32) -> Result<bool, String> {
     if std::fs::read_to_string(path).ok().as_deref() == Some(text) {
         return Ok(false);
     }

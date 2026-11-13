@@ -1,0 +1,63 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+# What `erpc worker import` says.
+
+done = "已接入 {name}：已写入它的 erpc.toml"
+exists = "{path} 已存在：这个应用 erpc worker 已经可以运行"
+exists_hint = "`erpc worker check{dir_scope}` 会说明它描述的内容"
+in_the_way = "{path} 已存在，且不是普通文件（链接、目录或其他）：erpc 只会新建 erpc.toml，绝不会经由该路径上已有的东西写入"
+in_the_way_hint = "请确认它是什么并将其移除，然后重新运行"
+no_dir = "{dir} 不是 erpc 可读取的目录：{error}"
+no_cargo = "{dir} 中没有 Cargo.toml：erpc 用 cargo 构建应用，或直接部署以其他方式构建的二进制文件"
+no_cargo_hint = "用你自己的方式构建应用的 Linux 二进制文件，然后指定它：`erpc worker import --binary <PATH>`"
+no_binary = "--binary 指定了 {path}，但 {full} 不是应用目录内的文件"
+no_binary_hint = "请给出相对于应用目录的路径，例如 dist/my-app"
+no_name = "无法用 `{from}` 生成应用名称"
+no_name_hint = "请用 --name 指定：1 到 32 个小写字母、数字和单个连字符，以字母开头"
+bad_health = "--health 需要以 / 开头的路径（如 /healthz），并且需要端口（--port）；收到的是 `{path}`"
+invalid = "读取到的内容无法生成 erpc 接受的 erpc.toml（{error}）；未写入任何内容"
+not_written = "无法写入 {path}：{error}"
+secrets = "按名称或示例文件中带有凭据的值判断，这些看起来是机密，因此没有复制任何值；它们已作为注释列在 erpc.toml 中，请把每一个保存到 erpc worker 读取的位置：{names}"
+unclosed = "{file} 中 {name} 的值的引号没有闭合：未读取 {name} 的值，该文件此后的内容也未读取"
+unclosed_line = "{file} 中有一行不构成设置名，且其引号没有闭合：该文件此后的内容未读取"
+unset = "这些只出现在 erpc 不读取值的地方（.env，或与另一个名字是同一文件的示例文件）；它们已作为注释写入 erpc.toml，请设置或保存：{names}"
+unset_example = "这些出现在 {files} 中，但没有 erpc 可复制的值（为空、有多行，或超过 4096 字节）；它们已作为注释写入 erpc.toml，请设置或保存：{names}"
+names_only = "{file} 与另一个名字是同一个文件（硬链接，或应用的另一个 dotenv 文件链接到它）：按 .env 的方式读取，只读取名称"
+bad_port = "{file} 中 {name} 的值不是 1 到 65535 之间的端口：未用作应用的端口"
+bad_port_flag = "--port 需要 1 到 65535 之间的端口"
+key_files = "这些看起来是密钥文件：{files}；`erpc worker key import <FILE> --wipe{dir_scope}` 会把它保存到 erpc worker 读取的位置并擦除文件"
+key_files_odd = "这些看起来是密钥文件，但文件名中含有 erpc 不会显示的字符（显示为 ?），因此下面的步骤没有列出它们：{files}；请先重命名，再用 `erpc worker key import <FILE> --wipe{dir_scope}` 导入"
+lines = "由 ERPC 数据线路提供，因此不在这里设置：{names}"
+served = "由 [services] 中的服务在服务器上设置，因此不在此处设置：{names}"
+docker = "不使用 Dockerfile 和 compose 文件：erpc worker 在加固的 systemd 单元下直接运行二进制文件"
+prebuilt_note = "预构建的二进制文件会原样部署：要带上改动，请在部署前重新构建"
+state = "在服务器上，应用自己的目录是只读的：请把文件写到 ERPC_WORKER_STATE_DIR 指向的目录，部署后仍会保留"
+
+[skipped]
+other = "{file} 中有 {n} 行不构成设置名（`=` 之前的内容不能作为设置名：设置名只能由大写字母、数字和 `_` 组成，不能以数字开头，也不能是 erpc 或服务器自行设置的名称）。这些行已略过；读取它们的应用在部署时将没有这些设置"
+
+[unread]
+link = "{file} 是指向应用目录之外（或无处可指）的链接：未读取"
+linked_example = "{file} 是一个链接；示例文件只有本身是普通文件时才会读取：未读取，其指向的内容也未复制"
+not_a_file = "{file} 不是普通文件（管道、设备或目录）：未读取"
+too_large = "{file} 超过 1 MiB：未读取"
+not_text = "{file} 不是 UTF-8 文本：未读取"
+failed = "无法读取 {file}：{error}"
+
+[cargo]
+unreadable = "无法读取 Cargo.toml：{error}"
+workspace = "这个 Cargo.toml 是工作区而不是包；请对包含应用的包运行 `erpc worker import <DIR>`"
+no_package = "Cargo.toml 中没有包名"
+no_bin = "包 {package} 不构建二进制文件：没有 src/main.rs，也没有 [[bin]]"
+several_bins = "这个包构建多个二进制文件（{bins}）；请用 --bin 指定应用的那一个"
+no_such_bin = "这个包没有名为 `{asked}` 的二进制文件；它构建的是 {bins}"
+
+[built]
+cargo = "cargo build --release → {bin}"
+prebuilt = "原样部署：{binary}"
+
+[field]
+build = "构建"
+port = "端口"
+vars = "设置"

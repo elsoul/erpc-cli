@@ -1,0 +1,64 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+# What `erpc worker import` says.
+
+done = "Took in {name}: wrote its erpc.toml"
+exists = "{path} is there already: this app is one erpc worker knows how to run"
+exists_hint = "`erpc worker check{dir_scope}` says what it describes"
+in_the_way = "{path} is there already and is not a plain file (a link, a directory or something else): erpc makes erpc.toml new, and never writes through what is at its path"
+in_the_way_hint = "look at what it is and remove it, then run this again"
+no_dir = "{dir} is not a directory erpc can read: {error}"
+no_cargo = "{dir} has no Cargo.toml: erpc builds an app with cargo, or ships a binary built another way"
+no_cargo_hint = "build the app's Linux binary your own way, then name it: `erpc worker import --binary <PATH>`"
+no_binary = "--binary names {path}, and {full} is not a file inside the app"
+no_binary_hint = "give the path from the app's directory, such as dist/my-app"
+no_name = "`{from}` cannot be made into an app's name"
+no_name_hint = "name it with --name: 1 to 32 lowercase letters, digits and single hyphens, starting with a letter"
+bad_health = "--health takes a path that starts with /, such as /healthz, and needs the port (--port); it got `{path}`"
+invalid = "what was read does not make an erpc.toml erpc accepts ({error}); nothing was written"
+not_written = "could not write {path}: {error}"
+secrets = "these look like secrets, by their name or by a credential in the example's value, so no value was copied; they are named in erpc.toml as comments, and each is kept where erpc worker reads it: {names}"
+unclosed = "in {file}, the quote that opens {name}'s value never closes: {name} has no value here, and nothing after it in that file was read"
+unclosed_line = "in {file}, a quote never closes, in a line that names no setting: nothing after it in that file was read"
+unset = "named only where erpc reads no values (.env, or an example file that is one file with another name); they are in erpc.toml as comments to set or keep: {names}"
+unset_example = "in {files} with no value erpc could copy (none there, one of several lines, or one longer than 4096 bytes); they are in erpc.toml as comments to set or keep: {names}"
+names_only = "{file} is one file with another name (a hard link, or what another dotenv file of the app links to): read as .env is, for its names only"
+bad_port = "{file} gives {name} something that is not a port from 1 to 65535: not used as the app's port"
+bad_port_flag = "--port takes a port from 1 to 65535"
+key_files = "these look like a key in a file: {files}; `erpc worker key import <FILE> --wipe{dir_scope}` keeps it where erpc worker reads it and wipes the file"
+key_files_odd = "these look like a key in a file, and their names hold characters erpc does not print (shown as ?), so no step below names them: {files}; rename each, then `erpc worker key import <FILE> --wipe{dir_scope}` takes it in"
+lines = "provided by an ERPC data line, so not set here: {names}"
+served = "set on the server by a service under [services], so not set here: {names}"
+docker = "the Dockerfile and compose file are not used: erpc worker runs the binary itself, under a hardened systemd unit"
+prebuilt_note = "a prebuilt binary is shipped as it is: build it again before a deploy that should carry a change"
+state = "on a server the app's own directory is read-only: write files under the directory ERPC_WORKER_STATE_DIR names, which a deploy keeps"
+
+[skipped]
+one = "{file} has {n} line that names no setting: what stands before its `=` is not a name a setting can have (capital letters, digits and `_`, starting with no digit, and not one erpc or the server sets itself). It is left out, and an app that reads it is deployed without it"
+other = "{file} has {n} lines that name no setting: what stands before their `=` is not a name a setting can have (capital letters, digits and `_`, starting with no digit, and not one erpc or the server sets itself). They are left out, and an app that reads one of them is deployed without it"
+
+[unread]
+link = "{file} is a link that leads outside the app's directory, or nowhere: not read"
+linked_example = "{file} is a link, and an example file is read only when it is a file itself: not read, and nothing of what it leads to was copied"
+not_a_file = "{file} is not a regular file (a pipe, a device or a directory): not read"
+too_large = "{file} is larger than 1 MiB: not read"
+not_text = "{file} is not UTF-8 text: not read"
+failed = "{file} could not be read: {error}"
+
+[cargo]
+unreadable = "Cargo.toml could not be read: {error}"
+workspace = "this Cargo.toml is a workspace, not a package; run `erpc worker import <DIR>` on the package that holds the app"
+no_package = "Cargo.toml names no package"
+no_bin = "the package {package} builds no binary: it has no src/main.rs and no [[bin]]"
+several_bins = "the package builds several binaries ({bins}); name the app's with --bin"
+no_such_bin = "the package builds no binary called `{asked}`; it builds {bins}"
+
+[built]
+cargo = "cargo build --release → {bin}"
+prebuilt = "shipped as it is: {binary}"
+
+[field]
+build = "build"
+port = "port"
+vars = "vars"

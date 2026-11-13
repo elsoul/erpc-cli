@@ -11,9 +11,10 @@ files    = ["config.jsonc"]
 # The app refuses to start without these; set each in [vars] or [secrets].
 # `erpc worker deploy --grpc` (or `run --grpc --ip <IPV4>` here) starts an
 # hourly ERPC gRPC line and sets GRPC_ENDPOINT to it, so it need not be set
-# here. API_TOKEN is any 16+ random characters (`openssl rand -hex 24`). The
-# RPC for reads is one of the two in the set: ERPC_API_KEY (the account's RPC
-# key, a secret) or SOLANA_RPC_ENDPOINT (a URL, in [vars]).
+# here. API_TOKEN is any 16+ random characters, which this makes and keeps:
+#   erpc worker secret put API_TOKEN --generate
+# The RPC for reads is one of the two in the set: ERPC_API_KEY (the account's
+# RPC key, a secret) or SOLANA_RPC_ENDPOINT (a URL, in [vars]).
 requires = ["GRPC_ENDPOINT", "API_TOKEN", ["ERPC_API_KEY", "SOLANA_RPC_ENDPOINT"]]
 # Keep the port in step with API_PORT below.
 health   = { http = "http://127.0.0.1:3000/healthz", timeout_secs = 30 }
@@ -37,10 +38,11 @@ TRADE_APP_LANG = "en"
 # EXPLORER_URL = "<https:// base of a block explorer, for links in notifications>"
 RUST_LOG       = "info"
 
-# Secret settings are references to 1Password or the OS keychain, never the
-# values themselves:
+# Secret settings are references to 1Password, the OS keychain or erpc's
+# encrypted keystore on your machine, never the values themselves:
 #   op://<vault-id>/<item-id>/<field>
 #   keychain:<service>/<account>
+#   keystore:<service>/<account>
 #
 # [secrets]
 # X_TOKEN      = "op://<vault-id>/<item-id>/x-token"  (a gRPC that takes a token)
@@ -50,8 +52,9 @@ RUST_LOG       = "info"
 #                only word a bot left alone on a server sends)
 
 # The trading key. `erpc worker key new` makes one, keeps it only in
-# 1Password or the keychain, and fills this in. The app gets it on a pipe
-# when it starts; it is never written to a file, here or on a server.
+# 1Password, the keychain or erpc's encrypted keystore, and fills this in.
+# The app gets it on a pipe when it starts; it is never written to a file
+# on a server, nor to any file unencrypted.
 #
 # [wallet]
 # source = "op://<vault-id>/<item-id>/keypair"

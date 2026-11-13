@@ -115,6 +115,13 @@ signal-hook = { version = "0.3.18", default-features = false }
 # Already in the lock through tempfile; safe wrappers for what the worker
 # agent asks of Linux (prctl, mlockall, socket peer credentials, kill).
 rustix = { version = "1.1", default-features = false }
+# The worker's WAF, an HTTP/1.1 reverse proxy in the agent on a server. All
+# four are in the lock through reqwest already, which uses hyper as a client;
+# serving with it brings httpdate, for the Date header a server writes.
+hyper = { version = "1.12", default-features = false }
+hyper-util = { version = "0.1.21", default-features = false }
+http-body-util = { version = "0.1.5", default-features = false }
+httparse = { version = "1.10.1", default-features = false, features = ["std"] }
 # Platform features are chosen per target in crates/erpc-auth/Cargo.toml.
 # On Linux the Secret Service backend is vendored, so the build does not
 # need a system libdbus: the release targets are static musl.

@@ -17,6 +17,7 @@ hint = " enter 送信 · shift+enter 改行 · esc 中断 · pgup/pgdn スクロ
 
 [commands]
 new = "新しい会話を始める"
+model = "モデルのサイズを選ぶ: /model xlarge · /model auto"
 help = "キーとコマンド"
 exit = "コンソールを終了する"
 
@@ -74,3 +75,14 @@ said_own_words = "下の入力欄に入力してください。"
 hint_yes_no = " ↑ で続ける · enter 決定 · n/esc やめる"
 hint_one = " ↑↓ 選択 · enter 決定 · 1-9 で選ぶ · esc 自分で入力"
 hint_several = " ↑↓ 移動 · space 選択/解除 · enter 決定 · esc 自分で入力"
+
+# `/model`: the size every turn goes to.
+[size]
+current = "モデルのサイズ: {size}"
+choices = "small · medium · large · xlarge（いちばん高性能・トークンを 2 倍消費）· auto（あいさつは small、それ以外は large）"
+set = "これからの回答はすべて {size} が答えます。"
+xlarge = "これからの回答はすべて、いちばん高性能な xlarge が答えます。トークンは 2 倍消費します。"
+auto = "回答ごとにサイズを自動で選ぶ設定に戻しました（あいさつは small、それ以外は large）。"
+unknown = "不明なサイズです: {size} · small、medium、large、xlarge、auto のどれかを指定してください"
+refused = "ERPC AI は今 {size} を提供していません。代わりに既定のサイズが答え、次からはサイズを自動で選びます。"
+unavailable = "ERPC AI は今モデルのサイズを選べません。すべての回答を既定のモデルが答えます。"

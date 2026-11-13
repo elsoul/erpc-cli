@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 missing = "{name} cannot start without {settings}"
-missing_hint = "`erpc worker secret put {first}{dir_scope}`, or set it in [vars]"
+missing_hint = "`erpc worker secret put {first}{how}{dir_scope}`, or set it in [vars]"
 missing_line_hint = "{first} comes from a data line: `erpc worker deploy{scope} --{flag}` starts an hourly one for the server; or set it in [vars]"
 not_ready = "this machine lacks what a deploy needs: {what}"
 plan = "Deploy {name} release {release} to {to} as {worker}"
@@ -16,6 +16,21 @@ starting = "starting it and waiting for it to be healthy"
 and = " and "
 and_then = "{hint}; {next}"
 
+[start]
+again_hint = "the request stays on record: run the same command again, and it sends the same request and makes no other"
+in_progress_hint = "the request stays on record: run the same command again shortly, and it sends the same request and makes no other. If that never settles: {look}; once it is sure nothing was started, {remove}"
+not_known_hint = "the request stays on record, and the same command again sends the same request and makes no other. To clear it by hand: {look}; once it is sure nothing was started, {remove}"
+exists_server_hint = "the server may well have been started by the earlier request, and the request stays on record. Look at the account's servers (the dashboard, or `erpc ai`): `erpc worker deploy --vps <ID>{scope}` takes one up, and the dashboard ends one that is not wanted. Then {remove}"
+exists_line_hint = "the line may well have been started by the earlier request, and the request stays on record. Look at the account's lines (the dashboard, or `erpc ai`). A deploy cannot take up a line that is not on record: end it there, then {remove}, and the next deploy starts one"
+unnamed_server_hint = "by user-api's answer the server was started, and the request stays on record. Look at the account's servers (the dashboard, or `erpc ai`): `erpc worker deploy --vps <ID>{scope}` takes one up, and the dashboard ends one that is not wanted. Then {remove}"
+unnamed_line_hint = "by user-api's answer the line was started, and the request stays on record. Look at the account's lines (the dashboard, or `erpc ai`). A deploy cannot take up a line that is not on record: end it there, then {remove}, and the next deploy starts one"
+look = "the dashboard shows what the account has"
+look_status = "the dashboard shows what the account has, and `erpc worker status{scope}` what this environment has on record"
+left = "an earlier start of {what} got no answer and stays on record; it may have gone through and be charged, and this command does not ask for it: {clear}"
+carry_on_or_clear = "deploy again asking for it to carry on with it, or, once the dashboard shows it was never started, {remove}"
+remove_toml = "remove `{slot}` from [env.{env}.starting] in erpc.toml"
+remove_item = "remove `{slot}` from the `starting` field of the environment's 1Password item"
+
 [still_charged]
 one = "{names} is charged by the hour and on record: `erpc worker deploy{scope}` again carries on with it, `erpc worker delete --release-server{scope}` ends it"
 other = "{names} are charged by the hour and on record: `erpc worker deploy{scope}` again carries on with them, `erpc worker delete --release-server{scope}` ends them"
@@ -28,6 +43,10 @@ none_hint = "a release of erpc carries them; for a build of your own, run script
 not_installed = "could not install the agent: {error}"
 installed = "agent installed"
 unchanged = "agent unchanged"
+kept = "the agent that runs was left running, though a newer one is installed: --prepare restarts nothing, so an app that runs there keeps running under the agent it had"
+restarting = "restarting the agent, as a newer one is installed; the key goes to it right after"
+restarted_hint = "the agent was restarted for the newer one before this failed, so the app that ran there is stopped until the key is handed over: `erpc worker start{scope}` hands it over"
+needrestart = "needrestart could not be told to leave the worker alone ({error}): a package run on the server may restart it, and a restarted worker waits for its key until `erpc worker start{scope}` hands it over"
 
 [upload]
 failed = "could not upload {path}: {error}"
@@ -83,9 +102,13 @@ back_unhealthy = "; the server went back to {to}, which is not healthy either"
 no_earlier = "; there was no earlier release to go back to, so it is stopped"
 release = "release {release} failed: {why}{back}"
 logs = "`erpc worker logs{scope}` shows why"
+unchanged = "; the release in use, if any, was left as it was"
 
 [done]
 runs = "{name} release {release} runs on {host} as {worker}, healthy."
+prepared = "{name} release {release} is on {host} as {worker}, not started: neither its key nor a secret was read."
+prepared_next = "`erpc worker deploy{scope}` at a terminal hands them over and starts the app. It builds and installs a release of its own and starts that one: the build is cached and the server is ready."
+agent_kept = "The agent that runs there was left running, though a newer one is installed: an app that runs there keeps running under the agent it had, and the new agent takes over at the next `erpc worker deploy{scope}` at a terminal."
 ssh_only = "SSH is allowed only from {from}."
 rollback = "`erpc worker rollback{scope}` goes back to {previous}."
 in_vault = "The server is on record in 1Password vault {vault} ({title}); erpc.toml names the vault."

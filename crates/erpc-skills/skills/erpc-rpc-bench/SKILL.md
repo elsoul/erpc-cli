@@ -35,7 +35,13 @@ erpc worker bench --env prod --json        # for reading the numbers programmati
 
 - **Endpoints compared:**
   - `shared` is ERPC's shared RPC (`edge.erpc.global`), which routes to the nearest ERPC region.
-    It uses the account's API key, or the app's `ERPC_API_KEY` secret when erpc.toml has one.
+    It uses the app's `ERPC_API_KEY` secret when erpc.toml has one, else the account's API key:
+    the first of the account's keys the shared RPC takes when erpc tries them from this
+    machine, or, when it takes none, the first it does not refuse either (no answer, a rate
+    limit, a failure of its own). Refused with all of them here, erpc measures with the
+    account's primary key all the same and says so under the table
+    (`"shared_key_refused_here": true` with `--json`): a key limited to the server's address
+    is refused here and works there. Pass that line on.
   - `unlimited` is the environment's Unlimited RPC, when `erpc worker deploy --unlimited` started
     one.
   - `--url NAME=...` adds any other endpoint, up to six in all: an RPC the user has from another
@@ -86,11 +92,14 @@ one or two sentences what it means. For example (the numbers here are made up):
   - So `erpc worker deploy --unlimited` points the app's sending at it
     (`SOLANA_SEND_RPC_ENDPOINT`) and leaves its reads on the shared RPC.
   - It is billed by the hour from ERPC Credit until `erpc worker delete --release-server` ends it.
-    erpc shows the price and asks before starting it.
+    erpc shows the price before starting it: asked at a terminal, said and started under
+    `--yes`.
   - Getting it ready takes time: a server is set up for it, up to 45 minutes.
 - **The shared RPC** is enough when the app is not racing anyone, or when the difference is a
   millisecond or two against a strategy measured in seconds.
 - Do not start an Unlimited RPC, or anything that costs money, only to measure it. The user
-  decides after seeing the price; `erpc worker deploy --unlimited` asks at the price.
+  decides after seeing the price: `erpc worker deploy --unlimited` asks at the price at a
+  terminal, and with `--yes` starts it without asking, so add `--yes` only once the user has
+  said yes to the price.
 - Unlimited RPC endpoints are plain HTTP (no TLS) and admit only the addresses on their
   whitelist, which erpc sets to the server's address. Say so if the user asks about encryption.

@@ -9,10 +9,13 @@
 > - **Once trading starts you can lose everything in the wallet.** PumpSwap
 >   pools are volatile, liquidity collapses, RPCs fail. Fund only what you
 >   can afford to lose.
-> - **The trading key never touches a file.** It lives in 1Password or your
->   OS keychain, and `erpc worker` hands it to the app on a pipe when the app
->   starts. There is no `wallet.json`. Treat the wallet as a hot wallet all
->   the same: the machine running the bot holds the key in memory.
+> - **The trading key never touches a file unencrypted, and no file on the
+>   server.** It lives in 1Password or your OS keychain, or, on a machine
+>   with neither, in erpc's keystore: a file on your machine, encrypted
+>   under a passphrase you choose and must not lose. `erpc worker` hands it
+>   to the app on a pipe when the app starts. There is no `wallet.json`.
+>   Treat the wallet as a hot wallet all the same: the machine running the
+>   bot holds the key in memory.
 
 The bot watches PumpSwap (the pump.fun AMM) over Geyser gRPC, and for each
 new pool runs the whole trade: **buy → sell → close the token account**.
@@ -42,8 +45,8 @@ new pool runs the whole trade: **buy → sell → close the token account**.
 
 ```bash
 erpc worker key new                    # the trading key; prints the public key to fund
-erpc worker secret put API_TOKEN       # the bot's API token: any 16+ random characters (openssl rand -hex 24)
-erpc worker secret put ERPC_API_KEY    # the account's RPC key (dashboard), or SOLANA_RPC_ENDPOINT in [vars]
+erpc worker secret put API_TOKEN --generate          # the bot's API token, made for you and shown to nobody
+erpc worker secret put ERPC_API_KEY --from-account   # the account's RPC key, read from your account, or SOLANA_RPC_ENDPOINT in [vars]
 erpc worker check                      # what erpc.toml describes, and what is missing
 erpc worker run --grpc --ip <IPV4>     # build and run here, with an hourly gRPC line letting this machine in
 erpc worker deploy --new-vps --grpc    # build for Linux, run it on a new hourly VPS with a gRPC line
@@ -92,8 +95,9 @@ measured here include this machine's distance to the lines.
 `erpc worker check` lists the settings the app needs (`run.requires` in
 `erpc.toml`): `GRPC_ENDPOINT` and `API_TOKEN`, and an RPC. Plain
 settings go in `[vars]`. Secrets are kept by `erpc worker secret put` in
-1Password or the OS keychain, and `[secrets]` holds only their references
-(`op://<vault-id>/<item-id>/<field>` or `keychain:<service>/<account>`).
+1Password, the OS keychain or erpc's encrypted keystore, and `[secrets]`
+holds only their references (`op://<vault-id>/<item-id>/<field>`,
+`keychain:<service>/<account>` or `keystore:<service>/<account>`).
 There is no `.env` file. `erpc worker run` gives the app only these settings,
 not your shell's environment.
 

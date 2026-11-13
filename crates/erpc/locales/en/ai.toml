@@ -17,6 +17,7 @@ sign_in_hint = "Sign in with `erpc login`, or create an account with `erpc signu
 empty_question = "the question is empty"
 open_dashboard = "Open the ERPC dashboard to buy a monthly or yearly plan: {url}"
 declined_because = "the model declined to answer: {why}"
+size_refused = "ERPC AI does not offer {size} right now: its default size answers instead, and later turns are sized for you again."
 declined = "the model declined to answer: no reason given"
 stopped = "stopped"
 

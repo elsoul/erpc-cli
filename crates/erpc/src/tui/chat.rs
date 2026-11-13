@@ -21,6 +21,7 @@ use crossterm::event::{
 };
 use erpc_ai::confirm::{Allow, Answer, Confirm, Confirmation, Question};
 use erpc_ai::session::{Access, Session, SessionEvent, Turn};
+use erpc_api::ai::Size;
 use futures_util::StreamExt as _;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -51,15 +52,82 @@ const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "�
 /// The most rows the box grows to before it scrolls.
 const MAX_INPUT_ROWS: usize = 6;
 /// The commands.
-const COMMANDS: [&str; 3] = ["/new", "/help", "/exit"];
+const COMMANDS: [&str; 4] = ["/new", "/model", "/help", "/exit"];
 
 /// What a command does, in the language of the run.
 fn command_about(name: &str) -> String {
     match name {
         "/new" => t!("tui.commands.new"),
+        "/model" => t!("tui.commands.model"),
         "/help" => t!("tui.commands.help"),
         _ => t!("tui.commands.exit"),
     }
+}
+
+/// What `/model` asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SizeAsked {
+    /// To be told the size in use: `/model` alone.
+    Shown,
+    /// To put the conversation on a size; none for `auto`.
+    Put(Option<Size>),
+}
+
+/// What `/model` with `arg` after it asks for.
+fn size_asked(arg: &str) -> Result<SizeAsked, String> {
+    match arg.trim() {
+        "" => Ok(SizeAsked::Shown),
+        "auto" => Ok(SizeAsked::Put(None)),
+        name => name
+            .parse::<Size>()
+            .map(|size| SizeAsked::Put(Some(size)))
+            .map_err(|_| t!("tui.size.unknown", size = name)),
+    }
+}
+
+/// What the console says when the conversation is put on `size`.
+fn size_set(size: Option<Size>) -> String {
+    match size {
+        Some(Size::Xlarge) => t!("tui.size.xlarge"),
+        Some(size) => t!("tui.size.set", size = size.name()),
+        None => t!("tui.size.auto"),
+    }
+}
+
+/// What the console does about `/model`.
+#[derive(Debug)]
+enum SizeReply {
+    /// Put the waiting session on this size (none: `auto`), and say so.
+    Put(Option<Size>),
+    /// Change nothing, and say this.
+    Say(Tone, String),
+}
+
+/// What the console does about `asked`: `sizes_refused` says the service
+/// turned the sizes down, `waiting` that a session waits for the next
+/// message (no turn is running), and `current` is the size in use.
+fn size_reply(
+    asked: SizeAsked,
+    sizes_refused: bool,
+    waiting: bool,
+    current: Option<Size>,
+) -> SizeReply {
+    match asked {
+        _ if sizes_refused => SizeReply::Say(Tone::Warn, t!("tui.size.unavailable")),
+        SizeAsked::Shown => SizeReply::Say(Tone::Info, size_shown(current)),
+        SizeAsked::Put(size) if waiting => SizeReply::Put(size),
+        SizeAsked::Put(_) => SizeReply::Say(Tone::Warn, t!("tui.wait_first")),
+    }
+}
+
+/// The size in use and the ones to pick from, for `/model` alone.
+fn size_shown(size: Option<Size>) -> String {
+    let current = size.map_or("auto", Size::name);
+    format!(
+        "{}\n{}",
+        t!("tui.size.current", size = current),
+        t!("tui.size.choices")
+    )
 }
 
 /// The commands and the keys, for `/help`.
@@ -168,6 +236,8 @@ struct Busy {
 enum Action {
     Send(String),
     Reset,
+    /// `/model`: show the size, or put the conversation on one.
+    Size(SizeAsked),
     Quit,
 }
 
@@ -198,6 +268,10 @@ pub async fn run<A: Access + 'static>(
     }
     crossterm::execute!(out, EnableBracketedPaste)?;
     let mut app = App::new(look, intro);
+    app.size = session.size();
+    if app.size.is_some() {
+        app.note(Tone::Info, size_set(app.size));
+    }
     let (history, _) = session.snapshot();
     if !history.is_empty() {
         let whole: Vec<serde_json::Value> =
@@ -313,6 +387,7 @@ async fn run_loop<A: Access + 'static>(
                         app.note(Tone::Warn, t!("tui.wait_first"));
                     }
                 }
+                Action::Size(asked) => app.on_size(idle.as_mut(), asked),
                 Action::Send(text) => match idle.take() {
                     Some(session) => running = Some(app.start(session, text, tx.clone())),
                     None => app.queue.push_back(text),
@@ -323,6 +398,9 @@ async fn run_loop<A: Access + 'static>(
 }
 
 struct App {
+    /// The size the person put the conversation on; none when each turn's
+    /// words decide it.
+    size: Option<Size>,
     look: Look,
     intro: Intro,
     entries: Vec<Entry>,
@@ -354,6 +432,7 @@ struct App {
 impl App {
     fn new(look: Look, intro: Intro) -> Self {
         Self {
+            size: None,
             look,
             intro,
             entries: Vec::new(),
@@ -369,6 +448,28 @@ impl App {
             picker: None,
             next: None,
             edits: 0,
+        }
+    }
+
+    /// Answers `/model`: shows the size, or puts the waiting session on
+    /// one. Once the service has turned the sizes down there is none to
+    /// show or choose; while a turn runs, a change waits.
+    fn on_size<A: Access>(&mut self, session: Option<&mut Session<A>>, asked: SizeAsked) {
+        let refused = session
+            .as_ref()
+            .is_some_and(|session| session.sizes_refused());
+        match (
+            size_reply(asked, refused, session.is_some(), self.size),
+            session,
+        ) {
+            (SizeReply::Put(size), Some(session)) => {
+                session.set_size(size);
+                self.size = size;
+                self.note(Tone::Info, size_set(size));
+            }
+            (SizeReply::Say(tone, text), _) => self.note(tone, text),
+            // `size_reply` puts only a waiting session on a size.
+            (SizeReply::Put(_), None) => {}
         }
     }
 
@@ -554,6 +655,11 @@ impl App {
                     let seconds = format!("{:.1}", busy.started.elapsed().as_secs_f64());
                     parts.push(t!("tui.footer.seconds", seconds));
                 }
+                // The size, when the person chose one: what the answer cost
+                // depends on it.
+                if let Some(size) = self.size {
+                    parts.push(size.name().to_owned());
+                }
                 if let (Some(input), Some(output)) = (input_tokens, output_tokens) {
                     parts.push(t!("tui.footer.tokens", input, output));
                 }
@@ -597,6 +703,10 @@ impl App {
                 }
             }
             SessionEvent::Error { message } => self.note(Tone::Error, message),
+            SessionEvent::SizeRefused { size } => {
+                self.size = None;
+                self.note(Tone::Warn, t!("tui.size.refused", size));
+            }
             SessionEvent::Compacted { .. } => {
                 self.note(Tone::Info, t!("tui.compacted"));
             }
@@ -814,6 +924,17 @@ impl App {
                 let help = help();
                 self.note(Tone::Info, help);
                 None
+            }
+            // Before the arm below: `/model xlarge` has a space in it, and
+            // would go to the assistant as a message.
+            command if command == "/model" || command.starts_with("/model ") => {
+                match size_asked(&command["/model".len()..]) {
+                    Ok(asked) => Some(Action::Size(asked)),
+                    Err(why) => {
+                        self.note(Tone::Warn, why);
+                        None
+                    }
+                }
             }
             command if command.starts_with('/') && !command.contains(char::is_whitespace) => {
                 self.note(Tone::Warn, t!("tui.unknown_command", command));
@@ -1573,6 +1694,75 @@ mod tests {
         assert_eq!(key(&mut app, KeyCode::Enter, KeyModifiers::NONE), None);
         typed(&mut app, "/nope");
         assert_eq!(key(&mut app, KeyCode::Enter, KeyModifiers::NONE), None);
+    }
+
+    #[test]
+    fn model_picks_a_size_or_auto_and_never_reaches_the_assistant() {
+        use super::SizeAsked;
+        use erpc_api::ai::Size;
+        let mut app = app();
+        for (typed_text, asked) in [
+            ("/model xlarge", SizeAsked::Put(Some(Size::Xlarge))),
+            ("/model  Large ", SizeAsked::Put(Some(Size::Large))),
+            ("/model erpc-ai-medium", SizeAsked::Put(Some(Size::Medium))),
+            ("/model auto", SizeAsked::Put(None)),
+            ("/model", SizeAsked::Shown),
+        ] {
+            typed(&mut app, typed_text);
+            assert_eq!(
+                key(&mut app, KeyCode::Enter, KeyModifiers::NONE),
+                Some(Action::Size(asked)),
+                "{typed_text}"
+            );
+        }
+        // An unknown size is answered in the console.
+        let notes = app.entries.len();
+        typed(&mut app, "/model huge");
+        assert_eq!(key(&mut app, KeyCode::Enter, KeyModifiers::NONE), None);
+        assert_eq!(app.entries.len(), notes + 1);
+        typed(&mut app, "/mo");
+        key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.input, "/model");
+    }
+
+    #[test]
+    fn model_is_answered_by_whether_sizes_are_offered_and_a_turn_is_running() {
+        use super::{SizeAsked, SizeReply, size_reply};
+        use erpc_api::ai::Size;
+        let put = SizeAsked::Put(Some(Size::Xlarge));
+        assert!(matches!(
+            size_reply(put, false, true, None),
+            SizeReply::Put(Some(Size::Xlarge))
+        ));
+        assert!(matches!(
+            size_reply(SizeAsked::Put(None), false, true, Some(Size::Xlarge)),
+            SizeReply::Put(None)
+        ));
+        let said = |reply: SizeReply| match reply {
+            SizeReply::Say(_, text) => text,
+            SizeReply::Put(size) => panic!("put on {size:?}"),
+        };
+        // While a turn runs, a change waits; showing the size does not.
+        assert_eq!(
+            said(size_reply(put, false, false, None)),
+            t!("tui.wait_first")
+        );
+        assert!(
+            said(size_reply(
+                SizeAsked::Shown,
+                false,
+                false,
+                Some(Size::Large)
+            ))
+            .contains("large")
+        );
+        // Once the sizes are turned down, every /model says so.
+        for asked in [put, SizeAsked::Put(None), SizeAsked::Shown] {
+            assert_eq!(
+                said(size_reply(asked, true, true, None)),
+                t!("tui.size.unavailable")
+            );
+        }
     }
 
     #[test]

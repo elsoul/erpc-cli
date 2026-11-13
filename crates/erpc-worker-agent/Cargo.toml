@@ -3,7 +3,7 @@
 
 [package]
 name = "erpc-worker-agent"
-description = "The process on a server that runs an erpc worker app and holds its key in memory"
+description = "What runs an erpc worker app on a server: the process that holds its key in memory, and the HTTP proxy in front of it"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -30,8 +30,15 @@ zeroize.workspace = true
 tempfile.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-rustix = { workspace = true, features = ["std", "process", "net", "mm"] }
+rustix = { workspace = true, features = ["std", "fs", "process", "net", "mm"] }
 signal-hook.workspace = true
+# `waf`: the HTTP proxy in front of the app. hyper reads and writes HTTP on
+# both sides of it, and httparse reads a request's head before hyper does.
+http-body-util.workspace = true
+httparse.workspace = true
+hyper = { workspace = true, features = ["http1", "server", "client"] }
+hyper-util = { workspace = true, features = ["tokio"] }
+tokio = { workspace = true, features = ["net"] }
 
 [lints]
 workspace = true

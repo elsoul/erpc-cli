@@ -2,6 +2,7 @@
 
 read_failed = "could not read {path}: {error}"
 portability = "this app's servers are kept in 1Password, and the keychain is only on this machine: another machine will not be able to start it. Pass --store 1password to keep it where they are."
+portability_keystore = "this app's servers are kept in 1Password, and the keystore is only on this machine: another machine will not be able to start it. Pass --store 1password to keep it where they are."
 
 [field]
 pubkey = "pubkey"
@@ -26,6 +27,7 @@ made = "Trading key made for {app}: {pubkey}"
 imported = "Trading key imported for {app}: {pubkey}"
 where = "Kept in {store} as {source}; erpc.toml's [wallet] names it."
 hot_wallet = "Fund only what the bot needs: it is a hot wallet."
+keystore_backup = "This key's only copy is its encrypted file in {path}. Back that directory up and keep its passphrase: without both, the wallet is gone."
 by_hand = "the key is kept at {source}; set [wallet] source = \"{source}\" and pubkey = \"{pubkey}\" in erpc.toml by hand"
 
 [key_file]
@@ -37,6 +39,8 @@ no_wallet = "{app} has no wallet yet"
 new_hint = "`erpc worker key new{dir_scope}` makes one"
 no_pubkey = "(public key not set in erpc.toml)"
 kept_at = "kept at {source}"
+keystore_file = "its keystore file is {file}"
+keystore_missing = "this machine's keystore has no such entry ({file}): the key was kept on another machine, and this one cannot start the app with it"
 
 [balance]
 no_pubkey = "{app} has no wallet public key in erpc.toml"
@@ -63,6 +67,13 @@ replace_hint = "pass --replace to keep a new value in its place"
 by_hand = "the value is kept at {source}; add {name} = \"{source}\" to [secrets] by hand"
 done = "{name} ← {source}, kept in {store}"
 old_kept = "The old value is still kept at {old}; remove it there if it is no longer needed."
+generated = "Its value was made here: 64 random hexadecimal characters, shown to nobody."
+from_account = "Its value is the signed-in account's primary RPC API key, read from the account and shown to nobody."
+from_account_other = "Its value is one of the signed-in account's other RPC API keys, not its primary one, read from the account and shown to nobody."
+account_refused_hint = "the keys were tried from this machine, where a key limited to other addresses (the server's, say) is refused though it works from those: keep such a key by hand with `{command}`, typed unseen or piped in; a key can also have an end date, and the account's RPC plan can have ended, which the ERPC dashboard shows"
+account_unasked = "the shared RPC could not be asked about the account's API keys just now (it took none, and for one at least it gave no answer, or one that says nothing of the key), so nothing was kept"
+account_unasked_hint = "run the same command again in a while; or keep the key you mean by hand with `{command}`, typed unseen or piped in"
+no_random = "this machine gave no random bytes to make a value from"
 
 [list]
 none = "No secrets yet; `erpc worker secret put <NAME>{dir_scope}` keeps one."
@@ -75,6 +86,11 @@ not_there = "{name} is not in [secrets]"
 done = "{name} is no longer in erpc.toml."
 still_kept = "Its value is still kept at {source}; delete it there if nothing else uses it."
 plain = "{name} is no longer in erpc.toml. Its value is still kept at {source}; delete it there if nothing else uses it."
+deleted = "Its value was deleted from the keystore ({source})."
+absent = "This machine's keystore held no value under {source}."
+shared = "Its value stays in the keystore under {source}: {other} names it too."
+is_key = "Its value stays in the keystore under {source}: that is a trading key's entry, which erpc does not delete."
+not_deleted = "its value could not be deleted from the keystore ({source}): {error}"
 
 [send]
 bad_pubkey = "{to} is not a Solana address"

@@ -1,0 +1,55 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+# アプリの WAF について `erpc worker` が伝えるメッセージ。
+
+[check]
+listens = "ポート {port} で待ち受け、127.0.0.1:{upstream} のアプリの前に立ちます：{paths} への {methods} を転送し、ボディは {body} バイトまでで、{body_secs} 秒以内に届ききる必要があります（アプリが受け取るのを待つ時間は含みません）"
+every_path = "すべてのパス"
+allowed = "{paths} のみ"
+denied = "{allowed}（{paths} は常に拒否）"
+limits = "アドレスごと：{rate}、{connections}、{ban}。{probes}。{firewall}"
+rate = "毎秒 {per_second} リクエスト（バースト {burst}）"
+rate_off = "レート制限なし"
+connections = "同時 {n} 接続まで"
+connections_off = "接続数の制限なし"
+ban = "{window_secs} 秒間に {after} 回ブロックされると {for_secs} 秒間 BAN します"
+ban_off = "BAN なし"
+probes = "スキャナーの探索リクエストは拒否します"
+probes_off = "スキャナーの探索リクエストは調べません"
+firewall = "ファイアウォールは毎秒 {per_second} を超える新規接続を破棄します（バースト {burst}）"
+firewall_off = "ファイアウォールは新規接続を制限しません"
+
+[status]
+listening = "WAF：ポート {port} で待ち受け、{upstream} へ転送しています（{since} から）。リクエスト {requests}、転送 {forwarded}、ブロック {blocked}、接続拒否 {refused}、アプリのエラー {errors}、現在 BAN 中のアドレス {banned}"
+no_counts = "WAF：ポート {port} で待ち受け、{upstream} へ転送しています。カウントはまだ書き出されていません"
+down = "WAF：動いていません（{state}）。ポート {port} で待ち受けるはずです。原因は `erpc worker logs --waf{scope}` で確認でき、`erpc worker deploy{scope}` で再び起動します"
+unread = "WAF：{state}。サーバー上の設定を読み取れません（{error}）。`erpc worker deploy{scope}` で書き直します"
+absent = "WAF：erpc.toml には指定がありますが、サーバーにはまだありません。`erpc worker deploy{scope}` で設置します"
+other_rules = "WAF：動いているルールは erpc.toml のものではありません。`erpc worker deploy{scope}` で erpc.toml のルールに置き換えます。それまでポートをこれ以上広げることはしません"
+unsaid_rules = "WAF：サーバーがどのルールで動いているかを返しません（エージェントがこの erpc より古いため）。そのため erpc.toml のルールとはみなしません。`erpc worker deploy{scope}` で erpc.toml のルールに置き換えます。それまでポートをこれ以上広げることはしません"
+earlier_agent = "WAF：いまインストールされているものより前のエージェントが起動したものです（または、どのエージェントが起動したかをサーバーが判別できませんでした）。そのため erpc.toml のルールで動いているとはみなしません。`erpc worker deploy{scope}` で再起動します。それまでポートをこれ以上広げることはしません"
+before_config = "WAF：サーバー上の設定またはユニットが最後に変更されるより前に起動したものです（または、それらを書き込んでいたデプロイが WAF を再起動する前に中断されたか、いつ起動したかをサーバーが判別できませんでした）。そのため erpc.toml のルールで動いているとはみなしません。`erpc worker deploy{scope}` で再起動します。それまでポートをこれ以上広げることはしません"
+not_asked = "WAF：erpc.toml に [waf] はもうありません。`erpc worker deploy{scope}` でサーバー上の WAF を取り除きます"
+blocked = "ルール別のブロック数：{rules}"
+nothing_blocked = "まだ何もブロックしていません"
+
+[deploy]
+applying = "アプリの前に WAF を置いています：ポート {port}、転送先 {upstream}"
+listening = "WAF がポート {port} で待ち受けています"
+unchanged = "WAF はこれまでどおりポート {port} で待ち受けています"
+restarted = "WAF はポート {port} で待ち受けています。いまインストールされているエージェントで動くよう再起動しました。ルールはこれまでどおりです"
+restarted_config = "WAF はポート {port} で待ち受けています。サーバー上の設定またはユニットが最後に変更されるより前に起動していた（または、それらを書き込んでいたデプロイが WAF を再起動する前に中断されていたか、いつ起動したかをサーバーが判別できなかった）ため、現在の設定とユニットで動くよう再起動しました"
+removed = "erpc.toml に [waf] がなくなったため、サーバーから WAF を削除しました"
+not_removed = "以前のデプロイが残した WAF を削除できませんでした：{error}"
+failed = "リリース {release} は動いていますが、WAF が起動しませんでした：{why}"
+failed_hint = "`erpc worker logs --waf{scope}` で WAF のジャーナルを確認できます。`erpc worker deploy{scope}` をもう一度実行すると設置し直します"
+no_reason = "サーバーのエージェントは理由を示しませんでした"
+
+[done]
+open = "WAF がポート {port} で待ち受け、{upstream} のアプリへ転送します。このポートは {addresses} に開放されています{limit}。"
+limit = "（1 つのアドレスから毎秒 {per_second} を超える新規接続は破棄します）"
+nobody = "WAF がポート {port} で待ち受け、{upstream} のアプリへ転送します。まだ誰も通していません：`erpc worker firewall allow --to app <ADDRESS>{scope}` でアドレスに開放でき、0.0.0.0/0 を指定するとすべてのアドレスに開放します。"
+see = "`erpc worker firewall list{scope}` で WAF がブロックした数をルール別に、`erpc worker logs --waf{scope}` で拒否したリクエストを 1 件ずつ確認できます。"
+removed = "erpc.toml に [waf] がなくなったため、サーバーから WAF を削除しました。"
+prepared = "WAF（ポート {port}）は、アプリを起動するデプロイで設置されます。"

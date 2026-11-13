@@ -28,6 +28,38 @@ fn chain_flag(args: &[String]) -> Option<String> {
     None
 }
 
+/// Whether `args`, what follows `erpc <role>`, is a deploy: the role's own
+/// parser, for the chain the line names, reads their last verb as
+/// `deploy` (its own, or one under another verb, as `aqa deploy`). A line
+/// that names no chain takes it from the environment, a setting or a
+/// question, none of which is read here: it is a deploy when a chain that
+/// has the role reads it as one. A line the parser refuses is not.
+pub(crate) fn deploys(role: Role, args: &[String]) -> bool {
+    let chains: Vec<Chain> = match chain_flag(args).filter(|named| !named.is_empty()) {
+        Some(named) => Chain::parse(&named).into_iter().collect(),
+        None => Chain::ALL.to_vec(),
+    };
+    chains
+        .into_iter()
+        .filter(|chain| chain.roles().contains(&role))
+        .any(|chain| {
+            let full = std::iter::once(format!("erpc {role}")).chain(args.iter().cloned());
+            command(role, chain)
+                .try_get_matches_from(full)
+                .is_ok_and(|read| last_verb(&read) == Some("deploy"))
+        })
+}
+
+/// The verb a parsed line ends in: `deploy` of `aqa deploy`.
+fn last_verb(read: &ArgMatches) -> Option<&str> {
+    let (mut at, mut last) = (read, None);
+    while let Some((name, under)) = at.subcommand() {
+        last = Some(name);
+        at = under;
+    }
+    last
+}
+
 /// For a bare `erpc <role>` whose chain is not set anywhere, while more
 /// than one chain has the role: how to see each chain's commands. `None`
 /// when the chain is known, so its own help is shown.
@@ -1585,6 +1617,118 @@ mod tests {
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    /// Every path of subcommands under `command`.
+    fn paths(command: &clap::Command, at: &mut Vec<String>, out: &mut Vec<Vec<String>>) {
+        for sub in command.get_subcommands() {
+            if sub.get_name() == "help" {
+                continue;
+            }
+            at.push(sub.get_name().to_owned());
+            out.push(at.clone());
+            paths(sub, at, out);
+            at.pop();
+        }
+    }
+
+    /// `deploys` is what gives a node's deploy its time under `erpc ai`.
+    /// It reads a line with the role's own parser, so there is no second
+    /// grammar to keep; this holds it to the tree all the same: every verb
+    /// path of every role on every chain, written with the chain and a
+    /// host before it, is a deploy exactly when the parser accepts the
+    /// line and its last verb is `deploy`, under each name the verb has.
+    #[test]
+    fn every_deploy_in_the_tree_and_nothing_else_is_read_as_one() {
+        use super::deploys;
+        let (mut long, mut short) = (0, 0);
+        for role in [Role::Validator, Role::Rpc, Role::Node] {
+            for chain in Chain::ALL {
+                if !chain.roles().contains(&role) {
+                    continue;
+                }
+                let mut tree = command(role, chain);
+                tree.build();
+                let mut all = Vec::new();
+                paths(&tree, &mut Vec::new(), &mut all);
+                for path in all {
+                    let line: Vec<String> = ["--chain", chain.as_str(), "--name", "h1"]
+                        .iter()
+                        .map(|w| (*w).to_owned())
+                        .chain(path.iter().cloned())
+                        .collect();
+                    let full = std::iter::once(format!("erpc {role}")).chain(line.iter().cloned());
+                    let accepted = command(role, chain).try_get_matches_from(full).is_ok();
+                    let wanted = accepted && path.last().is_some_and(|verb| verb == "deploy");
+                    assert_eq!(deploys(role, &line), wanted, "{role} {line:?}");
+                    if wanted {
+                        long += 1;
+                    } else {
+                        short += 1;
+                    }
+                    // Under another name its last verb has, the same.
+                    let mut parent = &tree;
+                    for word in &path[..path.len() - 1] {
+                        parent = parent.find_subcommand(word).expect("on the path");
+                    }
+                    let verb = parent
+                        .find_subcommand(&path[path.len() - 1])
+                        .expect("the verb");
+                    for alias in verb.get_all_aliases() {
+                        let mut aliased = line.clone();
+                        if let Some(last) = aliased.last_mut() {
+                            alias.clone_into(last);
+                        }
+                        assert_eq!(deploys(role, &aliased), wanted, "{role} {aliased:?}");
+                    }
+                }
+            }
+        }
+        // Not vacuous: most chains' deploy needs no more than a host, and
+        // far more verbs are not deploys.
+        assert!(long >= 18, "{long} deploys were accepted as written");
+        assert!(short > long, "{short} other verbs");
+    }
+
+    #[test]
+    fn a_line_without_a_chain_is_a_deploy_when_a_chain_with_the_role_reads_it_as_one() {
+        use super::deploys;
+        // The chain comes from a setting or a question then, which is not
+        // read: any chain's reading counts.
+        assert!(deploys(Role::Validator, &args(&["--name", "h1", "deploy"])));
+        assert!(!deploys(
+            Role::Validator,
+            &args(&["--name", "h1", "status"])
+        ));
+        // A chain that is named decides alone, and one erpc does not know
+        // reads nothing.
+        assert!(!deploys(
+            Role::Validator,
+            &args(&["--chain", "nosuchchain", "deploy"])
+        ));
+        // An empty `--chain` names none, as erpc's own resolution has it:
+        // the line is read as one without a chain.
+        assert!(deploys(
+            Role::Validator,
+            &args(&["--chain", "", "--name", "h1", "deploy"])
+        ));
+        assert!(!deploys(
+            Role::Validator,
+            &args(&["--chain", "", "--name", "h1", "status"])
+        ));
+        // A chain that has no such role has no deploy of it, whatever its
+        // tree would read: erpc refuses the line before the parser sees it.
+        let mut without = 0;
+        for role in [Role::Validator, Role::Rpc, Role::Node] {
+            for chain in Chain::ALL {
+                if !chain.roles().contains(&role) {
+                    without += 1;
+                    let line = args(&["--chain", chain.as_str(), "--name", "h1", "deploy"]);
+                    assert!(!deploys(role, &line), "{role} {line:?}");
+                }
+            }
+        }
+        assert!(without > 0, "some chain lacks some role");
     }
 
     #[test]
