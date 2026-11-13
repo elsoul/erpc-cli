@@ -130,7 +130,7 @@ fs2 = "0.4"
 tempfile = "3.14"
 toml = "0.8"
 # Already in the lock through `toml`; edits erpc.toml keeping its comments.
-toml_edit = "0.22"
+toml_edit = "0.25"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
