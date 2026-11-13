@@ -126,6 +126,14 @@ jobs:
         with:
           toolchain: 1.98.0
           components: clippy
+      # The app is built with the oldest Rust its Cargo.toml allows
+      # (rust-version; solana-stream-sdk 4 needs 1.98.1), not with this
+      # repository's: the rendered directory sits under rust-toolchain.toml,
+      # so the step that builds it names its toolchain.
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: 1.98.1
+          components: clippy
       # The template's build output is kept beside the rendered directory,
       # not in it: a restored cache must not make that directory, which
       # `erpc worker init` refuses to write into when it exists. The
@@ -146,6 +154,11 @@ jobs:
         working-directory: template-ci/pumpfun-ci
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/template-ci/pumpfun-target
+          RUSTUP_TOOLCHAIN: 1.98.1
+          # Clippy looks for its config upward from here and would find this
+          # repository's (msrv 1.98, not the app's rust-version); an app made
+          # by init has none, so none is read.
+          CLIPPY_CONF_DIR: ${{ runner.temp }}
         run: |
           cargo clippy --all-targets --locked -- -D warnings
           cargo test --locked

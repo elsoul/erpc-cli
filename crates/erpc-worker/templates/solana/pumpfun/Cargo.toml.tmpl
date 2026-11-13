@@ -3,6 +3,7 @@ name = "{{name}}"
 version = "0.1.0"
 description = "PumpSwap auto-trading bot via Geyser gRPC, run with erpc worker"
 edition = "2021"
+rust-version = "1.98.1"
 license = "Apache-2.0"
 publish = false
 
@@ -30,7 +31,7 @@ serde_jsonc = "1"
 solana-account-decoder = "3.0"
 solana-rpc-client = "3.0"
 solana-rpc-client-api = "3.0"
-solana-stream-sdk = { version = "3.0.0", default-features = false }
+solana-stream-sdk = { version = "4.0.0", default-features = false }
 solana-sdk = "3.0"
 solana-instruction = "3.0"
 solana-commitment-config = "3.0"
@@ -50,7 +51,6 @@ scalar_api_reference = { version = "0.2", features = ["axum"] }
 utoipa = { version = "5", features = ["axum_extras"] }
 zeroize = "1"
 # Pin transitive deps to versions compatible with rust-toolchain 1.86.
-home = "=0.5.11"
 time = "=0.3.44"
 serde_with = "=3.16.1"
 darling = "=0.21.3"

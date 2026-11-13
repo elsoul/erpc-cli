@@ -3,7 +3,7 @@ Copyright 2025-2026 ELSOUL LABO B.V.
 
 This app is derived from trade-app in solana-stream
 (https://github.com/ValidatorsDAO/solana-stream, temp-release/trade-app,
-commit ea0c3a476b455a9db16a20aa0e82a006df300758), licensed under the Apache
+commit 32dabe7c42697ac3951023b3aa90fda282fb243a), licensed under the Apache
 License, Version 2.0.
 
 Changes made for erpc worker:
@@ -67,6 +67,6 @@ Changes made for erpc worker:
   read are gone: it was switched off for exhausting the RPC, and GET
   /api/timing measures from the streams instead. Dependencies nothing used
   are gone with it.
-- The package and binary are named after the app; the git dependency is
-  pinned to a commit; reqwest uses rustls instead of the system's OpenSSL,
-  so the app cross-builds for Linux and needs no libssl on the server.
+- The package and binary are named after the app; reqwest uses rustls
+  instead of the system's OpenSSL, so the app cross-builds for Linux and
+  needs no libssl on the server.
