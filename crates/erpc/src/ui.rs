@@ -12,6 +12,88 @@
 
 use console::{Style, Term};
 
+/// ERPC Blue, for what the eye should find first: help headings and the
+/// commands to run next. The mark's blue ([`crate::tui::mark`]) starts at
+/// `#2563EB`; this is a step lighter, so it reads on dark and light
+/// backgrounds alike.
+const ERPC_BLUE: [u8; 3] = [0x3B, 0x82, 0xF6];
+
+/// ERPC Blue as this terminal takes it: RGB where `COLORTERM` says the
+/// terminal has it, else the nearest of the 256 colours every terminal has.
+fn blue_code() -> BlueCode {
+    let [r, g, b] = ERPC_BLUE;
+    if crate::tui::Look::detect().truecolor {
+        BlueCode::Rgb(r, g, b)
+    } else {
+        BlueCode::Indexed(crate::tui::mark::nearest_256(r, g, b))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BlueCode {
+    Rgb(u8, u8, u8),
+    Indexed(u8),
+}
+
+/// Text in ERPC Blue.
+pub(crate) fn blue() -> Style {
+    match blue_code() {
+        BlueCode::Rgb(r, g, b) => Style::new().true_color(r, g, b),
+        BlueCode::Indexed(n) => Style::new().color256(n),
+    }
+}
+
+/// How clap draws help: the section headings and `Usage:` in ERPC Blue,
+/// names of commands and flags bold, and the notes after a description
+/// (`[env: …]`, `[possible values: …]`, `[alias: …]`) dimmed. In clap's
+/// error messages `error:` and the values keep clap's own colours; their
+/// `Usage:` line is blue too, as it takes the same style. Whether any of it
+/// is drawn is decided where the help is printed: by clap for the help it
+/// prints, and by [`help_coloured`] for help erpc prints itself.
+pub(crate) fn help_styles() -> clap::builder::Styles {
+    use clap::builder::styling::{Ansi256Color, Color, RgbColor, Style, Styles};
+    let blue = match blue_code() {
+        BlueCode::Rgb(r, g, b) => Color::Rgb(RgbColor(r, g, b)),
+        BlueCode::Indexed(n) => Color::Ansi256(Ansi256Color(n)),
+    };
+    let heading = Style::new().fg_color(Some(blue)).bold();
+    let note = Style::new().dimmed();
+    Styles::styled()
+        .header(heading)
+        .usage(heading)
+        .context(note)
+        .context_value(note)
+}
+
+/// Help clap rendered, for standard output: drawn in its styles when
+/// [`help_coloured`] says so, else plain.
+pub(crate) fn help_text(help: &clap::builder::StyledStr) -> String {
+    if help_coloured(false) {
+        help.ansi().to_string()
+    } else {
+        help.to_string()
+    }
+}
+
+/// Whether help erpc prints itself, rather than through clap, is drawn in
+/// colour on standard error (`stderr`) or standard output: the help of a
+/// role with no verb, and help that i18n wraps itself. The answer is
+/// `console`'s, the one the colours of a [`Report`] follow: a terminal
+/// that is not `dumb`, no `NO_COLOR` (`console` counts an empty one too)
+/// and `CLICOLOR` not `0`, or `CLICOLOR_FORCE` set; on Windows, a console
+/// that escape sequences can be turned on in. A `NO_COLOR` that is set and
+/// not empty turns colour off even under `CLICOLOR_FORCE`, as it does for
+/// the help clap prints.
+pub(crate) fn help_coloured(stderr: bool) -> bool {
+    let no_color = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
+    let enabled = if stderr {
+        console::colors_enabled_stderr()
+    } else {
+        console::colors_enabled()
+    };
+    enabled && !no_color
+}
+
 /// Whether standard output is a terminal a person reads.
 pub(crate) fn stdout_drawn() -> bool {
     drawn(&Term::stdout())
@@ -195,13 +277,12 @@ fn draw(line: &Line, width: usize, out: &mut Vec<String>) {
         }
         Line::Next(steps) => {
             out.push(format!("👉 {}", bold.apply_to("Next")));
-            out.extend(steps.iter().map(|s| {
-                format!(
-                    "{UNDER}{} {}",
-                    dim.apply_to("$"),
-                    Style::new().cyan().apply_to(s)
-                )
-            }));
+            let blue = blue();
+            out.extend(
+                steps
+                    .iter()
+                    .map(|s| format!("{UNDER}{} {}", dim.apply_to("$"), blue.apply_to(s))),
+            );
         }
     }
 }
@@ -250,7 +331,7 @@ fn decorated(text: &str, mark: &str) -> String {
             out.push(format!(
                 "{UNDER}{} {}",
                 dim.apply_to("$"),
-                Style::new().cyan().apply_to(step)
+                blue().apply_to(step)
             ));
             continue;
         }
@@ -306,7 +387,7 @@ pub(crate) fn step_line(text: &str, drawn: bool) -> String {
     if drawn {
         format!(
             "{} {}",
-            Style::new().cyan().for_stderr().apply_to("›"),
+            blue().for_stderr().apply_to("›"),
             Style::new().dim().for_stderr().apply_to(text)
         )
     } else {

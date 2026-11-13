@@ -155,15 +155,15 @@ pub(crate) const fn wraps_itself(lang: Lang) -> bool {
 
 /// Prints the help clap rendered for `error` (`--help`, or a command
 /// without its subcommand) wrapped to the terminal, and exits as clap
-/// would.
+/// would. It is in colour when [`crate::ui::help_coloured`] says so.
 pub(crate) fn print_help(error: &clap::Error) -> ! {
     use std::io::Write as _;
-    let (term, drawn) = if error.use_stderr() {
-        (console::Term::stderr(), crate::ui::stderr_drawn())
+    let term = if error.use_stderr() {
+        console::Term::stderr()
     } else {
-        (console::Term::stdout(), crate::ui::stdout_drawn())
+        console::Term::stdout()
     };
-    let coloured = drawn && std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty());
+    let coloured = crate::ui::help_coloured(error.use_stderr());
     let rendered = error.render();
     let text = if coloured {
         rendered.ansi().to_string()

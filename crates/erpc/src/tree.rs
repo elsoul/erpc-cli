@@ -140,6 +140,7 @@ pub(crate) fn command(role: Role, chain: Chain) -> Command {
     let networks: Vec<&'static str> = chain.networks().to_vec();
     let mut command = Command::new(role.as_str())
         .bin_name(format!("erpc {role}"))
+        .styles(crate::ui::help_styles())
         .about(format!("{role} commands on {chain}"))
         .arg(
             Arg::new("chain")
@@ -951,7 +952,7 @@ pub async fn run(role: Role, args: &[String], json: bool) -> Outcome {
                 "erpc {role} needs a verb; `erpc {role} --chain {chain} --help` lists them"
             ));
         }
-        return Outcome::Done(command(role, chain).render_help().to_string());
+        return Outcome::Done(crate::ui::help_text(&command(role, chain).render_help()));
     };
     if role == Role::Validator && chain == Chain::Eth {
         return crate::eth_validator_tree::run(name, sub, source, json).await;
