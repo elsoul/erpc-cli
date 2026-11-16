@@ -23,8 +23,8 @@ whose version has no entry below.
   validator and why, the commands every chain has, `erpc rpc call` and
   `list-networks` for rpc, the options and examples. It replaces a plain
   English list of `--chain <chain> --help` lines. For a script (`--json`
-  before the command, as in `erpc --json validator`, or `ERPC_JSON`) it
-  is plain, even under `CLICOLOR_FORCE`. `erpc rpc help`
+  before the role's other words, as in `erpc --json validator --help`, or
+  `ERPC_JSON=true`) it is plain, even under `CLICOLOR_FORCE`. `erpc rpc help`
   is this overview too, no longer clap's list of `call` and
   `list-networks`; `erpc rpc help call` and `erpc rpc help list-networks`
   still print what `erpc rpc call --help` and `erpc rpc list-networks

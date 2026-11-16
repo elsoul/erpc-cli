@@ -206,6 +206,6 @@
 "worker delete --release-server" = "Also end the hourly ERPC server it runs on"
 "worker delete --forget" = "Do not reach the server: the worker no longer runs there (the server is gone, say), and the record goes without it"
 "worker delete --forget-line" = "Take a data line off the record without ending it, by its id: one ended outside erpc. Repeatable"
-"worker delete --yes" = "Go ahead without asking (with `--release-server`, a VPS never reached, or one passed with `--forget`, that is not on the account signed in to is still asked about, at a terminal)"
+"worker delete --yes" = "Go ahead without asking (with `--release-server`: a VPS never reached, or one passed with `--forget`, that is not on the account signed in to is still asked about, at a terminal)"
 "worker list" = "List the apps on this machine and where each is deployed"
 "worker list --prune" = "First take the apps whose erpc.toml is gone off the list. Their directories and servers are not touched"
