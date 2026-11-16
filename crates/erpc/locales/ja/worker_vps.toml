@@ -62,6 +62,10 @@ ending = "時間課金の {kind} {id} を終了しています"
 failed = "user-api が {kind} {id} を終了しませんでした：{answer}"
 no_hourly_list = "user-api のクレジットスナップショットに時間課金の商品がありません。何も変更していません"
 
+[gone]
+looking = "VPS {id} はアカウントのサーバーにも課金対象にもありません。購入した直後の可能性があるため、1 分あまり確認を続けます"
+no_list = "user-api の VPS の状態に一覧がないため、VPS {id} がまだアカウントにあるかどうか分かりません"
+
 [line]
 no_status = "erpc は {kind} 回線の状態を取得できません"
 no_list = "user-api が返した {kind} 回線の状態に一覧が含まれていません。何も変更していません"

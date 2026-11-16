@@ -55,6 +55,32 @@ whose version has no entry below.
   keys`: keys is on solana only) or clap's own words for the line. A
   chain without the command says so (`validator N/A for bitcoin`). It is
   never read as `--chain`: nothing runs, and no picker opens.
+- A worker whose hourly VPS was ended outside erpc (in the dashboard, or
+  by support) after a deploy that never reached it could no longer be
+  deleted or deployed: `erpc worker delete --release-server` failed with
+  "the account has no hourly vps" and kept the record, asking to be run
+  again, and `erpc worker deploy` waited for that VPS each time and
+  failed. erpc now asks the account signed in to whether it has the VPS:
+  it is missing when it is neither among the account's servers nor
+  charged for at every look over more than a minute, so that one bought
+  a moment ago, which user-api can take that long to list, is never
+  missing. erpc.toml does not say which account bought a VPS, so a VPS
+  missing from the account signed in to may be another account's: every
+  message that calls it missing names the account looked at, and only a
+  person at a terminal, asked with that account named, can say it leaves
+  the record. `--yes` does not answer that question, and with no terminal,
+  or under `--json`, nothing is done and the error says so.
+  - `delete --release-server` asks the account only about a VPS that was
+    never reached, or one the person says is not to be reached
+    (`--forget`); on the person's yes, such a VPS, when missing, is taken
+    off the record without being ended. A server that was reached is
+    removed from and ended as before, whatever the account says: erpc
+    never takes a failure to reach it for its end.
+  - `deploy`, on the person's yes, takes such a VPS off the record and
+    chooses a server as for a new environment; otherwise it stops and
+    names `delete --release-server`.
+- `erpc worker delete` no longer warns about a trading app's positions
+  when the worker never ran on a server.
 
 ## [0.1.0-rc.5] - 2026-11-16
 

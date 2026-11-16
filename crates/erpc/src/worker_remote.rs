@@ -21,6 +21,7 @@ use crate::error::{CliError, Code};
 use crate::node_common::{Say, go_ahead};
 use crate::worker::{App, load_env};
 use crate::worker_secrets;
+use crate::worker_vps::OnAccount;
 
 pub(crate) fn failed(message: impl Into<String>) -> CliError {
     CliError::new(Code::Failed, message)
@@ -870,13 +871,18 @@ pub(crate) async fn delete(json: bool, app: &App, ask: &DeleteAsk) -> Outcome {
     if let Some(e) = refuse_delete(&env, release_server, &scope) {
         return e.into();
     }
-    positions_warning(&m, app, &say);
+    let seen = account_view(&env, release_server, ask.forget, &say).await;
+    let missing = seen.missing_from();
+    // Only a worker that ran on a server can hold positions.
+    if env.host.is_some() {
+        positions_warning(&m, app, &say);
+    }
     say.line(&delete_prompt(
         &env,
         &id,
         &app.env,
         release_server,
-        ask.forget,
+        (ask.forget, missing),
     ));
     if let Some(asked) = forget_prompt(&forgotten) {
         say.line(&asked);
@@ -887,9 +893,17 @@ pub(crate) async fn delete(json: bool, app: &App, ask: &DeleteAsk) -> Outcome {
         let what = crate::worker_vps::purchase_name(start);
         say.line(&t!("worker_remote.delete.start_unanswered", what));
     }
-    if let Err(e) = go_ahead(ask.yes, &t!("worker_remote.delete.refused")) {
-        return e.into();
-    }
+    let asking = crate::worker_vps::can_ask(json, crate::session::has_terminal());
+    // The server leaves the record unended only as the person agreed.
+    let agreed_missing = match agreed(
+        missing.zip(env.resource.as_ref()),
+        asking,
+        |question| crate::node_common::confirm(question).map_err(failed),
+        || go_ahead(ask.yes, &t!("worker_remote.delete.refused")),
+    ) {
+        Ok(account) => account,
+        Err(e) => return e.into(),
+    };
     let removal = match &env.host {
         None => Removal::NoHost,
         Some(_) if ask.forget => Removal::Skipped,
@@ -942,7 +956,7 @@ pub(crate) async fn delete(json: bool, app: &App, ask: &DeleteAsk) -> Outcome {
         say.line(line);
     }
     let released = if release_server {
-        release(&env, &say).await
+        release(&env, &say, server_end(agreed_missing, &removal)).await
     } else {
         Released::default()
     };
@@ -986,12 +1000,10 @@ pub(crate) async fn delete(json: bool, app: &App, ask: &DeleteAsk) -> Outcome {
         .iter()
         .filter(|l| !release_server || released.kept_ids.contains(&l.id))
         .collect();
-    let answer = json!({
+    let mut answer = what_was_released(&released);
+    answer.extend(json_fields(json!({
         "removed": matches!(removal, Removal::Done).then_some(id.as_str()),
         "removal": removal.as_str(),
-        "server_ended": released.server.clone().unwrap_or(Value::Null),
-        "lines_ended": released.lines,
-        "lines_dropped": released.dropped,
         "lines_kept": released.kept,
         "lines_forgotten": ids(&forgotten),
         "lines_left_running": left_running,
@@ -999,7 +1011,8 @@ pub(crate) async fn delete(json: bool, app: &App, ask: &DeleteAsk) -> Outcome {
         "starts_forgotten": env.starting,
         "backup": backup,
         "erpc_toml": rewritten.is_ok(),
-    });
+    })));
+    let answer = Value::Object(answer);
     let mut text = match (&removal, &env.host) {
         (Removal::Done, _) => t!("worker_remote.delete.removed", id = id.as_str()),
         (Removal::Skipped, Some(host)) => {
@@ -1056,14 +1069,76 @@ fn failure_details(
     forgotten: &[Line],
     on_record: Option<&Env>,
 ) -> Value {
-    json!({
+    let mut details = what_was_released(released);
+    details.extend(json_fields(json!({
         "removal": removal.as_str(),
+        "lines_forgotten": on_record.map(|_| ids(forgotten)),
+        "on_record": on_record,
+    })));
+    Value::Object(details)
+}
+
+/// What a release ended, dropped and took off the record, as a delete's
+/// JSON says it, done or not.
+fn what_was_released(released: &Released) -> serde_json::Map<String, Value> {
+    json_fields(json!({
         "server_ended": released.server.clone().unwrap_or(Value::Null),
         "lines_ended": released.lines,
         "lines_dropped": released.dropped,
-        "lines_forgotten": on_record.map(|_| ids(forgotten)),
-        "on_record": on_record,
-    })
+    }))
+}
+
+/// The fields of a JSON object written with `json!`.
+fn json_fields(object: Value) -> serde_json::Map<String, Value> {
+    match object {
+        Value::Object(fields) => fields,
+        _ => serde_json::Map::new(),
+    }
+}
+
+/// The yes a delete goes on with, and the account the person agreed the
+/// server is missing from: the only way a server leaves the record unended
+/// ([`server_end`]). A server missing from the account signed in to
+/// (`missing`: that account and the server) is taken off the record
+/// unended only on the yes of a person who can be asked (`can_ask`: at a
+/// terminal, not under `--json`) to a question that names the account,
+/// since only they can tell whether it has ended or is another account's:
+/// `--yes` does not answer it, and with nobody to ask nothing is done. Any
+/// other delete asks as it always did (`go_ahead`), and its server is
+/// ended as before.
+fn agreed<'a>(
+    missing: Option<(&'a str, &Resource)>,
+    can_ask: bool,
+    ask: impl FnOnce(&str) -> Result<bool, CliError>,
+    go_ahead: impl FnOnce() -> Result<(), CliError>,
+) -> Result<Option<&'a str>, CliError> {
+    let Some((account, server)) = missing else {
+        return go_ahead().map(|()| None);
+    };
+    let (kind, id) = (server.kind.as_str(), server.id.as_str());
+    if !can_ask {
+        return Err(CliError::new(
+            Code::NeedsTerminal,
+            t!(
+                "worker_remote.delete.missing_needs_person",
+                kind,
+                id,
+                account
+            ),
+        )
+        .hint(t!("worker_remote.delete.missing_needs_person_hint")));
+    }
+    if ask(&t!("worker_remote.delete.missing_ask", kind, id, account))? {
+        Ok(Some(account))
+    } else {
+        Err(CliError::new(
+            Code::Declined,
+            t!(
+                "tui.picker.said_no_to",
+                refused = t!("worker_remote.delete.refused")
+            ),
+        ))
+    }
 }
 
 /// The hourly ERPC server a plain delete forgets while it still runs and
@@ -1161,14 +1236,20 @@ fn unreached_hint(env: &Env, forgotten: &[Line], scope: &str) -> String {
     hint
 }
 
-/// What `delete` says it is about to do.
+/// What `delete` says it is about to do: with `--forget`, and with the
+/// hourly server on record missing from the account signed in to
+/// (`missing`, that account, asked only as [`asks_account`] says), which
+/// is not ended but leaves the record: the person's yes is given knowing
+/// which account was looked at.
 fn delete_prompt(
     env: &Env,
     id: &UnitId,
     env_name: &str,
     release_server: bool,
-    forget: bool,
+    (forget, missing): (bool, Option<&str>),
 ) -> String {
+    let server = env.resource.as_ref();
+    let (kind, server_id) = server.map_or(("", ""), |r| (r.kind.as_str(), r.id.as_str()));
     format!(
         "{}{}",
         match (&env.host, &env.resource) {
@@ -1182,11 +1263,28 @@ fn delete_prompt(
             (None, Some(_)) => t!("worker_remote.delete_prompt.never_reached", env = env_name),
             (None, None) => t!("worker_remote.delete_prompt.no_server", env = env_name),
         },
-        match (release_server, env.lines.is_empty(), ends_server(env)) {
-            (true, true, true) => t!("worker_remote.delete_prompt.then_server"),
-            (true, false, true) => t!("worker_remote.delete_prompt.then_lines_and_server"),
-            (true, false, false) => t!("worker_remote.delete_prompt.then_lines"),
-            (true, true, false) => t!("worker_remote.delete_prompt.no_server_to_end"),
+        match (
+            release_server,
+            env.lines.is_empty(),
+            ends_server(env),
+            missing
+        ) {
+            (true, true, true, Some(account)) => t!(
+                "worker_remote.delete_prompt.then_missing",
+                kind,
+                id = server_id,
+                account
+            ),
+            (true, false, true, Some(account)) => t!(
+                "worker_remote.delete_prompt.then_lines_missing",
+                kind,
+                id = server_id,
+                account
+            ),
+            (true, true, true, None) => t!("worker_remote.delete_prompt.then_server"),
+            (true, false, true, None) => t!("worker_remote.delete_prompt.then_lines_and_server"),
+            (true, false, false, _) => t!("worker_remote.delete_prompt.then_lines"),
+            (true, true, false, _) => t!("worker_remote.delete_prompt.no_server_to_end"),
             // A plain delete leaves the hourly server and lines running:
             // said before the yes, not only after.
             (false, ..) => {
@@ -1332,6 +1430,9 @@ struct Released {
     dropped: Vec<String>,
     /// The server ended, as user-api answered.
     server: Option<Value>,
+    /// The server on record, missing from the account signed in to: not
+    /// ended, and off the record.
+    server_gone: Option<GoneServer>,
     /// What could not be ended, and why.
     failed: Vec<String>,
     /// The ids of the lines that could not be ended.
@@ -1340,6 +1441,44 @@ struct Released {
     kept: Vec<String>,
     /// Their ids, which stay on record if anything else does.
     kept_ids: Vec<String>,
+}
+
+/// A server that leaves the record without being ended: which, and the
+/// account it is missing from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GoneServer {
+    server: Resource,
+    account: String,
+}
+
+/// What a release does with the hourly server on record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ServerEnd<'a> {
+    /// End it.
+    End,
+    /// Missing from `account`: not ended; it leaves the record.
+    Gone(&'a str),
+}
+
+/// What a release does with the server, from the account the person
+/// agreed it is missing from (`missing`, from [`agreed`]; asked only as
+/// [`asks_account`] says) and from how the removal went: a missing server
+/// leaves the record only when no worker could be on it as far as erpc
+/// knows, never reached (`NoHost`), or not reached because the person said
+/// so (`--forget`, `Skipped`). Whatever an attempt to reach a server
+/// answered, erpc never judges from it that the server has ended.
+fn server_end<'a>(missing: Option<&'a str>, removal: &Removal) -> ServerEnd<'a> {
+    match (missing, removal) {
+        (Some(account), Removal::NoHost | Removal::Skipped) => ServerEnd::Gone(account),
+        _ => ServerEnd::End,
+    }
+}
+
+impl Released {
+    /// Whether the server is off the account: ended now, or before.
+    const fn server_off(&self) -> bool {
+        self.server.is_some() || self.server_gone.is_some()
+    }
 }
 
 /// What a release ended, dropped and kept, in words.
@@ -1353,6 +1492,13 @@ fn say_released(text: &mut String, released: &Released, had_server: bool) {
     }
     if released.server.is_some() {
         text.push_str(&t!("worker_remote.released.server"));
+    } else if let Some(gone) = &released.server_gone {
+        text.push_str(&t!(
+            "worker_remote.released.server_gone",
+            kind = gone.server.kind.as_str(),
+            id = gone.server.id,
+            account = gone.account
+        ));
     } else if !had_server {
         text.push_str(&t!("worker_remote.released.no_server"));
     }
@@ -1399,6 +1545,30 @@ fn line_end(line: &Line, listed: Option<bool>, charged: Option<&[(String, i64)]>
     }
 }
 
+/// The hourly server whose place on the account `delete` asks about: on
+/// `--release-server`, one never reached, or one the person said is not to
+/// be reached (`forget`). A server that was reached is removed from and
+/// ended as before, whatever the account says: only the person can say it
+/// no longer answers.
+fn asks_account(env: &Env, release_server: bool, forget: bool) -> Option<&Resource> {
+    env.resource
+        .as_ref()
+        .filter(|_| release_server && ends_server(env) && (env.host.is_none() || forget))
+}
+
+/// What the account signed in to says of the server [`asks_account`]
+/// names ([`crate::worker_vps::on_account`]). Without a session it is not
+/// known: the end is tried as before, and says why it failed.
+async fn account_view(env: &Env, release_server: bool, forget: bool, say: &Say) -> OnAccount {
+    let Some(resource) = asks_account(env, release_server, forget) else {
+        return OnAccount::Unknown;
+    };
+    match crate::worker_vps::Api::open().await {
+        Ok(api) => crate::worker_vps::on_account(&api, resource, say).await,
+        Err(_) => OnAccount::Unknown,
+    }
+}
+
 /// Whether `env` has an hourly ERPC server on record to end. One that has
 /// none (a server of one's own, or what a partial release left) has
 /// nothing to end, which is not a failure.
@@ -1408,9 +1578,10 @@ fn ends_server(env: &Env) -> bool {
         .is_some_and(|r| r.hourly && !r.id.is_empty())
 }
 
-/// Ends `env`'s lines, then its hourly server, whatever happens to each
-/// line: a line that cannot be ended never keeps the server charged.
-async fn release(env: &Env, say: &Say) -> Released {
+/// Ends `env`'s lines, then its hourly server as `server` says, whatever
+/// happens to each line: a line that cannot be ended never keeps the
+/// server charged.
+async fn release(env: &Env, say: &Say, server: ServerEnd<'_>) -> Released {
     let mut out = Released::default();
     if !env.lines.is_empty() {
         match crate::worker_vps::Api::open().await {
@@ -1468,12 +1639,20 @@ async fn release(env: &Env, say: &Say) -> Released {
             }
         }
     }
-    if ends_server(env) {
-        match crate::worker_vps::end(env, say).await {
-            Ok(answer) => out.server = Some(answer),
-            Err(e) => out
-                .failed
-                .push(t!("worker_remote.release.server_failed", error = e.message)),
+    if let Some(resource) = env.resource.as_ref().filter(|_| ends_server(env)) {
+        match server {
+            ServerEnd::Gone(account) => {
+                out.server_gone = Some(GoneServer {
+                    server: resource.clone(),
+                    account: account.to_owned(),
+                });
+            }
+            ServerEnd::End => match crate::worker_vps::end(env, say).await {
+                Ok(answer) => out.server = Some(answer),
+                Err(e) => out
+                    .failed
+                    .push(t!("worker_remote.release.server_failed", error = e.message)),
+            },
         }
     }
     out
@@ -1550,7 +1729,7 @@ fn retry_hint(env: &Env, released: &Released, removal: &Removal, again: &Again<'
         hint.push_str(&t!("worker_remote.retry.backup"));
         hint.push_str(&crate::worker_backup::stuck(again.env));
     }
-    if ends_server(env) && released.server.is_none() {
+    if ends_server(env) && !released.server_off() {
         hint.push_str(&t!("worker_remote.retry.server"));
     }
     if !released.lines_failed.is_empty() {
@@ -1576,7 +1755,7 @@ fn left_over(env: &Env, released: &Released, removal: &Removal) -> Env {
     // The server is gone from the record once it is ended, or when there
     // was none to end and the worker is off it.
     let worker_off = !matches!(removal, Removal::Failed(_));
-    if released.server.is_some() || (worker_off && !ends_server(env)) {
+    if released.server_off() || (worker_off && !ends_server(env)) {
         // The backup keys stay while they are not revoked.
         Env {
             inventory: env.inventory.clone(),
@@ -2246,7 +2425,7 @@ mod tests {
         // that they keep running: one may have been ended elsewhere, and
         // erpc has not looked.
         let id = UnitId::new("bot-prod").expect("unit id");
-        let prompt = delete_prompt(&env(), &id, "prod", false, false);
+        let prompt = delete_prompt(&env(), &id, "prod", false, (false, None));
         let items = hourly_items(&env()).join(", ");
         assert!(
             prompt.ends_with(&format!(
@@ -2266,7 +2445,7 @@ mod tests {
         ] {
             let (said, items) = crate::i18n::speaking(lang, || {
                 (
-                    delete_prompt(&env(), &id, "prod", false, false),
+                    delete_prompt(&env(), &id, "prod", false, (false, None)),
                     hourly_items(&env()),
                 )
             });
@@ -2292,7 +2471,9 @@ mod tests {
             ..env()
         };
         assert!(still_charged_line(&own, "").is_none());
-        assert!(!delete_prompt(&own, &id, "prod", false, false).contains("--release-server"));
+        assert!(
+            !delete_prompt(&own, &id, "prod", false, (false, None)).contains("--release-server")
+        );
     }
 
     #[test]
@@ -2441,12 +2622,12 @@ mod tests {
             host: None,
             ..env()
         };
-        assert!(delete_prompt(&bought, &id, "prod", true, false).contains("never reached"));
+        assert!(delete_prompt(&bought, &id, "prod", true, (false, None)).contains("never reached"));
         assert!(
-            delete_prompt(&Env::default(), &id, "prod", false, false)
+            delete_prompt(&Env::default(), &id, "prod", false, (false, None))
                 .contains("no server is on record")
         );
-        let skipped = delete_prompt(&env(), &id, "prod", false, true);
+        let skipped = delete_prompt(&env(), &id, "prod", false, (true, None));
         assert!(
             skipped.contains("without reaching 203.0.113.10"),
             "{skipped}"
@@ -2541,7 +2722,7 @@ mod tests {
     fn the_delete_prompt_is_told_in_the_operators_language() {
         use erpc_core::i18n::Lang;
         let id = UnitId::new("app-prod").expect("id");
-        let said = || delete_prompt(&env(), &id, "prod", true, false);
+        let said = || delete_prompt(&env(), &id, "prod", true, (false, None));
         let english = said();
         for lang in [Lang::Ja, Lang::Ru] {
             let text = crate::i18n::speaking(lang, said);
@@ -2571,5 +2752,232 @@ mod tests {
             // Sized once, for the worst case, and never grown.
             assert_eq!(quoted.capacity(), value.len() * 6 + 2, "{value:?}");
         }
+    }
+
+    /// A server missing from the account signed in to has nothing to end:
+    /// a release asks user-api nothing about it, takes it off the record
+    /// naming that account, and leaves nothing to do again.
+    #[tokio::test]
+    async fn a_server_missing_from_the_account_leaves_the_record_unended() {
+        use super::{GoneServer, Say, ServerEnd, release, say_released};
+        let never_reached = Env {
+            host: None,
+            lines: Vec::new(),
+            ..env()
+        };
+        let quiet = Say { quiet: true };
+        let released = release(&never_reached, &quiet, ServerEnd::Gone("Example Account")).await;
+        assert!(released.failed.is_empty(), "{:?}", released.failed);
+        assert!(released.server.is_none(), "nothing was ended");
+        assert_eq!(
+            released.server_gone,
+            Some(GoneServer {
+                server: never_reached.resource.clone().expect("a server"),
+                account: "Example Account".to_owned(),
+            })
+        );
+        assert_eq!(
+            left_over(&never_reached, &released, &Removal::NoHost),
+            Env::default()
+        );
+        let hint = retry_hint(&never_reached, &released, &Removal::NoHost, &again(""));
+        assert!(!hint.contains("dashboard"), "{hint}");
+        let mut text = String::new();
+        say_released(&mut text, &released, true);
+        assert_eq!(
+            text,
+            " VPS 100001 is not on the account you are signed in to (Example Account): it was not \
+             ended, and it leaves the record."
+        );
+        let details = failure_details(&Removal::NoHost, &released, &[], None);
+        assert_eq!(details["removal"], "no_server_on_record");
+        assert_eq!(details["server_ended"], serde_json::Value::Null);
+        // Not ended and not missing: a worker not removed keeps it all.
+        let not_ended = Released::default();
+        assert!(!not_ended.server_off());
+        let unreachable = Removal::Failed("connection refused".to_owned());
+        assert!(ends_server(&left_over(&env(), &not_ended, &unreachable)));
+    }
+
+    /// The account is asked about the server only on `--release-server`,
+    /// for an hourly server never reached or one the person said is not
+    /// to be reached (`--forget`); a server that was reached is removed
+    /// from and ended as before, whatever the account says.
+    #[test]
+    fn the_account_is_asked_only_of_a_server_no_worker_is_known_to_run_on() {
+        use super::asks_account;
+        let never_reached = Env {
+            host: None,
+            ..env()
+        };
+        let reached = env();
+        let not_hourly = Env {
+            resource: Some(Resource {
+                hourly: false,
+                ..env().resource.expect("a server")
+            }),
+            host: None,
+            ..env()
+        };
+        assert_eq!(
+            asks_account(&never_reached, true, false),
+            never_reached.resource.as_ref()
+        );
+        assert_eq!(
+            asks_account(&reached, true, true),
+            reached.resource.as_ref()
+        );
+        assert_eq!(asks_account(&reached, true, false), None);
+        assert_eq!(
+            asks_account(&never_reached, false, false),
+            None,
+            "a plain delete"
+        );
+        assert_eq!(asks_account(&reached, false, true), None, "a plain delete");
+        assert_eq!(asks_account(&not_hourly, true, false), None);
+        assert_eq!(asks_account(&Env::default(), true, true), None);
+    }
+
+    /// A missing server leaves the record only when no worker is known to
+    /// be on it: never reached, or not reached as the person asked. After
+    /// any attempt to reach it, removed or not, it is ended as before.
+    #[test]
+    fn a_missing_server_leaves_the_record_only_when_no_worker_is_known_on_it() {
+        use super::{ServerEnd, server_end};
+        let account = Some("Example Account");
+        let failed =
+            Removal::Failed("ssh: connect to host 203.0.113.10: Connection timed out".to_owned());
+        for removal in [Removal::NoHost, Removal::Skipped] {
+            assert_eq!(
+                server_end(account, &removal),
+                ServerEnd::Gone("Example Account")
+            );
+            assert_eq!(server_end(None, &removal), ServerEnd::End);
+        }
+        for removal in [Removal::Done, failed] {
+            assert_eq!(server_end(account, &removal), ServerEnd::End, "{removal:?}");
+            assert_eq!(server_end(None, &removal), ServerEnd::End);
+        }
+    }
+
+    /// The prompt names the account a server is missing from, so that the
+    /// yes is given knowing it, and still promises the end of one that is
+    /// not missing.
+    #[test]
+    fn the_prompt_names_the_account_a_server_is_missing_from() {
+        let id = UnitId::new("app-prod").expect("id");
+        let bought = Env {
+            host: None,
+            lines: Vec::new(),
+            ..env()
+        };
+        let missing = Some("Example Account");
+        assert_eq!(
+            delete_prompt(&bought, &id, "prod", true, (false, missing)),
+            "Forget [env.prod] (its server was never reached), then take VPS 100001 off the \
+             record without ending it: it is not on the account you are signed in to (Example \
+             Account), so it has ended, or it is another account's"
+        );
+        let forgotten = delete_prompt(&env(), &id, "prod", true, (true, missing));
+        assert!(
+            forgotten.starts_with("Forget [env.prod] without reaching 203.0.113.10, as asked")
+                && forgotten.contains(
+                    ", then end its data lines and take VPS 100001 off the record without ending it"
+                )
+                && forgotten.contains("(Example Account)"),
+            "{forgotten}"
+        );
+        assert!(
+            delete_prompt(&bought, &id, "prod", true, (false, None))
+                .ends_with(", then end the hourly server")
+        );
+    }
+
+    /// A server missing from the account leaves the record unended only on
+    /// the yes of a person asked with the account named: `--yes` does not
+    /// give it, and with nobody to ask nothing is done. Any other delete
+    /// asks as it always did.
+    #[test]
+    fn a_missing_server_leaves_the_record_only_on_a_persons_yes() {
+        use super::agreed;
+        use crate::error::Code;
+        use std::cell::{Cell, RefCell};
+
+        let server = env().resource.expect("a server");
+        let missing = Some(("Example Account", &server));
+        let went_ahead = Cell::new(0);
+        let go_ahead = || {
+            went_ahead.set(went_ahead.get() + 1);
+            Ok(())
+        };
+        let asked = RefCell::new(Vec::new());
+        let answer = |yes: bool| {
+            let asked = &asked;
+            move |q: &str| {
+                asked.borrow_mut().push(q.to_owned());
+                Ok(yes)
+            }
+        };
+
+        // Not missing: the delete's own yes, as before; nothing agreed
+        // missing, so the server is ended as before.
+        assert_eq!(
+            agreed(None, false, answer(true), go_ahead).expect("as before"),
+            None
+        );
+        assert_eq!(went_ahead.get(), 1);
+        assert!(asked.borrow().is_empty());
+
+        // Missing, nobody to ask (no terminal, --json; --yes or not).
+        let nobody = agreed(missing, false, answer(true), go_ahead).expect_err("nobody");
+        assert_eq!(nobody.code, Code::NeedsTerminal);
+        assert!(nobody.message.contains("VPS 100001"), "{}", nobody.message);
+        assert!(
+            nobody.message.contains("(Example Account)"),
+            "{}",
+            nobody.message
+        );
+        assert!(
+            nobody
+                .hint
+                .unwrap_or_default()
+                .contains("`--yes` does not answer")
+        );
+        assert!(asked.borrow().is_empty());
+        assert_eq!(went_ahead.get(), 1, "the plain yes is never asked instead");
+
+        // Missing, a person: asked with the account named; their yes is
+        // what lets the server leave the record unended.
+        assert_eq!(
+            agreed(missing, true, answer(true), go_ahead).expect("yes"),
+            Some("Example Account")
+        );
+        assert!(
+            asked.borrow()[0]
+                .starts_with("Go ahead, taking VPS 100001 off the record without ending it?")
+                && asked.borrow()[0].contains("(Example Account)"),
+            "{:?}",
+            asked.borrow()
+        );
+        let no = agreed(missing, true, answer(false), go_ahead).expect_err("no");
+        assert_eq!(no.code, Code::Declined);
+        assert_eq!(went_ahead.get(), 1);
+    }
+
+    /// What a release did is in a delete's JSON, done or not. A server
+    /// that left the record unended is not among it: only a person at a
+    /// terminal, never a `--json` run, can let one leave.
+    #[test]
+    fn what_a_release_did_is_in_the_json_done_or_not() {
+        use super::what_was_released;
+        let released = Released {
+            dropped: vec!["Shreds line 100003".to_owned()],
+            ..Released::default()
+        };
+        let fields = what_was_released(&released);
+        assert!(!fields.contains_key("server_gone"));
+        assert_eq!(fields["server_ended"], serde_json::Value::Null);
+        assert_eq!(fields["lines_dropped"][0], "Shreds line 100003");
+        assert_eq!(fields["lines_ended"], json!([]));
     }
 }

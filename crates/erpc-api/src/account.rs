@@ -22,6 +22,11 @@ use crate::ApiError;
 /// Credit balance, what is drawing on it, and how long it lasts.
 pub const CREDIT_SNAPSHOT_URL: &str = "https://user-api.erpc.global/v3/user/credit-snapshot";
 
+/// How long user-api may answer [`CREDIT_SNAPSHOT_URL`] from its cache
+/// (it says 60 seconds): a product started or ended within this can be
+/// missing from it, or still in it.
+pub const CREDIT_SNAPSHOT_CACHE: core::time::Duration = core::time::Duration::from_secs(60);
+
 /// Credits added and spent, by month, for the last three months.
 pub const CREDIT_SUMMARY_URL: &str = "https://user-api.erpc.global/v3/billing/credit/summary";
 

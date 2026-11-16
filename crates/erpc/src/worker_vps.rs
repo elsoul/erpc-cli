@@ -1271,6 +1271,226 @@ pub(crate) async fn end(env: &Env, say: &Say) -> Result<Value, CliError> {
     Ok(ended)
 }
 
+/// How many looks at the account a VPS on record must be missing from,
+/// and how far apart they are, before it is called missing: together
+/// longer than user-api may take to list a VPS just bought
+/// ([`erpc_ai::ready::UNLISTED`]) and than the credit snapshot is cached
+/// ([`account::CREDIT_SNAPSHOT_CACHE`]), which the build checks.
+const GONE_WINDOW: (u32, Duration) = (6, Duration::from_secs(15));
+const _: () = {
+    let (looks, every) = GONE_WINDOW;
+    let span = every.as_secs() * (looks as u64 - 1);
+    assert!(span > erpc_ai::ready::UNLISTED.as_secs());
+    assert!(span > account::CREDIT_SNAPSHOT_CACHE.as_secs());
+};
+
+/// What one look at the account shows of a VPS on record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Seen {
+    /// Among the account's VPSs, whatever their status, or charged for.
+    There,
+    /// Neither listed nor charged for.
+    Missing,
+}
+
+/// An id as user-api writes it, a number or a string of one.
+fn id_in(value: &Value) -> Option<i64> {
+    value
+        .as_i64()
+        .or_else(|| value.as_str().and_then(|s| s.parse().ok()))
+}
+
+/// The VPSs a credit snapshot charges for by the hour, by id; `None` when
+/// it has no list, or a VPS row whose id cannot be read: that could be the
+/// one looked for, so the look says nothing.
+fn vps_charged_in(snapshot: &Value) -> Option<Vec<i64>> {
+    let mut ids = Vec::new();
+    for row in snapshot["message"]["hourlyResources"].as_array()? {
+        if row["productType"].as_str() == Some("vps") {
+            ids.push(id_in(&row["userProductId"])?);
+        }
+    }
+    Some(ids)
+}
+
+/// VPS `id` as one look shows it: there when the account's VPS status
+/// (`list`, a `/v3/vps/status` reply, which lists a pending VPS too) has
+/// it or the account is charged for it by the hour (`charged`, from
+/// [`vps_charged_in`]). `None` when the reply has no list, or a row
+/// without an id: that says nothing.
+fn seen(list: &Value, charged: &[i64], id: i64) -> Option<Seen> {
+    let rows = list.get("data")?.as_array()?;
+    // By its id, a number or a string of one; a row whose id cannot be
+    // read could be this VPS, so the look says nothing.
+    let mut listed = false;
+    for row in rows {
+        listed |= row.get("userVpsId").and_then(id_in)? == id;
+    }
+    let charged = charged.contains(&id);
+    Some(if listed || charged {
+        Seen::There
+    } else {
+        Seen::Missing
+    })
+}
+
+/// What `looks` looks, `every` apart, find: missing only when every look
+/// does; there as soon as one finds it; not known (`None`) as soon as one
+/// cannot be read. `waiting` is called once, before the first wait.
+async fn missing_throughout<F, Fut>(
+    looks: u32,
+    every: Duration,
+    mut look: F,
+    waiting: impl FnOnce(),
+) -> Option<Seen>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<Seen, CliError>>,
+{
+    let mut waiting = Some(waiting);
+    for n in 0..looks {
+        if n > 0 {
+            if let Some(say) = waiting.take() {
+                say();
+            }
+            tokio::time::sleep(every).await;
+        }
+        match look().await {
+            Ok(Seen::There) => return Some(Seen::There),
+            Ok(Seen::Missing) => {}
+            Err(_) => return None,
+        }
+    }
+    Some(Seen::Missing)
+}
+
+/// What the account signed in to says of the hourly VPS on record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum OnAccount {
+    /// Among its VPSs, or charged for.
+    There,
+    /// Missing from it at every look over more than a minute: ended outside
+    /// erpc (in the dashboard, or by support), or a VPS of
+    /// another account, which the record cannot tell apart. `account` is
+    /// the account signed in to, as erpc names it, for the person to judge.
+    Missing { account: String },
+    /// Not known: not an hourly VPS, or the account could not be read.
+    Unknown,
+}
+
+impl OnAccount {
+    /// The account it is missing from, when it is.
+    pub(crate) fn missing_from(&self) -> Option<&str> {
+        match self {
+            Self::Missing { account } => Some(account),
+            _ => None,
+        }
+    }
+}
+
+/// What the account signed in to says of the hourly VPS `resource` on
+/// record: missing only when it is neither among the account's VPSs nor
+/// charged for at every one of several looks over more than a minute, so
+/// that a VPS bought a moment ago, which user-api can take that long to
+/// show, is never missing. A VPS missing from the account signed in to may
+/// still be another account's: erpc.toml does not say whose it is, so the
+/// caller names the account and leaves the judgement to the person at the
+/// terminal. Anything but an hourly VPS is not known.
+pub(crate) async fn on_account(api: &Api, resource: &Resource, say: &Say) -> OnAccount {
+    let Ok(url) = erpc_ai::ready::vps_status_url() else {
+        return OnAccount::Unknown;
+    };
+    let replies = || async move {
+        Ok::<_, CliError>((
+            api.read(url).await?,
+            api.read(account::CREDIT_SNAPSHOT_URL).await?,
+        ))
+    };
+    let name = || async move {
+        account_name(
+            erpc_api::get_user(&api.client, &api.token)
+                .await
+                .ok()
+                .as_ref(),
+        )
+    };
+    on_account_by(resource, GONE_WINDOW, replies, name, say).await
+}
+
+/// [`on_account`] with where its replies come from: `replies` gives the
+/// VPS status and the credit snapshot of one look, `name` the account's
+/// name, asked only when every look found the VPS missing.
+async fn on_account_by<R, RF, N, NF>(
+    resource: &Resource,
+    (looks, every): (u32, Duration),
+    mut replies: R,
+    name: N,
+    say: &Say,
+) -> OnAccount
+where
+    R: FnMut() -> RF,
+    RF: Future<Output = Result<(Value, Value), CliError>>,
+    N: FnOnce() -> NF,
+    NF: Future<Output = Option<String>>,
+{
+    if resource.kind != ResourceKind::Vps || !resource.hourly {
+        return OnAccount::Unknown;
+    }
+    let Ok(id) = resource.id.parse::<i64>() else {
+        return OnAccount::Unknown;
+    };
+    let look = || {
+        let reply = replies();
+        async move {
+            let (list, snapshot) = reply.await?;
+            look_at(&list, &snapshot, id).ok_or_else(|| failed(t!("worker_vps.gone.no_list", id)))
+        }
+    };
+    let seen = missing_throughout(looks, every, look, || {
+        say.line(&t!("worker_vps.gone.looking", id));
+    })
+    .await;
+    // Whose account it is missing from: asked only then.
+    let account = if seen == Some(Seen::Missing) {
+        name().await
+    } else {
+        None
+    };
+    judged(seen, account)
+}
+
+/// What one look shows of VPS `id`, from the account's VPS status (`list`)
+/// and its credit snapshot: [`seen`] with the VPSs [`vps_charged_in`] reads.
+fn look_at(list: &Value, snapshot: &Value, id: i64) -> Option<Seen> {
+    vps_charged_in(snapshot).and_then(|charged| seen(list, &charged, id))
+}
+
+/// The account's name as erpc says it, from the account read (`None` when
+/// it could not be): `None` too when it has no name to show, which would
+/// leave the person nothing to judge by.
+fn account_name(user: Option<&erpc_api::User>) -> Option<String> {
+    user.map(erpc_api::User::label_for_display)
+        .filter(|name| !name.trim().is_empty())
+}
+
+/// Whether a person can be asked what only they can say: at a terminal,
+/// and not under `--json` (`quiet`), whose output is for a program.
+/// `--yes` answers none of it.
+pub(crate) const fn can_ask(quiet: bool, terminal: bool) -> bool {
+    !quiet && terminal
+}
+
+/// What the looks (`seen`, `None` when one could not be read) and the
+/// account's name (`None` when it could not be read) come to: missing
+/// only with both, there when a look found it, else not known.
+fn judged(seen: Option<Seen>, account: Option<String>) -> OnAccount {
+    match (seen, account) {
+        (Some(Seen::There), _) => OnAccount::There,
+        (Some(Seen::Missing), Some(account)) => OnAccount::Missing { account },
+        _ => OnAccount::Unknown,
+    }
+}
+
 /// How user-api names a data line of each kind.
 struct LineProduct {
     /// The hourly family that starts one.
@@ -1321,18 +1541,23 @@ const fn line_product(kind: LineKind) -> LineProduct {
 /// charged, which a status list (set up, or not yet) is not.
 pub(crate) async fn charged(api: &Api) -> Result<Vec<(String, i64)>, CliError> {
     let snapshot = api.read(account::CREDIT_SNAPSHOT_URL).await?;
-    let rows = snapshot["message"]["hourlyResources"]
-        .as_array()
-        .ok_or_else(|| failed(t!("worker_vps.end.no_hourly_list")))?;
-    Ok(rows
-        .iter()
-        .filter_map(|r| {
-            Some((
-                r["productType"].as_str()?.to_owned(),
-                r["userProductId"].as_i64()?,
-            ))
-        })
-        .collect())
+    charged_in(&snapshot).ok_or_else(|| failed(t!("worker_vps.end.no_hourly_list")))
+}
+
+/// What a credit snapshot charges for by the hour, as [`charged`] gives
+/// it, ids written as numbers or strings; `None` when it has no list.
+fn charged_in(snapshot: &Value) -> Option<Vec<(String, i64)>> {
+    let rows = snapshot["message"]["hourlyResources"].as_array()?;
+    Some(
+        rows.iter()
+            .filter_map(|r| {
+                Some((
+                    r["productType"].as_str()?.to_owned(),
+                    id_in(&r["userProductId"])?,
+                ))
+            })
+            .collect(),
+    )
 }
 
 /// Whether a line on record is gone from the account: the one rule deploy
@@ -3456,5 +3681,277 @@ mod tests {
         }
         // Russian says three minutes as a few.
         assert!(crate::i18n::speaking(Lang::Ru, say).contains("3 минуты"));
+    }
+
+    /// One look finds a VPS on record there when the account lists it, at
+    /// any status (a pending one included), or charges for it by the hour,
+    /// by an id written as a number or a string; missing when neither; and
+    /// says nothing when the reply has no list or a row has no id.
+    #[test]
+    fn a_vps_is_there_when_listed_or_charged_and_missing_only_when_neither() {
+        use super::{Seen, seen, vps_charged_in};
+        let listed = json!({ "data": [
+            { "userVpsId": 100_001, "status": "pending" },
+            { "userVpsId": "200002", "status": "on", "ip": "203.0.113.10" },
+        ] });
+        let empty = json!({ "data": [] });
+        assert_eq!(seen(&listed, &[], 100_001), Some(Seen::There));
+        assert_eq!(seen(&listed, &[], 200_002), Some(Seen::There));
+        assert_eq!(seen(&empty, &[100_001], 100_001), Some(Seen::There));
+        assert_eq!(seen(&empty, &[], 100_001), Some(Seen::Missing));
+        assert_eq!(seen(&listed, &[], 300_003), Some(Seen::Missing));
+        assert_eq!(seen(&empty, &[200_002], 100_001), Some(Seen::Missing));
+        // No list, or a row that could be this VPS, is no answer.
+        assert_eq!(seen(&json!({}), &[], 100_001), None);
+        assert_eq!(seen(&json!({ "data": null }), &[], 100_001), None);
+        assert_eq!(seen(&json!({ "message": [] }), &[], 100_001), None);
+        let unreadable = json!({ "data": [{ "status": "on" }] });
+        assert_eq!(seen(&unreadable, &[], 100_001), None);
+        let not_a_number = json!({ "data": [{ "userVpsId": "a1" }] });
+        assert_eq!(seen(&not_a_number, &[], 100_001), None);
+
+        // The snapshot's VPSs: other products with the same number are not
+        // one; a VPS row without a readable id, or no list, says nothing.
+        let snapshot = |rows: serde_json::Value| json!({ "message": { "hourlyResources": rows } });
+        assert_eq!(
+            vps_charged_in(&snapshot(json!([
+                { "productType": "vps", "userProductId": 100_001 },
+                { "productType": "vps", "userProductId": "200002" },
+                { "productType": "bare_metal", "userProductId": 300_003 },
+                { "productType": "erpc_plan", "userProductId": "x" },
+            ]))),
+            Some(vec![100_001, 200_002])
+        );
+        assert_eq!(
+            vps_charged_in(&snapshot(
+                json!([{ "productType": "vps", "userProductId": "x" }])
+            )),
+            None
+        );
+        assert_eq!(
+            vps_charged_in(&snapshot(json!([{ "productType": "vps" }]))),
+            None
+        );
+        assert_eq!(vps_charged_in(&json!({ "message": {} })), None);
+    }
+
+    /// The looks and the account's name come to "missing" only with both:
+    /// a look that could not be read, or a name that could not, is not
+    /// known, which keeps the record.
+    #[test]
+    fn missing_needs_every_look_and_the_accounts_name() {
+        use super::{OnAccount, Seen, judged};
+        let name = || Some("Example Account".to_owned());
+        assert_eq!(
+            judged(Some(Seen::Missing), name()),
+            OnAccount::Missing {
+                account: "Example Account".to_owned()
+            }
+        );
+        assert_eq!(judged(Some(Seen::Missing), None), OnAccount::Unknown);
+        assert_eq!(judged(None, name()), OnAccount::Unknown);
+        assert_eq!(judged(None, None), OnAccount::Unknown);
+        assert_eq!(judged(Some(Seen::There), name()), OnAccount::There);
+        assert_eq!(judged(Some(Seen::There), None), OnAccount::There);
+    }
+
+    /// A VPS is missing only when every look finds it so: one look that
+    /// finds it there, the last one included, says it is there, and one
+    /// that cannot be read says nothing is known, after which nothing more
+    /// is looked at. The person is told once, before the first wait, and not
+    /// when the first look settles it.
+    #[tokio::test]
+    async fn a_vps_is_missing_only_when_every_look_finds_it_missing() {
+        use super::{Seen, failed, missing_throughout};
+        use core::time::Duration;
+        use std::cell::Cell;
+
+        async fn run(answers: &[Result<Seen, &str>]) -> (Option<Seen>, usize, usize) {
+            let (looks, told) = (Cell::new(0_usize), Cell::new(0_usize));
+            let looks_allowed = u32::try_from(answers.len()).expect("few");
+            let seen = missing_throughout(
+                looks_allowed,
+                Duration::ZERO,
+                || {
+                    let n = looks.get();
+                    looks.set(n + 1);
+                    let answer = answers[n].map_err(failed);
+                    async move { answer }
+                },
+                || told.set(told.get() + 1),
+            )
+            .await;
+            (seen, looks.get(), told.get())
+        }
+
+        let missing = [Ok(Seen::Missing); 6];
+        assert_eq!(run(&missing).await, (Some(Seen::Missing), 6, 1));
+
+        let mut there_last = missing;
+        there_last[5] = Ok(Seen::There);
+        assert_eq!(run(&there_last).await, (Some(Seen::There), 6, 1));
+
+        let first = [Ok(Seen::There), Ok(Seen::Missing)];
+        assert_eq!(run(&first).await, (Some(Seen::There), 1, 0));
+
+        let unreadable = [Ok(Seen::Missing), Err("no answer"), Ok(Seen::Missing)];
+        assert_eq!(run(&unreadable).await, (None, 2, 1));
+        let unreadable_last = [Ok(Seen::Missing), Ok(Seen::Missing), Err("no answer")];
+        assert_eq!(run(&unreadable_last).await.0, None);
+    }
+
+    /// Only an hourly VPS can be missing: of a bare-metal server, a VPS not
+    /// billed by the hour or one without a number nothing is known, and
+    /// user-api is not asked.
+    #[tokio::test]
+    async fn only_an_hourly_vps_can_be_missing() {
+        use erpc_worker::manifest::{Resource, ResourceKind};
+
+        use super::{Api, OnAccount, on_account};
+        let api = Api::offline();
+        let say = Say { quiet: true };
+        let resource = |kind, id: &str, hourly| Resource {
+            kind,
+            id: id.to_owned(),
+            region: None,
+            hourly,
+        };
+        for r in [
+            resource(ResourceKind::BareMetal, "100001", true),
+            resource(ResourceKind::Vps, "100001", false),
+            resource(ResourceKind::Vps, "", true),
+            resource(ResourceKind::Vps, "not-a-number", true),
+        ] {
+            assert_eq!(
+                on_account(&api, &r, &say).await,
+                OnAccount::Unknown,
+                "{r:?}"
+            );
+        }
+        let missing = OnAccount::Missing {
+            account: "Example Account".to_owned(),
+        };
+        assert_eq!(missing.missing_from(), Some("Example Account"));
+        assert_eq!(OnAccount::There.missing_from(), None);
+        assert_eq!(OnAccount::Unknown.missing_from(), None);
+    }
+
+    /// An id is read as user-api writes it, a number or a string of one.
+    #[test]
+    fn an_id_is_a_number_or_a_string_of_one() {
+        use super::id_in;
+        assert_eq!(id_in(&json!(100_001)), Some(100_001));
+        assert_eq!(id_in(&json!("100001")), Some(100_001));
+        assert_eq!(id_in(&json!("vps-1")), None);
+        assert_eq!(id_in(&json!(null)), None);
+    }
+
+    /// The charges are read with ids as numbers or strings; no list is no
+    /// answer.
+    #[test]
+    fn the_charges_are_read_with_ids_as_numbers_or_strings() {
+        use super::charged_in;
+        let snapshot = json!({ "message": { "hourlyResources": [
+            { "productType": "grpc", "userProductId": 200_002 },
+            { "productType": "shreds", "userProductId": "300003" },
+            { "productType": "vps" },
+        ] } });
+        assert_eq!(
+            charged_in(&snapshot),
+            Some(vec![
+                ("grpc".to_owned(), 200_002),
+                ("shreds".to_owned(), 300_003)
+            ])
+        );
+        assert_eq!(charged_in(&json!({ "message": {} })), None);
+    }
+
+    /// The whole reading of the account, with its replies given: a reply
+    /// with no list, or one that fails, is not known; a VPS charged but not
+    /// listed is there; missing at every look and with the account's name
+    /// read is missing, and only then is the name asked for; a name that
+    /// cannot be read, or is empty, leaves it not known.
+    #[tokio::test]
+    async fn the_account_is_read_through_every_look_and_its_name() {
+        use super::{OnAccount, account_name, look_at, on_account_by};
+        use core::time::Duration;
+        use erpc_worker::manifest::{Resource, ResourceKind};
+        use std::cell::Cell;
+
+        let vps = Resource {
+            kind: ResourceKind::Vps,
+            id: "100001".to_owned(),
+            region: None,
+            hourly: true,
+        };
+        let say = Say { quiet: true };
+        let snapshot = |rows: serde_json::Value| json!({ "message": { "hourlyResources": rows } });
+        let empty = || (json!({ "data": [] }), snapshot(json!([])));
+        let named = || async { Some("Example Account".to_owned()) };
+        let unnamed = || async { None };
+        let window = (3, Duration::ZERO);
+
+        let looks = Cell::new(0);
+        let replies = || {
+            looks.set(looks.get() + 1);
+            async { Ok(empty()) }
+        };
+        assert_eq!(
+            on_account_by(&vps, window, replies, named, &say).await,
+            OnAccount::Missing {
+                account: "Example Account".to_owned()
+            }
+        );
+        assert_eq!(looks.get(), 3, "every look is made");
+        assert_eq!(
+            on_account_by(&vps, window, || async { Ok(empty()) }, unnamed, &say).await,
+            OnAccount::Unknown
+        );
+        let charged = || async {
+            Ok((
+                json!({ "data": [] }),
+                snapshot(json!([{ "productType": "vps", "userProductId": "100001" }])),
+            ))
+        };
+        let never = || async { panic!("the name is asked only of a missing VPS") };
+        assert_eq!(
+            on_account_by(&vps, window, charged, never, &say).await,
+            OnAccount::There
+        );
+        let no_list = || async { Ok((json!({}), snapshot(json!([])))) };
+        assert_eq!(
+            on_account_by(&vps, window, no_list, never, &say).await,
+            OnAccount::Unknown
+        );
+        let no_snapshot = || async { Ok((json!({ "data": [] }), json!({ "message": {} }))) };
+        assert_eq!(
+            on_account_by(&vps, window, no_snapshot, never, &say).await,
+            OnAccount::Unknown
+        );
+        let failing = || async { Err(super::failed("no answer")) };
+        assert_eq!(
+            on_account_by(&vps, window, failing, never, &say).await,
+            OnAccount::Unknown
+        );
+
+        // One look, from its two replies.
+        let listed = json!({ "data": [{ "userVpsId": "100001", "status": "pending" }] });
+        assert_eq!(
+            look_at(&listed, &snapshot(json!([])), 100_001),
+            Some(super::Seen::There)
+        );
+        assert_eq!(look_at(&listed, &json!({}), 100_001), None);
+
+        // The name shown, or none.
+        let user = |name: Option<&str>| -> erpc_api::User {
+            serde_json::from_value(json!({ "uid": "", "username": name })).expect("a user")
+        };
+        assert_eq!(
+            account_name(Some(&user(Some("Example Account")))),
+            Some("Example Account".to_owned())
+        );
+        assert_eq!(account_name(Some(&user(None))), None, "nothing to show");
+        assert_eq!(account_name(Some(&user(Some("  ")))), None);
+        assert_eq!(account_name(None), None);
     }
 }
