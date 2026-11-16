@@ -12,6 +12,23 @@ whose version has no entry below.
 
 ## [Unreleased]
 
+### Changed
+
+- Help at a terminal shows `Usage:` and its section headings in ERPC Blue,
+  and dims the notes after a description (`[env: …]`, `[possible values:
+  …]`, `[alias: …]`); command and flag names stay bold. The `Usage:` line
+  of a command-line error is blue too; `error:` and the values in it keep
+  their colours. The commands listed under 👉 Next and the `›` before a step
+  under way are in the same blue instead of cyan. The blue is RGB where
+  `COLORTERM` says the terminal takes it, else the nearest of the 256
+  colours. Help off a terminal stays plain.
+
+### Fixed
+
+- Japanese and Chinese help, which erpc wraps itself, is plain under
+  `CLICOLOR=0` and coloured under `CLICOLOR_FORCE`, as English help is; it
+  went by `NO_COLOR` alone before.
+
 ## [0.1.0-rc.4] - 2026-11-13
 
 ### Added

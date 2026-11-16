@@ -612,7 +612,8 @@ fn run_to_end<F: std::future::Future>(work: F) -> std::io::Result<F::Output> {
 
 async fn run() -> ExitCode {
     let lang = i18n::choose();
-    let parsed = i18n::localized(<Cli as clap::CommandFactory>::command(), lang)
+    let command = <Cli as clap::CommandFactory>::command().styles(cli::ui::help_styles());
+    let parsed = i18n::localized(command, lang)
         .try_get_matches()
         .and_then(|mut m| <Cli as clap::FromArgMatches>::from_arg_matches_mut(&mut m));
     let cli = match parsed {
