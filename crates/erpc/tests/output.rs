@@ -712,10 +712,34 @@ fn a_solana_verb_without_its_network_or_name_is_a_usage_error() {
 #[test]
 fn help_erpc_prints_itself_is_coloured_when_clap_help_is() {
     let home = tempfile::tempdir().expect("isolated configuration");
-    let commands: [(&[&str], &str); 3] = [
+    let commands: [(&[&str], &str); 10] = [
         (&["--help"], "Usage: erpc"),
         (&["v", "--chain", "solana"], "Usage: erpc validator"),
+        (
+            &["v", "--chain", "solana", "--help"],
+            "Usage: erpc validator",
+        ),
         (&["--lang", "ja", "--help"], "使い方: erpc"),
+        // The overview, before a chain is chosen.
+        (&["v"], "Usage: erpc validator --chain <CHAIN> <COMMAND>"),
+        (
+            &["rpc", "--help"],
+            "Usage: erpc rpc --chain <CHAIN> <COMMAND>",
+        ),
+        (
+            &["--lang", "ja", "v"],
+            "使い方: erpc validator --chain <CHAIN>",
+        ),
+        // A chain where the verb goes, with help asked: its help.
+        (&["v", "solana", "--help"], "validator commands on solana"),
+        (
+            &["v", "eth", "deploy", "-h"],
+            "Usage: erpc validator deploy",
+        ),
+        (
+            &["--lang", "ja", "rpc", "--chain", "solana", "--help"],
+            "使い方: erpc rpc",
+        ),
     ];
     let settings: [(&[(&str, &str)], bool); 3] = [
         (&[], false),
@@ -739,6 +763,52 @@ fn help_erpc_prints_itself_is_coloured_when_clap_help_is() {
             );
         }
     }
+}
+
+/// Help never needs a chain: with none chosen, a verb's help is the
+/// overview and where that verb's options are, not "no chain is chosen".
+/// A chain where the verb goes runs nothing: it is refused with the line
+/// meant, as text and as one JSON record.
+#[test]
+fn help_needs_no_chain_and_a_chain_where_the_verb_goes_runs_nothing() {
+    let home = tempfile::tempdir().expect("isolated configuration");
+    let output = isolated(home.path(), &["v", "deploy", "--help"]).expect("isolated route");
+    assert_eq!(output.status.code(), Some(0));
+    let help = String::from_utf8(output.stdout).expect("UTF-8 help");
+    assert!(help.contains("Commands every chain has:"), "{help}");
+    assert!(
+        help.trim_end().ends_with(
+            "What deploy takes depends on the chain: erpc validator --chain <CHAIN> deploy --help"
+        ),
+        "{help}"
+    );
+
+    let output =
+        isolated(home.path(), &["v", "solana", "deploy", "--name", "a b"]).expect("isolated route");
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    let said = String::from_utf8(output.stderr).expect("UTF-8 error");
+    assert!(
+        said.contains("`solana` is a chain, not a command"),
+        "{said}"
+    );
+    assert!(
+        said.contains("erpc validator --chain solana deploy --name 'a b'"),
+        "{said}"
+    );
+
+    let output =
+        isolated(home.path(), &["--json", "rpc", "eth", "status"]).expect("isolated route");
+    assert_eq!(output.status.code(), Some(2));
+    let record: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("one JSON record");
+    assert_eq!(record["error"]["code"], "usage", "{record}");
+    assert!(
+        record["error"]["hint"]
+            .as_str()
+            .is_some_and(|h| h.ends_with("erpc rpc --chain eth status")),
+        "{record}"
+    );
 }
 
 /// `text` without its escape sequences.

@@ -1,0 +1,64 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+# `erpc validator`, `erpc rpc` and `erpc node` before a chain is chosen,
+# and the line after a chain's own help.
+
+[about]
+validator = "以下のチェーンのバリデーター。コマンドはチェーンごとにあり、チェーンは --chain で選ぶ。"
+rpc = "JSON-RPC リクエストと、以下のチェーンの RPC ノード。ノードのコマンドはチェーンごとにあり、チェーンは --chain で選ぶ。"
+node = "以下のチェーンのノード（互換用の名前で扱う）。コマンドはチェーンごとにあり、チェーンは --chain で選ぶ。"
+
+[heading]
+without_chain = "チェーンを選ばずに使うもの"
+chains = "チェーンとそのネットワーク"
+no_validator = "バリデーターのないチェーン"
+commands = "どのチェーンにもあるコマンド"
+examples = "例"
+
+[no_validator]
+mining = "プルーフ・オブ・ワークで採掘する：動かすバリデーターがない"
+rollup = "独自のプルーフ・オブ・ステークのバリデーターを持たないロールアップ"
+rpc = "これらの RPC ノード：erpc rpc --chain <CHAIN>"
+
+[commands]
+more = "各コマンドがそのチェーンで何をするかと、チェーンが加えるコマンドは、チェーンのヘルプにある："
+
+[verb]
+init = "ノードを 1Password のインベントリに記録し、サーバーを準備する"
+deploy = "基本システムとクライアントをインストールし、セーフモードで起動する"
+list = "インベントリにあるホストを一覧表示する"
+status = "ホストの状態を表示する"
+logs = "ホストのログを表示する"
+start = "サービスを起動する"
+stop = "サービスを停止する"
+restart = "サービスを再起動する"
+update = "クライアントを更新し、安全を確かめながら再起動する"
+update_config = "起動スクリプトと設定を作り直す"
+plan = "変更が何をするかを、実行せずに表示する"
+destroy = "サービスを停止してノードを退役させる（鍵には触れない）"
+
+[rpc]
+call = "共有、独自、または x402 のエンドポイントに JSON-RPC リクエストを 1 回送る"
+list_networks = "ERPC の共有 RPC と x402 RPC があるネットワークを一覧表示する"
+
+[option]
+chain = "チェーン。上のいずれか（指定がなければ ERPC_CHAIN、それもなければ default_chain 設定）"
+network = "ネットワーク。そのチェーンにあるもののいずれか。mainnet を変更するときは、コマンドラインにも --chain が要る"
+name = "ホスト。インベントリでの名前で指定する"
+
+[example]
+help = "{chain} にあるもの：各コマンドと、そこでの働き"
+list = "インベントリにある {chain} のホスト"
+default = "これ以降、erpc {role} <COMMAND> に --chain が要らない"
+call = "ERPC の共有 RPC へのリクエストを 1 回送る。ネットワークはメソッドから判断する"
+
+[verb_help]
+depends = "{verb} が受け取るものはチェーンによって違う：erpc {role} --chain <CHAIN> {verb} --help"
+
+[chain_word]
+refused = "`{word}` はチェーンで、コマンドではありません。erpc {role} ではチェーンを --chain で指定します"
+hint = "次のように実行してください：{command}"
+
+[chain]
+next = "コマンドのオプションと、{chain} での働き：erpc {role} --chain {chain} <COMMAND> --help"

@@ -85,6 +85,7 @@ mod monad_tree;
 mod nitro_rpc;
 mod nitro_tree;
 mod node_common;
+mod node_help;
 mod node_report;
 mod nodes;
 mod polygon_custody;
