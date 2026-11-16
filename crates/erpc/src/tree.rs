@@ -207,7 +207,14 @@ fn chainless_help(verb: &str, json: bool) -> Outcome {
         <crate::Cli as clap::CommandFactory>::command().styles(ui::help_styles()),
         crate::cli::i18n::lang(),
     );
-    match cli.try_get_matches_from(["erpc", "rpc", verb, "--help"]) {
+    // The program as clap names it in usage lines, from how it was run
+    // (`erpc.exe` on Windows), so that this is what `erpc rpc <verb>
+    // --help` prints.
+    let program = std::env::args_os()
+        .next()
+        .unwrap_or_else(|| std::ffi::OsString::from("erpc"));
+    let line = [program, "rpc".into(), verb.into(), "--help".into()];
+    match cli.try_get_matches_from(line) {
         Err(error) => parse_outcome(&error, json),
         Ok(_) => Outcome::Usage(format!("`erpc rpc {verb} --help` lists what it takes")),
     }
