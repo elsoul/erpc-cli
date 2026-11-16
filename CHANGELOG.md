@@ -12,6 +12,8 @@ whose version has no entry below.
 
 ## [Unreleased]
 
+## [0.1.0-rc.6] - 2026-11-16
+
 ### Changed
 
 - `erpc validator`, `erpc rpc` and `erpc node` with no chain chosen, and
@@ -21,7 +23,8 @@ whose version has no entry below.
   validator and why, the commands every chain has, `erpc rpc call` and
   `list-networks` for rpc, the options and examples. It replaces a plain
   English list of `--chain <chain> --help` lines. For a script (`--json`
-  or `ERPC_JSON`) it is plain, even under `CLICOLOR_FORCE`. `erpc rpc help`
+  before the role's other words, as in `erpc --json validator --help`, or
+  `ERPC_JSON=true`) it is plain, even under `CLICOLOR_FORCE`. `erpc rpc help`
   is this overview too, no longer clap's list of `call` and
   `list-networks`; `erpc rpc help call` and `erpc rpc help list-networks`
   still print what `erpc rpc call --help` and `erpc rpc list-networks
@@ -806,7 +809,8 @@ version.
 - `docs/verify-release.md`: verify signatures against a key saved once from
   `main`, not against `pubkey.txt` at the tag being checked.
 
-[Unreleased]: https://github.com/elsoul/erpc-cli/compare/v0.1.0-rc.5...HEAD
+[Unreleased]: https://github.com/elsoul/erpc-cli/compare/v0.1.0-rc.6...HEAD
+[0.1.0-rc.6]: https://github.com/elsoul/erpc-cli/releases/tag/v0.1.0-rc.6
 [0.1.0-rc.5]: https://github.com/elsoul/erpc-cli/releases/tag/v0.1.0-rc.5
 [0.1.0-rc.4]: https://github.com/elsoul/erpc-cli/releases/tag/v0.1.0-rc.4
 [0.1.0-rc.3]: https://github.com/elsoul/erpc-cli/releases/tag/v0.1.0-rc.3
