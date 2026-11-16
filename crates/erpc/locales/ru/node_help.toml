@@ -19,7 +19,7 @@ examples = "Примеры"
 [no_validator]
 mining = "добыча доказательством работы: валидатора для запуска нет"
 rollup = "роллапы без собственного валидатора с доказательством доли"
-rpc = "Их RPC-узлы: erpc rpc --chain <CHAIN>"
+rpc = "Их RPC-узлы: erpc rpc --chain <chain>"
 
 [commands]
 more = "Справка блокчейна говорит, что каждая команда делает в нём, и перечисляет добавленные им команды:"
@@ -50,15 +50,18 @@ name = "Хост, по его имени в инвентаре"
 [example]
 help = "Что есть у {chain}: каждая команда и что она там делает"
 list = "Хосты {chain} в инвентаре"
-default = "После этого для erpc {role} <COMMAND> не нужен --chain"
+default = "После этого для erpc {role} <COMMAND> не нужен --chain, но для изменений в mainnet он по-прежнему нужен"
 call = "Один запрос к общему RPC ERPC; сеть определяется по методу"
 
 [verb_help]
-depends = "Что принимает {verb}, зависит от блокчейна: erpc {role} --chain <CHAIN> {verb} --help"
+depends = "Что принимает {verb}, зависит от блокчейна: erpc {role} --chain <chain> {verb} --help"
+only = "{verb} есть только у {chains}: erpc {role} --chain {chain} {verb} --help"
+none = "у erpc {role} нет команды `{word}` ни для одного блокчейна"
 
 [chain_word]
 refused = "`{word}` — это блокчейн, а не команда: erpc {role} принимает блокчейн через --chain"
 hint = "запустите так: {command}"
+takes_none = "`{word}` — это блокчейн, а erpc rpc {verb} блокчейн не принимает"
 
 [chain]
 next = "Параметры команды и что она делает в {chain}: erpc {role} --chain {chain} <COMMAND> --help"

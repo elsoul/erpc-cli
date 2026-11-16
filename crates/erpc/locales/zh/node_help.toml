@@ -19,7 +19,7 @@ examples = "示例"
 [no_validator]
 mining = "通过工作量证明挖矿：没有可运行的验证者"
 rollup = "没有自己的权益证明验证者的 rollup"
-rpc = "它们的 RPC 节点：erpc rpc --chain <CHAIN>"
+rpc = "它们的 RPC 节点：erpc rpc --chain <chain>"
 
 [commands]
 more = "链自己的帮助说明每个命令在该链上做什么，并列出该链增加的命令："
@@ -50,15 +50,18 @@ name = "主机，按其在清单中的名称"
 [example]
 help = "{chain} 有什么：每个命令及其在该链上的作用"
 list = "清单中 {chain} 的主机"
-default = "此后 erpc {role} <COMMAND> 不再需要 --chain"
+default = "此后 erpc {role} <COMMAND> 不再需要 --chain，但更改 mainnet 时仍需要"
 call = "向 ERPC 共享 RPC 发送一个请求；网络由方法判断"
 
 [verb_help]
-depends = "{verb} 接受什么取决于链：erpc {role} --chain <CHAIN> {verb} --help"
+depends = "{verb} 接受什么取决于链：erpc {role} --chain <chain> {verb} --help"
+only = "{verb} 只在 {chains} 上有：erpc {role} --chain {chain} {verb} --help"
+none = "`{word}` 不是任何链上 erpc {role} 的命令"
 
 [chain_word]
 refused = "`{word}` 是链，不是命令：erpc {role} 用 --chain 指定链"
 hint = "请这样运行：{command}"
+takes_none = "`{word}` 是链，而 erpc rpc {verb} 不接受链"
 
 [chain]
 next = "命令的选项及其在 {chain} 上的作用：erpc {role} --chain {chain} <COMMAND> --help"

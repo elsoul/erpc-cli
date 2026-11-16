@@ -261,7 +261,12 @@ enum Command {
         args: Vec<String>,
     },
     /// Send JSON-RPC requests or manage RPC nodes with --chain.
-    #[command(visible_alias = "r", disable_help_flag = true)]
+    // `help` goes to the node tree too, as it does for validator and node.
+    #[command(
+        visible_alias = "r",
+        disable_help_flag = true,
+        disable_help_subcommand = true
+    )]
     Rpc {
         #[command(subcommand)]
         action: Option<RpcAction>,

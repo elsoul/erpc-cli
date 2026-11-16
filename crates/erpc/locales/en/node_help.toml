@@ -19,7 +19,7 @@ examples = "Examples"
 [no_validator]
 mining = "mined by proof of work: there is no validator to run"
 rollup = "rollups with no proof-of-stake validator of their own"
-rpc = "Their RPC nodes: erpc rpc --chain <CHAIN>"
+rpc = "Their RPC nodes: erpc rpc --chain <chain>"
 
 [commands]
 more = "A chain's own help says what each does there, and lists the commands it adds:"
@@ -50,15 +50,18 @@ name = "The host, by its inventory name"
 [example]
 help = "What {chain} has: each command, and what it does there"
 list = "The {chain} hosts in the inventory"
-default = "After this, erpc {role} <COMMAND> needs no --chain"
+default = "After this, erpc {role} <COMMAND> needs no --chain, but a mainnet change still does"
 call = "One request to ERPC's shared RPC; the network is told from the method"
 
 [verb_help]
-depends = "What {verb} takes depends on the chain: erpc {role} --chain <CHAIN> {verb} --help"
+depends = "What {verb} takes depends on the chain: erpc {role} --chain <chain> {verb} --help"
+only = "{verb} is on {chains} only: erpc {role} --chain {chain} {verb} --help"
+none = "`{word}` is no command of erpc {role} on any chain"
 
 [chain_word]
 refused = "`{word}` is a chain, not a command: erpc {role} takes its chain with --chain"
 hint = "run it as: {command}"
+takes_none = "`{word}` is a chain, and erpc rpc {verb} takes none"
 
 [chain]
 next = "A command's options, and what it does on {chain}: erpc {role} --chain {chain} <COMMAND> --help"

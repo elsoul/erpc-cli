@@ -721,14 +721,14 @@ fn help_erpc_prints_itself_is_coloured_when_clap_help_is() {
         ),
         (&["--lang", "ja", "--help"], "使い方: erpc"),
         // The overview, before a chain is chosen.
-        (&["v"], "Usage: erpc validator --chain <CHAIN> <COMMAND>"),
+        (&["v"], "Usage: erpc validator --chain <chain> <COMMAND>"),
         (
             &["rpc", "--help"],
-            "Usage: erpc rpc --chain <CHAIN> <COMMAND>",
+            "Usage: erpc rpc --chain <chain> <COMMAND>",
         ),
         (
             &["--lang", "ja", "v"],
-            "使い方: erpc validator --chain <CHAIN>",
+            "使い方: erpc validator --chain <chain>",
         ),
         // A chain where the verb goes, with help asked: its help.
         (&["v", "solana", "--help"], "validator commands on solana"),
@@ -778,7 +778,7 @@ fn help_needs_no_chain_and_a_chain_where_the_verb_goes_runs_nothing() {
     assert!(help.contains("Commands every chain has:"), "{help}");
     assert!(
         help.trim_end().ends_with(
-            "What deploy takes depends on the chain: erpc validator --chain <CHAIN> deploy --help"
+            "What deploy takes depends on the chain: erpc validator --chain <chain> deploy --help"
         ),
         "{help}"
     );
@@ -809,6 +809,83 @@ fn help_needs_no_chain_and_a_chain_where_the_verb_goes_runs_nothing() {
             .is_some_and(|h| h.ends_with("erpc rpc --chain eth status")),
         "{record}"
     );
+}
+
+/// The overview is plain for a script (`--json`, `ERPC_JSON`), even when
+/// colour is forced; and help never asks which chain nor fails for want
+/// of one: an empty `--chain` names none, `help` where clap reads it as a
+/// request for help is one, and rpc's `help` is the overview too.
+#[test]
+fn help_for_a_script_is_plain_and_help_never_asks_for_a_chain() {
+    let home = tempfile::tempdir().expect("isolated configuration");
+    let forced = [("CLICOLOR_FORCE", "1")];
+    let by_variable = [("CLICOLOR_FORCE", "1"), ("ERPC_JSON", "true")];
+    let script: [(&[&str], &[_]); 4] = [
+        (&["--json", "v", "--help"], &forced),
+        (&["--json", "v", "deploy", "--help"], &forced),
+        (&["--json", "rpc", "--help"], &forced),
+        (&["v", "--help"], &by_variable),
+    ];
+    for (arguments, variables) in script {
+        let output = isolated_with(home.path(), arguments, variables).expect("isolated route");
+        assert_eq!(output.status.code(), Some(0), "{arguments:?}");
+        let help = String::from_utf8(output.stdout).expect("UTF-8 help");
+        assert!(!help.contains('\x1b'), "{arguments:?}: {help:?}");
+        assert!(
+            help.contains("Chains and their networks:"),
+            "{arguments:?}: {help}"
+        );
+    }
+    let lines: [&[&str]; 6] = [
+        &["v", "--chain=", "--help"],
+        &["v", "--chain", "", "deploy", "--help"],
+        &["v", "migration", "help"],
+        &["rpc", "help"],
+        &["rpc", "help", "deploy"],
+        &["node", "-h"],
+    ];
+    for arguments in lines {
+        let output = isolated(home.path(), arguments).expect("isolated route");
+        let said = String::from_utf8_lossy(&output.stderr).into_owned();
+        assert_eq!(output.status.code(), Some(0), "{arguments:?}: {said}");
+        assert!(
+            !said.contains("no chain is chosen"),
+            "{arguments:?}: {said}"
+        );
+        let help = String::from_utf8(output.stdout).expect("UTF-8 help");
+        assert!(
+            help.contains("Chains and their networks:"),
+            "{arguments:?}: {help}"
+        );
+    }
+}
+
+/// Every `list` example an overview gives runs as it says on a machine
+/// with nothing set up.
+#[test]
+fn the_list_examples_of_each_overview_run_as_they_say() {
+    let home = tempfile::tempdir().expect("isolated configuration");
+    for (role, expected) in [("validator", 1), ("rpc", 1), ("node", 0)] {
+        let output = isolated(home.path(), &[role, "--help"]).expect("isolated route");
+        let help = String::from_utf8(output.stdout).expect("UTF-8 help");
+        let lists: Vec<String> = help
+            .lines()
+            .skip_while(|l| !l.starts_with("Examples:"))
+            .filter_map(|l| l.trim().split("  ").next().map(str::to_owned))
+            .filter(|example| example.ends_with(" list"))
+            .collect();
+        assert_eq!(lists.len(), expected, "{role}: {help}");
+        for example in lists {
+            let words: Vec<&str> = example.split_whitespace().skip(1).collect();
+            let output = isolated(home.path(), &words).expect("isolated route");
+            assert_eq!(
+                output.status.code(),
+                Some(0),
+                "{example}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
 }
 
 /// `text` without its escape sequences.

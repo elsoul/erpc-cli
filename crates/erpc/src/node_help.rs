@@ -37,11 +37,15 @@ pub(crate) fn names_of(role: Role) -> String {
         .join(", ")
 }
 
-/// Help for standard output: in colour when [`ui::help_coloured`] says so,
-/// wrapped to the terminal as Japanese and Chinese need, without the blank
-/// line clap ends with.
-pub(crate) fn shown(help: &StyledStr) -> String {
-    let text = ui::help_text(help);
+/// Help for standard output: in colour when [`ui::help_coloured`] says so
+/// and it is not for a script (`json`), wrapped to the terminal as
+/// Japanese and Chinese need, without the blank line clap ends with.
+pub(crate) fn shown(help: &StyledStr, json: bool) -> String {
+    let text = if json {
+        help.to_string()
+    } else {
+        ui::help_text(help)
+    };
     let width = console::Term::stdout()
         .size_checked()
         .map_or(100, |(_, cols)| usize::from(cols));
@@ -62,10 +66,59 @@ pub(crate) fn tree(role: Role, chain: Chain) -> Command {
 
 /// The overview of `role` before a chain is chosen: what it is for, how a
 /// chain is chosen, the chains and their networks, the commands every
-/// chain has and examples; `verb`, when a request for help named one, gets
-/// a line on where its options are.
-pub(crate) fn overview(role: Role, verb: Option<&str>) -> String {
-    shown(&overview_styled(role, &chains_of(role), verb))
+/// chain has and examples, plain for a script (`json`). What a request for
+/// help asked about (`asked`) gets a line on where it is.
+pub(crate) fn overview(role: Role, asked: Option<&Asked>, json: bool) -> String {
+    shown(&overview_styled(role, &chains_of(role), asked), json)
+}
+
+/// The command a request for help named, with no chain chosen, and on
+/// which chains of the role it is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Asked {
+    /// On every chain: what it takes depends on the chain.
+    Everywhere(String),
+    /// Only on these chains.
+    On(String, Vec<Chain>),
+    /// On none: no such command.
+    Nowhere(String),
+}
+
+impl Asked {
+    /// Where `word` is a command of `role`.
+    pub(crate) fn of(role: Role, word: &str) -> Self {
+        let all = chains_of(role);
+        let on: Vec<Chain> = all
+            .iter()
+            .copied()
+            .filter(|c| {
+                crate::tree::command(role, *c)
+                    .find_subcommand(word)
+                    .is_some()
+            })
+            .collect();
+        let word = word.to_owned();
+        if on.is_empty() {
+            Self::Nowhere(word)
+        } else if on.len() == all.len() {
+            Self::Everywhere(word)
+        } else {
+            Self::On(word, on)
+        }
+    }
+
+    /// The line the overview ends with.
+    fn said(&self, role: Role) -> String {
+        match self {
+            Self::Everywhere(verb) => t!("node_help.verb_help.depends", verb, role),
+            Self::On(verb, on) => {
+                let chains = on.iter().map(|c| c.as_str()).collect::<Vec<_>>().join(", ");
+                let chain = on.first().copied().unwrap_or(Chain::Solana);
+                t!("node_help.verb_help.only", verb, chains, role, chain)
+            }
+            Self::Nowhere(word) => t!("node_help.verb_help.none", word, role),
+        }
+    }
 }
 
 /// One line of a list: drawn as clap draws a command or a flag (`lit`),
@@ -178,7 +231,7 @@ impl Pen {
     }
 }
 
-fn overview_styled(role: Role, chains: &[Chain], verb: Option<&str>) -> StyledStr {
+fn overview_styled(role: Role, chains: &[Chain], asked: Option<&Asked>) -> StyledStr {
     let mut pen = Pen::new();
     pen.text(&match role {
         Role::Validator => t!("node_help.about.validator"),
@@ -188,7 +241,7 @@ fn overview_styled(role: Role, chains: &[Chain], verb: Option<&str>) -> StyledSt
     pen.blank();
     let mut usage = vec![(
         format!("erpc {role} --chain"),
-        " <CHAIN> <COMMAND> [OPTIONS]",
+        " <chain> <COMMAND> [OPTIONS]",
     )];
     if role == Role::Rpc {
         usage.push(("erpc rpc call".to_owned(), " <METHOD> [PARAMS]"));
@@ -228,16 +281,16 @@ fn overview_styled(role: Role, chains: &[Chain], verb: Option<&str>) -> StyledSt
         .collect();
     pen.rows(&verbs);
     pen.note(&t!("node_help.commands.more"));
-    pen.command(&format!("erpc {role} --chain <CHAIN> --help"));
+    pen.command(&format!("erpc {role} --chain <chain> --help"));
     pen.blank();
     pen.heading(&t!("clap.options"));
     pen.rows(&[
         Row::new("--chain", t!("node_help.option.chain"))
-            .with(" <CHAIN>")
+            .with(" <chain>")
             .long_only(),
-        Row::new("-n, --network", t!("node_help.option.network")).with(" <NETWORK>"),
+        Row::new("-n, --network", t!("node_help.option.network")).with(" <network>"),
         Row::new("--name", t!("node_help.option.name"))
-            .with(" <NAME>")
+            .with(" <name>")
             .long_only(),
         Row::new("-h, --help", t!("clap.help")),
     ]);
@@ -247,9 +300,9 @@ fn overview_styled(role: Role, chains: &[Chain], verb: Option<&str>) -> StyledSt
         role,
         chains.first().copied().unwrap_or(Chain::Solana),
     ));
-    if let Some(verb) = verb {
+    if let Some(asked) = asked {
         pen.blank();
-        pen.text(&t!("node_help.verb_help.depends", verb, role));
+        pen.text(&asked.said(role));
     }
     pen.out
 }
@@ -272,13 +325,16 @@ fn no_validator_rows() -> Vec<Row> {
 }
 
 /// Why `chain` has no validator, in the operator's language: the reason
-/// [`Chain::validator_na_reason`] gives, said short.
+/// [`Chain::validator_na_reason`] gives, said short when it is one erpc
+/// has words for, else as it is.
 fn no_validator(chain: Chain) -> Option<String> {
-    chain.validator_na_reason()?;
-    Some(if chain == Chain::Bitcoin {
+    let reason = chain.validator_na_reason()?;
+    Some(if reason.contains("proof-of-work") {
         t!("node_help.no_validator.mining")
-    } else {
+    } else if reason.contains("rollup") {
         t!("node_help.no_validator.rollup")
+    } else {
+        reason.to_owned()
     })
 }
 
@@ -302,21 +358,23 @@ fn verb_about(name: &str) -> Option<String> {
     })
 }
 
+/// Examples that run as they say on a machine with nothing set up: a
+/// `list` only where it needs neither a network nor a vault (solana's).
 fn examples(role: Role, chain: Chain) -> Vec<Row> {
-    let mut rows = vec![
-        Row::new(
-            format!("erpc {role} --chain {chain} --help"),
-            t!("node_help.example.help", chain),
-        ),
-        Row::new(
+    let mut rows = vec![Row::new(
+        format!("erpc {role} --chain {chain} --help"),
+        t!("node_help.example.help", chain),
+    )];
+    if chain == Chain::Solana {
+        rows.push(Row::new(
             format!("erpc {role} --chain {chain} list"),
             t!("node_help.example.list", chain),
-        ),
-        Row::new(
-            format!("erpc config set default_chain {chain}"),
-            t!("node_help.example.default", role),
-        ),
-    ];
+        ));
+    }
+    rows.push(Row::new(
+        format!("erpc config set default_chain {chain}"),
+        t!("node_help.example.default", role),
+    ));
     if role == Role::Rpc {
         rows.push(Row::new(
             "erpc rpc call getSlot",
@@ -331,7 +389,7 @@ mod tests {
     use erpc_core::chain::{COMMON_VERBS, Chain, Role};
     use erpc_core::i18n::Lang;
 
-    use super::{chains_of, overview_styled, verb_about};
+    use super::{Asked, chains_of, examples, overview_styled, verb_about};
     use crate::cli::i18n::speaking;
 
     fn plain(role: Role) -> String {
@@ -344,7 +402,7 @@ mod tests {
             let text = plain(role);
             assert!(
                 text.contains(&format!(
-                    "Usage: erpc {role} --chain <CHAIN> <COMMAND> [OPTIONS]"
+                    "Usage: erpc {role} --chain <chain> <COMMAND> [OPTIONS]"
                 )),
                 "{text}"
             );
@@ -374,7 +432,7 @@ mod tests {
                 "{text}"
             );
             // Where a chain's own commands are, on a line of its own.
-            let own = format!("erpc {role} --chain <CHAIN> --help");
+            let own = format!("erpc {role} --chain <chain> --help");
             assert!(text.lines().any(|l| l.trim() == own), "{text}");
         }
     }
@@ -456,14 +514,56 @@ mod tests {
         assert!(!text.contains("Record the node"), "{text}");
     }
 
+    /// A command asked about is said where it is: on every chain, on some
+    /// (named, with one to try), or on none.
     #[test]
-    fn a_verb_asked_about_is_told_where_its_options_are() {
-        let text = overview_styled(Role::Validator, &chains_of(Role::Validator), Some("deploy"))
-            .to_string();
-        assert!(
-            text.trim_end()
-                .ends_with("erpc validator --chain <CHAIN> deploy --help"),
-            "{text}"
+    fn a_command_asked_about_is_told_on_which_chains_it_is() {
+        let v = Role::Validator;
+        assert_eq!(Asked::of(v, "deploy"), Asked::Everywhere("deploy".into()));
+        assert_eq!(
+            Asked::of(v, "keys"),
+            Asked::On("keys".into(), vec![Chain::Solana])
         );
+        assert_eq!(Asked::of(v, "bogus"), Asked::Nowhere("bogus".into()));
+        assert_eq!(Asked::of(Role::Rpc, "keys"), Asked::Nowhere("keys".into()));
+        let last = |asked: &Asked| {
+            overview_styled(v, &chains_of(v), Some(asked))
+                .to_string()
+                .trim_end()
+                .rsplit('\n')
+                .next()
+                .unwrap_or_default()
+                .to_owned()
+        };
+        speaking(Lang::En, || {
+            assert_eq!(
+                last(&Asked::of(v, "deploy")),
+                "What deploy takes depends on the chain: erpc validator --chain <chain> deploy --help"
+            );
+            assert_eq!(
+                last(&Asked::of(v, "keys")),
+                "keys is on solana only: erpc validator --chain solana keys --help"
+            );
+            assert_eq!(
+                last(&Asked::of(v, "bogus")),
+                "`bogus` is no command of erpc validator on any chain"
+            );
+        });
+    }
+
+    /// A `list` example only where it runs with nothing set up: solana's,
+    /// which needs neither a network nor a vault (`tests/output.rs` runs it).
+    #[test]
+    fn a_list_example_is_given_only_for_solana() {
+        let lists = |role: Role, chain: Chain| {
+            examples(role, chain)
+                .iter()
+                .filter(|r| r.lit.ends_with(" list"))
+                .count()
+        };
+        assert_eq!(lists(Role::Validator, Chain::Solana), 1);
+        assert_eq!(lists(Role::Rpc, Chain::Solana), 1);
+        assert_eq!(lists(Role::Node, Chain::Avax), 0);
+        assert_eq!(chains_of(Role::Node)[0], Chain::Avax);
     }
 }

@@ -6,7 +6,7 @@
 
 [about]
 validator = "以下のチェーンのバリデーター。コマンドはチェーンごとにあり、チェーンは --chain で選ぶ。"
-rpc = "JSON-RPC リクエストと、以下のチェーンの RPC ノード。ノードのコマンドはチェーンごとにあり、チェーンは --chain で選ぶ。"
+rpc = "JSON-RPC リクエストと、以下のチェーンの RPC ノード。コマンドはチェーンごとにあり、チェーンは --chain で選ぶ。"
 node = "以下のチェーンのノード（互換用の名前で扱う）。コマンドはチェーンごとにあり、チェーンは --chain で選ぶ。"
 
 [heading]
@@ -19,7 +19,7 @@ examples = "例"
 [no_validator]
 mining = "プルーフ・オブ・ワークで採掘する：動かすバリデーターがない"
 rollup = "独自のプルーフ・オブ・ステークのバリデーターを持たないロールアップ"
-rpc = "これらの RPC ノード：erpc rpc --chain <CHAIN>"
+rpc = "これらの RPC ノード：erpc rpc --chain <chain>"
 
 [commands]
 more = "各コマンドがそのチェーンで何をするかと、チェーンが加えるコマンドは、チェーンのヘルプにある："
@@ -50,15 +50,18 @@ name = "ホスト。インベントリでの名前で指定する"
 [example]
 help = "{chain} にあるもの：各コマンドと、そこでの働き"
 list = "インベントリにある {chain} のホスト"
-default = "これ以降、erpc {role} <COMMAND> に --chain が要らない"
+default = "これ以降、erpc {role} <COMMAND> に --chain が要らない（mainnet を変更するときは要る）"
 call = "ERPC の共有 RPC へのリクエストを 1 回送る。ネットワークはメソッドから判断する"
 
 [verb_help]
-depends = "{verb} が受け取るものはチェーンによって違う：erpc {role} --chain <CHAIN> {verb} --help"
+depends = "{verb} が受け取るものはチェーンによって違う：erpc {role} --chain <chain> {verb} --help"
+only = "{verb} は {chains} にだけある：erpc {role} --chain {chain} {verb} --help"
+none = "`{word}` は、どのチェーンの erpc {role} にもないコマンド"
 
 [chain_word]
 refused = "`{word}` はチェーンで、コマンドではありません。erpc {role} ではチェーンを --chain で指定します"
 hint = "次のように実行してください：{command}"
+takes_none = "`{word}` はチェーンですが、erpc rpc {verb} はチェーンを受け取りません"
 
 [chain]
 next = "コマンドのオプションと、{chain} での働き：erpc {role} --chain {chain} <COMMAND> --help"
