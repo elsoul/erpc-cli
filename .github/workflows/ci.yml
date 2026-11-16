@@ -24,14 +24,15 @@ env:
   CARGO_INCREMENTAL: "0"
   RUSTFLAGS: "-D warnings"
 
-# clippy, test (ubuntu-latest) and the two template jobs run on the
-# repository's self-hosted Linux runners when the repository variable
-# CI_SELF_HOSTED_LINUX names their label, and only for code from this
-# repository: a pull request from a fork and any run Dependabot starts stay
-# on ubuntu-latest. The runners refuse such jobs on their own as well. Clearing
-# the variable sends every job back to ubuntu-latest; nothing else changes.
-# A self-hosted job neither restores nor saves the Rust cache, so nothing it
-# builds reaches a GitHub-hosted job through the cache.
+# clippy and test (ubuntu-latest) run on the repository's self-hosted Linux
+# runners when the repository variable CI_SELF_HOSTED_LINUX names their label,
+# and only for code from this repository: a pull request from a fork and any
+# run Dependabot starts stay on ubuntu-latest. The runners refuse such jobs on
+# their own as well. Clearing the variable sends every job back to
+# ubuntu-latest; nothing else changes. A self-hosted job neither restores nor
+# saves the Rust cache, so nothing it builds reaches a GitHub-hosted job
+# through the cache. The template jobs stay on ubuntu-latest: with the Rust
+# cache they finish there sooner than a cold build does on the runners.
 jobs:
   fmt:
     name: rustfmt
@@ -127,7 +128,7 @@ jobs:
   # migration, how it plans a sell) cannot stop running unnoticed.
   template:
     name: pumpfun template (render, clippy, test)
-    runs-on: ${{ vars.CI_SELF_HOSTED_LINUX != '' && github.actor != 'dependabot[bot]' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_SELF_HOSTED_LINUX || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -142,8 +143,7 @@ jobs:
       # directory does not exist either when the cache is restored, so its
       # lock is not in the cache's own key: it is named here, and a change
       # to the template's dependencies starts afresh.
-      - if: runner.environment == 'github-hosted'
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           key: ${{ hashFiles('crates/erpc-worker/templates/solana/pumpfun/Cargo.lock.tmpl', 'crates/erpc-worker/templates/solana/pumpfun/Cargo.toml.tmpl') }}
           workspaces: |
@@ -168,7 +168,7 @@ jobs:
   # the app, which has neither.
   template-hello:
     name: hello template (render, clippy, test)
-    runs-on: ${{ vars.CI_SELF_HOSTED_LINUX != '' && github.actor != 'dependabot[bot]' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_SELF_HOSTED_LINUX || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -177,8 +177,7 @@ jobs:
         with:
           toolchain: 1.98.0
           components: clippy, rustfmt
-      - if: runner.environment == 'github-hosted'
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: render the template
         run: |
           mkdir -p "$RUNNER_TEMP/template-ci"
