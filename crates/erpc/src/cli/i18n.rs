@@ -74,10 +74,10 @@ pub(crate) fn speaking<T>(lang: Lang, f: impl FnOnce() -> T) -> T {
 /// name, host = vps.ip)`, an argument by itself standing for `name = name`.
 macro_rules! t {
     ($key:literal $(, $name:ident $(= $value:expr)?)* $(,)?) => {
-        $crate::i18n::CATALOG.text(
-            $crate::i18n::lang(),
+        $crate::cli::i18n::CATALOG.text(
+            $crate::cli::i18n::lang(),
             $key,
-            &[$((stringify!($name), &$crate::i18n::arg!($name $(= $value)?) as &dyn ::std::fmt::Display)),*],
+            &[$((stringify!($name), &$crate::cli::i18n::arg!($name $(= $value)?) as &dyn ::std::fmt::Display)),*],
         )
     };
 }
@@ -86,11 +86,11 @@ macro_rules! t {
 /// `tn!("worker.vps.found", servers.len(), region)`.
 macro_rules! tn {
     ($key:literal, $n:expr $(, $name:ident $(= $value:expr)?)* $(,)?) => {
-        $crate::i18n::CATALOG.plural(
-            $crate::i18n::lang(),
+        $crate::cli::i18n::CATALOG.plural(
+            $crate::cli::i18n::lang(),
             $key,
             u64::try_from($n).unwrap_or(u64::MAX),
-            &[$((stringify!($name), &$crate::i18n::arg!($name $(= $value)?) as &dyn ::std::fmt::Display)),*],
+            &[$((stringify!($name), &$crate::cli::i18n::arg!($name $(= $value)?) as &dyn ::std::fmt::Display)),*],
         )
     };
 }

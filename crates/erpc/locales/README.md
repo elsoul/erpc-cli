@@ -68,7 +68,7 @@ from
 ERPC_HELP_DUMP=worker cargo test -p erpc dump_help -- --ignored --nocapture
 ```
 
-and add the command to `TRANSLATED` in `src/i18n.rs`.
+and add the command to `TRANSLATED` in `src/cli/i18n.rs`.
 
 ## Rules the tests hold
 
