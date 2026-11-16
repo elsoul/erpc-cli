@@ -860,6 +860,34 @@ fn help_for_a_script_is_plain_and_help_never_asks_for_a_chain() {
     }
 }
 
+/// `erpc rpc help call` and `help list-networks` print what `erpc rpc call
+/// --help` and `list-networks --help` print, coloured or not, in English
+/// and in Japanese.
+#[test]
+fn rpc_help_of_a_command_without_a_chain_is_that_commands_own_help() {
+    let home = tempfile::tempdir().expect("isolated configuration");
+    for verb in ["call", "list-networks"] {
+        for variables in [&[][..], &[("CLICOLOR_FORCE", "1")]] {
+            for lang in ["en", "ja"] {
+                let run = |line: &[&str]| {
+                    let mut full = vec!["--lang", lang];
+                    full.extend(line);
+                    isolated_with(home.path(), &full, variables).expect("isolated route")
+                };
+                let asked = run(&["rpc", "help", verb]);
+                let own = run(&["rpc", verb, "--help"]);
+                assert_eq!(asked.status.code(), Some(0), "{verb} {lang} {variables:?}");
+                assert_eq!(own.status.code(), Some(0), "{verb} {lang} {variables:?}");
+                assert_eq!(
+                    String::from_utf8_lossy(&asked.stdout),
+                    String::from_utf8_lossy(&own.stdout),
+                    "{verb} {lang} {variables:?}"
+                );
+            }
+        }
+    }
+}
+
 /// Every `list` example an overview gives runs as it says on a machine
 /// with nothing set up.
 #[test]

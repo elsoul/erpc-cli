@@ -37,19 +37,33 @@ pub(crate) fn names_of(role: Role) -> String {
         .join(", ")
 }
 
-/// Help for standard output: in colour when [`ui::help_coloured`] says so
-/// and it is not for a script (`json`), wrapped to the terminal as
-/// Japanese and Chinese need, without the blank line clap ends with.
+/// Help clap rendered, for standard output, as `erpc` prints clap's help:
+/// in colour when [`ui::help_coloured`] says so and it is not for a script
+/// (`json`), wrapped by [`i18n::wrap`] only in Japanese and Chinese (clap
+/// wraps the rest), without the blank line clap ends with.
 pub(crate) fn shown(help: &StyledStr, json: bool) -> String {
-    let text = if json {
+    let text = coloured(help, json);
+    if i18n::wraps_itself(i18n::lang()) {
+        i18n::wrap(text.trim_end(), width())
+    } else {
+        text.trim_end().to_owned()
+    }
+}
+
+/// `help` in colour or plain, as [`shown`] decides.
+fn coloured(help: &StyledStr, json: bool) -> String {
+    if json {
         help.to_string()
     } else {
         ui::help_text(help)
-    };
-    let width = console::Term::stdout()
+    }
+}
+
+/// The terminal's width, or 100 off a terminal.
+fn width() -> usize {
+    console::Term::stdout()
         .size_checked()
-        .map_or(100, |(_, cols)| usize::from(cols));
-    i18n::wrap(text.trim_end(), width)
+        .map_or(100, |(_, cols)| usize::from(cols))
 }
 
 /// `role`'s tree on `chain` as its help shows it: clap's headings in the
@@ -69,7 +83,9 @@ pub(crate) fn tree(role: Role, chain: Chain) -> Command {
 /// chain has and examples, plain for a script (`json`). What a request for
 /// help asked about (`asked`) gets a line on where it is.
 pub(crate) fn overview(role: Role, asked: Option<&Asked>, json: bool) -> String {
-    shown(&overview_styled(role, &chains_of(role), asked), json)
+    // Drawn by hand, so wrapped here in every language.
+    let text = coloured(&overview_styled(role, &chains_of(role), asked), json);
+    i18n::wrap(text.trim_end(), width())
 }
 
 /// The command a request for help named, with no chain chosen, and on
@@ -108,7 +124,7 @@ impl Asked {
     }
 
     /// The line the overview ends with.
-    fn said(&self, role: Role) -> String {
+    pub(crate) fn said(&self, role: Role) -> String {
         match self {
             Self::Everywhere(verb) => t!("node_help.verb_help.depends", verb, role),
             Self::On(verb, on) => {
@@ -358,8 +374,10 @@ fn verb_about(name: &str) -> Option<String> {
     })
 }
 
-/// Examples that run as they say on a machine with nothing set up: a
-/// `list` only where it needs neither a network nor a vault (solana's).
+/// The examples: a chain's help, its `list` only where that runs on a
+/// machine with nothing set up (solana's, which needs neither a network
+/// nor a vault), the default chain, and for rpc one `call`, which needs a
+/// sign-in (`erpc login`) as any request to ERPC's shared RPC does.
 fn examples(role: Role, chain: Chain) -> Vec<Row> {
     let mut rows = vec![Row::new(
         format!("erpc {role} --chain {chain} --help"),
