@@ -23,7 +23,9 @@ whose version has no entry below.
   English list of `--chain <chain> --help` lines. For a script (`--json`
   or `ERPC_JSON`) it is plain, even under `CLICOLOR_FORCE`. `erpc rpc help`
   is this overview too, no longer clap's list of `call` and
-  `list-networks`.
+  `list-networks`; `erpc rpc help call` and `erpc rpc help list-networks`
+  still print what `erpc rpc call --help` and `erpc rpc list-networks
+  --help` print.
 - A chain's own help (`erpc validator --chain solana --help`) has clap's
   headings in the operator's language, offers under `--chain` only the
   chains that have the command, and ends with where a command's options
@@ -38,7 +40,9 @@ whose version has no entry below.
   `erpc validator migration help`) shows the overview and where the
   command it names is: what `deploy` takes depends on the chain, `keys` is
   on solana only, and a word that is no command on any chain is said to
-  be none. It opened the chain picker, and with no terminal or under
+  be none. The command it names is the first word that is no option and
+  no value of `--chain`, `--network` or `--name`, or, after a leading
+  `help`, the word that follows. It opened the chain picker, and with no terminal or under
   `--json` failed with "no chain is chosen"; `erpc --json validator deploy
   --help` now prints the overview and exits 0.
 - A chain named where the command goes, as in `erpc validator solana
@@ -46,9 +50,11 @@ whose version has no entry below.
   command. With a command to run (`erpc validator solana deploy`) it is
   refused with the line meant (`erpc validator --chain solana deploy`;
   `erpc rpc call getSlot` for `erpc rpc solana call getSlot`, since `call`
-  takes no chain), and a chain without the command says so (`validator
-  N/A for bitcoin`). It is never read as `--chain`: nothing runs, and no
-  picker opens.
+  takes no chain), offered only when that line parses on the chain;
+  otherwise it gets the chains the command is on (`erpc validator eth
+  keys`: keys is on solana only) or clap's own words for the line. A
+  chain without the command says so (`validator N/A for bitcoin`). It is
+  never read as `--chain`: nothing runs, and no picker opens.
 
 ## [0.1.0-rc.5] - 2026-11-16
 
