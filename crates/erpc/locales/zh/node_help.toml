@@ -1,0 +1,67 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+# `erpc validator`, `erpc rpc` and `erpc node` before a chain is chosen,
+# and the line after a chain's own help.
+
+[about]
+validator = "下列链上的验证者。每条链有各自的命令：用 --chain 选择链。"
+rpc = "JSON-RPC 请求，以及下列链上的 RPC 节点。每条链有各自的命令：用 --chain 选择链。"
+node = "下列链上的节点（以兼容名称使用）。每条链有各自的命令：用 --chain 选择链。"
+
+[heading]
+without_chain = "无需选择链"
+chains = "链及其网络"
+no_validator = "没有验证者的链"
+commands = "每条链都有的命令"
+examples = "示例"
+
+[no_validator]
+mining = "通过工作量证明挖矿：没有可运行的验证者"
+rollup = "没有自己的权益证明验证者的 rollup"
+rpc = "它们的 RPC 节点：erpc rpc --chain <chain>"
+
+[commands]
+more = "链自己的帮助说明每个命令在该链上做什么，并列出该链增加的命令："
+
+[verb]
+init = "在 1Password 清单中记录节点并准备服务器"
+deploy = "安装基础系统和客户端，并以安全模式启动"
+list = "列出清单中的主机"
+status = "显示主机的状态"
+logs = "显示主机的日志"
+start = "启动服务"
+stop = "停止服务"
+restart = "重启服务"
+update = "更新客户端，并在保护下重启"
+update_config = "重新生成启动脚本和配置"
+plan = "显示变更会做什么，但不执行"
+destroy = "停止服务并让节点退役（不改动密钥）"
+
+[rpc]
+call = "向共享、自定义或 x402 端点发送一个 JSON-RPC 请求"
+list_networks = "列出提供 ERPC 共享 RPC 和 x402 RPC 的网络"
+
+[option]
+chain = "链，上面列出的之一（否则用 ERPC_CHAIN，再否则用 default_chain 设置）"
+network = "网络，该链的网络之一；更改 mainnet 时命令行上也必须有 --chain"
+name = "主机，按其在清单中的名称"
+
+[example]
+help = "{chain} 有什么：每个命令及其在该链上的作用"
+list = "清单中 {chain} 的主机"
+default = "此后 erpc {role} <COMMAND> 不再需要 --chain，但更改 mainnet 时仍需要"
+call = "向 ERPC 共享 RPC 发送一个请求；网络由方法判断"
+
+[verb_help]
+depends = "{verb} 接受什么取决于链：erpc {role} --chain <chain> {verb} --help"
+only = "{verb} 只在 {chains} 上有：erpc {role} --chain {chain} {verb} --help"
+none = "`{word}` 不是任何链上 erpc {role} 的命令"
+
+[chain_word]
+refused = "`{word}` 是链，不是命令：erpc {role} 用 --chain 指定链"
+hint = "请这样运行：{command}"
+takes_none = "`{word}` 是链，而 erpc rpc {verb} 不接受链"
+
+[chain]
+next = "命令的选项及其在 {chain} 上的作用：erpc {role} --chain {chain} <COMMAND> --help"

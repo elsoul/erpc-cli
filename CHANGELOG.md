@@ -12,6 +12,50 @@ whose version has no entry below.
 
 ## [Unreleased]
 
+### Changed
+
+- `erpc validator`, `erpc rpc` and `erpc node` with no chain chosen, and
+  their `--help`, show an overview drawn as the rest of erpc's help is, in
+  colour at a terminal and in the operator's language: what the command is
+  for, its usage, the chains and their networks, the chains with no
+  validator and why, the commands every chain has, `erpc rpc call` and
+  `list-networks` for rpc, the options and examples. It replaces a plain
+  English list of `--chain <chain> --help` lines. For a script (`--json`
+  or `ERPC_JSON`) it is plain, even under `CLICOLOR_FORCE`. `erpc rpc help`
+  is this overview too, no longer clap's list of `call` and
+  `list-networks`; `erpc rpc help call` and `erpc rpc help list-networks`
+  still print what `erpc rpc call --help` and `erpc rpc list-networks
+  --help` print.
+- A chain's own help (`erpc validator --chain solana --help`) has clap's
+  headings in the operator's language, offers under `--chain` only the
+  chains that have the command, and ends with where a command's options
+  are. What the commands and options say stays English.
+
+### Fixed
+
+- Help never asks which chain nor fails for want of one. With no chain
+  chosen (no `--chain` or an empty one, no `ERPC_CHAIN`, no
+  `default_chain`), a request for help (`--help` or `-h` before `--`,
+  `help` as the first word, or a line clap reads as one on some chain, as
+  `erpc validator migration help`) shows the overview and where the
+  command it names is: what `deploy` takes depends on the chain, `keys` is
+  on solana only, and a word that is no command on any chain is said to
+  be none. The command it names is the first word that is no option and
+  no value of `--chain`, `--network` or `--name`, or, after a leading
+  `help`, the word that follows. It opened the chain picker, and with no terminal or under
+  `--json` failed with "no chain is chosen"; `erpc --json validator deploy
+  --help` now prints the overview and exits 0.
+- A chain named where the command goes, as in `erpc validator solana
+  --help`, shows that chain's help when the line asks for help or names no
+  command. With a command to run (`erpc validator solana deploy`) it is
+  refused with the line meant (`erpc validator --chain solana deploy`;
+  `erpc rpc call getSlot` for `erpc rpc solana call getSlot`, since `call`
+  takes no chain), offered only when that line parses on the chain;
+  otherwise it gets the chains the command is on (`erpc validator eth
+  keys`: keys is on solana only) or clap's own words for the line. A
+  chain without the command says so (`validator N/A for bitcoin`). It is
+  never read as `--chain`: nothing runs, and no picker opens.
+
 ## [0.1.0-rc.5] - 2026-11-16
 
 ### Changed
