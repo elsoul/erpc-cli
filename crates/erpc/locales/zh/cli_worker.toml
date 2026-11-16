@@ -206,6 +206,6 @@
 "worker delete --release-server" = "同时终止其所在的按小时计费 ERPC 服务器"
 "worker delete --forget" = "不连接服务器：worker 已不在那里运行（例如服务器已不存在），直接删除记录"
 "worker delete --forget-line" = "按 ID 将一条数据线路从记录中移除而不终止它：即已在 erpc 之外终止的线路。可重复指定"
-"worker delete --yes" = "不询问，直接继续（从未连接过、或加了 `--forget` 的 VPS，若不在当前登录的账户中，仍会在终端中询问）"
+"worker delete --yes" = "不询问，直接继续（使用 `--release-server` 时，从未连接过、或加了 `--forget` 的 VPS，若不在当前登录的账户中，仍会在终端中询问）"
 "worker list" = "列出本机上的应用及各自的部署位置"
 "worker list --prune" = "先把 erpc.toml 已不存在的应用从列表中移除。不会改动其目录和服务器"

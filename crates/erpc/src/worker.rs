@@ -530,9 +530,9 @@ pub(crate) enum Action {
         /// one ended outside erpc. Repeatable.
         #[arg(long, value_name = "LINE_ID")]
         forget_line: Vec<String>,
-        /// Go ahead without asking (a VPS never reached, or one passed with
-        /// `--forget`, that is not on the account signed in to is still
-        /// asked about, at a terminal).
+        /// Go ahead without asking (with `--release-server`, a VPS never
+        /// reached, or one passed with `--forget`, that is not on the
+        /// account signed in to is still asked about, at a terminal).
         #[arg(long, short = 'y')]
         yes: bool,
     },

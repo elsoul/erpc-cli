@@ -206,6 +206,6 @@
 "worker delete --release-server" = "アプリが動いている時間課金の ERPC サーバーも終了する"
 "worker delete --forget" = "サーバーに接続しない。ワーカーがもうそこで動いていない場合（サーバーがすでにないなど）に、記録だけを消す"
 "worker delete --forget-line" = "データ回線を終了せずに記録から外す（ID で指定）。erpc の外で終了した回線に使う。複数回指定可"
-"worker delete --yes" = "確認せずに進める（一度も接続していない VPS、または `--forget` を付けた VPS で、サインイン中のアカウントにないものは、端末で必ず確認する）"
+"worker delete --yes" = "確認せずに進める（`--release-server` のときは、一度も接続していない VPS、または `--forget` を付けた VPS で、サインイン中のアカウントにないものは、端末で必ず確認する）"
 "worker list" = "このマシンにあるアプリと、それぞれのデプロイ先を一覧表示する"
 "worker list --prune" = "先に、erpc.toml が無くなったアプリを一覧から外す。ディレクトリとサーバーには触れない"
