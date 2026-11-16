@@ -62,6 +62,10 @@ ending = "正在终止按小时计费的 {kind} {id}"
 failed = "user-api 未能终止 {kind} {id}：{answer}"
 no_hourly_list = "user-api 的积分快照中没有列出按小时计费的产品；未做任何更改"
 
+[gone]
+looking = "VPS {id} 既不在该账户的服务器中，也不在计费项目中：可能是刚刚购买的，将再查看一分多钟"
+no_list = "user-api 的 VPS 状态中没有列表，因此无法确定 VPS {id} 是否仍在该账户中"
+
 [line]
 no_status = "erpc 不知道如何获取 {kind} 线路的状态"
 no_list = "user-api 返回的 {kind} 线路状态中没有列表；未做任何更改"

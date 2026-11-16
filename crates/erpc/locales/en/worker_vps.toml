@@ -63,6 +63,10 @@ ending = "Ending hourly {kind} {id}"
 failed = "user-api did not end {kind} {id}: {answer}"
 no_hourly_list = "user-api's credit snapshot lists no hourly products; nothing was changed"
 
+[gone]
+looking = "VPS {id} is neither among the account's servers nor charged for: looking again for a little over a minute, in case it was only just bought"
+no_list = "user-api's VPS status has no list in it, so whether VPS {id} is still on the account is not known"
+
 [line]
 no_status = "erpc knows no status of {kind} lines"
 no_list = "user-api's status of {kind} lines has no list in it; nothing was changed"

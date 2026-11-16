@@ -85,6 +85,12 @@ not_seen_yet = "已启动，但 user-api 的列表和账户费用中都尚未显
 not_kept = "VPS {id} 已启动，但无法记录：{error}"
 not_kept_hint = "该 VPS 正在按小时计费：运行 `erpc worker deploy --vps {id}{scope}` 可接管，或在控制面板中终止"
 taking_up = "正在接管之前部署时记录的 VPS {id}"
+missing = "之前部署时记录、但从未连接过的 VPS {id} 不在当前登录的账户（{account}）中：它已终止，或属于另一个账户；是否将其从记录中移除，只有终端前的人才能回答；未部署任何内容"
+missing_hint = "请您自己在终端中运行此部署或 `{delete}`，不要加 `--json`：两者都会在不终止它的情况下将其从记录中移除（delete 还会终止该环境的数据线路）；或者登录拥有它的账户"
+missing_ask = "之前部署时记录、但从未连接过的 VPS {id} 不在当前登录的账户（{account}）中：它已终止，或属于另一个账户。要将其从记录中移除（不终止任何内容）并选择服务器吗？"
+missing_kept = "VPS {id} 仍保留在记录中；未部署任何内容"
+dropped = "VPS {id} 已从记录中移除；将像新环境一样选择服务器"
+not_dropped = "无法将 VPS {id} 从记录中移除：{error}"
 
 [server]
 no_terminal = "erpc.toml 中没有 [env.{env}]，且当前不在交互式终端中，无法选择服务器"
