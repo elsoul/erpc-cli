@@ -20,7 +20,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use erpc_auth::store::{StoreError, StoreKind};
 
 #[macro_use]
-mod i18n;
+mod cli;
 mod account_secret;
 mod ai;
 mod arbitrum_bundle;
@@ -46,7 +46,6 @@ mod backup;
 mod backup_schedule;
 mod bitcoin_rpc;
 mod bitcoin_tree;
-mod browser;
 mod bsc_backup;
 mod bsc_owned;
 mod bsc_rpc;
@@ -57,9 +56,7 @@ mod config;
 mod conversations;
 mod credit_wallet;
 mod doctor;
-mod echo;
 mod elf;
-mod error;
 mod eth_authority;
 mod eth_authority_evidence;
 mod eth_deploy;
@@ -73,14 +70,12 @@ mod hyperliquid_aqa;
 mod hyperliquid_ops;
 mod hyperliquid_tree;
 mod hyperliquid_validator;
-mod interrupt;
 mod kaia_backup;
 mod kaia_owned;
 mod kaia_rpc;
 mod kaia_signer;
 mod kaia_tree;
 mod keyless;
-mod long_commands;
 mod memory;
 mod near_rpc;
 mod near_tree;
@@ -95,7 +90,6 @@ mod nodes;
 mod polygon_custody;
 mod polygon_rpc;
 mod polygon_tree;
-mod prompt;
 mod restic;
 mod robinhood_admission;
 mod robinhood_admission_input;
@@ -134,8 +128,6 @@ mod sui_tree;
 mod tree;
 mod tron_node;
 mod tron_tree;
-mod tui;
-mod ui;
 mod validator_deploy;
 mod validator_init;
 mod validator_keys;
@@ -159,6 +151,10 @@ mod worker_run;
 mod worker_secrets;
 mod worker_vps;
 mod worker_waf;
+
+// Temporary: the old paths of the modules that moved into `cli/`, so the
+// move changes no imports. Each goes when its users import from `cli::`.
+pub(crate) use cli::{browser, echo, error, i18n, interrupt, long_commands, prompt, tui, ui};
 
 /// Exit statuses outside a failure's own ([`error::Code::exit`]).
 mod exit {
