@@ -1414,15 +1414,15 @@ pub(crate) async fn on_account(api: &Api, resource: &Resource, say: &Say) -> OnA
                 .as_ref(),
         )
     };
-    on_account_by(resource, GONE_WINDOW, replies, name, say).await
+    on_account_by(resource, replies, name, say).await
 }
 
 /// [`on_account`] with where its replies come from: `replies` gives the
 /// VPS status and the credit snapshot of one look, `name` the account's
-/// name, asked only when every look found the VPS missing.
+/// name, asked only when every look found the VPS missing. The looks are
+/// [`GONE_WINDOW`]'s, always.
 async fn on_account_by<R, RF, N, NF>(
     resource: &Resource,
-    (looks, every): (u32, Duration),
     mut replies: R,
     name: N,
     say: &Say,
@@ -1446,6 +1446,7 @@ where
             look_at(&list, &snapshot, id).ok_or_else(|| failed(t!("worker_vps.gone.no_list", id)))
         }
     };
+    let (looks, every) = GONE_WINDOW;
     let seen = missing_throughout(looks, every, look, || {
         say.line(&t!("worker_vps.gone.looking", id));
     })
@@ -3802,13 +3803,15 @@ mod tests {
 
     /// Only an hourly VPS can be missing: of a bare-metal server, a VPS not
     /// billed by the hour or one without a number nothing is known, and
-    /// user-api is not asked.
+    /// the account is not asked.
     #[tokio::test]
     async fn only_an_hourly_vps_can_be_missing() {
         use erpc_worker::manifest::{Resource, ResourceKind};
 
-        use super::{Api, OnAccount, on_account};
-        let api = Api::offline();
+        type Replies =
+            core::future::Ready<Result<(serde_json::Value, serde_json::Value), super::CliError>>;
+
+        use super::{OnAccount, on_account_by};
         let say = Say { quiet: true };
         let resource = |kind, id: &str, hourly| Resource {
             kind,
@@ -3816,6 +3819,9 @@ mod tests {
             region: None,
             hourly,
         };
+        let unasked = || -> Replies { panic!("the account is not to be asked") };
+        let unnamed =
+            || -> core::future::Ready<Option<String>> { panic!("no name is to be asked") };
         for r in [
             resource(ResourceKind::BareMetal, "100001", true),
             resource(ResourceKind::Vps, "100001", false),
@@ -3823,7 +3829,7 @@ mod tests {
             resource(ResourceKind::Vps, "not-a-number", true),
         ] {
             assert_eq!(
-                on_account(&api, &r, &say).await,
+                on_account_by(&r, unasked, unnamed, &say).await,
                 OnAccount::Unknown,
                 "{r:?}"
             );
@@ -3871,7 +3877,7 @@ mod tests {
     /// listed is there; missing at every look and with the account's name
     /// read is missing, and only then is the name asked for; a name that
     /// cannot be read, or is empty, leaves it not known.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn the_account_is_read_through_every_look_and_its_name() {
         use super::{OnAccount, account_name, look_at, on_account_by};
         use core::time::Duration;
@@ -3889,22 +3895,32 @@ mod tests {
         let empty = || (json!({ "data": [] }), snapshot(json!([])));
         let named = || async { Some("Example Account".to_owned()) };
         let unnamed = || async { None };
-        let window = (3, Duration::ZERO);
 
+        // Every look of the window is made, and the waits between them are
+        // taken in full: more than a VPS just bought can take to be listed
+        // and than the snapshot is cached.
         let looks = Cell::new(0);
         let replies = || {
             looks.set(looks.get() + 1);
             async { Ok(empty()) }
         };
+        let started = tokio::time::Instant::now();
         assert_eq!(
-            on_account_by(&vps, window, replies, named, &say).await,
+            on_account_by(&vps, replies, named, &say).await,
             OnAccount::Missing {
                 account: "Example Account".to_owned()
             }
         );
-        assert_eq!(looks.get(), 3, "every look is made");
+        assert_eq!(looks.get(), 6, "every look is made");
+        let waited = started.elapsed();
+        assert!(waited >= Duration::from_secs(75), "{waited:?}");
+        assert!(waited > erpc_ai::ready::UNLISTED, "{waited:?}");
+        assert!(
+            waited > erpc_api::account::CREDIT_SNAPSHOT_CACHE,
+            "{waited:?}"
+        );
         assert_eq!(
-            on_account_by(&vps, window, || async { Ok(empty()) }, unnamed, &say).await,
+            on_account_by(&vps, || async { Ok(empty()) }, unnamed, &say).await,
             OnAccount::Unknown
         );
         let charged = || async {
@@ -3915,22 +3931,22 @@ mod tests {
         };
         let never = || async { panic!("the name is asked only of a missing VPS") };
         assert_eq!(
-            on_account_by(&vps, window, charged, never, &say).await,
+            on_account_by(&vps, charged, never, &say).await,
             OnAccount::There
         );
         let no_list = || async { Ok((json!({}), snapshot(json!([])))) };
         assert_eq!(
-            on_account_by(&vps, window, no_list, never, &say).await,
+            on_account_by(&vps, no_list, never, &say).await,
             OnAccount::Unknown
         );
         let no_snapshot = || async { Ok((json!({ "data": [] }), json!({ "message": {} }))) };
         assert_eq!(
-            on_account_by(&vps, window, no_snapshot, never, &say).await,
+            on_account_by(&vps, no_snapshot, never, &say).await,
             OnAccount::Unknown
         );
         let failing = || async { Err(super::failed("no answer")) };
         assert_eq!(
-            on_account_by(&vps, window, failing, never, &say).await,
+            on_account_by(&vps, failing, never, &say).await,
             OnAccount::Unknown
         );
 
