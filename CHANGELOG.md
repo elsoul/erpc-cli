@@ -12,6 +12,8 @@ whose version has no entry below.
 
 ## [Unreleased]
 
+## [0.1.0-rc.5] - 2026-11-16
+
 ### Changed
 
 - Help at a terminal shows `Usage:` and its section headings in ERPC Blue,
@@ -734,7 +736,8 @@ version.
 - `docs/verify-release.md`: verify signatures against a key saved once from
   `main`, not against `pubkey.txt` at the tag being checked.
 
-[Unreleased]: https://github.com/elsoul/erpc-cli/compare/v0.1.0-rc.4...HEAD
+[Unreleased]: https://github.com/elsoul/erpc-cli/compare/v0.1.0-rc.5...HEAD
+[0.1.0-rc.5]: https://github.com/elsoul/erpc-cli/releases/tag/v0.1.0-rc.5
 [0.1.0-rc.4]: https://github.com/elsoul/erpc-cli/releases/tag/v0.1.0-rc.4
 [0.1.0-rc.3]: https://github.com/elsoul/erpc-cli/releases/tag/v0.1.0-rc.3
 [0.1.0-rc.2]: https://github.com/elsoul/erpc-cli/releases/tag/v0.1.0-rc.2
