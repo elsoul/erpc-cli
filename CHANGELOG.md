@@ -12,6 +12,29 @@ whose version has no entry below.
 
 ## [Unreleased]
 
+### Changed
+
+- `erpc validator`, `erpc rpc` and `erpc node` with no chain chosen, and
+  their `--help`, show an overview drawn as the rest of erpc's help is, in
+  colour at a terminal and in the operator's language: what the command is
+  for, its usage, the chains and their networks, the chains with no
+  validator and why, the commands every chain has, `erpc rpc call` and
+  `list-networks` for rpc, the options and examples. It replaces a plain
+  English list of `--chain <chain> --help` lines.
+- A chain's own help (`erpc validator --chain solana --help`) has clap's
+  headings in the operator's language, offers under `--chain` only the
+  chains that have the command, and ends with where a command's options
+  are. What the commands and options say stays English.
+
+### Fixed
+
+- Help never asks which chain: `erpc validator deploy --help` with no chain
+  chosen shows the overview and where deploy's options are, where it
+  opened the chain picker. A chain named where the command goes (`erpc
+  validator solana --help`) shows that chain's help; with a command to run
+  (`erpc validator solana deploy`) it is refused with the line meant
+  (`erpc validator --chain solana deploy`), never run and never a picker.
+
 ## [0.1.0-rc.5] - 2026-11-16
 
 ### Changed
