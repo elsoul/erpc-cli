@@ -65,7 +65,20 @@ bad() { fail=$((fail + 1)); printf 'FAIL %s\n   %s\n' "$1" "${2:-}"; }
 
 # The targets cargo-dist is configured to build, read from the same file the
 # script checks against, so this test cannot drift from the configuration.
-targets=$(grep -oE '"[a-z0-9_]+-[a-z0-9_-]+",' "$repo_root/dist-workspace.toml" | tr -d '",')
+# Only the `targets` array is read, comments stripped, as the script reads
+# it: a quoted value elsewhere in the file, such as a runner name in
+# github-custom-runners, is not a target.
+targets=$(awk '
+  /^[[:space:]]*targets[[:space:]]*=/ { inside = 1 }
+  inside {
+    line = $0; sub(/#.*/, "", line)
+    while (match(line, /"[a-z0-9_]+-[a-z0-9_-]+"/)) {
+      print substr(line, RSTART + 1, RLENGTH - 2)
+      line = substr(line, RSTART + RLENGTH)
+    }
+  }
+  inside && line ~ /\]/ { exit }
+' "$repo_root/dist-workspace.toml")
 target_count=$(printf '%s\n' "$targets" | grep -c .)
 
 make_artifacts() {
