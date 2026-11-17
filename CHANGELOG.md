@@ -12,6 +12,17 @@ whose version has no entry below.
 
 ## [Unreleased]
 
+### Added
+
+- `install.erpc.global` counts the installers it serves: each `GET` of an
+  installer writes one data point to Workers Analytics Engine with the
+  request's country, continent and Cloudflare data centre, the first language
+  of `Accept-Language`, the installer flavour, the version asked for (when
+  that release was served) and the version served, and the status. The data
+  point holds no address, user agent or anything else that tells one person
+  from another, and recording cannot delay or fail an install. The columns
+  are in `docs/install-counts.md`.
+
 ### Changed
 
 - The Intel macOS release (`x86_64-apple-darwin`) is cross-compiled on the

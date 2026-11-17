@@ -20,7 +20,13 @@ The convenience path (`curl | bash`) trusts DNS, TLS, the
 installer only from GitHub Releases, because it cannot verify a signature and
 the script it returns is executed. The one thing it adds is a fixed tail, kept
 in `installer/src/index.ts`, that runs the installed binary with
-`erpc skills install` to write the assistant's skills to `~/.erpc/skills`. It
+`erpc skills install` to write the assistant's skills to `~/.erpc/skills`.
+It also counts what it serves: each `GET` of an installer writes the
+request's country, continent and Cloudflare data centre, the first language
+of `Accept-Language`, the installer flavour, the version asked for and the
+version served, and the status to Workers Analytics Engine. That data point
+holds nothing that tells one person from another (no address, no user agent;
+[install counts](install-counts.md)). It
 verifies nothing itself, and neither
 does the installer script it serves. A self-updating command that would check
 the signatures below does not exist yet, so nothing on this path is verified
