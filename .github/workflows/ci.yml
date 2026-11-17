@@ -78,8 +78,17 @@ jobs:
           toolchain: 1.98.0
       - if: runner.environment == 'github-hosted'
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-      # Keep going after a failing target, so one run reports every failure.
-      - run: cargo test --workspace --locked --no-fail-fast
+      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
+        with:
+          tool: cargo-nextest@0.9.148
+      # cargo-nextest runs the test binaries side by side, each test in a
+      # process of its own, where cargo test runs the binaries one after
+      # another: on macOS the tests took 4.2 minutes instead of 9.4, on the
+      # self-hosted runners 1.6 instead of 4.5. The same tests run either way.
+      # Keep going after a failing test, so one run reports every failure.
+      - run: cargo nextest run --workspace --locked --no-fail-fast
+      # cargo-nextest does not run doctests.
+      - run: cargo test --workspace --locked --doc
       - run: cargo run --locked -- version --json
 
   # The worker agents erpc embeds are cross-built with zig before every
