@@ -137,7 +137,7 @@ jobs:
           "use-cache": false
           "version": "0.14.1"
       - name: "Install cargo-zigbuild, for the worker agents"
-        uses: "taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177"
+        uses: "taiki-e/install-action@b80e2bb2635f28eb98b9fce1e2f0887e1535c6b2"
         with:
           "tool": "cargo-zigbuild@0.24.0"
       - name: "Build the worker agents erpc embeds"
