@@ -82,13 +82,7 @@ fn input_schema(name: &str) -> Value {
             }),
             json!(["family", "fields"]),
         ),
-        "end_hourly_product" => (
-            json!({
-                "productType": { "type": "string", "description": "hourlyResources[].productType from credit_balance." },
-                "userProductId": { "type": "integer", "description": "hourlyResources[].userProductId from credit_balance." },
-            }),
-            json!(["productType", "userProductId"]),
-        ),
+        "end_hourly_product" => crate::actions::end_hourly_product_schema(),
         "create_credit_wallet" => (
             json!({
                 "vault": { "type": "string", "description": "The 1Password vault id to keep it in, if the user named one; otherwise the one erpc login uses." },
@@ -100,6 +94,7 @@ fn input_schema(name: &str) -> Value {
             json!({ "amountCredits": { "type": "integer", "minimum": 1, "maximum": 10000, "description": "Credits to buy; 1 Credit = €0.01, VAT is added." } }),
             json!(["amountCredits"]),
         ),
+        "point_udp_line" => crate::actions::point_udp_line_schema(),
         "secure_vps" => (
             json!({ "userVpsId": { "type": "integer", "description": "userVpsId from my_services or the start's result." } }),
             json!(["userVpsId"]),
@@ -291,9 +286,14 @@ const TOOLS: &[Tool] = &[
         name: "my_services",
         description: "Every service the signed-in account runs, by kind: VPS, bare metal, Unlimited \
                       RPC, dedicated RPC, shared and dedicated Geyser gRPC, shared and dedicated \
-                      shreds, Epic Shreds Direct. Product, plan, region, status and dates; for a \
-                      shared gRPC or shreds slot, any penalty. No IPs, passwords or keys: those are \
-                      in the dashboard.",
+                      shreds, Epic Shreds Direct, UDP Forwarding Standard and Premium \
+                      (udp_forwarding, udp_forwarding_premium). Product, plan, region, status and \
+                      dates; for a shared gRPC or shreds slot, any penalty; for a VPS its address \
+                      and login user; for a UDP Forwarding line its id, where it sends to \
+                      (destination) and the addresses it sends from (sourceIp, sourceIps). No \
+                      passwords or keys: those are in the dashboard. A list user-api would not \
+                      give erpc is in refused, in user-api's words: signing in again does not \
+                      change that.",
     },
     Tool {
         name: "server_catalog",
@@ -337,6 +337,20 @@ const TOOLS: &[Tool] = &[
                       result says whether user-api started it or why not (no card \
                       authorisation, not enough credit, no stock). Call it only when the user \
                       asked for this product; say what it costs first.",
+    },
+    Tool {
+        name: "point_udp_line",
+        description: "Points one of the signed-in account's UDP Forwarding lines (from \
+                      my_services) at a server: the public IPv4 address and UDP port the \
+                      leader's raw shreds are sent to, and the region they are sent from. erpc \
+                      shows the person the line, where it will send and what it is charged, and \
+                      points it only if they say yes. A Premium line is charged by the hour from \
+                      when it is pointed; a Standard one from its start, pointed or not. It \
+                      changes no firewall: the server has to let in, on that UDP port, the \
+                      addresses the line sends from. For an app deployed with erpc worker, \
+                      `erpc worker deploy --udp` points the line and opens the server's firewall \
+                      in one step: suggest that instead. Call it only when the user asked to \
+                      point this line there.",
     },
     Tool {
         name: "end_hourly_product",
@@ -444,6 +458,7 @@ pub async fn run(
             actions::start_hourly_product(client, token, input, confirm).await?
         }
         "end_hourly_product" => actions::end_hourly_product(client, token, input, confirm).await?,
+        "point_udp_line" => actions::point_udp_line(client, token, input, confirm).await?,
         "top_up_credit" => actions::top_up_credit(client, token, input, confirm, wallet).await?,
         "create_credit_wallet" => actions::create_credit_wallet(input, confirm, wallet).await?,
         "ask_choice" => crate::ask::ask_choice(input, confirm).await?,

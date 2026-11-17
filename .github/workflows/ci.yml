@@ -207,6 +207,13 @@ jobs:
         with:
           toolchain: 1.98.0
           components: clippy
+      # The template needs Rust 1.98.1 (solana-stream-sdk 5.0.0 asks for
+      # it): its steps run on that, and erpc itself, which renders it, on
+      # the workspace's toolchain.
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: 1.98.1
+          components: clippy
       # The template's build output is kept beside the rendered directory,
       # not in it: a restored cache must not make that directory, which
       # `erpc worker init` refuses to write into when it exists. The
@@ -223,13 +230,43 @@ jobs:
         run: |
           mkdir -p template-ci
           cargo run --locked -- worker init --template pumpfun --name pumpfun-ci --into template-ci --no-git --yes
-      - name: clippy and tests
+      - name: clippy and tests, as shipped (with the UDP source)
         working-directory: template-ci/pumpfun-ci
         env:
+          RUSTUP_TOOLCHAIN: 1.98.1
           CARGO_TARGET_DIR: ${{ github.workspace }}/template-ci/pumpfun-target
         run: |
           cargo clippy --all-targets --locked -- -D warnings
           cargo test --locked
+      - name: clippy and tests, without the UDP source
+        working-directory: template-ci/pumpfun-ci
+        env:
+          RUSTUP_TOOLCHAIN: 1.98.1
+          CARGO_TARGET_DIR: ${{ github.workspace }}/template-ci/pumpfun-target
+        run: |
+          cargo clippy --all-targets --locked --no-default-features -- -D warnings
+          cargo test --locked --no-default-features
+      # The template's lock becomes the Cargo.lock of every app made from
+      # it, and the cargo-deny and cargo-audit jobs below do not see it: the
+      # template is no member of the workspace. Its exceptions, each with
+      # its date and reason, are in
+      # crates/erpc-worker/template-checks/solana/pumpfun/.
+      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
+        with:
+          tool: cargo-audit,cargo-deny
+      - name: cargo-audit on the template's lock
+        working-directory: template-ci/pumpfun-ci
+        env:
+          RUSTUP_TOOLCHAIN: 1.98.1
+        run: |
+          mkdir -p .cargo
+          cp "$GITHUB_WORKSPACE/crates/erpc-worker/template-checks/solana/pumpfun/audit.toml" .cargo/audit.toml
+          cargo audit --deny warnings
+      - name: cargo-deny on the template's lock
+        working-directory: template-ci/pumpfun-ci
+        env:
+          RUSTUP_TOOLCHAIN: 1.98.1
+        run: cargo deny --locked --config "$GITHUB_WORKSPACE/crates/erpc-worker/template-checks/solana/pumpfun/deny.toml" check
 
   # The same for the template `init` makes when nothing is picked: its lock
   # must build as written, and what it answers is pinned by its own tests.

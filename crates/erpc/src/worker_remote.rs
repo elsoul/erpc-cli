@@ -1582,9 +1582,21 @@ fn ends_server(env: &Env) -> bool {
 /// happens to each line: a line that cannot be ended never keeps the
 /// server charged.
 async fn release(env: &Env, say: &Say, server: ServerEnd<'_>) -> Released {
+    release_through(env, say, server, crate::worker_vps::Api::open).await
+}
+
+/// [`release`], with the lines ended through the session `open` gives. The
+/// lines are ended whatever becomes of the server: one missing from the
+/// account (`ServerEnd::Gone`) leaves its lines, a UDP Forwarding line
+/// sending to it among them, to be ended like any other.
+async fn release_through<O, F>(env: &Env, say: &Say, server: ServerEnd<'_>, open: O) -> Released
+where
+    O: FnOnce() -> F,
+    F: core::future::Future<Output = Result<crate::worker_vps::Api, CliError>>,
+{
     let mut out = Released::default();
     if !env.lines.is_empty() {
-        match crate::worker_vps::Api::open().await {
+        match open().await {
             Ok(api) => {
                 // What the account is charged for: a line on record that is
                 // not among it has nothing to end.
@@ -2105,6 +2117,7 @@ mod tests {
                     id: id.to_owned(),
                     endpoint: String::new(),
                     hourly: true,
+                    sources: Vec::new(),
                 })
                 .collect(),
             ..Env::default()
@@ -2191,6 +2204,36 @@ mod tests {
         assert!(line.is_pending());
         assert_eq!(line_end(line, Some(false), Some(&[])), LineEnd::End);
         assert_eq!(line_end(line, None, None), LineEnd::End);
+    }
+
+    /// A UDP Forwarding line is released by the same rule, charged as
+    /// either of its products. One never pointed at the server (a Premium
+    /// line is not charged until it is) is ended, never dropped.
+    #[test]
+    fn a_udp_forwarding_line_is_released_as_the_other_lines_are() {
+        let line = |endpoint: &str| Line {
+            kind: LineKind::Udp,
+            id: "100004".to_owned(),
+            endpoint: endpoint.to_owned(),
+            hourly: true,
+            sources: Vec::new(),
+        };
+        let pointed = line("0.0.0.0:10001");
+        for product in ["one_hop_direct", "udp_forwarding_premium"] {
+            let charged = vec![(product.to_owned(), 100_004)];
+            assert_eq!(
+                line_end(&pointed, Some(false), Some(&charged)),
+                LineEnd::End,
+                "{product}"
+            );
+        }
+        // Charged as another product only: not this line's charge.
+        let other = vec![("grpc".to_owned(), 100_004)];
+        assert_eq!(line_end(&pointed, Some(false), Some(&other)), LineEnd::Drop);
+        assert_eq!(line_end(&pointed, Some(true), Some(&other)), LineEnd::End);
+        let pending = line("");
+        assert_eq!(line_end(&pending, Some(true), Some(&[])), LineEnd::End);
+        assert_eq!(line_end(&pending, Some(false), Some(&[])), LineEnd::End);
     }
 
     #[test]
@@ -2797,6 +2840,77 @@ mod tests {
         assert!(!not_ended.server_off());
         let unreachable = Removal::Failed("connection refused".to_owned());
         assert!(ends_server(&left_over(&env(), &not_ended, &unreachable)));
+    }
+
+    /// A server missing from the account does not keep its lines: a UDP
+    /// Forwarding line still charged for, which sends to that server, is
+    /// ended as UDP Forwarding (its product read from the account's
+    /// charges) before the server leaves the record. Here the end has no
+    /// one to agree to it, so the line stays on record, failed, and the
+    /// delete says so and how to run it again: it is never dropped quietly
+    /// while charged.
+    #[tokio::test]
+    async fn a_udp_line_of_a_missing_server_is_ended_not_left_charged() {
+        use super::{Say, ServerEnd, release_through};
+        use crate::worker_vps::stub::{Request, Stub};
+        let stub = Stub::serve(|request: &Request| match request.path.as_str() {
+            "/v3/user/credit-snapshot" => (
+                200,
+                json!({ "message": { "hourlyResources": [
+                    { "productType": "vps", "userProductId": 100_001 },
+                    { "productType": "one_hop_direct", "userProductId": 200_002 },
+                ] } }),
+            ),
+            _ => (200, json!({ "success": true, "data": [] })),
+        })
+        .await;
+        let gone = Env {
+            host: None,
+            lines: vec![Line {
+                kind: LineKind::Udp,
+                id: "200002".to_owned(),
+                endpoint: "0.0.0.0:10001".to_owned(),
+                hourly: true,
+                sources: Vec::new(),
+            }],
+            ..env()
+        };
+        let quiet = Say { quiet: true };
+        let api = stub.api();
+        let released = release_through(
+            &gone,
+            &quiet,
+            ServerEnd::Gone("Example Account"),
+            || async { Ok(api) },
+        )
+        .await;
+        // Asked as a line still charged for, and ended as UDP Forwarding:
+        // the end itself needs a yes no one here can give.
+        assert_eq!(released.lines_failed, vec!["200002".to_owned()]);
+        assert!(released.dropped.is_empty() && released.kept.is_empty());
+        assert!(
+            released.failed.iter().any(|f| f.contains("200002")),
+            "{:?}",
+            released.failed
+        );
+        assert!(
+            released.server_gone.is_some(),
+            "the server leaves the record"
+        );
+        assert!(
+            stub.asked()
+                .iter()
+                .any(|asked| asked == "GET /v3/user/credit-snapshot"),
+            "{:?}",
+            stub.asked()
+        );
+        // What is left on record is the line, still to be ended, and the
+        // command to run again names it.
+        let left = left_over(&gone, &released, &Removal::NoHost);
+        assert_eq!(left.resource, None);
+        assert_eq!(left.lines, gone.lines);
+        let hint = retry_hint(&gone, &released, &Removal::NoHost, &again(""));
+        assert!(hint.contains("--release-server"), "{hint}");
     }
 
     /// The account is asked about the server only on `--release-server`,

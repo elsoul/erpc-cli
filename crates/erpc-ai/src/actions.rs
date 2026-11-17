@@ -200,8 +200,8 @@ const NO_ONE_TO_ASK: &str = "this changes what the account pays for, and only th
      terminal can say yes to that; erpc ai without a terminal (-m in a script, --json) cannot. \
      Tell the user to ask in `erpc ai` at a terminal";
 
-/// What user-api answered, for the model: whether it worked and its words,
-/// without Stripe's ids.
+/// What user-api answered, for the model: whether it worked, its words and
+/// the id of what it started, without Stripe's ids.
 fn outcome(reply: &hourly::Reply, done: &str) -> Value {
     let body = &reply.body;
     let mut out = pick(
@@ -220,6 +220,13 @@ fn outcome(reply: &hourly::Reply, done: &str) -> Value {
                 out[key] = value.clone();
             }
         }
+    }
+    // A UDP Forwarding start answers with the line as `subscription`, whose
+    // `id` is what its end route and its `my` list know it by.
+    if let Some(id) = body.get("subscription").and_then(|s| s.get("id"))
+        && !id.is_null()
+    {
+        out["subscriptionId"] = id.clone();
     }
     out["httpStatus"] = json!(reply.status);
     out["done"] = json!(
@@ -437,6 +444,241 @@ pub async fn end_hourly_product(
         .await
         .map_err(|e| format!("the end was not sent: {e}"))?;
     Ok(outcome(&reply, &format!("end {product}")))
+}
+
+/// Where a UDP Forwarding line is to send: the server's public IPv4
+/// address and a UDP port of its own.
+fn udp_destination(given: &str) -> Result<std::net::SocketAddrV4, String> {
+    given
+        .trim()
+        .parse::<std::net::SocketAddrV4>()
+        .ok()
+        .filter(|address| {
+            address.port() != 0 && erpc_api::udp::is_public_destination(*address.ip())
+        })
+        .ok_or_else(|| {
+            "destination is the server's public IPv4 address and a UDP port, written \
+             address:port (10001 unless the app says otherwise); an address of a private, shared, \
+             documentation or other special-purpose range is refused"
+                .to_owned()
+        })
+}
+
+/// A UDP Forwarding list user-api did not give, as the model is told: its
+/// refusal in its own words (it refuses a route it does not open to erpc's
+/// sign-in, and signing in again changes nothing), or that it did not
+/// answer.
+fn udp_unread(family: &erpc_api::udp::Family, error: &erpc_api::ApiError) -> String {
+    use erpc_api::ApiError;
+    match error {
+        ApiError::Refused { .. } | ApiError::Status(_) => format!(
+            "user-api refused to list the account's {} lines: {error}. Signing in again does \
+             not change this; the dashboard points the line",
+            family.name
+        ),
+        other => format!("user-api did not answer: {other}"),
+    }
+}
+
+/// Line `id` and its product, from the account's lists: Standard's first,
+/// then Premium's.
+async fn udp_line(
+    client: &AuthClient,
+    token: &SecretString,
+    id: i64,
+) -> Result<(&'static erpc_api::udp::Family, Value), String> {
+    let wanted = id.to_string();
+    for family in &erpc_api::udp::FAMILIES {
+        let reply = account::read_udp_forwarding(client, token, family.my_url)
+            .await
+            .map_err(|e| udp_unread(family, &e))?;
+        let rows = erpc_api::udp::rows(&reply)
+            .ok_or_else(|| format!("user-api gave no list of the {} lines", family.name))?;
+        if let Some(row) = rows
+            .iter()
+            .find(|row| erpc_api::udp::is_row_of(row, &wanted))
+        {
+            let of = erpc_api::udp::family_of(row).unwrap_or(family);
+            return Ok((of, row.clone()));
+        }
+    }
+    Err(format!(
+        "the account has no UDP Forwarding line {id}; my_services lists them"
+    ))
+}
+
+/// What the person is asked before line `id` of `family`, as `row` has it
+/// now, is pointed at `destination` from `region`.
+fn udp_question(
+    family: &erpc_api::udp::Family,
+    row: &Value,
+    id: i64,
+    destination: std::net::SocketAddrV4,
+    region: &str,
+) -> Confirmation {
+    let now = match (
+        row.get("destination").and_then(Value::as_str),
+        row.get("region").and_then(Value::as_str),
+    ) {
+        (Some(to), Some(from)) if !to.is_empty() => {
+            t!("confirm.udp.to", destination = to, region = from)
+        }
+        (Some(to), None) if !to.is_empty() => to.to_owned(),
+        _ => t!("confirm.udp.nowhere"),
+    };
+    // A Premium line is charged once it is pointed and active: one that is
+    // already is charged as a Standard line is.
+    let pointed_and_active = row.get("status").and_then(Value::as_str) == Some("active")
+        && row
+            .get("destination")
+            .and_then(Value::as_str)
+            .is_some_and(|d| !d.is_empty());
+    let charged = if family.charged_from_start || pointed_and_active {
+        t!("confirm.udp.charged_already")
+    } else {
+        t!("confirm.udp.charged_when_pointed")
+    };
+    let destination = destination.to_string();
+    Confirmation {
+        title: t!("confirm.udp.title", name = family.name, id, destination),
+        lines: vec![
+            (
+                t!("confirm.label.sends_to"),
+                t!("confirm.udp.to", destination, region),
+            ),
+            (t!("confirm.label.points_now"), now),
+            (t!("confirm.label.charged"), charged),
+            (
+                t!("confirm.label.note"),
+                t!(
+                    "confirm.udp.firewall",
+                    port = destination.rsplit(':').next().unwrap_or_default()
+                ),
+            ),
+        ],
+    }
+}
+
+/// What `end_hourly_product` takes, as (properties, required).
+pub(crate) fn end_hourly_product_schema() -> (Value, Value) {
+    (
+        json!({
+            "productType": { "type": "string", "description": "hourlyResources[].productType from credit_balance." },
+            "userProductId": { "type": "integer", "description": "hourlyResources[].userProductId from credit_balance." },
+        }),
+        json!(["productType", "userProductId"]),
+    )
+}
+
+/// What the model is told when user-api did not point a line: the refusal,
+/// and whether trying again can help ([`erpc_api::udp::pointing_may_pass_later`]).
+fn pointing_refused(e: &erpc_api::ApiError, id: i64, to: &str, region: &str) -> String {
+    let then = if matches!(e, erpc_api::ApiError::Unauthorized) {
+        "The user signs in again (`erpc login`); then it can be tried again"
+    } else if erpc_api::udp::pointing_may_pass_later(e) {
+        "A change within a minute of the last one, or while user-api applies it, is refused, \
+         and a region or user-api itself can be down for a while; try again in a minute"
+    } else {
+        "This refusal comes back the same however often it is tried: tell the user, and do \
+         not try again"
+    };
+    format!("user-api did not point line {id} at {to} from {region}: {e}. {then}")
+}
+
+/// What `point_udp_line` takes, as (properties, required).
+pub(crate) fn point_udp_line_schema() -> (Value, Value) {
+    (
+        json!({
+            "subscriptionId": { "type": "integer", "description": "The line's id, from my_services (udp_forwarding or udp_forwarding_premium) or the start's subscriptionId." },
+            "destination": { "type": "string", "description": "The server's public IPv4 address and the UDP port the shreds go to, written address:port (10001 unless the app says otherwise). An address of a private, shared, documentation or other special-purpose range is refused." },
+            "region": { "type": "string", "enum": erpc_api::udp::regions(), "description": "The region the line sends from: the server's, or the nearest one its product serves (dublin is Premium's only)." },
+        }),
+        json!(["subscriptionId", "destination", "region"]),
+    )
+}
+
+/// `point_udp_line`: points one of the account's UDP Forwarding lines at
+/// `destination` (a server's public IPv4 address and UDP port), sending
+/// from `region`, after the person says yes. It changes no firewall and no
+/// erpc.toml: `erpc worker deploy --udp` does both for an app of erpc's.
+///
+/// # Errors
+///
+/// A message saying what is wrong with the input, what user-api or the
+/// person refused, for the caller to show.
+pub(crate) async fn point_udp_line(
+    client: &AuthClient,
+    token: &SecretString,
+    input: &Value,
+    confirm: Option<&dyn Confirm>,
+) -> Result<Value, String> {
+    let id = input
+        .get("subscriptionId")
+        .and_then(Value::as_i64)
+        .ok_or("subscriptionId is the line's id, as my_services gives it")?;
+    let destination = udp_destination(
+        input
+            .get("destination")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+    )?;
+    let region = input
+        .get("region")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let confirm = confirm.ok_or(NO_ONE_TO_ASK)?;
+
+    // The line as the account has it now, not as the model remembers it.
+    let (family, row) = udp_line(client, token, id).await?;
+    if let Some(status @ ("cancelled" | "suspended")) = row.get("status").and_then(Value::as_str) {
+        return Err(format!(
+            "line {id} is {status}: it sends nothing, wherever it points"
+        ));
+    }
+    if !family.regions.contains(&region) {
+        return Err(format!(
+            "{} sends from {}; not from {region:?}",
+            family.name,
+            family.regions.join(", ")
+        ));
+    }
+    if !confirm
+        .confirm(&udp_question(family, &row, id, destination, region))
+        .await
+    {
+        return Err("the user said no; nothing was changed".to_owned());
+    }
+    let to = destination.to_string();
+    let reply =
+        account::set_udp_destination(client, token, family.destination_url, id, region, &to)
+            .await
+            .map_err(|e| pointing_refused(&e, id, &to, region))?;
+    let line = reply.get("subscription").unwrap_or(&reply);
+    let mut out = pick(
+        line,
+        &[
+            "status",
+            "region",
+            "destination",
+            "sourceIp",
+            "sourceIps",
+            "lastError",
+        ],
+    );
+    out["done"] = json!(true);
+    out["what"] = json!(format!(
+        "point {} line {id} at {to} from {region}",
+        family.name
+    ));
+    out["subscriptionId"] = json!(id);
+    out["next"] = json!(format!(
+        "Tell the user the line now sends to {to}, and that the server has to let in the \
+         addresses it sends from on UDP port {port} (sourceIp or sourceIps in my_services, once \
+         ERPC names them); erpc changed no firewall. For an app deployed with erpc worker, \
+         `erpc worker deploy --udp` keeps the line and the firewall in step.",
+        port = destination.port()
+    ));
+    Ok(out)
 }
 
 /// A random version 4 UUID, for a session's client request id.
@@ -1124,6 +1366,96 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_udp_line_is_pointed_only_at_an_address_and_port_and_only_with_someone_to_ask() {
+        let client = erpc_auth::AuthClient::new().expect("client");
+        let token = secrecy::SecretString::from("not-sent");
+        let point = |destination: &str| json!({ "subscriptionId": 42, "destination": destination, "region": "tokyo" });
+        // What is wrong with the input is said before anything is asked.
+        for bad in [
+            "203.0.113.10",
+            "203.0.113.10:0",
+            "0.0.0.0:10001",
+            "[2001:db8::1]:10001",
+            "127.0.0.1:10001",
+            "10.0.0.5:10001",
+            "192.168.1.2:10001",
+            "172.16.0.1:10001",
+            "100.64.0.1:10001",
+            "169.254.1.1:10001",
+            "224.0.0.1:10001",
+            "255.255.255.255:10001",
+            "203.0.113.10:10001",
+        ] {
+            let refused = super::point_udp_line(&client, &token, &point(bad), Some(&Yes))
+                .await
+                .expect_err(bad);
+            assert!(
+                refused.contains("public IPv4 address and a UDP port"),
+                "{refused}"
+            );
+        }
+        let no_id = json!({ "destination": "203.0.113.10:10001", "region": "tokyo" });
+        assert!(
+            super::point_udp_line(&client, &token, &no_id, Some(&Yes))
+                .await
+                .expect_err("no id")
+                .contains("subscriptionId")
+        );
+        // Nobody to ask: refused before user-api is asked anything, since a
+        // Premium line pointed is a line charged.
+        assert_eq!(
+            super::point_udp_line(&client, &token, &point("8.8.8.8:10001"), None).await,
+            Err(super::NO_ONE_TO_ASK.to_owned())
+        );
+    }
+
+    #[test]
+    fn the_person_is_told_where_a_udp_line_will_send_and_what_it_is_charged() {
+        use erpc_api::udp::FAMILIES;
+        let to: std::net::SocketAddrV4 = "203.0.113.10:10001".parse().expect("address");
+        let said = |family, row: &serde_json::Value| {
+            super::udp_question(family, row, 42, to, "tokyo").text()
+        };
+        let unpointed = json!({ "status": "provisioning", "destination": null });
+        // Standard: charged already, wherever it points.
+        let standard = said(&FAMILIES[0], &unpointed);
+        assert!(
+            standard.contains("UDP Forwarding Standard line 42 at 203.0.113.10:10001")
+                && standard.contains("203.0.113.10:10001 from tokyo")
+                && standard.contains("no server yet")
+                && standard.contains("by the hour already")
+                && standard.contains("UDP port 10001"),
+            "{standard}"
+        );
+        // Premium: charged from when it is pointed, unless it is already.
+        let premium = said(&FAMILIES[1], &unpointed);
+        assert!(
+            premium.contains("from when it is pointed and active"),
+            "{premium}"
+        );
+        let moved = json!({
+            "status": "active", "destination": "203.0.113.9:10001", "region": "frankfurt",
+        });
+        let premium = said(&FAMILIES[1], &moved);
+        assert!(
+            premium.contains("by the hour already")
+                && premium.contains("203.0.113.9:10001 from frankfurt"),
+            "{premium}"
+        );
+        // A refused list is user-api's word, not a session to sign in again.
+        let refusal = erpc_api::account::udp_forwarding_reply(
+            403,
+            r#"{"message":"this route is not open to erpc-cli"}"#,
+        )
+        .expect_err("refused");
+        let unread = super::udp_unread(&FAMILIES[0], &refusal);
+        assert!(
+            unread.contains("not open to erpc-cli") && !unread.contains("erpc login"),
+            "{unread}"
+        );
+    }
+
+    #[tokio::test]
     async fn a_purchase_key_is_asked_for_only_once_the_start_is_about_to_leave() {
         let client = erpc_auth::AuthClient::new().expect("client");
         let token = secrecy::SecretString::from("not-sent");
@@ -1392,5 +1724,58 @@ mod tests {
         let out = outcome(&refused, "start VPS");
         assert_eq!(out["done"], json!(false));
         assert_eq!(out["code"], json!("OUT_OF_STOCK"));
+        assert!(out.get("subscriptionId").is_none());
+    }
+
+    #[test]
+    fn an_outcome_surfaces_the_id_of_a_nested_subscription() {
+        // A UDP Forwarding start: the line comes back as `subscription`.
+        let reply = Reply {
+            status: 200,
+            body: json!({
+                "success": true,
+                "subscription": {
+                    "id": 42, "productKey": "one_hop_direct", "status": "provisioning",
+                    "stripeSubscriptionId": "sub_x"
+                },
+                "receipt": { "stripeInvoiceId": "in_x" },
+                "replayed": false
+            }),
+        };
+        let out = outcome(&reply, "start UDP Forwarding Standard");
+        assert_eq!(out["done"], json!(true));
+        assert_eq!(out["subscriptionId"], json!(42));
+        assert!(out.get("subscription").is_none());
+        assert!(out.get("receipt").is_none());
+        // A subscription without an id names none.
+        let unnamed = Reply {
+            status: 200,
+            body: json!({ "success": true, "subscription": { "status": "provisioning" } }),
+        };
+        assert!(outcome(&unnamed, "start").get("subscriptionId").is_none());
+    }
+
+    #[test]
+    fn a_refused_pointing_tells_the_model_whether_to_try_again() {
+        use erpc_api::ApiError;
+        let said = |e: &ApiError| super::pointing_refused(e, 7, "8.8.8.8:10001", "frankfurt");
+        let later = said(&ApiError::Refused {
+            status: 409,
+            message: "UDP_FORWARDING_PREMIUM_APPLY_IN_PROGRESS".to_owned(),
+        });
+        assert!(later.contains("try again in a minute"), "{later}");
+        let never = said(&ApiError::Refused {
+            status: 400,
+            message: "INVALID_DESTINATION: not a public address".to_owned(),
+        });
+        assert!(
+            never.contains("do not try again") && !never.contains("in a minute"),
+            "{never}"
+        );
+        let signed_out = said(&ApiError::Unauthorized);
+        assert!(
+            signed_out.contains("signs in again") && !signed_out.contains("in a minute"),
+            "{signed_out}"
+        );
     }
 }

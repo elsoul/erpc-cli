@@ -19,6 +19,8 @@ mod handlers;
 mod i18n;
 mod runtime;
 mod shreds;
+#[cfg(feature = "udp")]
+mod shreds_udp;
 mod state;
 mod timing;
 mod trace;
@@ -27,6 +29,38 @@ mod wallet;
 mod webhook;
 
 const UPDATE_CHANNEL_CAPACITY: usize = 10_000;
+
+/// The raw shreds ERPC forwards over UDP, received on `bind` for as long as
+/// the bot runs: the same migrations as the Shreds stream's, with no stream
+/// between the leader and the bot.
+#[cfg(feature = "udp")]
+async fn udp_shreds(
+    bind: SocketAddr,
+    state: Arc<RwLock<AppState>>,
+    geyser_slot: Arc<AtomicU64>,
+    rpc: Arc<RpcClient>,
+    send_rpc: Arc<RpcClient>,
+) {
+    log::info!("UDP shreds: {bind}");
+    shreds_udp::run(bind, state, geyser_slot, rpc, send_rpc).await
+}
+
+/// This build has no UDP source (`--no-default-features` left the `udp`
+/// feature out): the line's shreds are not taken in, and the bot runs on
+/// without them.
+#[cfg(not(feature = "udp"))]
+async fn udp_shreds(
+    bind: SocketAddr,
+    _: Arc<RwLock<AppState>>,
+    _: Arc<AtomicU64>,
+    _: Arc<RpcClient>,
+    _: Arc<RpcClient>,
+) {
+    log::warn!(
+        "UDP shreds: SHREDS_UDP_BIND={bind} is set, but this build has no UDP source (built with --no-default-features); running on without it"
+    );
+    futures::future::pending().await
+}
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
@@ -163,6 +197,25 @@ async fn main() -> Result<(), anyhow::Error> {
         })
     };
 
+    // The raw shreds ERPC forwards over UDP, when a line sends them here.
+    // They are taken in only for slots near the one Geyser last reported.
+    let udp_handle = {
+        let bind = settings.shreds_udp_bind;
+        let state = app_state.clone();
+        let geyser_slot = tracked_slot.clone();
+        let rpc = rpc_client.clone();
+        let send_rpc = send_rpc_client.clone();
+        tokio::spawn(async move {
+            match bind {
+                Some(bind) => udp_shreds(bind, state, geyser_slot, rpc, send_rpc).await,
+                None => {
+                    log::info!("UDP shreds: none (SHREDS_UDP_BIND is not set)");
+                    futures::future::pending().await
+                }
+            }
+        })
+    };
+
     // Axum API server
     let api_handle = {
         let state = app_state.clone();
@@ -177,7 +230,7 @@ async fn main() -> Result<(), anyhow::Error> {
         })
     };
 
-    tokio::try_join!(processor_handle, geyser_handle, shreds_handle, api_handle)?;
+    tokio::try_join!(processor_handle, geyser_handle, shreds_handle, udp_handle, api_handle)?;
 
     Ok(())
 }

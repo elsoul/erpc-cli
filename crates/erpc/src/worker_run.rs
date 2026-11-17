@@ -46,7 +46,7 @@ use crate::node_common::Say;
 use crate::worker::{Dir, load};
 use crate::worker_deploy::said_in;
 use crate::worker_secrets;
-use crate::worker_vps::{self, Api};
+use crate::worker_vps::{self, Api, LineTarget};
 
 /// What the app's environment keeps of erpc's own, so that it runs and
 /// prints as it would from a shell.
@@ -89,9 +89,7 @@ async fn start_and_watch(
 ) -> Result<Outcome, CliError> {
     let say = Say { quiet: json };
     let (path, m) = load(dir)?;
-    let root = path
-        .parent()
-        .map_or_else(|| PathBuf::from("."), Path::to_owned);
+    let root = crate::worker_build::app_root(&path);
     let given: Vec<&str> = lines.kinds.iter().map(|(k, _)| k.setting()).collect();
     let missing = m.missing_besides(&given);
     if !missing.is_empty() {
@@ -103,7 +101,7 @@ async fn start_and_watch(
             .join(", ");
         // A line's setting comes from the line's flag, not from a secret.
         let hint = match LineKind::ALL.into_iter().find(|k| k.setting() == first) {
-            Some(kind) if kind != LineKind::Unlimited => {
+            Some(kind) if kind.on_run() => {
                 t!(
                     "worker_run.missing_line_hint",
                     first,
@@ -205,6 +203,13 @@ async fn take_lines(
     interrupt: &mut Hold,
 ) -> Result<(), CliError> {
     let charged = worker_vps::charged(api).await?;
+    // This machine, by its address: a run takes no UDP Forwarding line
+    // (a laptop behind NAT cannot receive it), so no port or region.
+    let target = LineTarget {
+        ip,
+        udp_port: None,
+        region: None,
+    };
     for (kind, plan) in &lines.kinds {
         let kind = *kind;
         let label = kind.label();
@@ -221,6 +226,7 @@ async fn take_lines(
                     id,
                     endpoint: String::new(),
                     hourly: true,
+                    sources: Vec::new(),
                 };
                 line.hourly = worker_vps::is_charged(&charged, &line);
                 say.line(&t!(
@@ -234,9 +240,9 @@ async fn take_lines(
             async |named| {
                 let mut record = Unrecorded(named);
                 let plan = plan.as_deref();
-                worker_vps::start_line(api, kind, ip, None, plan, "", say, &mut record).await
+                worker_vps::start_line(api, kind, &target, plan, "", say, &mut record).await
             },
-            async |id, hourly| worker_vps::wait_line(api, kind, id, ip, hourly, say).await,
+            async |id, hourly| worker_vps::wait_line(api, kind, id, &target, hourly, say).await,
         )
         .await?;
         say.line(&t!(
@@ -332,6 +338,7 @@ async fn take_line(
                     id,
                     endpoint: String::new(),
                     hourly: true,
+                    sources: Vec::new(),
                 });
                 started
             }
@@ -345,6 +352,7 @@ async fn take_line(
             id: id.clone(),
             endpoint: String::new(),
             hourly,
+            sources: Vec::new(),
         });
     }
     // Ctrl-C, now or while the line was found or bought, stops the run,
@@ -720,6 +728,7 @@ mod tests {
             id: id.to_owned(),
             endpoint: format!("line-{id}.example"),
             hourly: true,
+            sources: Vec::new(),
         }
     }
 

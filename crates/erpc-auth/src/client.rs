@@ -338,6 +338,32 @@ impl AuthClient {
         .await
     }
 
+    /// Sends `body` as JSON in a PUT with the access token and returns the
+    /// status and body.
+    ///
+    /// The same allowlist check as [`Self::get_with_token`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::post_with_token`].
+    pub async fn put_with_token(
+        &self,
+        audience: Audience,
+        url: &str,
+        access_token: &SecretString,
+        body: Vec<u8>,
+    ) -> Result<(u16, String), HttpError> {
+        self.send_with_token(
+            reqwest::Method::PUT,
+            audience,
+            url,
+            access_token,
+            body,
+            None,
+        )
+        .await
+    }
+
     async fn send_with_token(
         &self,
         method: reqwest::Method,

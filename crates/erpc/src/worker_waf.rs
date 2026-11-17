@@ -1348,9 +1348,16 @@ mod tests {
     ) {
         let say = crate::node_common::Say { quiet: true };
         let me = Some("198.51.100.7".parse().expect("an address"));
-        let synced =
-            crate::worker_firewall::sync(server, m, "default", &m.env["default"], me, &say)
-                .expect("the firewall step");
+        let synced = crate::worker_firewall::sync(
+            server,
+            m,
+            "default",
+            &m.env["default"],
+            me,
+            crate::worker_firewall::Ask::from_record(""),
+            &say,
+        )
+        .expect("the firewall step");
         let before = server.asked();
         let settled = super::Deploy {
             server,
@@ -1511,8 +1518,15 @@ mod tests {
             let mut server = first();
             server.fails = vec![fails];
             let me = Some("198.51.100.7".parse().expect("an address"));
-            let synced =
-                crate::worker_firewall::sync(&server, &m, "default", &m.env["default"], me, &say);
+            let synced = crate::worker_firewall::sync(
+                &server,
+                &m,
+                "default",
+                &m.env["default"],
+                me,
+                crate::worker_firewall::Ask::from_record(""),
+                &say,
+            );
             assert_eq!(
                 synced.err().expect("failed").message,
                 format!("the server did not do it: {fails}")
