@@ -12,16 +12,27 @@
 //! and its number -- is never in a reply: an environment shows its servers by
 //! slot, size and region, and its lines by kind.
 //!
-//! Every write is a compare-and-swap on the record's revision:
+//! Every put and delete is a compare-and-swap on the record's revision:
 //! `expected_revision` 0 makes the record and fails if it is there, `n`
-//! changes it only if it is still at `n`. A write sent again with the same
-//! content after its reply was lost is answered as a success. No route here
-//! starts or ends anything that is paid for.
+//! changes it only if it is still at `n`. Taking a server or a line in
+//! carries no revision: the same request sent again is a success, and one
+//! that would move it is refused. A write sent again with the same content
+//! after its reply was lost is answered as a success. No route here starts
+//! or ends anything that is paid for.
 //!
 //! Replies are read leniently: a field this version does not know is
 //! ignored, and a slot, state or kind it does not know is kept as
 //! [`Other`](Slot::Other) rather than refused, so an account that has moved
-//! on still reads in an older erpc.
+//! on still reads in an older erpc. An environment whose facts are in a
+//! newer format than [`FACTS_FORMAT`] is the exception: it is refused with
+//! [`WorkerError::NewerFormat`], so that it is never edited and written back
+//! by a version that would drop what it does not know.
+//!
+//! What this module prints is safe on a terminal: an unknown value kept as
+//! `Other`, and everything a [`Refusal`] hands out, is cleaned of control
+//! and reordering characters. The fields of a record (a host, a host key, a
+//! template, a region, …) are the account's text as sent; a caller escapes
+//! them before printing.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -64,6 +75,17 @@ pub enum WorkerError {
         name: String,
         /// The rule it breaks.
         rule: &'static str,
+    },
+    /// The environment's facts are in a format newer than this version
+    /// reads ([`FACTS_FORMAT`]). Reading them anyway and writing them back
+    /// would drop what this version does not know.
+    #[error(
+        "the environment's record is in format {found}, newer than this erpc reads ({FACTS_FORMAT}); \
+         update erpc"
+    )]
+    NewerFormat {
+        /// The format the record is in.
+        found: u64,
     },
 }
 
@@ -111,21 +133,27 @@ impl Refusal {
 
     /// The field the refusal points at, from the root of the request body
     /// (`facts.backup`, `id`, …), on [`Code::InvalidRequest`] and
-    /// [`Code::ResourceNotFound`].
+    /// [`Code::ResourceNotFound`]. Cleaned like the message: safe to print.
     #[must_use]
-    pub fn field(&self) -> Option<&str> {
-        self.data.get("field").and_then(Value::as_str)
+    pub fn field(&self) -> Option<String> {
+        self.data
+            .get("field")
+            .and_then(Value::as_str)
+            .and_then(|f| one_line(f, DETAIL_MAX))
     }
 
     /// Which limit was reached, on [`Code::LimitExceeded`] (`line` for an
-    /// environment's data lines).
+    /// environment's data lines). Cleaned like the message: safe to print.
     #[must_use]
-    pub fn limit(&self) -> Option<&str> {
-        self.data.get("limit").and_then(Value::as_str)
+    pub fn limit(&self) -> Option<String> {
+        self.data
+            .get("limit")
+            .and_then(Value::as_str)
+            .and_then(|l| one_line(l, DETAIL_MAX))
     }
 
     /// The environments that hold a start not yet on record, on
-    /// [`Code::StartPending`].
+    /// [`Code::StartPending`]. Cleaned like the message: safe to print.
     #[must_use]
     pub fn envs(&self) -> Vec<String> {
         self.data
@@ -134,11 +162,51 @@ impl Refusal {
             .map(|envs| {
                 envs.iter()
                     .filter_map(Value::as_str)
-                    .map(str::to_owned)
+                    .filter_map(|e| one_line(e, DETAIL_MAX))
                     .collect()
             })
             .unwrap_or_default()
     }
+}
+
+/// The longest message a [`Refusal`] keeps, in characters.
+const MESSAGE_MAX: usize = 300;
+
+/// The longest detail a [`Refusal`] hands out, in characters.
+const DETAIL_MAX: usize = 128;
+
+/// The longest unknown value an open enum keeps, in characters.
+const OTHER_MAX: usize = 64;
+
+/// The first line of `text` without control or reordering characters, at
+/// most `max` characters; `None` when nothing is left.
+fn one_line(text: &str, max: usize) -> Option<String> {
+    let line: String = text
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .filter(|c| !c.is_control() && !crate::reorders(*c))
+        .take(max)
+        .collect();
+    (!line.is_empty()).then_some(line)
+}
+
+/// An unknown value as an open enum keeps it: ASCII letters, digits, `_`,
+/// `-` and `.`, anything else as `?`, at most [`OTHER_MAX`] characters. The
+/// values the account uses are all of that shape, and one that is not is
+/// not printed as sent.
+fn token(text: &str) -> String {
+    text.chars()
+        .take(OTHER_MAX)
+        .map(|c| {
+            if (c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.')) && !crate::reorders(c) {
+                c
+            } else {
+                '?'
+            }
+        })
+        .collect()
 }
 
 /// Defines an enum read from a string the account sends, with the strings
@@ -150,7 +218,9 @@ macro_rules! open_enum {
         #[non_exhaustive]
         pub enum $name {
             $($(#[$vmeta])* $variant,)+
-            /// A value this version does not know, as sent.
+            /// A value this version does not know, cleaned to letters,
+            /// digits, `_`, `-` and `.` (anything else as `?`), at most 64
+            /// characters.
             Other(String),
         }
 
@@ -169,7 +239,7 @@ macro_rules! open_enum {
             fn from(text: &str) -> Self {
                 match text {
                     $($text => Self::$variant,)+
-                    other => Self::Other(other.to_owned()),
+                    other => Self::Other(token(other)),
                 }
             }
         }
@@ -952,8 +1022,8 @@ pub struct Deleted {
 
 /// The rule app and environment names follow: a lowercase letter first,
 /// then lowercase letters and digits, single dashes between them.
-const NAME_RULE: &str = "a lowercase letter, then lowercase letters, digits and single dashes, \
-                         not ending in a dash";
+const NAME_RULE: &str = "up to 32 characters: a lowercase letter, then lowercase letters, digits \
+                         and single dashes, not ending in a dash";
 
 fn is_slug(name: &str, max: usize) -> bool {
     let bytes = name.as_bytes();
@@ -1010,20 +1080,16 @@ fn env_url(app: &str, env: &str) -> Result<String, WorkerError> {
 
 /// The message of a reply, cut to one printable line.
 fn message_of(body: &Value) -> Option<String> {
-    let text = body.get("message").and_then(Value::as_str)?;
-    let line: String = text
-        .lines()
-        .next()
-        .unwrap_or_default()
-        .chars()
-        .filter(|c| !c.is_control() && !crate::reorders(*c))
-        .take(300)
-        .collect();
-    (!line.is_empty()).then_some(line)
+    one_line(body.get("message").and_then(Value::as_str)?, MESSAGE_MAX)
 }
 
 /// Reads a reply: `data` of a success, with whether it was a 201, or the
 /// refusal.
+///
+/// A success whose `data` is an environment with facts in a format newer
+/// than [`FACTS_FORMAT`] is [`WorkerError::NewerFormat`], whichever call it
+/// answered (reading the environment, writing it, taking a server or a line
+/// in), and before its facts are read at all: they may not even parse.
 fn reply<T: DeserializeOwned>(status: u16, text: &str) -> Result<Written<T>, WorkerError> {
     let body: Value = serde_json::from_str(text).unwrap_or(Value::Null);
     if (200..300).contains(&status) {
@@ -1032,6 +1098,11 @@ fn reply<T: DeserializeOwned>(status: u16, text: &str) -> Result<Written<T>, Wor
             .filter(|_| body.get("success").and_then(Value::as_bool) != Some(false))
             .cloned()
             .ok_or_else(|| ApiError::Malformed("a success without data".to_owned()))?;
+        if let Some(found) = data.get("factsFormat").and_then(Value::as_u64)
+            && found > u64::from(FACTS_FORMAT)
+        {
+            return Err(WorkerError::NewerFormat { found });
+        }
         let record =
             serde_json::from_value(data).map_err(|e| ApiError::Malformed(e.to_string()))?;
         return Ok(Written {
@@ -1297,7 +1368,7 @@ mod tests {
             "coreOptions": [1, 2, 4, 8],
             "lines": [{
                 "id": LINE_ID, "kind": "grpc", "hourly": true, "pending": false,
-                "state": "active", "endpoint": "https://grpc.example.net"
+                "state": "active", "endpoint": "grpc.example.net:443"
             }],
             "refStates": { "backup": null },
             "deployed": {
@@ -1394,7 +1465,7 @@ mod tests {
         assert_eq!(env.lines[0].kind, LineKind::Grpc);
         assert_eq!(
             env.lines[0].endpoint.as_deref(),
-            Some("https://grpc.example.net")
+            Some("grpc.example.net:443")
         );
         assert_eq!(env.ref_states.backup, None);
         assert_eq!(
@@ -1739,13 +1810,13 @@ mod tests {
             &json!({ "success": false, "code": "resource_not_found", "message": "no",
                      "data": { "field": "id" } }),
         );
-        assert_eq!(field.field(), Some("id"));
+        assert_eq!(field.field().as_deref(), Some("id"));
         let limit = refusal(
             422,
             &json!({ "success": false, "code": "limit_exceeded", "message": "no",
                      "data": { "limit": "line" } }),
         );
-        assert_eq!(limit.limit(), Some("line"));
+        assert_eq!(limit.limit().as_deref(), Some("line"));
         let pending = refusal(
             409,
             &json!({ "success": false, "code": "start_pending", "message": "no",
@@ -1761,9 +1832,8 @@ mod tests {
 
     #[test]
     fn refusals_without_a_code_are_still_refusals() {
-        // The JSON gate and the parser in front of the routes answer 400
-        // without a code; a device session on a route not open to it gets
-        // a 403 without one; the MCP gate's 403 has neither.
+        // A 400 without a code, a 403 with a message and no code, and a
+        // 403 with neither code nor message.
         for (status, body) in [
             (
                 400,
@@ -1829,5 +1899,84 @@ mod tests {
                 deleted: true
             }
         );
+    }
+
+    #[test]
+    fn an_environment_in_a_newer_format_is_refused_on_read_and_on_write() {
+        let mut newer = env_detail_json();
+        newer["factsFormat"] = json!(3);
+        // A field of the newer format this version could not even parse.
+        newer["facts"]["host"] = json!({ "v4": "203.0.113.10" });
+        // 200 answers reading it (and a write sent again); 201 answers
+        // making it or taking a server or a line into it.
+        for status in [200, 201] {
+            let (status, text) = ok(status, &newer);
+            match reply::<EnvDetail>(status, &text) {
+                Err(WorkerError::NewerFormat { found }) => assert_eq!(found, 3),
+                other => panic!("{status}: expected NewerFormat, got {other:?}"),
+            }
+        }
+        let err = reply::<EnvDetail>(200, &ok(200, &newer).1).expect_err("refused");
+        assert!(
+            err.to_string()
+                .contains("format 3, newer than this erpc reads (2)"),
+            "{err}"
+        );
+        // The format this version writes, and an older one, are read.
+        for format in [1, 2] {
+            let mut detail = env_detail_json();
+            detail["factsFormat"] = json!(format);
+            let (status, text) = ok(200, &detail);
+            assert!(reply::<EnvDetail>(status, &text).is_ok(), "{format}");
+        }
+    }
+
+    #[test]
+    fn an_unknown_value_from_the_account_is_printed_clean() {
+        let r = refusal(
+            409,
+            &json!({ "success": false, "code": "evil\u{1b}[2J\u{202e}code", "message": "no" }),
+        );
+        let code = r.code.clone().expect("code");
+        assert_eq!(code, Code::Other("evil??2J?code".to_owned()));
+        let shown = r.to_string();
+        assert!(
+            !shown.contains('\u{1b}') && !shown.contains('\u{202e}'),
+            "{shown}"
+        );
+        assert_eq!(
+            shown,
+            "user-api refused the request (409, evil??2J?code): no"
+        );
+        let long = Code::from("x".repeat(500).as_str());
+        assert_eq!(long.as_str().len(), 64);
+        for shown in [
+            Slot::from("stand\u{1b}by").to_string(),
+            State::from("\u{202e}gone").to_string(),
+            LineKind::from("la\nser").to_string(),
+            WalletSource::from("key\u{7}chain").to_string(),
+            SecretSource::from("e\u{2066}rpc").to_string(),
+            Service::from("ka\u{9b}fka").to_string(),
+        ] {
+            assert!(shown.chars().all(|c| c.is_ascii_graphic()), "{shown:?}");
+            assert!(shown.contains('?'), "{shown:?}");
+        }
+        // Known values are matched before cleaning, and stay what they are.
+        assert_eq!(Slot::from("active"), Slot::Active);
+        assert_eq!(Code::from("ACCOUNT_CLOSED"), Code::AccountClosed);
+        assert_eq!(WalletSource::from("1password"), WalletSource::OnePassword);
+    }
+
+    #[test]
+    fn the_details_a_refusal_hands_out_are_clean() {
+        let r = refusal(
+            400,
+            &json!({ "success": false, "code": "invalid_request", "message": "no",
+                     "data": { "field": "facts.lines[1].id\u{1b}[31m", "limit": "li\u{202e}ne",
+                               "envs": ["prod\u{7}", "\u{2067}staging"] } }),
+        );
+        assert_eq!(r.field().as_deref(), Some("facts.lines[1].id[31m"));
+        assert_eq!(r.limit().as_deref(), Some("line"));
+        assert_eq!(r.envs(), ["prod", "staging"]);
     }
 }
