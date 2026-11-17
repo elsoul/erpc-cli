@@ -8,17 +8,22 @@
 //! `/v3/worker/apps/<app>` or `/v3/worker/apps/<app>/envs/<env>`, and a name
 //! is checked against the rules erpc.toml already holds it to before it is
 //! put in a path. Ids that do come back (the app's, a server's, a line's) are
-//! opaque strings. What a server or a line is in the account -- its product
-//! and its number -- is never in a reply: an environment shows its servers by
-//! slot, size and region, and its lines by kind.
+//! opaque strings. The types here have no place for what a server or a line
+//! is in the account -- its product and its number: an environment is read
+//! with its servers by slot, size and region and its lines by kind, and
+//! anything else a reply says about them is not read.
 //!
 //! Every put and delete is a compare-and-swap on the record's revision:
-//! `expected_revision` 0 makes the record and fails if it is there, `n`
-//! changes it only if it is still at `n`. Taking a server or a line in
-//! carries no revision: the same request sent again is a success, and one
-//! that would move it is refused. A write sent again with the same content
-//! after its reply was lost is answered as a success. No route here starts
-//! or ends anything that is paid for.
+//! `expected_revision` `n` changes or deletes the record only if it is still
+//! at `n`, and on a put, 0 makes the record and fails if it is there (no
+//! record is at revision 0, so a delete expecting 0 is refused). Taking a
+//! server or a line in carries no revision: the same request sent again is
+//! a success, and one that would move it is refused. A write sent again
+//! with the same content after its reply was lost is answered as a success.
+//! No route here starts or ends anything that is paid for.
+//!
+//! A closed account is refused on every route with [`Code::AccountClosed`],
+//! not taken for a session that has ended.
 //!
 //! Replies are read leniently: a field this version does not know is
 //! ignored, and a slot, state or kind it does not know is kept as
@@ -89,6 +94,13 @@ pub enum WorkerError {
         /// Whether the reply answered a write (`put_env`, `adopt_server`,
         /// `adopt_line`), which the account may already have applied.
         after_write: bool,
+    },
+    /// A wallet key the account does not take, caught before it was sent:
+    /// it takes a public key of 32 bytes, in base58.
+    #[error("wallet public key {key:?} is not 32 bytes in base58")]
+    WalletKey {
+        /// The key, as given.
+        key: String,
     },
 }
 
@@ -320,7 +332,10 @@ open_enum! {
         SealKeyRevoked = "seal_key_revoked",
         /// A fingerprint that does not match the key.
         FingerprintMismatch = "fingerprint_mismatch",
-        /// The account is closed.
+        /// The account is closed. Every route answers it, with status 401
+        /// (409 when the account closed while the request was handled),
+        /// and it is a refusal, not an ended session: signing in again
+        /// does not help.
         AccountClosed = "ACCOUNT_CLOSED",
         /// The account has no user record.
         UserNotFound = "user_not_found",
@@ -350,8 +365,13 @@ open_enum! {
 }
 
 open_enum! {
-    /// The state of what a server or line is in the account: `gone` when
-    /// it no longer is this account's, or no longer exists.
+    /// The state of what a server or line is in the account: the status
+    /// its product has there, or `gone` when it no longer is this
+    /// account's, or no longer exists. Each kind of product has its own
+    /// statuses (`available`, `provisioning`, `maintenance`, `suspended`,
+    /// and for some lines `applying`, `error` or `cancelled`, among
+    /// others), and they grow with the products: only `active` and `gone`
+    /// are named here, and the rest are kept as [`Other`](State::Other).
     State {
         /// In use.
         Active = "active",
@@ -471,27 +491,77 @@ pub struct App {
     pub secrets: Vec<SecretSummary>,
 }
 
-/// The public side of an app's wallet.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// The public side of an app's wallet, as a reply shows it. A write sends
+/// a [`PutWallet`].
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub struct Wallet {
     /// The public key, base58.
     pub pubkey: String,
-    /// Where the key is kept. Absent in a reply that may not say.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Where the key is kept. Read leniently: absent when a reply does not
+    /// say.
+    #[serde(default)]
     pub source_kind: Option<WalletSource>,
 }
 
-impl Wallet {
-    /// A wallet's public side: its key and where the private key is kept.
-    #[must_use]
-    pub fn new(pubkey: impl Into<String>, source_kind: WalletSource) -> Self {
-        Self {
-            pubkey: pubkey.into(),
-            source_kind: Some(source_kind),
+/// The public side of an app's wallet, as a write sends it: its public key
+/// and where the private key is kept, which the account takes only
+/// together. Nothing else about the wallet is sent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct PutWallet {
+    /// The public key: 32 bytes, base58.
+    pub pubkey: String,
+    /// Where the private key is kept.
+    pub source_kind: WalletSource,
+}
+
+impl PutWallet {
+    /// The wallet with public key `pubkey`, its private key kept in
+    /// `source_kind`.
+    ///
+    /// # Errors
+    ///
+    /// [`WorkerError::WalletKey`] when `pubkey` is not 32 bytes in base58,
+    /// which the account would refuse.
+    pub fn new(pubkey: impl Into<String>, source_kind: WalletSource) -> Result<Self, WorkerError> {
+        let pubkey = pubkey.into();
+        if base58_len(&pubkey) != Some(32) {
+            return Err(WorkerError::WalletKey { key: pubkey });
+        }
+        Ok(Self {
+            pubkey,
+            source_kind,
+        })
+    }
+}
+
+/// How many bytes `text` is in base58, or `None` when it is not base58 or
+/// is longer than a 32-byte key can be (44 characters).
+fn base58_len(text: &str) -> Option<usize> {
+    const ALPHABET: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    if text.len() > 44 {
+        return None;
+    }
+    // The number, little-endian, without the zero bytes the leading `1`s
+    // stand for.
+    let mut number: Vec<u8> = Vec::with_capacity(33);
+    for c in text.bytes() {
+        let mut carry = u32::try_from(ALPHABET.iter().position(|&a| a == c)?).ok()?;
+        for byte in &mut number {
+            carry += u32::from(*byte) * 58;
+            *byte = carry.to_le_bytes()[0];
+            carry >>= 8;
+        }
+        while carry > 0 {
+            number.push(carry.to_le_bytes()[0]);
+            carry >>= 8;
         }
     }
+    let zeros = text.bytes().take_while(|&c| c == b'1').count();
+    Some(zeros + number.len())
 }
 
 /// A sealed secret's record: never its value.
@@ -756,8 +826,10 @@ impl DeployedSecret {
 /// [`FACTS_FORMAT`]. Which server and which lines the environment has are
 /// not here: they are taken in with [`adopt_server`] and [`adopt_line`].
 ///
-/// Every field is sent, `null` included, so that a write says what each
-/// one is rather than leaving it to a default.
+/// Every field is sent, `null` included: the account requires each one,
+/// and refuses a write that leaves one out with [`Code::InvalidRequest`]
+/// naming it ([`Refusal::field`]). An empty firewall is two empty lists,
+/// and no start is an empty map.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
@@ -899,8 +971,8 @@ pub struct PutApp {
     pub chain: String,
     /// The template it was made from.
     pub template: Option<String>,
-    /// Its wallet's public side. Nothing else about the wallet is sent.
-    pub wallet: Option<Wallet>,
+    /// Its wallet's public side, or `None` for an app without a wallet.
+    pub wallet: Option<PutWallet>,
 }
 
 impl PutApp {
@@ -910,7 +982,7 @@ impl PutApp {
         expected_revision: u64,
         chain: impl Into<String>,
         template: Option<String>,
-        wallet: Option<Wallet>,
+        wallet: Option<PutWallet>,
     ) -> Self {
         Self {
             expected_revision,
@@ -932,16 +1004,20 @@ pub struct PutEnv {
     pub facts_format: u32,
     /// The facts.
     pub facts: Facts,
-    /// The last deploy, when there was one.
+    /// The last deploy. Left out when `None`, which the account takes as
+    /// `null`: no deploy on record. A put replaces the whole environment,
+    /// so a write that is not a deploy sends the last one again to keep it
+    /// ([`PutEnv::with_deploy`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deployed: Option<Deployed>,
-    /// What it shipped.
+    /// What the last deploy shipped, the same way.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deployed_app: Option<DeployedApp>,
 }
 
 impl PutEnv {
-    /// A write of `facts`, expecting the record at `expected_revision`.
+    /// A write of `facts`, expecting the record at `expected_revision`,
+    /// with no deploy on record: one already there is cleared.
     #[must_use]
     pub const fn new(expected_revision: u64, facts: Facts) -> Self {
         Self {
@@ -953,7 +1029,8 @@ impl PutEnv {
         }
     }
 
-    /// The same write, recording a deploy.
+    /// The same write, with `deployed` on record: a new deploy, or the last
+    /// one sent again to keep it.
     #[must_use]
     pub fn with_deploy(mut self, deployed: Deployed, deployed_app: DeployedApp) -> Self {
         self.deployed = Some(deployed);
@@ -1028,11 +1105,11 @@ pub struct Written<T> {
     pub record: T,
 }
 
-/// What deleting an app answers.
+/// What deleting an app or an environment answers.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[non_exhaustive]
 pub struct Deleted {
-    /// The app.
+    /// The app or environment.
     pub name: String,
     /// Whether it was deleted.
     pub deleted: bool,
@@ -1102,7 +1179,8 @@ fn message_of(body: &Value) -> Option<String> {
 }
 
 /// Reads a reply: `data` of a success, with whether it was a 201, or the
-/// refusal.
+/// refusal. A 401 is an ended session, unless it says the account is
+/// closed.
 fn reply<T: DeserializeOwned>(status: u16, text: &str) -> Result<Written<T>, WorkerError> {
     let body: Value = serde_json::from_str(text).unwrap_or(Value::Null);
     if (200..300).contains(&status) {
@@ -1118,12 +1196,13 @@ fn reply<T: DeserializeOwned>(status: u16, text: &str) -> Result<Written<T>, Wor
             record,
         });
     }
-    if status == 401 {
+    let code = body.get("code").and_then(Value::as_str).map(Code::from);
+    if status == 401 && code != Some(Code::AccountClosed) {
         return Err(ApiError::Unauthorized.into());
     }
     Err(Refusal {
         status,
-        code: body.get("code").and_then(Value::as_str).map(Code::from),
+        code,
         message: message_of(&body),
         data: body.get("data").cloned().unwrap_or(Value::Null),
     }
@@ -1205,6 +1284,9 @@ async fn delete(
 }
 
 /// The account's apps, each with its environments and without secrets.
+/// The list is whole, in one reply: an account has at most 100 apps (one
+/// more is refused with [`Code::LimitExceeded`], limit `worker`), an app at
+/// most 16 environments, and an environment at most 8 lines.
 ///
 /// # Errors
 ///
@@ -1256,8 +1338,10 @@ pub async fn put_app(
 ///
 /// [`Code::StartPending`] while an environment holds a start not yet on
 /// record, [`Code::RevisionConflict`] when the app moved since
-/// `expected_revision`, and [`WorkerError`] when the request fails or is
-/// refused otherwise.
+/// `expected_revision`, [`Code::WorkerNotFound`] when there is no such app,
+/// and [`WorkerError`] when the request fails or is refused otherwise. An
+/// `expected_revision` of 0 does not mean "whatever it is at": it matches
+/// no app, so it is a conflict when the app is there.
 pub async fn delete_app(
     client: &AuthClient,
     access_token: &SecretString,
@@ -1287,8 +1371,9 @@ pub async fn get_env(
     env_reply(status, &text, false).map(|w| w.record)
 }
 
-/// Makes the environment `env` of `app` (expected revision 0) or changes
-/// its facts. Its servers and lines are not touched.
+/// Makes the environment `env` of `app` (expected revision 0) or replaces
+/// its record: its facts and its deploy (see [`PutEnv::deployed`]). Its
+/// servers and lines are not touched.
 ///
 /// # Errors
 ///
@@ -1310,20 +1395,22 @@ pub async fn put_env(
 }
 
 /// Deletes the environment `env` of `app`'s record. Nothing it runs on is
-/// stopped or ended. The reply's details are returned as sent.
+/// stopped or ended.
 ///
 /// # Errors
 ///
 /// [`Code::StartPending`] while it holds a start not yet on record,
-/// [`Code::RevisionConflict`] when it moved since `expected_revision`, and
-/// [`WorkerError`] when the request fails or is refused otherwise.
+/// [`Code::RevisionConflict`] when it moved since `expected_revision`,
+/// [`Code::WorkerNotFound`] or [`Code::EnvNotFound`] when there is no such
+/// app or environment, and [`WorkerError`] when the request fails or is
+/// refused otherwise.
 pub async fn delete_env(
     client: &AuthClient,
     access_token: &SecretString,
     app: &str,
     env: &str,
     expected_revision: u64,
-) -> Result<Value, WorkerError> {
+) -> Result<Deleted, WorkerError> {
     let (status, text) =
         delete(client, access_token, &env_url(app, env)?, expected_revision).await?;
     reply(status, &text).map(|w| w.record)
@@ -1640,10 +1727,10 @@ mod tests {
             0,
             "solana",
             Some("solana/pumpfun@1".to_owned()),
-            Some(Wallet::new(
-                "11111111111111111111111111111111",
-                WalletSource::Keystore,
-            )),
+            Some(
+                PutWallet::new("11111111111111111111111111111111", WalletSource::Keystore)
+                    .expect("a 32-byte key"),
+            ),
         );
         assert_eq!(
             serde_json::to_value(&body).expect("encodes"),
@@ -1659,6 +1746,49 @@ mod tests {
             serde_json::to_value(&bare).expect("encodes"),
             json!({ "expectedRevision": 3, "chain": "solana", "template": null, "wallet": null })
         );
+    }
+
+    #[test]
+    fn a_wallet_key_is_sent_only_when_it_is_32_bytes_in_base58() {
+        for key in [
+            "11111111111111111111111111111111",
+            "So11111111111111111111111111111111111111112",
+            "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        ] {
+            let wallet = PutWallet::new(key, WalletSource::OnePassword).expect(key);
+            assert_eq!(
+                serde_json::to_value(&wallet).expect("encodes"),
+                json!({ "pubkey": key, "sourceKind": "1password" })
+            );
+        }
+        let long = "z".repeat(44);
+        let longer = "1".repeat(45);
+        let secret_shaped = "2".repeat(88);
+        for key in [
+            "",
+            "1111",
+            "1111111111111111111111111111111",
+            "111111111111111111111111111111111",
+            "0OIl111111111111111111111111111111111111111",
+            "So1111111111111111111111111111111111111111+",
+            long.as_str(),
+            longer.as_str(),
+            secret_shaped.as_str(),
+        ] {
+            match PutWallet::new(key, WalletSource::Keystore) {
+                Err(e @ WorkerError::WalletKey { .. }) => assert_eq!(
+                    e.to_string(),
+                    format!("wallet public key {key:?} is not 32 bytes in base58")
+                ),
+                other => panic!("{key:?}: expected WalletKey, got {other:?}"),
+            }
+        }
+        // A leading `1` is a zero byte; 255 is "5Q" and 256, two bytes, "5R".
+        assert_eq!(base58_len("1"), Some(1));
+        assert_eq!(base58_len("2"), Some(1));
+        assert_eq!(base58_len("5Q"), Some(1));
+        assert_eq!(base58_len("5R"), Some(2));
+        assert_eq!(base58_len("15R"), Some(3));
     }
 
     #[test]
@@ -1894,10 +2024,43 @@ mod tests {
         }
         let r = refusal(502, &Value::Null);
         assert_eq!(r.to_string(), "user-api refused the request (502)");
-        assert!(matches!(
-            reply::<Value>(401, "{}"),
-            Err(WorkerError::Api(ApiError::Unauthorized))
-        ));
+        for body in [
+            "{}",
+            "",
+            r#"{"success":false,"code":"invalid_token","message":"expired"}"#,
+        ] {
+            assert!(
+                matches!(
+                    reply::<Value>(401, body),
+                    Err(WorkerError::Api(ApiError::Unauthorized))
+                ),
+                "{body:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_closed_account_is_a_refusal_not_an_ended_session() {
+        let closed = json!({ "success": false, "code": "ACCOUNT_CLOSED", "message": "closed" });
+        let r = refusal(401, &closed);
+        assert_eq!((r.status, r.code.clone()), (401, Some(Code::AccountClosed)));
+        assert_eq!(
+            r.to_string(),
+            "user-api refused the request (401, ACCOUNT_CLOSED): closed"
+        );
+        // An environment's reply too, on a read and after a write.
+        for after_write in [false, true] {
+            assert!(matches!(
+                env_reply(401, &closed.to_string(), after_write),
+                Err(WorkerError::Refused(Refusal {
+                    status: 401,
+                    code: Some(Code::AccountClosed),
+                    ..
+                }))
+            ));
+        }
+        // The same code while the request was handled.
+        assert_eq!(refusal(409, &closed).code, Some(Code::AccountClosed));
     }
 
     #[test]
@@ -1933,16 +2096,68 @@ mod tests {
     }
 
     #[test]
-    fn deleting_an_app_reads_what_was_deleted() {
-        let (status, text) = ok(200, &json!({ "name": "pump-sniper", "deleted": true }));
-        let w: Written<Deleted> = reply(status, &text).expect("reads");
-        assert_eq!(
-            w.record,
-            Deleted {
-                name: "pump-sniper".to_owned(),
-                deleted: true
-            }
-        );
+    fn deleting_an_app_or_an_environment_reads_what_was_deleted() {
+        for name in ["pump-sniper", "prod"] {
+            let (status, text) = ok(200, &json!({ "name": name, "deleted": true }));
+            let w: Written<Deleted> = reply(status, &text).expect("reads");
+            assert_eq!(
+                w.record,
+                Deleted {
+                    name: name.to_owned(),
+                    deleted: true
+                }
+            );
+        }
+        let (status, text) = ok(200, &json!({ "deleted": true }));
+        assert!(matches!(
+            reply::<Deleted>(status, &text),
+            Err(WorkerError::Api(ApiError::Malformed(_)))
+        ));
+    }
+
+    #[test]
+    fn an_environment_in_the_older_format_reads_without_its_server_or_lines() {
+        // Format 1 kept the server and the lines in the facts; format 2
+        // takes them in by adopting. A format-1 record reads, and what it
+        // says about them is not read.
+        let older = json!({
+            "name": "prod",
+            "revision": 4,
+            "factsFormat": 1,
+            "facts": {
+                "resource": { "kind": "vps", "id": 200_002, "region": "amsterdam", "hourly": true },
+                "host": "203.0.113.10",
+                "sshUser": "ubuntu",
+                "sshPort": null,
+                "hostKey": "ssh-ed25519 AAAAexample",
+                "firewall": { "sshAllow": ["198.51.100.7/32"], "appAllow": [] },
+                "lines": [{ "kind": "grpc", "id": 300_003, "endpoint": "grpc.example.net:443",
+                            "hourly": true, "sources": [] }],
+                "starting": {},
+                "backup": null
+            },
+            "refStates": { "resource": "active", "lines": ["active"], "backup": null },
+            "deployed": null,
+            "deployedApp": null,
+            "updatedAt": "2026-10-29T15:40:37.000Z"
+        });
+        for (status, after_write) in [(200, false), (200, true), (201, true)] {
+            let (status, text) = ok(status, &older);
+            let env = env_reply(status, &text, after_write)
+                .expect("format 1 reads")
+                .record;
+            assert_eq!(env.facts_format, 1);
+            assert_eq!(env.facts.host.as_deref(), Some("203.0.113.10"));
+            assert_eq!(env.facts.desired_cores, None);
+            assert!(env.servers.is_empty() && env.lines.is_empty());
+            assert_eq!(env.ref_states.backup, None);
+            let shown = format!("{env:?}");
+            assert!(
+                !shown.contains("200002") && !shown.contains("300003"),
+                "{shown}"
+            );
+            assert!(!shown.contains("grpc.example.net"), "{shown}");
+        }
     }
 
     #[test]
@@ -2005,8 +2220,11 @@ mod tests {
 
         // Only an environment's record is checked: delete_env, and every
         // other call, read their reply with `reply`, which does not look.
-        let (status, text) = ok(200, &json!({ "name": "prod", "factsFormat": 3 }));
-        assert!(reply::<Value>(status, &text).is_ok());
+        let (status, text) = ok(
+            200,
+            &json!({ "name": "prod", "deleted": true, "factsFormat": 3 }),
+        );
+        assert!(reply::<Deleted>(status, &text).is_ok());
         // A refusal is a refusal, whatever its data says.
         let r = refusal(
             409,
