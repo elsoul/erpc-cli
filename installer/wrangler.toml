@@ -23,3 +23,10 @@ GITHUB_REPO = "elsoul/erpc-cli"
 
 [observability]
 enabled = true
+
+# Install counts (src/index.ts, recordInstall). Analytics Engine creates the
+# dataset on the first write; the daily export reads it by this name
+# (docs/install-counts.md).
+[[analytics_engine_datasets]]
+binding = "INSTALLS"
+dataset = "erpc_installs"

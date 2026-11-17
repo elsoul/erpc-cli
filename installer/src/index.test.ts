@@ -307,3 +307,193 @@ test("a newly deployed release does not reuse the previous release cache", async
   assert.equal((await h.get()).status, 502);
   assert.equal(h.requests.length, 2);
 });
+
+// --- install counts ---------------------------------------------------------
+
+import { installEvent, primaryLanguage, INSTALL_BLOBS } from "./index.ts";
+
+/** A request as Workers hands it over, with the `cf` object Node lacks. */
+function cfRequest(path: string, init: RequestInit = {}, cf: Record<string, unknown> = {}): Request {
+  const req = new Request(INSTALL + path, init);
+  Object.defineProperty(req, "cf", { value: cf });
+  return req;
+}
+
+const TOKYO = { country: "JP", continent: "AS", colo: "NRT", city: "Tokyo", latitude: "35.6" };
+
+/**
+ * The worker with GitHub, the cache and the context stubbed, `v1.2.3` selected
+ * at deployment (or nothing, with `selected: false`). The cache keeps what is
+ * put, so a second request is a cache hit.
+ */
+function counting(t: TestContext, installs?: AnalyticsEngineDataset, selected = true) {
+  const entries = new Map<string, Response>();
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "caches");
+  Object.defineProperty(globalThis, "caches", { configurable: true, value: {
+    default: {
+      async match(key: Request) { return entries.get(key.url)?.clone(); },
+      async put(key: Request, value: Response) { entries.set(key.url, value); },
+    },
+  } });
+  t.after(() => {
+    if (previous) Object.defineProperty(globalThis, "caches", previous);
+    else Reflect.deleteProperty(globalThis, "caches");
+  });
+  const fetched: string[] = [];
+  t.mock.method(globalThis, "fetch", async (input: RequestInfo | URL) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    fetched.push(url);
+    if (url.endsWith("/v9.9.9/erpc-installer.sh")) return new Response("not found", { status: 404 });
+    return new Response(url.endsWith(".ps1") ? REAL_PS1 : REAL_SH);
+  });
+  const writes: Promise<unknown>[] = [];
+  const ctx = { waitUntil(p: Promise<unknown>) { writes.push(p); }, passThroughOnException() {}, props: {} };
+  const env = { GITHUB_REPO: REPO, INSTALLS: installs,
+    LATEST_RELEASE: selected ? "v1.2.3" : undefined, LATEST_RELEASE_SOURCE: selected ? "github-latest" : undefined };
+  return {
+    fetched,
+    async get(req: Request) {
+      const res = await worker.fetch(req, env, ctx as ExecutionContext);
+      await Promise.all(writes);
+      return res;
+    },
+  };
+}
+
+function collector() {
+  const points: AnalyticsEngineDataPoint[] = [];
+  return { points, ds: { writeDataPoint: (p?: AnalyticsEngineDataPoint) => void points.push(p ?? {}) } };
+}
+
+const blob = (p: AnalyticsEngineDataPoint, name: (typeof INSTALL_BLOBS)[number]) => p.blobs?.[INSTALL_BLOBS.indexOf(name)];
+
+test("the install event carries region, language and versions, and nothing else", () => {
+  const req = cfRequest(
+    "/",
+    { headers: { "accept-language": "ja-JP,ja;q=0.9,en;q=0.8", "user-agent": "curl/8.7.1", "x-real-ip": "203.0.113.9" } },
+    TOKYO,
+  );
+  const res = new Response("#!/bin/sh\n", { headers: { "x-erpc-tag": "v1.2.3" } });
+  const e = installEvent(req, null, "sh", res);
+  assert.deepEqual(e, {
+    country: "JP",
+    continent: "AS",
+    colo: "NRT",
+    language: "ja",
+    os: "unix",
+    arch: "unknown",
+    script: "sh",
+    requested: "latest",
+    version: "v1.2.3",
+    status: 200,
+  });
+  assert.deepEqual(Object.keys(e).filter((k) => k !== "status"), [...INSTALL_BLOBS]);
+  const all = JSON.stringify(e);
+  for (const leak of ["curl", "203.0.113.9", "Tokyo", "35.6"]) assert.ok(!all.includes(leak), `no ${leak}`);
+});
+
+test("a pinned PowerShell install is recorded as such", () => {
+  const res = new Response("#\n", { headers: { "x-erpc-tag": "v0.9.0-rc.1" } });
+  const req = cfRequest("/v0.9.0-rc.1/ps1", {}, { country: "DE", continent: "EU", colo: "FRA" });
+  const e = installEvent(req, "v0.9.0-rc.1", "ps1", res);
+  assert.equal(e.os, "windows");
+  assert.equal(e.script, "ps1");
+  assert.equal(e.requested, "v0.9.0-rc.1");
+  assert.equal(e.version, "v0.9.0-rc.1");
+});
+
+test("values outside the expected shapes become unknown", () => {
+  const req = cfRequest("/", { headers: { "accept-language": "<script>" } }, { country: "jp; drop", continent: 7, colo: "nrt-1" });
+  const e = installEvent(req, `v1.0.0-${"a".repeat(80)}`, "sh", new Response("", { status: 502 }));
+  assert.equal(e.country, "unknown");
+  assert.equal(e.continent, "unknown");
+  assert.equal(e.colo, "unknown");
+  assert.equal(e.language, "unknown");
+  assert.equal(e.requested, "unknown");
+  assert.equal(e.version, "unknown");
+  assert.equal(e.status, 502);
+  // no cf object at all (wrangler dev, tests)
+  assert.equal(installEvent(new Request(INSTALL + "/"), null, "sh", new Response("")).country, "unknown");
+});
+
+test("the primary language is the first range's primary subtag", () => {
+  assert.equal(primaryLanguage("zh-Hant-TW,zh;q=0.8"), "zh");
+  assert.equal(primaryLanguage(" RU-ru ; q=1"), "ru");
+  assert.equal(primaryLanguage("fil"), "fil");
+  assert.equal(primaryLanguage("*"), "unknown");
+  assert.equal(primaryLanguage(""), "unknown");
+  assert.equal(primaryLanguage(null), "unknown");
+  assert.equal(primaryLanguage("x-klingon"), "unknown");
+});
+
+test("a served installer writes one data point in the export's column order", async t => {
+  // The export reads blobN by position (docs/install-counts.md): append only.
+  assert.deepEqual(
+    [...INSTALL_BLOBS],
+    ["country", "continent", "colo", "language", "os", "arch", "script", "requested", "version"],
+  );
+  const { points, ds } = collector();
+  const w = counting(t, ds);
+  const res = await w.get(cfRequest("/", { headers: { "accept-language": "ru" } }, TOKYO));
+  assert.equal(res.status, 200);
+  assert.equal(points.length, 1);
+  const p = points[0];
+  assert.deepEqual(p.indexes, ["sh"]);
+  assert.deepEqual(p.doubles, [200]);
+  assert.equal(p.blobs?.length, INSTALL_BLOBS.length);
+  assert.equal(blob(p, "country"), "JP");
+  assert.equal(blob(p, "language"), "ru");
+  assert.equal(blob(p, "requested"), "latest");
+  assert.equal(blob(p, "version"), "v1.2.3");
+});
+
+test("cache hits, PowerShell and failed serves are counted too", async t => {
+  const { points, ds } = collector();
+  const w = counting(t, ds);
+  assert.equal((await w.get(cfRequest("/", {}, TOKYO))).status, 200);
+  assert.equal((await w.get(cfRequest("/?again=1", {}, TOKYO))).status, 200);
+  assert.equal((await w.get(cfRequest("/ps1", {}, TOKYO))).status, 200);
+  assert.equal((await w.get(cfRequest("/v9.9.9", {}, TOKYO))).status, 502);
+  // The second root request was served from the cache and still counted.
+  assert.equal(w.fetched.filter((u) => u.endsWith("/v1.2.3/erpc-installer.sh")).length, 1);
+  assert.deepEqual(points.map((p) => [blob(p, "script"), blob(p, "requested"), blob(p, "version"), p.doubles?.[0]]), [
+    ["sh", "latest", "v1.2.3", 200],
+    ["sh", "latest", "v1.2.3", 200],
+    ["ps1", "latest", "v1.2.3", 200],
+    ["sh", "v9.9.9", "unknown", 502],
+  ]);
+  assert.deepEqual(points[2].indexes, ["ps1"]);
+});
+
+test("with no release selected the 502 is counted", async t => {
+  const { points, ds } = collector();
+  const w = counting(t, ds, false);
+  assert.equal((await w.get(cfRequest("/", {}, TOKYO))).status, 502);
+  assert.deepEqual(points.map((p) => [blob(p, "version"), p.doubles?.[0]]), [["unknown", 502]]);
+  assert.deepEqual(w.fetched, []);
+});
+
+test("a failing Analytics Engine write still serves the install script", async t => {
+  const throwing = {
+    writeDataPoint() {
+      throw new Error("analytics engine is down");
+    },
+  };
+  const res = await counting(t, throwing).get(cfRequest("/", {}, TOKYO));
+  assert.equal(res.status, 200);
+  const body = await res.text();
+  assert.ok(body.startsWith("#!/bin/sh"));
+  assert.ok(body.includes("skills install"));
+  assert.equal(res.headers.get("x-erpc-tag"), "v1.2.3");
+});
+
+test("no binding, HEAD, POST, health checks and unknown paths record nothing", async t => {
+  assert.equal((await counting(t).get(cfRequest("/", {}, TOKYO))).status, 200);
+  const { points, ds } = collector();
+  const w = counting(t, ds);
+  assert.equal((await w.get(cfRequest("/", { method: "HEAD" }, TOKYO))).status, 200);
+  assert.equal((await w.get(cfRequest("/", { method: "POST" }, TOKYO))).status, 405);
+  assert.equal((await w.get(cfRequest("/healthz", {}, TOKYO))).status, 200);
+  assert.equal((await w.get(cfRequest("/wp-login.php", {}, TOKYO))).status, 404);
+  assert.equal(points.length, 0);
+});
