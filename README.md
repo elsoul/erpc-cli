@@ -270,11 +270,61 @@ build one by talking to `erpc ai`.
 |---|---|
 | 🚀 **Start from HelloWorld** | `erpc worker init` makes a small HTTP API in Rust that deploys with one command and needs no key. The pump.fun trading bot is the next template up. |
 | 📦 **Bring the app you already have** | `erpc worker import` reads your directory (a Cargo package, `.env.example`, a Dockerfile) and writes its `erpc.toml` without changing your code. A Linux binary built anywhere, in any language, deploys the same way: `erpc worker import --binary <PATH>`. |
-| ⚡ **ERPC's lines, one flag each** | `deploy --grpc` (Geyser gRPC), `--shreds` (the Shreds stream), `--unlimited` (an Unlimited RPC). Each starts by the hour from ERPC Credit, lets your server in, and reaches the app as a setting. Nothing to copy from a dashboard. |
+| ⚡ **ERPC's lines, one flag each** | `deploy --grpc` (Geyser gRPC), `--shreds` (the Shreds stream), `--udp` (the leader's raw shreds over UDP), `--unlimited` (an Unlimited RPC). Each starts by the hour from ERPC Credit, lets your server in (or, for UDP, opens its port to ERPC's senders only; when ERPC names none, the port stays closed unless `--udp-any-source` opens it to any IPv4 address), and reaches the app as a setting. Nothing to copy from a dashboard. |
 | 🛡️ **A WAF in front of your API** | Add `[waf]` to `erpc.toml` and `deploy` puts a filtering proxy in front of the app: only the methods and paths you allow, size limits, a request rate per address, bans for addresses that keep being blocked, scanner probes refused. Around it the firewall drops everything else. |
 | 🔑 **Keys that never touch the server's disk** | The trading key and the secrets go from 1Password, your keychain or erpc's encrypted keystore straight into the worker's memory. No `wallet.json`, no `.env`. |
 | 🤖 **Made for scripts and agents** | `--yes` accepts the price a start shows, `--prepare` does everything but hand over the key, `--json` is on every command. `erpc ai` runs the same commands when you ask it to. |
 | 💶 **Costs in plain sight** | Every start shows its price first. `status` shows what each server and line costs per hour, your credit and how long it lasts. `erpc worker delete --release-server` ends all of it. |
+
+### Zero-block trades: raw shreds over UDP
+
+A zero-block buy lands in the very block the pool it buys is created in.
+The pump.fun template goes for it by reading a token's migration as the
+leader sends it out, before any node has run it, and buying at once.
+Whether the buy makes that block comes down to two things: how early the
+bot sees the migration, and how fast its buy reaches the leader. Each line
+that changes either is one flag:
+
+| Step | Flag | What the bot gets |
+|---|---|---|
+| Geyser gRPC | `--grpc` | The pool, once a node has run the migration |
+| Shreds | `--shreds` | The migration in the leader's shreds, before anyone has run it |
+| **UDP Forwarding** | `--udp` | The same shreds as raw UDP on a port of your server's own, from an ERPC node in its region: no gRPC stream in between |
+| Unlimited RPC | `--unlimited` | A send route of its own, in the server's region |
+
+```bash
+erpc worker deploy --udp                                  # Standard: €0.69 an hour, from one ERPC node
+erpc worker deploy --udp --udp-plan <PREMIUM_PRODUCT_ID>  # Premium: €1.39 an hour, the first copy of each shred from a regional mesh
+erpc worker api /api/timing                               # how much sooner the UDP shreds came, how late each buy landed
+```
+
+`deploy --udp` checks what it would be refused for before it buys anything,
+then starts the line, points it at the server's IPv4 address and port
+10001 (or `--udp-port`, 1024 and up), opens that port in the server's
+firewall to the addresses ERPC sends from and to no one else (when ERPC
+names none the port stays closed, unless `--udp-any-source` opens it to any
+IPv4 address), and gives the app `SHREDS_UDP_BIND`. The bot reads
+migrations from the UDP shreds and the Shreds stream alike, and acts on
+whichever shows one first; `/api/timing` says by how much the UDP shreds
+led (`udp_before_shreds_ms`). Each datagram is checked against its slot's
+leader before the bot believes it. In ERPC's
+own measurement (Frankfurt, 2026-10-30), Premium was first for 98% of the
+shreds both plans carried, by a median of 1.78 ms
+([ERPC's announcement](https://erpc.global/en/news/2026/11/03/erpc-shreds-udp-forwarding-premium-20261103/)). Prices are the
+catalogue's on 2026-11-13; `deploy` shows the current one before it asks.
+
+**When it helps.** UDP Forwarding makes the bot see sooner; it does not make
+its buy arrive sooner. On ERPC's test bot (a Standard VPS in Frankfurt) the
+shared Shreds stream showed migrations a median of 2 ms before Geyser: a
+lead that short is what a faster stream improves. When `/api/timing` shows
+the stream well ahead and the buys still late, the send is what holds the
+bot back: raise the priority fee first, which costs nothing by the hour,
+then `--unlimited`. A buy sent that early can land before the pool exists
+and fail, paying its fee; every bot aiming at the same pool competes for
+the same block, and nothing guarantees a place in it. Measure before and
+after each step; `erpc worker delete --release-server` ends the line with
+the server ([the bot's guide](crates/erpc-worker/templates/solana/pumpfun/README.md#raw-shreds-over-udp),
+[the line in detail](docs/worker.md#data-lines-grpc-shreds-udp-forwarding-unlimited-rpc)).
 
 ### The WAF
 
@@ -310,8 +360,11 @@ no TLS, no HTTP/2 and no WebSocket, and it does not inspect request bodies
 ### Locked down from the first deploy
 
 - **The firewall** lets SSH in only from the address you deploy from and
-  drops every other inbound connection. If your address changes, add every
-  fixed address your admins use:
+  drops every other inbound connection, but for the app's port when
+  `firewall.app_allow` opens it and the port of a UDP Forwarding line
+  (`--udp`), open to ERPC's senders only (to any IPv4 address when ERPC
+  names none and `--udp-any-source` asks). If your address changes, add
+  every fixed address your admins use:
 
   ```bash
   erpc worker firewall allow --to ssh 203.0.113.10 198.51.100.7

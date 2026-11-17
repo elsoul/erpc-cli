@@ -32,8 +32,11 @@
 //! 5. The firewall ([`crate::worker_firewall`]): SSH only from
 //!    `firewall.ssh_allow` and the address this deploy comes from, every
 //!    other inbound connection dropped but for `run.port` from
-//!    `firewall.app_allow`. Each table goes under a rollback timer and is
-//!    kept only once a fresh connection gets in. An app behind a WAF
+//!    `firewall.app_allow`, and the port of a UDP Forwarding line on
+//!    record from the addresses it sends from (when user-api names none,
+//!    the port stays closed unless `--udp-any-source` opens it to any IPv4
+//!    address). Each table goes under a rollback timer and is kept only
+//!    once a fresh connection gets in. An app behind a WAF
 //!    (`[waf]`) has the WAF's port opened in place of its own, and here
 //!    only when the WAF an earlier deploy left runs the very config
 //!    erpc.toml now makes, as a process of the agent step 4 installed.
@@ -44,12 +47,20 @@
 //!    limit on new connections that is in force
 //!    ([`crate::worker_firewall::decide`]). So a deploy that fails
 //!    between here and step 10, and a `--prepare`, leave the old rules
-//!    with the audience and the limit they had, never a wider one.
-//! 6. The data lines asked for (`--grpc`, `--shreds`, `--unlimited`): the
-//!    one erpc.toml names is taken up again, or a new hourly one is
-//!    started for the server, at its price, and waited for, its request
-//!    on record first as a VPS's is. Its endpoint reaches the app as
-//!    `GRPC_ENDPOINT`, `SHREDS_ENDPOINT` or `SOLANA_SEND_RPC_ENDPOINT`.
+//!    with the audience and the limit they had, never a wider one. The
+//!    UDP port is not the WAF's to hold: it is opened as the line's
+//!    record says, whatever step 5 does with the TCP port.
+//! 6. The data lines asked for (`--grpc`, `--shreds`, `--udp`,
+//!    `--unlimited`): the one erpc.toml names is taken up again, or a new
+//!    hourly one is started for the server, at its price, and waited for,
+//!    its request on record first as a VPS's is. Its endpoint reaches the
+//!    app as `GRPC_ENDPOINT`, `SHREDS_ENDPOINT` or
+//!    `SOLANA_SEND_RPC_ENDPOINT`; a UDP Forwarding line is pointed at the
+//!    server's address and a UDP port of its own (`--udp-port`), which the
+//!    app gets as `SHREDS_UDP_BIND`. A UDP Forwarding line on record that
+//!    was not asked for again has the addresses it sends from read again.
+//!    Then the firewall is applied again when what the lines let in
+//!    changed.
 //! 7. The release is uploaded and installed, its digests checked.
 //! 8. The key and the secrets are read. An agent step 4 left running
 //!    although it is not the one installed, or its unit changed, is
@@ -99,7 +110,7 @@ use crate::error::{CliError, Code};
 use crate::node_common::{Say, go_ahead};
 use crate::worker::{App, EnvRecord, load_env};
 use crate::worker_remote::{ctl, ctl_ok, failed, open, unlock_request};
-use crate::worker_vps::{self, Api, LineRecord, Server, StartRecord, Stays};
+use crate::worker_vps::{self, Api, LineRecord, LineTarget, Server, StartRecord, Stays};
 
 /// A `t!` message said in `lang` rather than the run's language: what a
 /// command also puts in its `--json` output is English there, for the
@@ -132,6 +143,14 @@ pub(crate) struct Where {
     pub(crate) plan: Option<String>,
     /// The data lines asked for, each at a plan (`None`: the cheapest).
     pub(crate) lines: Vec<(LineKind, Option<String>)>,
+    /// The UDP port a UDP Forwarding line sends to (`None`: the port of
+    /// the line on record, else [`worker_vps::DEFAULT_UDP_PORT`]).
+    pub(crate) udp_port: Option<u16>,
+    /// The region a UDP Forwarding line sends from (`None`: the server's).
+    pub(crate) udp_region: Option<String>,
+    /// Open the UDP Forwarding line's port to any IPv4 address when
+    /// user-api names none it sends from; without it the port stays closed.
+    pub(crate) udp_any_source: bool,
     /// For a new environment: keep its server facts in this 1Password vault.
     pub(crate) vault: Option<String>,
     /// For a new environment: keep its server facts in erpc.toml.
@@ -540,35 +559,407 @@ fn new_inventory(at: &Where) -> Result<Option<Inventory>, CliError> {
     }
 }
 
+/// The server a line of `kind` is for: its address; for a UDP Forwarding
+/// line, the port the shreds are sent to (`--udp-port`, else the port of
+/// the line on record, else [`worker_vps::DEFAULT_UDP_PORT`]) and the
+/// region they are sent from (`--udp-region`, else the server's); for the
+/// others, the server's region.
+fn line_target(
+    kind: LineKind,
+    at: &Where,
+    ip: Ipv4Addr,
+    region: Option<&str>,
+    lines: &[Line],
+) -> LineTarget {
+    let region = region.map(ToOwned::to_owned);
+    if kind != LineKind::Udp {
+        return LineTarget {
+            ip,
+            udp_port: None,
+            region,
+        };
+    }
+    let on_record = lines
+        .iter()
+        .find(|l| l.kind == LineKind::Udp)
+        .and_then(worker_vps::udp_port);
+    LineTarget {
+        ip,
+        udp_port: Some(
+            at.udp_port
+                .or(on_record)
+                .unwrap_or(worker_vps::DEFAULT_UDP_PORT),
+        ),
+        region: at.udp_region.clone().or(region),
+    }
+}
+
+/// `e` with `more` after the hint it has: what the step that failed said of
+/// its own trouble (a UDP line's destination that will never be taken, say)
+/// is kept, and what becomes of the line is said after it.
+fn and_hint(e: CliError, more: String) -> CliError {
+    match e.hint.clone() {
+        Some(hint) => e.hint(format!("{hint}\n{more}")),
+        None => e.hint(more),
+    }
+}
+
+/// Refuses a server address UDP Forwarding cannot send to: one that is not
+/// a public IPv4 address ([`erpc_api::udp::is_public_destination`]).
+/// user-api would refuse to point the line there, after a Standard line
+/// was started and charged.
+fn udp_public(ip: Ipv4Addr) -> Result<(), CliError> {
+    if erpc_api::udp::is_public_destination(ip) {
+        return Ok(());
+    }
+    Err(
+        CliError::new(Code::Usage, t!("worker_deploy.line.udp_not_public", ip))
+            .hint(t!("worker_deploy.line.udp_not_public_hint")),
+    )
+}
+
+/// The region a UDP Forwarding line of this deploy would send from, as far
+/// as it is known before anything is bought, decided as [`server`] decides
+/// the server: `--udp-region`; else the region of the server on record (a
+/// server of the user's own has none, and needs `--udp-region`); else the
+/// region of a VPS a stopped deploy left on record; a server named with
+/// `--host` has none; one named with `--vps` is read with it, and checked
+/// before any line is started (`None` here); a new VPS is bought in
+/// `--region`, else the nearest region. Chosen at a terminal from the
+/// account's servers, it is checked before any line is started too.
+fn udp_region_before(at: &Where, env: &Env) -> Result<Option<String>, CliError> {
+    if let Some(region) = &at.udp_region {
+        return Ok(Some(region.clone()));
+    }
+    let on_record = env.resource.as_ref().and_then(|r| r.region.clone());
+    if env.host.is_some() {
+        return on_record.map(Some).ok_or_else(worker_vps::udp_no_region);
+    }
+    if pending_vps(Some(env)).is_some() {
+        return Ok(on_record);
+    }
+    if at.host.is_some() {
+        return Err(worker_vps::udp_no_region());
+    }
+    if at.new_vps {
+        let region = at
+            .region
+            .clone()
+            .unwrap_or_else(|| worker_vps::nearest_region().to_owned());
+        return Ok(Some(region));
+    }
+    Ok(None)
+}
+
+/// The server's address, where it is known before anything is bought, as
+/// `server()` takes it: the one on record, else none while a VPS on record
+/// is still to be reached (its address is checked once it is), else
+/// `--host`. A host name is not judged.
+fn udp_host_before<'a>(at: &'a Where, env: &'a Env) -> Option<Ipv4Addr> {
+    let host = match (&env.host, pending_vps(Some(env))) {
+        (Some(host), _) => Some(host.as_str()),
+        (None, Some(_)) => None,
+        (None, None) => at.host.as_deref(),
+    };
+    host.and_then(|host| host.parse().ok())
+}
+
+/// What the UDP step would be refused for, asked before the server and the
+/// other lines are bought (refused after them, they would be left charged):
+/// the port, the server's address where it is known, the region, and what
+/// user-api says of the plan and the product's lines ([`worker_vps::udp_ready`]),
+/// through the session `open` gives. Nothing when no UDP line is asked for,
+/// and no session is opened then.
+async fn udp_before_buying<O, F>(
+    at: &Where,
+    env: &Env,
+    run_port: Option<u16>,
+    scope: &str,
+    open: O,
+) -> Result<(), CliError>
+where
+    O: FnOnce() -> F,
+    F: core::future::Future<Output = Result<Api, CliError>>,
+{
+    let Some((_, plan)) = at.lines.iter().find(|(kind, _)| *kind == LineKind::Udp) else {
+        return Ok(());
+    };
+    // A line `--forget-line` takes off the record is not the environment's
+    // own any more.
+    let on_record = env
+        .lines
+        .iter()
+        .find(|l| l.kind == LineKind::Udp && !at.forget_lines.contains(&l.id));
+    let port = at
+        .udp_port
+        .or_else(|| on_record.and_then(worker_vps::udp_port))
+        .unwrap_or(worker_vps::DEFAULT_UDP_PORT);
+    let ports = Ports {
+        ssh: at.port.or(env.ssh_port).unwrap_or(22),
+        run: run_port,
+        others_udp: Vec::new(),
+    };
+    udp_port_free(port, &ports)?;
+    if let Some(ip) = udp_host_before(at, env) {
+        udp_public(ip)?;
+    }
+    let region = udp_region_before(at, env)?;
+    let api = open().await?;
+    let check = worker_vps::UdpCheck {
+        plan: plan.as_deref(),
+        on_record: on_record.map(|l| l.id.as_str()),
+        pending: env.starting.contains_key(&StartOf::Udp),
+        region: region.as_deref(),
+        nothing_bought: true,
+        scope,
+    };
+    worker_vps::udp_ready(&api, &check).await
+}
+
+/// The ports of the server a UDP Forwarding line's port is checked
+/// against.
+#[derive(Debug, Default)]
+struct Ports {
+    /// SSH's.
+    ssh: u16,
+    /// The app's own (`run.port`).
+    run: Option<u16>,
+    /// The UDP ports the server's other workers receive on, by worker, as
+    /// its firewall has them.
+    others_udp: Vec<(String, u16)>,
+}
+
+/// Refuses a UDP port the server has in use already: SSH's, the app's own
+/// (`run.port`), or the one another worker on the server receives on.
+fn udp_port_free(port: u16, ports: &Ports) -> Result<(), CliError> {
+    let taken = if port == ports.ssh {
+        t!("worker_deploy.line.udp_port_ssh")
+    } else if ports.run == Some(port) {
+        t!("worker_deploy.line.udp_port_app")
+    } else if let Some((worker, _)) = ports.others_udp.iter().find(|(_, p)| *p == port) {
+        t!("worker_deploy.line.udp_port_worker", worker)
+    } else {
+        return Ok(());
+    };
+    Err(CliError::new(
+        Code::Usage,
+        t!("worker_deploy.line.udp_port_taken", port, taken),
+    )
+    .hint(t!("worker_deploy.line.udp_port_hint")))
+}
+
+/// The UDP ports the server's other workers receive on, from the openings
+/// its firewall keeps (`firewall-show`): what a new UDP Forwarding line
+/// must not be pointed at. The server's answer is read, not trusted to be
+/// well formed: an opening without a UDP port names none.
+fn others_udp_ports(shown: &Value, me: &str) -> Vec<(String, u16)> {
+    shown["openings"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter(|(worker, _)| worker.as_str() != me)
+        .filter_map(|(worker, opening)| {
+            let port = u16::try_from(opening["udp"]["port"].as_u64()?).ok()?;
+            Some((worker.clone(), port))
+        })
+        .collect()
+}
+
+/// Where the lines step keeps what it starts, and how it speaks.
+#[derive(Clone, Copy)]
+struct Step<'a> {
+    /// The environment's record, written as each line is named.
+    record: &'a EnvRecord<'a>,
+    /// What this deploy has put on record that is charged.
+    on_record: &'a RefCell<Vec<String>>,
+    /// The app and environment, as a hint's command names them.
+    scope: &'a str,
+    say: &'a Say,
+}
+
+/// Ends line `id` of `kind`, started by this deploy, after a step failed
+/// with `e`: asked as every end is, since the line is charged from its
+/// start and the step that failed may not pass on a second try. Ended, it
+/// leaves the record; kept, the hint says how to carry on with it.
+async fn end_started(
+    api: &Api,
+    (kind, id): (LineKind, &str),
+    env: &mut Env,
+    step: Step<'_>,
+    e: CliError,
+) -> CliError {
+    let Step {
+        record,
+        on_record,
+        scope,
+        say,
+    } = step;
+    say.line(&t!("worker_deploy.line.charged", message = e.message));
+    let Some(line) = env.lines.iter().find(|l| l.kind == kind).cloned() else {
+        return e;
+    };
+    let ended = match worker_vps::end_line(api, &line, say).await {
+        Ok(_) => {
+            env.lines.retain(|l| l.kind != kind);
+            let _ = record.save(env, None);
+            let ended = line_name(kind, id);
+            on_record.borrow_mut().retain(|w| *w != ended);
+            Ended::Yes
+        }
+        // Refused for good: deploying again would not point it either, so it
+        // is not among what the next deploy carries on with.
+        Err(_) if worker_vps::is_refused_for_good(&e) => {
+            let kept = line_name(kind, id);
+            on_record.borrow_mut().retain(|w| *w != kept);
+            Ended::KeptRefused
+        }
+        Err(_) => Ended::Kept,
+    };
+    end_said(e, ended, id, scope)
+}
+
+/// What became of a line [`end_started`] offered to end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ended {
+    Yes,
+    /// Not ended, and the step failed for good: deploying again does not
+    /// carry on with it.
+    KeptRefused,
+    /// Not ended: deploying again carries on with it.
+    Kept,
+}
+
+/// The step's error `e`, with what became of line `id` after its own hint
+/// ([`and_hint`]): ended; kept, charged until it is ended, and how to end
+/// it alone; or kept, and how to carry on with it.
+fn end_said(e: CliError, ended: Ended, id: &str, scope: &str) -> CliError {
+    match ended {
+        Ended::Yes => and_hint(e, t!("worker_deploy.line.ended", id)),
+        Ended::KeptRefused => and_hint(e, t!("worker_deploy.line.udp_end_alone", id, scope)),
+        Ended::Kept => and_hint(e, t!("worker_deploy.line.not_ended", id, scope)),
+    }
+}
+
+/// What becomes of line `id` of `kind` whose wait failed with `e`, `new`
+/// when this deploy started it.
+#[derive(Debug)]
+enum AfterWait {
+    /// Cancelled while it was waited for, started here or before: charged
+    /// no more, and neither to be ended nor waited for again; its own hint
+    /// says what is left to do.
+    Cancelled(CliError),
+    /// Started here: offered to be ended ([`end_started`]).
+    EndStarted(CliError),
+    /// On record from before, or an Unlimited RPC, which cannot be ended
+    /// while it is being set up: said with what to do about it.
+    Said(CliError),
+}
+
+/// Decides [`AfterWait`], in this order: a cancelled UDP Forwarding line
+/// first, since one this deploy started is no longer one to end.
+fn after_wait(kind: LineKind, id: &str, new: bool, e: CliError, scope: &str) -> AfterWait {
+    if kind == LineKind::Udp && worker_vps::is_udp_cancelled(&e, id) {
+        return AfterWait::Cancelled(e);
+    }
+    if new && kind != LineKind::Unlimited {
+        return AfterWait::EndStarted(e);
+    }
+    // Refused for good: waiting again does not help; ending it does.
+    if kind == LineKind::Udp && worker_vps::is_refused_for_good(&e) {
+        return AfterWait::Said(and_hint(
+            e,
+            t!("worker_deploy.line.udp_end_alone", id, scope),
+        ));
+    }
+    AfterWait::Said(and_hint(
+        e,
+        t!("worker_deploy.line.still_waiting", id, scope),
+    ))
+}
+
+/// The UDP Forwarding line's port, region and list again, now that the
+/// server (`ip` in `region`) and the other workers on it are known, before
+/// any line is started: refused at the UDP step, the lines before it would
+/// be left charged. Nothing when no UDP line is asked for.
+async fn udp_before_lines(
+    api: &Api,
+    at: &Where,
+    ports: &Ports,
+    (ip, region): (Ipv4Addr, Option<&str>),
+    env: &Env,
+    (nothing_bought, scope): (bool, &str),
+) -> Result<(), CliError> {
+    let Some((_, plan)) = at
+        .lines()
+        .into_iter()
+        .find(|(kind, _)| *kind == LineKind::Udp)
+    else {
+        return Ok(());
+    };
+    udp_public(ip)?;
+    let target = line_target(LineKind::Udp, at, ip, region, &env.lines);
+    let (port, udp_region) = worker_vps::udp_target(&target)?;
+    udp_port_free(port, ports)?;
+    let check = worker_vps::UdpCheck {
+        plan,
+        on_record: env
+            .lines
+            .iter()
+            .find(|l| l.kind == LineKind::Udp)
+            .map(|l| l.id.as_str()),
+        pending: env.starting.contains_key(&StartOf::Udp),
+        region: Some(udp_region),
+        nothing_bought,
+        scope,
+    };
+    worker_vps::udp_ready(api, &check).await
+}
+
 /// The data lines asked for: one `env` names and the account still has
-/// is taken up again, else a new one is started for `host`. A new line
-/// goes into erpc.toml as soon as user-api names its endpoint, before it
-/// is active, so a deploy that stops waiting leaves it on record: the next
-/// one takes it up, and `delete --release-server` ends it. A new gRPC or
-/// Shreds line that does not become active is offered to be ended at once;
-/// an Unlimited RPC cannot be ended while it is being set up.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the parts of the deploy the lines are for, each its own"
-)]
+/// is taken up again, else a new one is started for the server, its
+/// request on record first ([`LineStart`]). A new line goes into erpc.toml
+/// as soon as user-api names it, before it is active, so a deploy that
+/// stops waiting leaves it on record: the next one takes it up, and
+/// `delete --release-server` ends it. A new gRPC, Shreds or UDP Forwarding
+/// line that user-api does not list after its start, or that does not
+/// become active, is offered to be ended at once; an Unlimited RPC cannot
+/// be ended while it is being set up.
 async fn lines(
-    asked: &[(LineKind, Option<&str>)],
-    starts: Starts,
+    at: &Where,
+    ports: &Ports,
     server: &Server,
     env: &mut Env,
-    record: &EnvRecord<'_>,
-    on_record: &RefCell<Vec<String>>,
-    scope: &str,
-    say: &Say,
+    step: Step<'_>,
 ) -> Result<(), CliError> {
+    let api = Api::open().await?.accepting(at.starts.accepted());
+    lines_with(&api, at, ports, server, env, step).await
+}
+
+/// [`lines`], through `api`.
+async fn lines_with(
+    api: &Api,
+    at: &Where,
+    ports: &Ports,
+    server: &Server,
+    env: &mut Env,
+    step: Step<'_>,
+) -> Result<(), CliError> {
+    let Step {
+        record,
+        on_record,
+        scope,
+        say,
+    } = step;
     let host = &server.target.host;
     let region = server.resource.region.as_deref();
     let ip: Ipv4Addr = host.parse().map_err(|_| {
         failed(t!("worker_deploy.line.not_ipv4", host)).hint(t!("worker_deploy.line.not_ipv4_hint"))
     })?;
-    let api = Api::open().await?.accepting(starts.accepted());
-    for &(kind, plan) in asked {
-        let (known, next) = line_next(&api, kind, env, record, say).await?;
+    let nothing_bought = on_record.borrow().is_empty();
+    udp_before_lines(api, at, ports, (ip, region), env, (nothing_bought, scope)).await?;
+    for (kind, plan) in at.lines() {
+        let target = line_target(kind, at, ip, region, &env.lines);
+        let (known, next) = line_next(api, kind, env, record, say).await?;
         let (id, hourly, new) = match (known, next) {
             (Some(line), LineNext::TakeUp) => {
                 say.line(&t!("worker_deploy.line.taking_up", id = line.id));
@@ -591,11 +982,18 @@ async fn lines(
                     on_record,
                     scope,
                 };
-                let id =
-                    worker_vps::start_line(&api, kind, ip, region, plan, scope, say, &mut start)
-                        .await?;
-                let line = worker_vps::first_sight(&api, kind, &id, true, scope).await?;
-                keep(env, line, record)?;
+                let id = worker_vps::start_line(api, kind, &target, plan, scope, say, &mut start)
+                    .await?;
+                match worker_vps::first_sight(api, kind, &id, true, scope).await {
+                    Ok(line) => keep(env, line, record)?,
+                    // Started and charged, and user-api does not show it:
+                    // offered to be ended, as one that never becomes active
+                    // is.
+                    Err(e) if kind != LineKind::Unlimited => {
+                        return Err(end_started(api, (kind, &id), env, step, e).await);
+                    }
+                    Err(e) => return Err(e),
+                }
                 (id, true, true)
             }
         };
@@ -603,30 +1001,32 @@ async fn lines(
         if kind == LineKind::Unlimited {
             say.line(&t!("worker_deploy.line.unlimited_slow"));
         }
-        match worker_vps::wait_line(&api, kind, &id, ip, hourly, say).await {
+        match worker_vps::wait_line(api, kind, &id, &target, hourly, say).await {
             Ok(line) => {
                 let endpoint = &line.endpoint;
                 say.line(&t!("worker_deploy.line.active", id, endpoint));
+                // Said here, where it stays on the screen: the line is up
+                // and nothing can reach the app from it, or anything can.
+                if kind == LineKind::Udp && line.sources.is_empty() {
+                    let said = if at.udp_any_source {
+                        t!("worker_deploy.line.udp_unnamed_open", id)
+                    } else {
+                        t!("worker_deploy.line.udp_unnamed_closed", id, scope)
+                    };
+                    say.line(&format!("warning: {said}"));
+                }
                 keep(env, line, record)?;
             }
-            Err(e) if new && kind != LineKind::Unlimited => {
-                say.line(&t!("worker_deploy.line.charged", message = e.message));
-                let Some(line) = env.lines.iter().find(|l| l.kind == kind).cloned() else {
-                    return Err(e);
-                };
-                return Err(match worker_vps::end_line(&api, &line, say).await {
-                    Ok(_) => {
-                        env.lines.retain(|l| l.kind != kind);
-                        let _ = record.save(env, None);
+            Err(e) => {
+                return Err(match after_wait(kind, &id, new, e, scope) {
+                    AfterWait::Cancelled(e) => {
                         let ended = line_name(kind, &id);
                         on_record.borrow_mut().retain(|w| *w != ended);
-                        e.hint(t!("worker_deploy.line.ended", id))
+                        e
                     }
-                    Err(_) => e.hint(t!("worker_deploy.line.not_ended", id, scope)),
+                    AfterWait::EndStarted(e) => end_started(api, (kind, &id), env, step, e).await,
+                    AfterWait::Said(e) => e,
                 });
-            }
-            Err(e) => {
-                return Err(e.hint(t!("worker_deploy.line.still_waiting", id, scope)));
             }
         }
     }
@@ -677,9 +1077,14 @@ async fn line_next(
         Some(line) => {
             let listed = worker_vps::line_row(api, kind, &line.id).await?.is_some();
             let charged = worker_vps::is_charged(&worker_vps::charged(api).await?, line);
-            LineNext::of(Some((line.hourly, line.is_pending())), listed, charged)
+            LineNext::of(
+                kind,
+                Some((line.hourly, line.is_pending())),
+                listed,
+                charged,
+            )
         }
-        None => LineNext::of(None, false, false),
+        None => LineNext::of(kind, None, false, false),
     };
     if next == LineNext::Forget
         && let Some(gone) = &known
@@ -740,10 +1145,22 @@ enum LineNext {
 impl LineNext {
     /// `on_record` is the line on record, as (billed by the hour, pending:
     /// its endpoint never seen); `None` when there is none.
-    const fn of(on_record: Option<(bool, bool)>, listed: bool, charged: bool) -> Self {
+    const fn of(
+        kind: LineKind,
+        on_record: Option<(bool, bool)>,
+        listed: bool,
+        charged: bool,
+    ) -> Self {
         let Some((hourly, pending)) = on_record else {
             return Self::Buy;
         };
+        // A UDP Forwarding line is charged from the start (Standard) or
+        // once it is pointed at the server (Premium), which is what taking
+        // it up does: one on record that user-api lists is taken up whether
+        // or not the charges show it yet.
+        if matches!(kind, LineKind::Udp) && pending && listed {
+            return Self::TakeUp;
+        }
         if worker_vps::is_gone((hourly, pending), listed, charged) {
             return Self::Forget;
         }
@@ -754,6 +1171,175 @@ impl LineNext {
             (true, true, false) => Self::Wait(WaitWhy::NotYetCharged),
             (true, false, false) => Self::Wait(WaitWhy::NotSeenYet),
         }
+    }
+}
+
+/// Addresses as a message lists them; for none, that user-api names none.
+fn sources_said(sources: &[Ipv4Addr]) -> String {
+    if sources.is_empty() {
+        t!("worker_deploy.line.udp_no_address")
+    } else {
+        sources
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+/// Reads again where the UDP Forwarding line on record sends from, and
+/// keeps the record current: ERPC may move a line, and the firewall lets
+/// in what the record says. One that is pending has nothing to read yet; a
+/// read that fails (a source that is not an IPv4 address is one), or a
+/// line user-api no longer lists, is said, and the record kept. `session`
+/// is asked for only when there is a line to read.
+async fn refresh_udp_sources<S>(
+    session: impl FnOnce() -> S,
+    env: &mut Env,
+    record: &EnvRecord<'_>,
+    say: &Say,
+) -> Result<(), CliError>
+where
+    S: core::future::Future<Output = Result<Api, CliError>>,
+{
+    let Some(line) = env
+        .lines
+        .iter()
+        .find(|l| l.kind == LineKind::Udp && !l.is_pending())
+        .cloned()
+    else {
+        return Ok(());
+    };
+    let (id, kept) = (line.id.clone(), sources_said(&line.sources));
+    let read = match session().await {
+        Ok(api) => worker_vps::udp_sources_now(&api, &id).await,
+        Err(e) => Err(e),
+    };
+    match read {
+        Ok(Some(sources)) if sources != line.sources => {
+            let now = sources_said(&sources);
+            say.line(&t!(
+                "worker_deploy.line.udp_sources_changed",
+                id,
+                before = kept,
+                now
+            ));
+            keep(env, Line { sources, ..line }, record)
+        }
+        Ok(Some(_)) => Ok(()),
+        Ok(None) => {
+            say.line(&format!(
+                "warning: {}",
+                t!("worker_deploy.line.udp_not_listed", id, sources = kept)
+            ));
+            Ok(())
+        }
+        Err(e) => {
+            say.line(&format!(
+                "warning: {}",
+                t!(
+                    "worker_deploy.line.udp_sources_unread",
+                    id,
+                    error = e.message,
+                    sources = kept
+                )
+            ));
+            Ok(())
+        }
+    }
+}
+
+/// The UDP ports the server's other workers receive on, asked of its
+/// firewall. A server that does not answer is said, and the check goes
+/// without it: the line's port is still checked against SSH's and the
+/// app's own.
+fn others_udp(target: &Target, id: &UnitId, say: &Say) -> Vec<(String, u16)> {
+    let shown = open(target).and_then(|session| ctl(&session, id, Verb::FirewallShow, None));
+    match shown {
+        Ok(shown) if shown["openings"].is_object() => others_udp_ports(&shown, id.as_str()),
+        Ok(_) | Err(_) => {
+            say.line(&format!(
+                "warning: {}",
+                t!("worker_deploy.line.udp_ports_unread")
+            ));
+            Vec::new()
+        }
+    }
+}
+
+/// Whether the account is charged for the pending UDP Forwarding line
+/// `line` now, when the credit snapshot can be read; `None` when it cannot
+/// (no session, or user-api did not answer).
+async fn pending_udp_charged(line: &Line) -> Option<bool> {
+    let api = Api::open().await.ok()?;
+    let charged = worker_vps::charged(&api).await.ok()?;
+    Some(worker_vps::is_charged(&charged, line))
+}
+
+/// What the deploy's summary says of UDP Forwarding line `line`, in
+/// `lang`. Pointed at the server: its port, and what the firewall lets in
+/// there (its sources; any IPv4 address when user-api names none and
+/// `any_source` was asked; nothing otherwise, with how to open it).
+/// Pending, it sends nothing yet and may be charged all the same:
+/// `charged` is what the credit snapshot says, when it could be read.
+fn udp_line_said(
+    lang: Lang,
+    line: &Line,
+    any_source: bool,
+    charged: Option<bool>,
+    scope: &str,
+) -> String {
+    let name = line_name_in(lang, line.kind, &line.id);
+    let Some(port) = worker_vps::udp_port(line) else {
+        return match charged {
+            Some(true) => said_in!(
+                lang,
+                t!("worker_deploy.done.udp_pending_charged", name, scope)
+            ),
+            Some(false) => said_in!(
+                lang,
+                t!("worker_deploy.done.udp_pending_uncharged", name, scope)
+            ),
+            None => said_in!(lang, t!("worker_deploy.done.udp_pending", name, scope)),
+        };
+    };
+    if line.sources.is_empty() && !any_source {
+        return if line.hourly {
+            said_in!(
+                lang,
+                t!(
+                    "worker_deploy.done.udp_line_closed_hourly",
+                    name,
+                    port,
+                    scope
+                )
+            )
+        } else {
+            said_in!(
+                lang,
+                t!("worker_deploy.done.udp_line_closed", name, port, scope)
+            )
+        };
+    }
+    let from = if line.sources.is_empty() {
+        said_in!(lang, t!("worker_deploy.done.udp_any"))
+    } else {
+        let sources = sources_said(&line.sources);
+        said_in!(lang, t!("worker_deploy.done.udp_from", sources))
+    };
+    if line.hourly {
+        said_in!(
+            lang,
+            t!(
+                "worker_deploy.done.udp_line_hourly",
+                name,
+                port,
+                from,
+                scope
+            )
+        )
+    } else {
+        said_in!(lang, t!("worker_deploy.done.udp_line", name, port, from))
     }
 }
 
@@ -940,6 +1526,7 @@ impl LineRecord for LineStart<'_> {
             id: id.to_owned(),
             endpoint: String::new(),
             hourly: true,
+            sources: Vec::new(),
         };
         self.env.starting.remove(&StartOf::line(self.kind));
         keep(self.env, pending, self.record)?;
@@ -1203,17 +1790,71 @@ async fn server(
             false,
         ))
     } else {
-        let server = buy(api, at, start(), on_record, scope, say).await?;
+        let server = buy_picked(api, at, region, start(), on_record, say).await?;
         Ok(found(server, true, true))
     }
+}
+
+/// Buys the new VPS picked at the terminal, in `--region`, else `nearest`:
+/// first asked whether a UDP Forwarding line asked for sends from there
+/// ([`udp_region_for_new_vps`]), since a VPS bought where its line cannot
+/// be would be left charged.
+async fn buy_picked(
+    api: Api,
+    at: &Where,
+    nearest: &str,
+    start: ServerStart<'_>,
+    on_record: &RefCell<Vec<String>>,
+    say: &Say,
+) -> Result<Waiting, CliError> {
+    udp_region_for_new_vps(&api, at, nearest).await?;
+    let scope = start.scope;
+    buy(api, at, start, on_record, scope, say).await
+}
+
+/// A new VPS picked at the terminal, about to be bought in `--region`,
+/// else `nearest`: where a UDP Forwarding line asked for would send from
+/// is known now, and refused before the VPS is bought there when its plan
+/// does not send from it. Nothing to ask without `--udp`, or with
+/// `--udp-region`, which was checked before the server was chosen.
+async fn udp_region_for_new_vps(api: &Api, at: &Where, nearest: &str) -> Result<(), CliError> {
+    match at.lines.iter().find(|(kind, _)| *kind == LineKind::Udp) {
+        Some((_, plan)) if at.udp_region.is_none() => {
+            let region = at.region.as_deref().unwrap_or(nearest);
+            worker_vps::udp_region_ready(api, plan.as_deref(), region).await
+        }
+        _ => Ok(()),
+    }
+}
+
+/// What the summary says of a UDP Forwarding line besides its record.
+#[derive(Debug, Clone, Copy, Default)]
+struct UdpState {
+    /// `--udp-any-source`: its port is open to any IPv4 address when
+    /// user-api names none it sends from.
+    any_source: bool,
+    /// Whether a pending line is charged now, as the credit snapshot says;
+    /// `None` when there is none, or the snapshot could not be read.
+    pending_charged: Option<bool>,
 }
 
 /// What the environment has on record and is charged for, as the end of a
 /// deploy says it: each line and where it lets the server in from, and the
 /// hourly server.
-fn on_record_said(lang: Lang, env: &Env, resource: &Resource, scope: &str) -> Vec<String> {
+fn on_record_said(
+    lang: Lang,
+    env: &Env,
+    resource: &Resource,
+    udp: UdpState,
+    scope: &str,
+) -> Vec<String> {
     let mut text = Vec::new();
     for line in &env.lines {
+        if line.kind == LineKind::Udp {
+            let charged = udp.pending_charged.filter(|_| line.is_pending());
+            text.push(udp_line_said(lang, line, udp.any_source, charged, scope));
+            continue;
+        }
         let (name, endpoint) = (line_name_in(lang, line.kind, &line.id), &line.endpoint);
         text.push(if line.hourly {
             said_in!(
@@ -1344,6 +1985,36 @@ fn forget_missing(
     }
 }
 
+/// Stops a deploy while a UDP Forwarding line billed by the hour is on
+/// record (`env`) and no server it reached is (`host`): the server the line
+/// was pointed at has left the record (a VPS that ended outside erpc, which
+/// [`drop_ended_vps`] or `delete` took off, a VPS bought and never reached,
+/// or a `delete --release-server` that ended the server and not the line),
+/// so the server this deploy reaches is another one. A line on
+/// record that is not asked for again (`--udp`) nor forgotten
+/// (`--forget-line`) keeps sending where it was pointed, never at that
+/// server, and is charged all the same. Judged on the record, not on what
+/// this run took off it, so a deploy run again stops the same way. Nothing
+/// is bought; the error names the line and how to point it at the server
+/// or end it.
+fn udp_left_unpointed(env: &Env, at: &Where, scope: &str) -> Result<(), CliError> {
+    if env.host.is_some() || at.lines.iter().any(|(kind, _)| *kind == LineKind::Udp) {
+        return Ok(());
+    }
+    let Some(line) = env
+        .lines
+        .iter()
+        .find(|l| l.kind == LineKind::Udp && l.hourly && !at.forget_lines.contains(&l.id))
+    else {
+        return Ok(());
+    };
+    Err(CliError::new(
+        Code::Usage,
+        t!("worker_deploy.vps.udp_left", line = line.id),
+    )
+    .hint(t!("worker_deploy.vps.udp_left_hint", scope, line = line.id)))
+}
+
 /// The VPS `env` has on record without a server to reach yet: one a deploy
 /// bought and stopped before it was ready.
 fn pending_vps(env: Option<&Env>) -> Option<&Resource> {
@@ -1460,6 +2131,105 @@ fn app_ready_in(
     Ok((path, m))
 }
 
+/// Where erpc's index of apps finds the app whose erpc.toml is at `path`:
+/// its directory, absolute, as the index keeps it (`.` for an erpc.toml
+/// named with no directory, whose parent is the empty path).
+fn index_root(path: &Path) -> PathBuf {
+    let root = crate::worker_build::app_root(path);
+    std::fs::canonicalize(&root).unwrap_or(root)
+}
+
+/// What a deploy has once nothing refuses it before anything is bought:
+/// the app's erpc.toml and where it is, the worker's name, and the
+/// environment's record as it is before this run.
+#[derive(Debug)]
+struct Ready {
+    path: PathBuf,
+    m: Manifest,
+    id: UnitId,
+    env_before: Env,
+}
+
+/// Step 1 of a deploy, and what refuses one before anything is bought, in
+/// this order: the app and its settings, key and secrets ([`app_ready`]);
+/// what the build needs on this machine, the Rust that would build the app
+/// asked in its directory (`rustc`, `rustup`), and the key to log in with
+/// (`login`); the lines to forget; a VPS on record that has ended outside
+/// erpc (`ended`, [`drop_ended_vps`] in a deploy); and what a UDP Forwarding
+/// line would be refused for ([`udp_before_buying`], through the session
+/// `open` gives):
+/// refused after the server or another line is bought, they would be left
+/// charged. A new environment's record starts as where it is kept, so that
+/// a VPS bought next goes on record at once.
+async fn before_buying<O, F>(
+    app: &App,
+    at: &Where,
+    scope: &str,
+    login: impl FnOnce() -> Result<(), String>,
+    ended: impl AsyncFnOnce(&mut Env, &EnvRecord<'_>) -> Result<(), CliError>,
+    open: O,
+) -> Result<Ready, CliError>
+where
+    O: FnOnce() -> F,
+    F: core::future::Future<Output = Result<Api, CliError>>,
+{
+    let (path, m) = app_ready(app, at)?;
+    let id = UnitId::new(&m.unit_id(&app.env)).map_err(failed)?;
+    // A build that fails after a VPS was bought leaves it charged; so does
+    // a Rust too old for the app, which only a probe that asks `rustc`
+    // finds.
+    let root = crate::worker_build::app_root(&path);
+    let mut lacking =
+        crate::worker_build::missing_tools(&m, &root, crate::worker_build::Probe::Toolchain);
+    if let Err(no_key) = login() {
+        lacking.push((no_key, String::new()));
+    }
+    if !lacking.is_empty() {
+        let what: Vec<&str> = lacking.iter().map(|(what, _)| what.as_str()).collect();
+        let hints: Vec<&str> = lacking
+            .iter()
+            .map(|(_, hint)| hint.as_str())
+            .filter(|h| !h.is_empty())
+            .collect();
+        let e = failed(t!("worker_deploy.not_ready", what = what.join("; ")));
+        return Err(if hints.is_empty() {
+            e
+        } else {
+            e.hint(hints.join("; "))
+        });
+    }
+    // Lines to forget are checked now, before anything is built or bought.
+    take_lines(
+        &mut m.env.get(&app.env).cloned().unwrap_or_default(),
+        &at.forget_lines,
+    )?;
+    let mut env_before = match m.env.get(&app.env) {
+        Some(env) => env.clone(),
+        None => Env {
+            inventory: new_inventory(at)?,
+            ..Env::default()
+        },
+    };
+    // A VPS on record that has ended outside erpc leaves the record first,
+    // so that the UDP checks below judge the server this deploy will have.
+    let kept = EnvRecord {
+        path: &path,
+        app: &m.name,
+        env: &app.env,
+    };
+    ended(&mut env_before, &kept).await?;
+    udp_left_unpointed(&env_before, at, scope)?;
+    // Its port and, where the server is known, its region are decided here
+    // as the lines step decides them.
+    udp_before_buying(at, &env_before, m.run.port, scope, open).await?;
+    Ok(Ready {
+        path,
+        m,
+        id,
+        env_before,
+    })
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "the steps are one sequence, read top to bottom"
@@ -1472,61 +2242,33 @@ async fn run(
     yes: bool,
     on_record: &RefCell<Vec<String>>,
 ) -> Result<Value, CliError> {
-    // 1. The app. Every next command a hint names is for this app and
+    // 1. The app, and all that refuses the deploy before anything is
+    // bought. Every next command a hint names is for this app and
     // environment.
     let scope = app.scope();
-    let (path, m) = app_ready(app, at)?;
+    let Ready {
+        path,
+        m,
+        id,
+        env_before,
+    } = before_buying(
+        app,
+        at,
+        &scope,
+        || crate::vps_access::login_key().map(drop),
+        async |env: &mut Env, kept: &EnvRecord<'_>| drop_ended_vps(env, kept, &scope, say).await,
+        || async { Ok(Api::open().await?.accepting(at.starts.accepted())) },
+    )
+    .await?;
     let kept = EnvRecord {
         path: &path,
         app: &m.name,
         env: &app.env,
     };
     let asked_lines = at.lines();
-    let id = UnitId::new(&m.unit_id(&app.env)).map_err(failed)?;
-    // What the build and the login need, before anything is bought: a
-    // build that fails after a VPS was bought leaves it charged.
-    {
-        let root = path
-            .parent()
-            .map_or_else(|| PathBuf::from("."), Path::to_owned);
-        let mut lacking =
-            crate::worker_build::missing_tools(&m, &root, crate::worker_build::Probe::Toolchain);
-        if let Err(no_key) = crate::vps_access::login_key() {
-            lacking.push((no_key, String::new()));
-        }
-        if !lacking.is_empty() {
-            let what: Vec<&str> = lacking.iter().map(|(what, _)| what.as_str()).collect();
-            let hints: Vec<&str> = lacking
-                .iter()
-                .map(|(_, hint)| hint.as_str())
-                .filter(|h| !h.is_empty())
-                .collect();
-            let e = failed(t!("worker_deploy.not_ready", what = what.join("; ")));
-            return Err(if hints.is_empty() {
-                e
-            } else {
-                e.hint(hints.join("; "))
-            });
-        }
-    }
-    // Lines to forget are checked now, before anything is built or bought.
-    take_lines(
-        &mut m.env.get(&app.env).cloned().unwrap_or_default(),
-        &at.forget_lines,
-    )?;
 
     // 2. The server, chosen and agreed to before the build, so that the
-    // person is asked at the start and not after it. A new environment's
-    // record starts as where it is kept, so that a VPS bought here goes on
-    // record at once.
-    let mut env_before = match m.env.get(&app.env) {
-        Some(env) => env.clone(),
-        None => Env {
-            inventory: new_inventory(at)?,
-            ..Env::default()
-        },
-    };
-    drop_ended_vps(&mut env_before, &kept, &scope, say).await?;
+    // person is asked at the start and not after it.
     let Found {
         server,
         new_env,
@@ -1648,19 +2390,19 @@ async fn run(
     // already: else what is asked is held (the port closed, or left open
     // to those it was open to, with the limit on new connections it had),
     // and applied at step 10, which is handed what this step did, whole.
-    let synced = crate::worker_firewall::sync(
-        &crate::worker_firewall::Remote {
-            session: &session,
-            target: &server.target,
-            id: &id,
-        },
-        &m,
-        &app.env,
-        &env_before,
-        controller,
-        say,
-    )?;
-    let ssh_allow = synced.ssh_allow();
+    // The UDP Forwarding line's port is opened as its record says.
+    let ask = crate::worker_firewall::Ask {
+        udp_any_source: at.udp_any_source,
+        scope: &scope,
+    };
+    let firewall = crate::worker_firewall::Remote {
+        session: &session,
+        target: &server.target,
+        id: &id,
+    };
+    let mut synced =
+        crate::worker_firewall::sync(&firewall, &m, &app.env, &env_before, controller, ask, say)?;
+    let ssh_allow = synced.ssh_allow().to_vec();
 
     // erpc.toml names the server from here on, whatever fails later: the
     // server is set up, and `logs`, `status` and a second deploy reach it.
@@ -1680,12 +2422,9 @@ async fn run(
         ..env_before
     };
     let saved = kept.save(&env, None);
-    if let Some(root) = path.parent() {
-        let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_owned());
-        let _ = crate::session::beside_config(erpc_worker::index::FILE_NAME).and_then(|p| {
-            erpc_worker::index::update(&p, |i| Ok(((), i.remember(&m.name, &root)?)))
-        });
-    }
+    let root = index_root(&path);
+    let _ = crate::session::beside_config(erpc_worker::index::FILE_NAME)
+        .and_then(|p| erpc_worker::index::update(&p, |i| Ok(((), i.remember(&m.name, &root)?))));
 
     // 6. The data lines, now that the server's address is known and on
     // record; the app gets their endpoints when it starts. A line the
@@ -1695,19 +2434,72 @@ async fn run(
         kept.save(&env, None).map_err(failed)?;
         say.line(&said);
     }
-    if !asked_lines.is_empty() {
-        lines(
-            &asked_lines,
-            at.starts,
-            &server,
-            &mut env,
-            &kept,
+    let udp_asked = asked_lines.iter().any(|(k, _)| *k == LineKind::Udp);
+    let lined = if asked_lines.is_empty() {
+        Ok(())
+    } else {
+        let ports = Ports {
+            ssh: server.target.port,
+            run: m.run.port,
+            // Asked of the server only for a UDP line: its firewall knows
+            // which UDP ports its other workers receive on.
+            others_udp: if udp_asked {
+                others_udp(&server.target, &id, say)
+            } else {
+                Vec::new()
+            },
+        };
+        let step = Step {
+            record: &kept,
             on_record,
-            &scope,
+            scope: &scope,
             say,
-        )
-        .await?;
+        };
+        lines(at, &ports, &server, &mut env, step).await
+    };
+    // A UDP Forwarding line on record that was not asked for again still
+    // sends: where from is read again, since ERPC may have moved it.
+    if lined.is_ok() && !udp_asked {
+        refresh_udp_sources(Api::open, &mut env, &kept, say).await?;
     }
+    // The firewall follows the lines, whether or not every asked line came:
+    // a UDP Forwarding line pointed at the server just now, or whose
+    // addresses changed, or one that left the record, changes what its
+    // port lets in, and is on record before the next kind is tried. When
+    // both fail, the lines error is the one to report.
+    // The WAF's port stays as step 5 left it: only the UDP port changes.
+    if let Err(e) = crate::worker_firewall::reopen(
+        &firewall,
+        &mut synced,
+        crate::worker_firewall::udp_opening(&env, at.udp_any_source),
+        &crate::worker_firewall::say_udp(&env, ask),
+        say,
+    ) {
+        if lined.is_ok() {
+            return Err(e);
+        }
+        say.line(&format!(
+            "warning: {}",
+            t!(
+                "worker_deploy.line.firewall_not_followed",
+                error = e.message,
+                scope
+            )
+        ));
+    }
+    lined?;
+    // A pending UDP Forwarding line is said with whether it is charged now.
+    let pending_udp = env
+        .lines
+        .iter()
+        .find(|l| l.kind == LineKind::Udp && l.is_pending());
+    let udp_state = UdpState {
+        any_source: at.udp_any_source,
+        pending_charged: match pending_udp {
+            Some(line) => pending_udp_charged(line).await,
+            None => None,
+        },
+    };
     let launch = Launch::for_app(&m, &env).map_err(failed)?;
 
     // 7. The release.
@@ -1732,9 +2524,7 @@ async fn run(
         &format!("{dir}/{}", erpc_worker::server::LAUNCH_FILE),
         &launch_json,
     )?;
-    let root = path
-        .parent()
-        .map_or_else(|| PathBuf::from("."), Path::to_owned);
+    let root = crate::worker_build::app_root(&path);
     for file in &built.release.files {
         let bytes = std::fs::read(root.join(&file.path)).map_err(|e| {
             let path = &file.path;
@@ -1799,7 +2589,13 @@ async fn run(
                 said_in!(lang, t!("worker_deploy.done.not_kept", error))
             ));
         }
-        text.extend(on_record_said(lang, &env, &server.resource, &scope));
+        text.extend(on_record_said(
+            lang,
+            &env,
+            &server.resource,
+            udp_state,
+            &scope,
+        ));
         text.extend(starts_left_said(
             lang,
             &starts_left(&env, &[]),
@@ -1899,7 +2695,13 @@ async fn run(
             said_in!(lang, t!("worker_deploy.done.not_kept", error))
         )),
     }
-    after.extend(on_record_said(lang, &env, &server.resource, &scope));
+    after.extend(on_record_said(
+        lang,
+        &env,
+        &server.resource,
+        udp_state,
+        &scope,
+    ));
     after.extend(starts_left_said(
         lang,
         &starts_left(&env, &[]),
@@ -2203,9 +3005,16 @@ mod tests {
         // The deploy's firewall step, and then its end: what it has said
         // so far and has still to say, and what it reports besides the WAF.
         let end = |m: &Manifest, server: &Recorded| {
-            let synced =
-                crate::worker_firewall::sync(server, m, "default", &m.env["default"], me, &say)
-                    .expect("the firewall step");
+            let synced = crate::worker_firewall::sync(
+                server,
+                m,
+                "default",
+                &m.env["default"],
+                me,
+                crate::worker_firewall::Ask::from_record(""),
+                &say,
+            )
+            .expect("the firewall step");
             let step_5 = server.asked();
             let waf = crate::worker_waf::Deploy {
                 server,
@@ -2303,10 +3112,17 @@ mod tests {
                 id: "7".to_owned(),
                 endpoint: "line-7.example".to_owned(),
                 hourly: true,
+                sources: Vec::new(),
             }],
             ..Env::default()
         };
-        let said = super::on_record_said(Lang::En, &env, &bought(), " --env prod bot");
+        let said = super::on_record_said(
+            Lang::En,
+            &env,
+            &bought(),
+            super::UdpState::default(),
+            " --env prod bot",
+        );
         assert_eq!(said.len(), 2, "{said:?}");
         assert!(
             said.iter()
@@ -2318,7 +3134,8 @@ mod tests {
             hourly: false,
             ..bought()
         };
-        assert!(super::on_record_said(Lang::En, &Env::default(), &own, "").is_empty());
+        let udp = super::UdpState::default();
+        assert!(super::on_record_said(Lang::En, &Env::default(), &own, udp, "").is_empty());
     }
 
     #[test]
@@ -2714,6 +3531,7 @@ mod tests {
                 id: "100002".to_owned(),
                 endpoint: String::new(),
                 hourly: true,
+                sources: Vec::new(),
             }],
             ..Env::default()
         };
@@ -2898,6 +3716,75 @@ mod tests {
         assert_eq!(env, kept);
     }
 
+    /// A UDP Forwarding line's start is kept as the others are, under
+    /// `udp`: in erpc.toml from before its request leaves, until user-api
+    /// names the line. Its request names no region and no address (the
+    /// start route takes none), so a deploy that asks for another port or
+    /// region sends the same request again, and never buys a second line.
+    #[test]
+    fn a_udp_lines_start_is_on_record_under_its_own_key_and_sent_again_as_it_was() {
+        use super::{EnvRecord, LineRecord as _, LineStart, StartOf, StartRecord as _};
+        use erpc_core::i18n::Lang;
+        use erpc_worker::manifest::Manifest;
+        let tmp = tempfile::tempdir().expect("tmp");
+        let path = tmp.path().join("erpc.toml");
+        std::fs::write(&path, "name = \"bot\"\nchain = \"solana\"\n").expect("write");
+        let record = EnvRecord {
+            path: &path,
+            app: "bot",
+            env: "default",
+        };
+        let on_record = || Manifest::load(&path).expect("valid").env["default"].clone();
+        let named = RefCell::new(Vec::new());
+        let mut env = Env {
+            host: Some("203.0.113.10".to_owned()),
+            ..Env::default()
+        };
+        let udp = request("udp-forwarding", None, None);
+        let mut start = LineStart {
+            kind: LineKind::Udp,
+            env: &mut env,
+            record: &record,
+            on_record: &named,
+            scope: " bot",
+        };
+        start.begin(&udp).expect("on record");
+        let text = std::fs::read_to_string(&path).expect("erpc.toml");
+        assert!(
+            text.contains("[env.default.starting]\nudp = { key = "),
+            "{text}"
+        );
+        assert_eq!(on_record().starting[&StartOf::Udp], udp);
+        assert_eq!(start.pending(), Some(udp.clone()));
+        // Asked again with another port or region: the same purchase.
+        assert!(udp.same_purchase(&request("udp-forwarding", None, None)));
+        assert!(!udp.same_purchase(&request("udp-forwarding-premium", None, None)));
+        // Not asked for by this command: left as it is, and said.
+        let written = on_record();
+        let left = super::starts_left(&written, &[(LineKind::Grpc, None)]);
+        assert_eq!(
+            left.iter().map(|(of, _)| *of).collect::<Vec<_>>(),
+            [StartOf::Udp]
+        );
+        let said = super::starts_left_said(Lang::En, &left, &written, "default");
+        assert!(
+            said[0].contains("udp-forwarding prod_One")
+                && said[0].contains("remove `udp` from [env.default.starting]"),
+            "{said:?}"
+        );
+        assert!(super::starts_left(&written, &[(LineKind::Udp, None)]).is_empty());
+        // user-api names the line: on record, pending, and the request off.
+        start.named("100004").expect("named");
+        let kept = on_record();
+        assert!(kept.starting.is_empty());
+        assert_eq!(
+            (kept.lines[0].kind, kept.lines[0].id.as_str()),
+            (LineKind::Udp, "100004")
+        );
+        assert!(kept.lines[0].is_pending());
+        assert_eq!(*named.borrow(), ["UDP Forwarding line 100004"]);
+    }
+
     #[test]
     fn a_start_left_by_an_earlier_run_is_said_when_the_command_does_not_ask_for_it() {
         use super::StartOf;
@@ -2947,6 +3834,7 @@ mod tests {
             id: id.to_owned(),
             endpoint: String::new(),
             hourly: true,
+            sources: Vec::new(),
         };
         let mut env = Env {
             lines: vec![line("100002"), line("100003")],
@@ -2977,43 +3865,1343 @@ mod tests {
             Some((true, false)),
             Some((true, true)),
         ];
-        for on_record in on_records {
-            for listed in [false, true] {
-                for charged in [false, true] {
-                    let next = LineNext::of(on_record, listed, charged);
-                    // Forgotten only when hourly, seen with its endpoint
-                    // before, and shown by neither.
-                    let forget = on_record == Some((true, false)) && !listed && !charged;
-                    assert_eq!(
-                        next == LineNext::Forget,
-                        forget,
-                        "{on_record:?} {listed} {charged}"
-                    );
-                    if matches!(on_record, Some((true, _))) && next == LineNext::TakeUp {
-                        assert!(listed && charged);
-                    }
-                    if on_record.is_none() {
-                        assert_eq!(next, LineNext::Buy);
+        for kind in [LineKind::Grpc, LineKind::Shreds, LineKind::Unlimited] {
+            for on_record in on_records {
+                for listed in [false, true] {
+                    for charged in [false, true] {
+                        let next = LineNext::of(kind, on_record, listed, charged);
+                        // Forgotten only when hourly, seen with its endpoint
+                        // before, and shown by neither.
+                        let forget = on_record == Some((true, false)) && !listed && !charged;
+                        assert_eq!(
+                            next == LineNext::Forget,
+                            forget,
+                            "{kind:?} {on_record:?} {listed} {charged}"
+                        );
+                        if matches!(on_record, Some((true, _))) && next == LineNext::TakeUp {
+                            assert!(listed && charged);
+                        }
+                        if on_record.is_none() {
+                            assert_eq!(next, LineNext::Buy);
+                        }
                     }
                 }
             }
         }
+        let grpc =
+            |on_record, listed, charged| LineNext::of(LineKind::Grpc, on_record, listed, charged);
         assert_eq!(
-            LineNext::of(Some((true, true)), false, false),
+            grpc(Some((true, true)), false, false),
             LineNext::Wait(WaitWhy::NotSeenYet)
         );
         assert_eq!(
-            LineNext::of(Some((true, false)), true, false),
+            grpc(Some((true, false)), true, false),
             LineNext::Wait(WaitWhy::NotYetCharged)
         );
         assert_eq!(
-            LineNext::of(Some((true, true)), false, true),
+            grpc(Some((true, true)), false, true),
             LineNext::Wait(WaitWhy::SettingUp)
         );
         assert_eq!(
-            LineNext::of(Some((false, false)), false, false),
+            grpc(Some((false, false)), false, false),
             LineNext::Wait(WaitWhy::Unbilled)
         );
+    }
+
+    #[test]
+    fn a_udp_line_never_pointed_at_the_server_is_taken_up_once_listed() {
+        use super::{LineNext, WaitWhy};
+        let udp =
+            |on_record, listed, charged| LineNext::of(LineKind::Udp, on_record, listed, charged);
+        // Pointing it at the server is what taking it up does, and what
+        // makes Premium charged: listed is enough, charged or not.
+        assert_eq!(udp(Some((true, true)), true, false), LineNext::TakeUp);
+        assert_eq!(udp(Some((true, true)), true, true), LineNext::TakeUp);
+        assert_eq!(udp(Some((false, true)), true, false), LineNext::TakeUp);
+        assert_eq!(
+            udp(Some((true, true)), false, false),
+            LineNext::Wait(WaitWhy::NotSeenYet)
+        );
+        assert_eq!(
+            udp(Some((true, true)), false, true),
+            LineNext::Wait(WaitWhy::SettingUp)
+        );
+        // Once pointed, it goes by the rule the other kinds go by.
+        assert_eq!(
+            udp(Some((true, false)), true, false),
+            LineNext::Wait(WaitWhy::NotYetCharged)
+        );
+        assert_eq!(udp(Some((true, false)), true, true), LineNext::TakeUp);
+        assert_eq!(udp(Some((true, false)), false, false), LineNext::Forget);
+        assert_eq!(udp(None, false, false), LineNext::Buy);
+    }
+
+    #[test]
+    fn a_udp_line_sends_to_the_port_asked_else_the_one_on_record_else_the_default() {
+        let ip: std::net::Ipv4Addr = "203.0.113.10".parse().expect("ip");
+        let at = super::Where::default();
+        let on_record = Line {
+            kind: LineKind::Udp,
+            id: "7".to_owned(),
+            endpoint: "0.0.0.0:20000".to_owned(),
+            hourly: true,
+            sources: Vec::new(),
+        };
+        let target = super::line_target(LineKind::Udp, &at, ip, Some("tokyo"), &[]);
+        assert_eq!(
+            (target.ip, target.udp_port, target.region.as_deref()),
+            (ip, Some(10001), Some("tokyo"))
+        );
+        let target = super::line_target(
+            LineKind::Udp,
+            &at,
+            ip,
+            Some("tokyo"),
+            std::slice::from_ref(&on_record),
+        );
+        assert_eq!(target.udp_port, Some(20000));
+        let asked = super::Where {
+            udp_port: Some(30000),
+            udp_region: Some("dublin".to_owned()),
+            ..super::Where::default()
+        };
+        let target = super::line_target(LineKind::Udp, &asked, ip, Some("tokyo"), &[on_record]);
+        assert_eq!(
+            (target.udp_port, target.region.as_deref()),
+            (Some(30000), Some("dublin"))
+        );
+        // A --host server has no region on record: the line needs --udp-region.
+        assert!(
+            super::line_target(LineKind::Udp, &at, ip, None, &[])
+                .region
+                .is_none()
+        );
+        // The other kinds are for the server's region, and send to no port.
+        let other = super::line_target(LineKind::Unlimited, &asked, ip, Some("tokyo"), &[]);
+        assert_eq!(
+            (other.udp_port, other.region.as_deref()),
+            (None, Some("tokyo"))
+        );
+    }
+
+    /// A server UDP Forwarding cannot send to is refused before anything
+    /// is bought: user-api would refuse to point the line there after a
+    /// Standard line was started and charged. (The documentation ranges
+    /// are among those refused, so a public resolver's address stands for
+    /// a public one.)
+    #[test]
+    fn a_server_without_a_public_ipv4_address_takes_no_udp_line() {
+        assert!(super::udp_public("8.8.8.8".parse().expect("ip")).is_ok());
+        for private in [
+            "10.0.0.5",
+            "192.168.1.2",
+            "100.100.1.1",
+            "127.0.0.1",
+            "203.0.113.10",
+        ] {
+            let e = super::udp_public(private.parse().expect("ip")).expect_err(private);
+            assert!(e.message.contains(private), "{}", e.message);
+            assert!(
+                e.hint
+                    .as_deref()
+                    .is_some_and(|h| h.contains("100.64.0.0/10")),
+                "{:?}",
+                e.hint
+            );
+        }
+    }
+
+    /// The region a UDP line would send from is known before anything is
+    /// bought wherever the deploy decides the server itself: refused then
+    /// (a mistyped region, sydney, a server of one's own with no region),
+    /// nothing is charged. A VPS named with `--vps` is checked once it is
+    /// read, before any line is started.
+    #[test]
+    fn the_udp_region_is_decided_before_anything_is_bought() {
+        use erpc_worker::manifest::{Resource, ResourceKind};
+        let region = |at: &super::Where, env: &Env| super::udp_region_before(at, env);
+        let none = Env::default();
+        let asked = super::Where {
+            udp_region: Some("tokio".to_owned()),
+            ..super::Where::default()
+        };
+        // --udp-region, whatever the server: checked against the product.
+        assert_eq!(
+            region(&asked, &none).expect("asked").as_deref(),
+            Some("tokio")
+        );
+        // A new VPS: its --region, else the nearest.
+        let sydney = super::Where {
+            new_vps: true,
+            region: Some("sydney".to_owned()),
+            ..super::Where::default()
+        };
+        assert_eq!(
+            region(&sydney, &none).expect("new").as_deref(),
+            Some("sydney")
+        );
+        let nearest = super::Where {
+            new_vps: true,
+            ..super::Where::default()
+        };
+        assert_eq!(
+            region(&nearest, &none).expect("new").as_deref(),
+            Some(crate::worker_vps::nearest_region())
+        );
+        // A server of one's own: no region erpc knows.
+        let own = super::Where {
+            host: Some("203.0.113.10".to_owned()),
+            ..super::Where::default()
+        };
+        assert!(region(&own, &none).is_err());
+        let own_on_record = Env {
+            host: Some("203.0.113.10".to_owned()),
+            ..Env::default()
+        };
+        assert!(region(&super::Where::default(), &own_on_record).is_err());
+        // An ERPC server on record: its region.
+        let vps = Env {
+            host: Some("203.0.113.10".to_owned()),
+            resource: Some(Resource {
+                kind: ResourceKind::Vps,
+                id: "100001".to_owned(),
+                region: Some("frankfurt".to_owned()),
+                hourly: true,
+            }),
+            ..Env::default()
+        };
+        assert_eq!(
+            region(&super::Where::default(), &vps)
+                .expect("on record")
+                .as_deref(),
+            Some("frankfurt")
+        );
+        // --vps: read with it, checked later; and nothing asked yet.
+        let named = super::Where {
+            vps: Some(100_001),
+            ..super::Where::default()
+        };
+        assert_eq!(region(&named, &none).expect("later"), None);
+        assert_eq!(
+            region(&super::Where::default(), &none).expect("picked"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_udp_port_the_server_has_in_use_is_refused() {
+        let ports = |run| super::Ports {
+            ssh: 22,
+            run,
+            others_udp: vec![("other-prod".to_owned(), 10002)],
+        };
+        assert!(super::udp_port_free(10001, &ports(Some(3000))).is_ok());
+        assert!(super::udp_port_free(10001, &ports(None)).is_ok());
+        let ssh = super::udp_port_free(22, &ports(None)).expect_err("the SSH port");
+        assert!(ssh.message.contains("SSH"), "{}", ssh.message);
+        let app = super::udp_port_free(3000, &ports(Some(3000))).expect_err("the app's port");
+        assert!(app.message.contains("run.port"), "{}", app.message);
+        assert!(app.hint.is_some_and(|h| h.contains("--udp-port")));
+        // Another worker on the server receives on it already.
+        let other = super::udp_port_free(10002, &ports(None)).expect_err("another worker's");
+        assert!(
+            other.message.contains("10002") && other.message.contains("other-prod"),
+            "{}",
+            other.message
+        );
+        assert!(other.hint.is_some_and(|h| h.contains("--udp-port")));
+    }
+
+    #[test]
+    fn the_address_checked_before_buying_is_the_one_the_deploy_uses() {
+        let ip = |s: &str| s.parse::<std::net::Ipv4Addr>().ok();
+        let own = super::Where {
+            host: Some("10.0.0.5".to_owned()),
+            ..super::Where::default()
+        };
+        // --host, with nothing on record.
+        assert_eq!(
+            super::udp_host_before(&own, &Env::default()),
+            ip("10.0.0.5")
+        );
+        // The record's address first, as server() takes it.
+        let recorded = Env {
+            host: Some("203.0.113.10".to_owned()),
+            ..Env::default()
+        };
+        assert_eq!(super::udp_host_before(&own, &recorded), ip("203.0.113.10"));
+        // A VPS on record and not yet reached is the server, whatever
+        // --host says: its address is checked once it is known.
+        let pending = Env {
+            resource: Some(bought()),
+            ..Env::default()
+        };
+        assert_eq!(super::udp_host_before(&own, &pending), None);
+        // A host name is not judged.
+        let named = super::Where {
+            host: Some("bot.example.invalid".to_owned()),
+            ..super::Where::default()
+        };
+        assert_eq!(super::udp_host_before(&named, &Env::default()), None);
+    }
+
+    /// The UDP step's refusals are asked before the first line is started:
+    /// asked at the UDP step, the lines before it would be left charged.
+    /// A stubbed session refuses every start before it is sent, so what
+    /// shows the order is which refusal comes: the UDP line's, not the
+    /// gRPC line's start, which the catalogue offers a plan for.
+    #[tokio::test]
+    async fn no_line_is_started_when_the_udp_line_would_be_refused() {
+        use crate::worker_vps::stub::{Request, Stub};
+        let stub = Stub::serve(|request: &Request| match request.path.as_str() {
+            "/v3/billing/hourly-catalog" => (
+                200,
+                json!({ "families": [
+                    { "family": "grpc",
+                      "plans": [{ "productId": "prod_grpc", "hourlyCents": 34.0 }] },
+                ] }),
+            ),
+            _ => (200, json!({ "success": true, "data": [] })),
+        })
+        .await;
+        let quiet = crate::node_common::Say { quiet: true };
+        let (_dir, path) = app_on_disk();
+        let record = super::EnvRecord {
+            path: &path,
+            app: "bot",
+            env: "default",
+        };
+        let key = HostKey::parse(
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl",
+        )
+        .expect("key");
+        let server = |host: &str| super::Server {
+            target: erpc_ssh::Target {
+                host: host.to_owned(),
+                port: 22,
+                user: "root".to_owned(),
+                host_key: key.clone(),
+                identity: erpc_ssh::Identity::File("/nonexistent/key".into()),
+            },
+            resource: bought(),
+        };
+        let ports = super::Ports {
+            ssh: 22,
+            run: Some(3000),
+            others_udp: Vec::new(),
+        };
+        let asked = |udp_port| super::Where {
+            lines: vec![(LineKind::Grpc, None), (LineKind::Udp, None)],
+            udp_port,
+            ..super::Where::default()
+        };
+        // A server address UDP Forwarding does not send to; the app's own
+        // port; a catalogue that offers no UDP plan. The documentation
+        // ranges are refused like the rest, so a public resolver stands
+        // for a public address.
+        for (host, at, says) in [
+            ("10.0.0.5", asked(None), "public IPv4"),
+            ("8.8.8.8", asked(Some(3000)), "run.port"),
+            ("8.8.8.8", asked(None), "no udp-forwarding"),
+        ] {
+            let on_record = RefCell::new(Vec::new());
+            let step = super::Step {
+                record: &record,
+                on_record: &on_record,
+                scope: " --env default",
+                say: &quiet,
+            };
+            let mut env = Env::default();
+            let api = stub.api().accepting(true);
+            let e = super::lines_with(&api, &at, &ports, &server(host), &mut env, step)
+                .await
+                .expect_err(says);
+            assert!(e.message.contains(says), "{}", e.message);
+            assert!(env.lines.is_empty() && on_record.borrow().is_empty());
+        }
+    }
+
+    /// A UDP Forwarding line on record that ends while the deploy waits
+    /// for it: charged no more, so neither named as charged nor said to be
+    /// waited for again; its own hint says what is left to do.
+    #[tokio::test]
+    async fn a_line_cancelled_while_it_is_waited_for_is_not_called_charged() {
+        use crate::worker_vps::stub::{Request, Stub};
+        // Active through the checks before the lines; cancelled once the
+        // credit snapshot, which only the line step reads, has been read.
+        let mut snapshot_read = false;
+        let stub = Stub::serve(move |request: &Request| match request.path.as_str() {
+            "/v3/billing/hourly-catalog" => (
+                200,
+                json!({ "families": [
+                    { "family": "udp-forwarding",
+                      "plans": [{ "productId": "prod_standard", "hourlyCents": 69.0 }] },
+                ] }),
+            ),
+            "/v3/user/credit-snapshot" => {
+                snapshot_read = true;
+                (
+                    200,
+                    json!({ "message": { "hourlyResources": [
+                        { "productType": "one_hop_direct", "userProductId": 7 },
+                    ] } }),
+                )
+            }
+            "/v3/udp-forwarding/my" => (
+                200,
+                json!({ "success": true, "data": [{
+                    "id": 7, "productKey": "one_hop_direct",
+                    "status": if snapshot_read { "cancelled" } else { "active" },
+                    "region": "amsterdam", "destination": "8.8.8.8:10001",
+                    "sourceIp": "198.51.100.20",
+                }] }),
+            ),
+            _ => (200, json!({ "success": true, "data": [] })),
+        })
+        .await;
+        let quiet = crate::node_common::Say { quiet: true };
+        let (_dir, path) = app_on_disk();
+        let record = super::EnvRecord {
+            path: &path,
+            app: "bot",
+            env: "default",
+        };
+        let on_record = RefCell::new(vec!["UDP Forwarding line 7".to_owned()]);
+        let step = super::Step {
+            record: &record,
+            on_record: &on_record,
+            scope: " --env default",
+            say: &quiet,
+        };
+        let key = HostKey::parse(
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl",
+        )
+        .expect("key");
+        // A public resolver stands for a public address: the documentation
+        // ranges are refused.
+        let server = super::Server {
+            target: erpc_ssh::Target {
+                host: "8.8.8.8".to_owned(),
+                port: 22,
+                user: "root".to_owned(),
+                host_key: key,
+                identity: erpc_ssh::Identity::File("/nonexistent/key".into()),
+            },
+            resource: bought(),
+        };
+        let ports = super::Ports {
+            ssh: 22,
+            run: Some(3000),
+            others_udp: Vec::new(),
+        };
+        let at = super::Where {
+            lines: vec![(LineKind::Udp, None)],
+            ..super::Where::default()
+        };
+        let mut env = Env {
+            lines: vec![udp_line("0.0.0.0:10001", &["198.51.100.20"])],
+            ..Env::default()
+        };
+        let api = stub.api().accepting(true);
+        let e = super::lines_with(&api, &at, &ports, &server, &mut env, step)
+            .await
+            .expect_err("cancelled");
+        assert!(e.message.contains("is cancelled"), "{}", e.message);
+        let hint = e.hint.unwrap_or_default();
+        assert!(
+            hint.contains("--forget-line 7") && !hint.contains("charged by the hour"),
+            "{hint}"
+        );
+        assert!(on_record.borrow().is_empty(), "{:?}", on_record.borrow());
+    }
+
+    /// What the UDP step would be refused for is asked before the server
+    /// is bought, through a session opened only when a UDP line is asked
+    /// for.
+    #[tokio::test]
+    async fn a_udp_line_is_refused_before_anything_is_bought() {
+        use crate::worker_vps::stub::{Request, Stub};
+        let offers = |udp: bool| {
+            let families = if udp {
+                json!([{ "family": "udp-forwarding",
+                         "plans": [{ "productId": "prod_standard", "hourlyCents": 69.0 }] }])
+            } else {
+                json!([{ "family": "grpc",
+                         "plans": [{ "productId": "prod_grpc", "hourlyCents": 34.0 }] }])
+            };
+            move |request: &Request| match request.path.as_str() {
+                "/v3/billing/hourly-catalog" => (200, json!({ "families": families })),
+                _ => (200, json!({ "success": true, "data": [] })),
+            }
+        };
+        let (with_udp, without_udp) = (
+            Stub::serve(offers(true)).await,
+            Stub::serve(offers(false)).await,
+        );
+        let udp = |udp_port| super::Where {
+            lines: vec![(LineKind::Udp, None)],
+            udp_port,
+            ..super::Where::default()
+        };
+        // A public resolver stands for a public address: the documentation
+        // ranges are refused.
+        let on = |host: &str| Env {
+            host: Some(host.to_owned()),
+            resource: Some(bought()),
+            ..Env::default()
+        };
+        let check = |at: super::Where, env: Env, stub: &Stub| {
+            let api = stub.api().accepting(true);
+            async move {
+                super::udp_before_buying(&at, &env, Some(3000), " --env default", || async {
+                    Ok(api)
+                })
+                .await
+            }
+        };
+        check(udp(None), on("8.8.8.8"), &with_udp)
+            .await
+            .expect("nothing to refuse");
+        for (at, env, stub, says) in [
+            (udp(None), on("10.0.0.5"), &with_udp, "public IPv4"),
+            (udp(Some(3000)), on("8.8.8.8"), &with_udp, "run.port"),
+            (udp(None), on("8.8.8.8"), &without_udp, "no udp-forwarding"),
+        ] {
+            let e = check(at, env, stub).await.expect_err(says);
+            assert!(e.message.contains(says), "{}", e.message);
+        }
+        // A new VPS in a region the product does not send from: refused
+        // before the VPS is bought there.
+        let sydney = super::Where {
+            new_vps: true,
+            region: Some("sydney".to_owned()),
+            ..udp(None)
+        };
+        let e = check(sydney, Env::default(), &with_udp)
+            .await
+            .expect_err("sydney");
+        assert!(e.message.contains("sydney"), "{}", e.message);
+        // No UDP line asked for: no session is opened.
+        super::udp_before_buying(
+            &super::Where::default(),
+            &Env::default(),
+            None,
+            "",
+            || async { panic!("no session is opened") },
+        )
+        .await
+        .expect("nothing asked");
+    }
+
+    /// An app on disk that this machine builds with no tool at all: its
+    /// `build.prebuilt` binary is one the servers run.
+    fn app_built() -> (tempfile::TempDir, super::App) {
+        use crate::elf::fixture::{GLIBC_X86_64, X86_64, linked};
+        let dir = tempfile::tempdir().expect("a directory");
+        std::fs::create_dir(dir.path().join("dist")).expect("dist");
+        let binary = linked(X86_64, GLIBC_X86_64, b"\0GLIBC_2.17\0");
+        std::fs::write(dir.path().join("dist/bot"), binary).expect("a binary");
+        std::fs::write(
+            dir.path().join("erpc.toml"),
+            "name = \"bot\"\nchain = \"solana\"\n[run]\nport = 3000\n\
+             [build]\nprebuilt = \"dist/bot\"\n",
+        )
+        .expect("erpc.toml");
+        let app = super::App {
+            dir: crate::worker::Dir::at(dir.path()),
+            env: "default".to_owned(),
+        };
+        (dir, app)
+    }
+
+    /// What a deploy is asked with in these tests: its environment's facts
+    /// kept in erpc.toml (`--inline`), so that no store this machine's erpc
+    /// is set up with is consulted.
+    fn kept_inline() -> super::Where {
+        super::Where {
+            inline: true,
+            ..super::Where::default()
+        }
+    }
+
+    /// [`super::before_buying`] for `app` and `at`, with `login` as the
+    /// key's check and `api`, when there is one, as the session; asking for
+    /// a session where there is none fails the test.
+    async fn before_buying(
+        app: &super::App,
+        at: &super::Where,
+        login: Result<(), String>,
+        api: Option<super::Api>,
+    ) -> Result<super::Ready, crate::error::CliError> {
+        let open = move || async move {
+            match api {
+                Some(api) => Ok(api),
+                None => panic!("a session was opened"),
+            }
+        };
+        let ended = async |_: &mut super::Env, _: &crate::worker::EnvRecord<'_>| Ok(());
+        super::before_buying(app, at, " --env default", move || login, ended, open).await
+    }
+
+    /// The app's directory goes into erpc's index absolute, however the
+    /// app was named: `--dir erpc.toml` too, whose parent is empty.
+    #[test]
+    fn the_index_is_given_the_apps_directory_absolute() {
+        // Compared canonical on both sides: on Windows a canonical path
+        // carries the `\\?\` prefix a plain one does not.
+        let here = std::env::current_dir()
+            .and_then(std::fs::canonicalize)
+            .expect("a directory");
+        let named = |path: &str| super::index_root(std::path::Path::new(path));
+        assert_eq!(named("erpc.toml"), here);
+        assert_eq!(named("./erpc.toml"), here);
+        let dir = tempfile::tempdir().expect("a directory");
+        let real = std::fs::canonicalize(dir.path()).expect("absolute");
+        assert_eq!(super::index_root(&dir.path().join("erpc.toml")), real);
+    }
+
+    /// What `run` takes its app and record from refuses a deploy before
+    /// anything is bought, in its order: the key to log in with; a UDP
+    /// Forwarding line refused for its port, or its server's address,
+    /// before a session is opened; and one refused for its region through
+    /// the session. A deploy without a UDP line asks user-api nothing.
+    #[tokio::test]
+    async fn a_deploy_is_refused_before_anything_is_bought() {
+        use crate::worker_vps::stub::{Request, Stub};
+        let (_dir, app) = app_built();
+        let ready = before_buying(&app, &kept_inline(), Ok(()), None)
+            .await
+            .expect("ready");
+        assert_eq!(
+            (ready.m.name.as_str(), ready.id.as_str()),
+            ("bot", "bot-default")
+        );
+        assert_eq!(ready.env_before, Env::default());
+        let no_key = before_buying(&app, &kept_inline(), Err("no SSH key".into()), None)
+            .await
+            .expect_err("no key");
+        assert!(no_key.message.contains("no SSH key"), "{}", no_key.message);
+        let udp = |more: super::Where| super::Where {
+            lines: vec![(LineKind::Udp, None)],
+            ..more
+        };
+        for (at, says) in [
+            (
+                udp(super::Where {
+                    udp_port: Some(3000),
+                    ..kept_inline()
+                }),
+                "run.port",
+            ),
+            (
+                udp(super::Where {
+                    host: Some("10.0.0.5".to_owned()),
+                    ..kept_inline()
+                }),
+                "public IPv4",
+            ),
+        ] {
+            let e = before_buying(&app, &at, Ok(()), None)
+                .await
+                .expect_err(says);
+            assert!(e.message.contains(says), "{}", e.message);
+        }
+        let stub = Stub::serve(|request: &Request| match request.path.as_str() {
+            "/v3/billing/hourly-catalog" => (
+                200,
+                json!({ "families": [
+                    { "family": "udp-forwarding",
+                      "plans": [{ "productId": "prod_standard", "hourlyCents": 69.0 }] },
+                ] }),
+            ),
+            _ => (200, json!({ "success": true, "data": [] })),
+        })
+        .await;
+        let new_vps = |region: &str| {
+            udp(super::Where {
+                new_vps: true,
+                region: Some(region.to_owned()),
+                ..kept_inline()
+            })
+        };
+        let api = || Some(stub.api().accepting(true));
+        let e = before_buying(&app, &new_vps("sydney"), Ok(()), api())
+            .await
+            .expect_err("sydney");
+        assert!(e.message.contains("`sydney` is not a"), "{}", e.message);
+        before_buying(&app, &new_vps("amsterdam"), Ok(()), api())
+            .await
+            .expect("amsterdam");
+        assert!(stub.asked().iter().all(|asked| asked.starts_with("GET ")));
+    }
+
+    /// An app whose erpc.toml has `env` as its `[env.default]`, built as
+    /// [`app_built`] makes it.
+    fn app_with_env(env: &str) -> (tempfile::TempDir, super::App) {
+        let (dir, app) = app_built();
+        let path = dir.path().join("erpc.toml");
+        let mut toml = std::fs::read_to_string(&path).expect("erpc.toml");
+        toml.push_str("[env.default]\n");
+        toml.push_str(env);
+        std::fs::write(&path, toml).expect("erpc.toml");
+        (dir, app)
+    }
+
+    /// An hourly UDP Forwarding line on record while no server it reached
+    /// is stops the deploy before anything is bought, judged on the record:
+    /// a VPS that ended and leaves the record in this run, the record that
+    /// run saved (as a deploy run again finds it), and a VPS bought and
+    /// never reached. The error names the line, and the hint how to point
+    /// it at the server or end it. With a server on record the deploy goes
+    /// on, and so it does once the line is forgotten (`--forget-line`).
+    #[tokio::test]
+    async fn a_udp_line_with_no_server_on_record_stops_the_deploy() {
+        const UDP: &str = "lines = [{ kind = \"udp\", id = \"200002\", \
+                           endpoint = \"0.0.0.0:10001\", hourly = true }]\n";
+        const VPS: &str = "resource = { kind = \"vps\", id = \"100001\", \
+                           region = \"frankfurt\", hourly = true }\n";
+        let never = || async { panic!("no session is opened") };
+        let gone = async |env: &mut super::Env, _: &crate::worker::EnvRecord<'_>| {
+            env.resource = None;
+            Ok(())
+        };
+        let stays = async |_: &mut super::Env, _: &crate::worker::EnvRecord<'_>| Ok(());
+        let at = kept_inline();
+        let stopped = |e: crate::error::CliError| {
+            assert!(e.message.contains("200002"), "{}", e.message);
+            let hint = e.hint.unwrap_or_default();
+            for command in [
+                "erpc worker deploy --udp --env default",
+                "--forget-line 200002",
+                "erpc worker delete --release-server --env default",
+            ] {
+                assert!(hint.contains(command), "{command}: {hint}");
+            }
+        };
+
+        // The VPS ends and leaves the record in this run.
+        let (_dir, app) = app_with_env(&format!("{VPS}{UDP}"));
+        let e = super::before_buying(&app, &at, " --env default", || Ok(()), gone, never)
+            .await
+            .expect_err("stops");
+        stopped(e);
+        // The record that run saved, as the next deploy finds it.
+        let (_dir, app) = app_with_env(UDP);
+        let e = super::before_buying(&app, &at, " --env default", || Ok(()), stays, never)
+            .await
+            .expect_err("stops again");
+        stopped(e);
+        // A VPS bought and never reached: the line was not pointed at it.
+        let (_dir, app) = app_with_env(&format!("{VPS}{UDP}"));
+        let e = super::before_buying(&app, &at, " --env default", || Ok(()), stays, never)
+            .await
+            .expect_err("stops");
+        stopped(e);
+
+        // A server on record: the line sends to it, and the deploy goes on.
+        let (_dir, app) = app_with_env(&format!(
+            "{VPS}host = \"203.0.113.10\"\nssh_user = \"ubuntu\"\n\
+             host_key = \"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl\"\n{UDP}"
+        ));
+        super::before_buying(&app, &at, " --env default", || Ok(()), stays, never)
+            .await
+            .expect("a server on record");
+        // Forgotten, the line is not the environment's any more.
+        let (_dir, app) = app_with_env(UDP);
+        let forgotten = super::Where {
+            forget_lines: vec!["200002".to_owned()],
+            ..kept_inline()
+        };
+        super::before_buying(&app, &forgotten, " --env default", || Ok(()), stays, never)
+            .await
+            .expect("forgotten");
+    }
+
+    /// With no server on record, only an hourly UDP Forwarding line neither
+    /// asked for again (`--udp`) nor forgotten (`--forget-line`) stops a
+    /// deploy.
+    #[test]
+    fn only_an_unasked_hourly_udp_line_with_no_server_stops_a_deploy() {
+        let line = |kind, hourly| erpc_worker::manifest::Line {
+            kind,
+            id: "200002".to_owned(),
+            endpoint: "0.0.0.0:10001".to_owned(),
+            hourly,
+            sources: Vec::new(),
+        };
+        let env = |lines| Env {
+            lines,
+            ..Env::default()
+        };
+        let left = env(vec![line(LineKind::Udp, true)]);
+        let stop = |at: &super::Where, env: &Env| super::udp_left_unpointed(env, at, "");
+        let e = stop(&super::Where::default(), &left).expect_err("stops");
+        assert!(e.message.contains("200002"), "{}", e.message);
+        let asked = super::Where {
+            lines: vec![(LineKind::Udp, None)],
+            ..super::Where::default()
+        };
+        stop(&asked, &left).expect("pointed at the server");
+        let forgotten = super::Where {
+            forget_lines: vec!["200002".to_owned()],
+            ..super::Where::default()
+        };
+        stop(&forgotten, &left).expect("forgotten");
+        let none = super::Where::default();
+        let served = Env {
+            host: Some("203.0.113.10".to_owned()),
+            ..left.clone()
+        };
+        stop(&none, &served).expect("a server on record");
+        stop(&none, &env(vec![line(LineKind::Udp, false)])).expect("not hourly");
+        stop(&none, &env(vec![line(LineKind::Grpc, true)])).expect("no UDP line");
+        stop(&none, &Env::default()).expect("no line");
+    }
+
+    /// The Rust that would build the app is asked of `rustc` before
+    /// anything is bought: an app that needs a newer one than this machine
+    /// has is refused there, ahead of its UDP Forwarding line's checks. A
+    /// probe that only looked, as `check`'s does, would not find it.
+    #[tokio::test]
+    async fn a_deploy_asks_the_rust_that_would_build_the_app() {
+        let dir = tempfile::tempdir().expect("a directory");
+        std::fs::write(
+            dir.path().join("erpc.toml"),
+            "name = \"bot\"\nchain = \"solana\"\n[run]\nport = 3000\n",
+        )
+        .expect("erpc.toml");
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"bot\"\nversion = \"0.1.0\"\nrust-version = \"99.0\"\n",
+        )
+        .expect("Cargo.toml");
+        let app = super::App {
+            dir: crate::worker::Dir::at(dir.path()),
+            env: "default".to_owned(),
+        };
+        let at = super::Where {
+            lines: vec![(LineKind::Udp, None)],
+            udp_port: Some(3000),
+            ..kept_inline()
+        };
+        let e = before_buying(&app, &at, Ok(()), None)
+            .await
+            .expect_err("too old a Rust");
+        assert!(e.message.contains("99.0"), "{}", e.message);
+    }
+
+    /// A VPS picked at the terminal is checked for the UDP Forwarding line
+    /// asked for before it is bought: in a region the line's plan does not
+    /// send from, the line's refusal comes, and nothing is started.
+    #[tokio::test]
+    async fn a_vps_picked_at_the_terminal_is_checked_for_its_udp_line_first() {
+        use crate::worker_vps::stub::{Request, Stub};
+        let stub = Stub::serve(|request: &Request| match request.path.as_str() {
+            "/v3/billing/hourly-catalog" => (
+                200,
+                json!({ "families": [
+                    { "family": "udp-forwarding",
+                      "plans": [{ "productId": "prod_standard", "hourlyCents": 69.0 }] },
+                ] }),
+            ),
+            _ => (200, json!({ "success": true, "data": [] })),
+        })
+        .await;
+        let quiet = crate::node_common::Say { quiet: true };
+        let (_dir, path) = app_on_disk();
+        let record = super::EnvRecord {
+            path: &path,
+            app: "bot",
+            env: "default",
+        };
+        let start = super::ServerStart {
+            env: Env::default(),
+            record: &record,
+            fresh: true,
+            scope: " --env default",
+        };
+        let on_record = RefCell::new(Vec::new());
+        let at = super::Where {
+            lines: vec![(LineKind::Udp, None)],
+            region: Some("sydney".to_owned()),
+            ..super::Where::default()
+        };
+        let picked = super::buy_picked(
+            stub.api().accepting(true),
+            &at,
+            "amsterdam",
+            start,
+            &on_record,
+            &quiet,
+        )
+        .await;
+        let Err(e) = picked else {
+            panic!("bought in sydney");
+        };
+        assert!(e.message.contains("`sydney` is not a"), "{}", e.message);
+        assert_eq!(stub.asked(), ["GET /v3/billing/hourly-catalog"]);
+        assert!(on_record.borrow().is_empty());
+    }
+
+    /// What becomes of a line whose wait failed, in the order the line step
+    /// asks: a UDP Forwarding line cancelled meanwhile first, one this
+    /// deploy started included, which is then not offered to be ended; a
+    /// line this deploy started is offered to be ended; one from before, or
+    /// an Unlimited RPC, is said with what to do, after the hint of the
+    /// step that failed.
+    #[test]
+    fn a_failed_wait_is_decided_in_order_and_keeps_the_steps_own_hint() {
+        use super::{AfterWait, after_wait};
+        let scope = " --env staging";
+        let cancelled = || super::failed(t!("worker_vps.line.udp_cancelled", id = "7"));
+        let for_good = || {
+            super::failed("could not point UDP Forwarding line 7")
+                .hint(t!("worker_vps.line.udp_point_hint_end"))
+        };
+        let other = || super::failed("not active in time").hint("its own hint");
+        for new in [true, false] {
+            let decided = after_wait(LineKind::Udp, "7", new, cancelled(), scope);
+            assert!(
+                matches!(decided, AfterWait::Cancelled(_)),
+                "{new}: {decided:?}"
+            );
+        }
+        for kind in [LineKind::Udp, LineKind::Grpc, LineKind::Shreds] {
+            let decided = after_wait(kind, "7", true, for_good(), scope);
+            assert!(
+                matches!(decided, AfterWait::EndStarted(_)),
+                "{kind:?}: {decided:?}"
+            );
+        }
+        let AfterWait::Said(e) = after_wait(LineKind::Udp, "7", false, for_good(), scope) else {
+            panic!("said");
+        };
+        let alone = t!("worker_deploy.line.udp_end_alone", id = "7", scope);
+        let own = t!("worker_vps.line.udp_point_hint_end");
+        assert_eq!(e.hint, Some(format!("{own}\n{alone}")));
+        let waiting = t!("worker_deploy.line.still_waiting", id = "7", scope);
+        for (kind, new) in [(LineKind::Grpc, false), (LineKind::Unlimited, true)] {
+            let AfterWait::Said(e) = after_wait(kind, "7", new, other(), scope) else {
+                panic!("{kind:?} said");
+            };
+            assert_eq!(e.hint, Some(format!("its own hint\n{waiting}")), "{kind:?}");
+        }
+    }
+
+    /// What became of a line offered to be ended is said after the hint of
+    /// the step that failed, which stays: ended; kept, refused for good,
+    /// and how to end it alone; or kept, and how to carry on with it.
+    #[test]
+    fn what_became_of_a_line_offered_to_be_ended_follows_the_steps_own_hint() {
+        use super::Ended;
+        let scope = " --env staging";
+        for (ended, then) in [
+            (Ended::Yes, t!("worker_deploy.line.ended", id = "7")),
+            (
+                Ended::KeptRefused,
+                t!("worker_deploy.line.udp_end_alone", id = "7", scope),
+            ),
+            (
+                Ended::Kept,
+                t!("worker_deploy.line.not_ended", id = "7", scope),
+            ),
+        ] {
+            let hinted =
+                super::end_said(super::failed("x").hint("its own hint"), ended, "7", scope);
+            assert_eq!(
+                hinted.hint,
+                Some(format!("its own hint\n{then}")),
+                "{ended:?}"
+            );
+            let bare = super::end_said(super::failed("x"), ended, "7", scope);
+            assert_eq!(bare.hint, Some(then), "{ended:?}");
+        }
+    }
+
+    /// A pointing refused for good on a line on record: not to be waited
+    /// for again, but ended, and the hint says how to end it alone.
+    #[tokio::test]
+    async fn a_line_refused_for_good_is_not_waited_for_again() {
+        use crate::worker_vps::stub::{Request, Stub};
+        let stub = Stub::serve(|request: &Request| match request.path.as_str() {
+            "/v3/billing/hourly-catalog" => (
+                200,
+                json!({ "families": [
+                    { "family": "udp-forwarding",
+                      "plans": [{ "productId": "prod_standard", "hourlyCents": 69.0 }] },
+                ] }),
+            ),
+            "/v3/user/credit-snapshot" => (
+                200,
+                json!({ "message": { "hourlyResources": [
+                    { "productType": "one_hop_direct", "userProductId": 7 },
+                ] } }),
+            ),
+            // Pointed elsewhere: the deploy points it at this server.
+            "/v3/udp-forwarding/my" => (
+                200,
+                json!({ "success": true, "data": [{
+                    "id": 7, "productKey": "one_hop_direct", "status": "active",
+                    "region": "amsterdam", "destination": "1.1.1.1:10001",
+                }] }),
+            ),
+            "/v3/udp-forwarding/destination" => (
+                400,
+                json!({ "success": false, "code": "INVALID_DESTINATION",
+                        "message": "the destination is not allowed" }),
+            ),
+            _ => (200, json!({ "success": true, "data": [] })),
+        })
+        .await;
+        let quiet = crate::node_common::Say { quiet: true };
+        let (_dir, path) = app_on_disk();
+        let record = super::EnvRecord {
+            path: &path,
+            app: "bot",
+            env: "default",
+        };
+        let on_record = RefCell::new(Vec::new());
+        let step = super::Step {
+            record: &record,
+            on_record: &on_record,
+            scope: " --env default",
+            say: &quiet,
+        };
+        let key = HostKey::parse(
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl",
+        )
+        .expect("key");
+        let server = super::Server {
+            target: erpc_ssh::Target {
+                host: "8.8.8.8".to_owned(),
+                port: 22,
+                user: "root".to_owned(),
+                host_key: key,
+                identity: erpc_ssh::Identity::File("/nonexistent/key".into()),
+            },
+            resource: bought(),
+        };
+        let ports = super::Ports {
+            ssh: 22,
+            run: Some(3000),
+            others_udp: Vec::new(),
+        };
+        let at = super::Where {
+            lines: vec![(LineKind::Udp, None)],
+            ..super::Where::default()
+        };
+        let mut env = Env {
+            lines: vec![udp_line("0.0.0.0:10001", &["198.51.100.20"])],
+            ..Env::default()
+        };
+        let api = stub.api().accepting(true);
+        let e = super::lines_with(&api, &at, &ports, &server, &mut env, step)
+            .await
+            .expect_err("refused");
+        assert!(e.message.contains("could not point"), "{}", e.message);
+        let hint = e.hint.unwrap_or_default();
+        assert!(
+            hint.contains("comes back the same")
+                && hint.contains("`erpc worker deploy --env default --forget-line 7`")
+                && !hint.contains("waits for it again"),
+            "{hint}"
+        );
+    }
+
+    /// A line this deploy started, refused for good and not ended: said how
+    /// to end it, and not among what the next deploy carries on with.
+    #[tokio::test]
+    async fn a_started_line_refused_for_good_is_said_how_to_end() {
+        use crate::worker_vps::stub::{Request, Stub};
+        let stub = Stub::serve(|request: &Request| match request.path.as_str() {
+            "/v3/user/credit-snapshot" => (
+                200,
+                json!({ "message": { "hourlyResources": [
+                    { "productType": "one_hop_direct", "userProductId": 7 },
+                ] } }),
+            ),
+            _ => (200, json!({ "success": true, "data": [] })),
+        })
+        .await;
+        let quiet = crate::node_common::Say { quiet: true };
+        let (_dir, path) = app_on_disk();
+        let record = super::EnvRecord {
+            path: &path,
+            app: "bot",
+            env: "default",
+        };
+        let on_record = RefCell::new(vec![
+            "VPS 100001".to_owned(),
+            "UDP Forwarding line 7".to_owned(),
+        ]);
+        let step = super::Step {
+            record: &record,
+            on_record: &on_record,
+            scope: " --env staging",
+            say: &quiet,
+        };
+        let mut env = Env {
+            lines: vec![udp_line("", &[])],
+            ..Env::default()
+        };
+        let refused = super::failed("could not point UDP Forwarding line 7")
+            .hint(t!("worker_vps.line.udp_point_hint_end"));
+        let e =
+            super::end_started(&stub.api(), (LineKind::Udp, "7"), &mut env, step, refused).await;
+        let hint = e.hint.unwrap_or_default();
+        assert!(
+            hint.contains("stays charged by the hour until it is ended")
+                && hint.contains("`erpc worker deploy --env staging --forget-line 7`")
+                && !hint.contains("deploy again"),
+            "{hint}"
+        );
+        assert_eq!(*on_record.borrow(), ["VPS 100001"]);
+    }
+
+    #[test]
+    fn a_hint_added_keeps_the_one_before_it() {
+        let bare = super::and_hint(super::failed("x"), "then".to_owned());
+        assert_eq!(bare.hint.as_deref(), Some("then"));
+        let hinted = super::and_hint(super::failed("x").hint("first"), "then".to_owned());
+        assert_eq!(hinted.hint.as_deref(), Some("first\nthen"));
+        // A line cancelled while it was waited for is told apart: nothing
+        // is said of waiting for it again.
+        let cancelled = super::failed(t!("worker_vps.line.udp_cancelled", id = "7"));
+        assert!(crate::worker_vps::is_udp_cancelled(&cancelled, "7"));
+        assert!(!crate::worker_vps::is_udp_cancelled(&cancelled, "8"));
+        assert!(!crate::worker_vps::is_udp_cancelled(
+            &super::failed("x"),
+            "7"
+        ));
+    }
+
+    #[test]
+    fn the_other_workers_udp_ports_are_read_from_the_servers_openings() {
+        // `firewall-show`, as the agent answers it.
+        let shown = json!({
+            "ok": true,
+            "table": "table inet erpc_worker { }",
+            "openings": {
+                "bot-default": { "port": 0, "allow": [],
+                    "udp": { "port": 10001, "allow": ["198.51.100.20"] } },
+                "other-prod": { "port": 3000, "allow": ["203.0.113.0/24"],
+                    "udp": { "port": 10002, "allow": [], "any_source": true } },
+                "web-prod": { "port": 8080, "allow": ["203.0.113.0/24"] },
+            },
+            "pending": false,
+        });
+        // This worker's own port is not another's.
+        assert_eq!(
+            super::others_udp_ports(&shown, "bot-default"),
+            [("other-prod".to_owned(), 10002)]
+        );
+        assert_eq!(super::others_udp_ports(&shown, "new-default").len(), 2);
+        // A server with no worker firewall yet, or an answer that is not
+        // one, names none.
+        assert!(super::others_udp_ports(&json!({ "openings": {} }), "bot-default").is_empty());
+        assert!(super::others_udp_ports(&json!({ "ok": false }), "bot-default").is_empty());
+        let odd = json!({ "openings": { "x-prod": { "udp": { "port": 70000 } } } });
+        assert!(super::others_udp_ports(&odd, "bot-default").is_empty());
+    }
+
+    fn udp_line(endpoint: &str, sources: &[&str]) -> Line {
+        Line {
+            kind: LineKind::Udp,
+            id: "7".to_owned(),
+            endpoint: endpoint.to_owned(),
+            hourly: true,
+            sources: sources.iter().map(|s| s.parse().expect("ip")).collect(),
+        }
+    }
+
+    #[test]
+    fn the_summary_names_a_udp_line_whatever_state_it_is_in() {
+        use erpc_core::i18n::Lang;
+        let said = |line: &Line, any_source, charged| {
+            super::udp_line_said(Lang::En, line, any_source, charged, " --env staging")
+        };
+        // Pointed, with its sources.
+        let pointed = said(&udp_line("0.0.0.0:10001", &["198.51.100.20"]), false, None);
+        assert!(
+            pointed.contains("UDP port 10001 from 198.51.100.20")
+                && pointed.contains("charged by the hour"),
+            "{pointed}"
+        );
+        // Pointed, and user-api names no source: closed, with how to open
+        // it, and charged all the same.
+        let unnamed = udp_line("0.0.0.0:10001", &[]);
+        let closed = said(&unnamed, false, None);
+        assert!(
+            closed.contains("UDP port 10001, which stays closed")
+                && closed.contains("`erpc worker deploy --env staging --udp --udp-any-source`")
+                && closed.contains("charged by the hour"),
+            "{closed}"
+        );
+        let open = said(&unnamed, true, None);
+        assert!(
+            open.contains("open to any IPv4 address, as --udp-any-source asked"),
+            "{open}"
+        );
+        // Pending: never pointed at the server. It was left out before,
+        // though a Standard line is charged from its start.
+        let pending = udp_line("", &[]);
+        let charged = said(&pending, false, Some(true));
+        assert!(
+            charged.contains("UDP Forwarding line 7")
+                && charged.contains("pointed at no server")
+                && charged.contains("it is charged by the hour until")
+                && charged.contains("`erpc worker delete --release-server --env staging`")
+                && charged.contains("`erpc worker deploy --env staging --udp`"),
+            "{charged}"
+        );
+        let uncharged = said(&pending, false, Some(false));
+        assert!(uncharged.contains("do not show it now"), "{uncharged}");
+        // The charges could not be read: what each product is charged.
+        let unknown = said(&pending, false, None);
+        assert!(
+            unknown.contains("A Standard line is charged by the hour from its start"),
+            "{unknown}"
+        );
+        // Said in the run's language, as the rest of the summary is.
+        let japanese = super::udp_line_said(Lang::Ja, &pending, false, Some(true), "");
+        assert_ne!(
+            japanese,
+            super::udp_line_said(Lang::En, &pending, false, Some(true), "")
+        );
+        assert!(!japanese.contains('{'), "{japanese}");
+    }
+
+    /// An app's erpc.toml in a directory of its own, for a record to be
+    /// written to.
+    fn app_on_disk() -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let path = dir.path().join("erpc.toml");
+        std::fs::write(&path, "name = \"bot\"\nchain = \"solana\"\n").expect("erpc.toml");
+        (dir, path)
+    }
+
+    #[tokio::test]
+    async fn the_sources_on_record_follow_what_user_api_lists_and_stay_when_it_cannot_be_read() {
+        use crate::worker_vps::stub::{Request, Stub};
+        let quiet = crate::node_common::Say { quiet: true };
+        let (_dir, path) = app_on_disk();
+        let record = super::EnvRecord {
+            path: &path,
+            app: "bot",
+            env: "default",
+        };
+        let on_record = || Env {
+            host: Some("203.0.113.10".to_owned()),
+            lines: vec![udp_line("0.0.0.0:10001", &["198.51.100.20"])],
+            ..Env::default()
+        };
+        let listing = |row: Value| async move {
+            Stub::serve(move |request: &Request| match request.path.as_str() {
+                "/v3/udp-forwarding/my" => (200, json!({ "success": true, "data": [row] })),
+                _ => (200, json!({ "success": true, "data": [] })),
+            })
+            .await
+        };
+
+        // ERPC moved the line: the record follows, in memory and on disk.
+        let moved = listing(json!({ "id": 7, "sourceIp": "198.51.100.30" })).await;
+        let mut env = on_record();
+        super::refresh_udp_sources(|| async { Ok(moved.api()) }, &mut env, &record, &quiet)
+            .await
+            .expect("read");
+        assert_eq!(
+            env.lines[0].sources,
+            ["198.51.100.30".parse::<std::net::Ipv4Addr>().expect("ip")]
+        );
+        let written = std::fs::read_to_string(&path).expect("erpc.toml");
+        assert!(written.contains("198.51.100.30"), "{written}");
+        assert_eq!(moved.asked(), ["GET /v3/udp-forwarding/my"]);
+
+        // A source that is not an IPv4 address, a line user-api no longer
+        // lists, a list it refuses, and no session at all: each is said,
+        // and the record stays as it was.
+        let odd = listing(json!({ "id": 7, "sourceIp": "2001:db8::30" })).await;
+        let unlisted = listing(json!({ "id": 8, "sourceIp": "198.51.100.31" })).await;
+        let refused = Stub::serve(|_: &Request| (403, json!({ "message": "not open" }))).await;
+        for stub in [&odd, &unlisted, &refused] {
+            let mut env = on_record();
+            super::refresh_udp_sources(|| async { Ok(stub.api()) }, &mut env, &record, &quiet)
+                .await
+                .expect("goes on");
+            assert_eq!(env, on_record());
+        }
+        let mut env = on_record();
+        let no_session = || async { Err(super::failed("there is no session")) };
+        super::refresh_udp_sources(no_session, &mut env, &record, &quiet)
+            .await
+            .expect("goes on");
+        assert_eq!(env, on_record());
+
+        // A pending line has nothing to read: no session is asked for.
+        let mut pending = Env {
+            lines: vec![udp_line("", &[])],
+            ..Env::default()
+        };
+        let never = || async { panic!("no session is needed for a pending line") };
+        super::refresh_udp_sources(never, &mut pending, &record, &quiet)
+            .await
+            .expect("nothing to do");
+    }
+
+    #[tokio::test]
+    async fn a_line_started_and_then_not_seen_is_offered_to_be_ended() {
+        use crate::worker_vps::stub::{Request, Stub};
+        // The step after the start failed. Ending the line is the
+        // person's to confirm, and a stubbed session has no one to ask:
+        // the offer is made, nothing is ended, and the hint says how to
+        // carry on with the line that stays on record.
+        let stub = Stub::serve(|request: &Request| match request.path.as_str() {
+            "/v3/user/credit-snapshot" => (
+                200,
+                json!({ "message": { "hourlyResources": [
+                    { "productType": "one_hop_direct", "userProductId": 7 },
+                ] } }),
+            ),
+            _ => (200, json!({ "success": true, "data": [] })),
+        })
+        .await;
+        let quiet = crate::node_common::Say { quiet: true };
+        let (_dir, path) = app_on_disk();
+        let record = super::EnvRecord {
+            path: &path,
+            app: "bot",
+            env: "default",
+        };
+        let on_record = RefCell::new(vec!["UDP Forwarding line 7".to_owned()]);
+        let step = super::Step {
+            record: &record,
+            on_record: &on_record,
+            scope: " --env staging",
+            say: &quiet,
+        };
+        let mut env = Env {
+            lines: vec![udp_line("", &[])],
+            ..Env::default()
+        };
+        let failed = super::failed("UDP Forwarding line 7 started, and user-api does not list it");
+        let e = super::end_started(&stub.api(), (LineKind::Udp, "7"), &mut env, step, failed).await;
+        assert!(e.message.contains("does not list it"), "{}", e.message);
+        let hint = e.hint.unwrap_or_default();
+        assert!(
+            hint.contains("line 7 was not ended")
+                && hint.contains("`erpc worker delete --release-server --env staging`"),
+            "{hint}"
+        );
+        // Which product to end was looked up: the end got as far as asking.
+        assert!(
+            stub.asked()
+                .contains(&"GET /v3/user/credit-snapshot".to_owned()),
+            "{:?}",
+            stub.asked()
+        );
+        // Not ended: still on record, and still named as charged.
+        assert_eq!(env.lines.len(), 1);
+        assert_eq!(*on_record.borrow(), ["UDP Forwarding line 7"]);
     }
 
     #[test]
@@ -3024,6 +5212,7 @@ mod tests {
         assert_eq!(AgentSource::choose(false, false), AgentSource::Beside);
     }
     use erpc_worker::manifest::{Env, Line, LineKind, Resource, ResourceKind};
+    use serde_json::{Value, json};
 
     #[test]
     fn a_vps_bought_and_not_yet_reached_is_taken_up() {
@@ -3064,6 +5253,7 @@ mod tests {
                     id: format!("10000{i}"),
                     endpoint: String::new(),
                     hourly: true,
+                    sources: Vec::new(),
                 })
                 .collect();
             super::say_forgotten(&lines).expect("said")

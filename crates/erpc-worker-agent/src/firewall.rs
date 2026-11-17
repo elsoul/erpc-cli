@@ -255,18 +255,45 @@ fn load(tools: &dyn Tools, table: &str, path: &Path) -> Result<(), String> {
 }
 
 /// Why `opening` is not one a server takes, whatever is in force there,
-/// when it is not: its port, how many addresses it names, its limit's
-/// numbers.
+/// when it is not: its ports, how many addresses each names, its limit's
+/// numbers. It opens a TCP port (one other than SSH's, for 1 to 64
+/// addresses), a UDP port (one other than SSH's, for 1 to 64 IPv4
+/// addresses, or for any IPv4 address when it says so and names none), or
+/// both. A TCP port 0 with no address and no limit opens no TCP port, for
+/// a worker that opens its UDP port alone. An opening that opens nothing
+/// is refused: to close a worker's ports, erpc sends no opening.
 fn refuse_shape(opening: &Opening, ssh_port: u16) -> Result<(), String> {
     let o = opening;
-    if o.port == 0 || o.port == ssh_port || o.allow.is_empty() || o.allow.len() > 64 {
-        return Err("an opening is a port other than SSH's, for 1 to 64 addresses".to_owned());
+    let tcp_ok = if o.allow.is_empty() {
+        o.port == 0 && o.limit.is_none()
+    } else {
+        o.port != 0 && o.port != ssh_port && o.allow.len() <= 64
+    };
+    if !tcp_ok {
+        return Err(
+            "an opening is a port other than SSH's, for 1 to 64 addresses, or port 0 for none"
+                .to_owned(),
+        );
     }
     if let Some(problem) = o
         .limit
         .and_then(|limit| limit.problems().into_iter().next())
     {
         return Err(format!("the opening's limit on new connections: {problem}"));
+    }
+    if let Some(udp) = &o.udp
+        && (udp.port == 0 || udp.port == ssh_port || udp.allow.len() > 64 || !udp.names_senders())
+    {
+        return Err(
+            "an opening's UDP port is a port other than SSH's, for 1 to 64 IPv4 addresses, or \
+             for any address when it says so and names none"
+                .to_owned(),
+        );
+    }
+    if o.allow.is_empty() && o.udp.is_none() {
+        return Err(
+            "an opening opens a TCP port, a UDP port or both; to close them, send none".to_owned(),
+        );
     }
     Ok(())
 }
@@ -290,13 +317,28 @@ fn refuse_everyone(opening: &Opening, waf_port: Option<u16>) -> Option<String> {
 /// Whether `opening` lets in nobody that `in_force`, the worker's opening
 /// in force, does not: the same port, with the same limit on new
 /// connections, to addresses that are each, as written, among the ones in
-/// force. Applying it makes nothing wider than it is.
+/// force. Applying it makes nothing wider than it is. Its UDP port is not
+/// looked at: what this excuses is the refusal of everyone to a TCP port,
+/// and a UDP port is checked on its own ([`refuse_shape`]).
 fn within(opening: &Opening, in_force: Option<&Opening>) -> bool {
     in_force.is_some_and(|now| {
         opening.port == now.port
             && opening.limit == now.limit
             && opening.allow.iter().all(|a| now.allow.contains(a))
     })
+}
+
+/// What `firewall-apply` takes, whatever is in force on the server: an SSH
+/// port, and no opening (to close the worker's ports) or one of the shape
+/// [`refuse_shape`] takes.
+fn check(request: &FirewallRequest) -> Result<(), String> {
+    if request.ssh_port == 0 {
+        return Err("0 is not the SSH port".to_owned());
+    }
+    request
+        .opening
+        .as_ref()
+        .map_or(Ok(()), |o| refuse_shape(o, request.ssh_port))
 }
 
 /// `firewall-apply`: this worker's opening (stdin) applied to the table,
@@ -328,22 +370,19 @@ pub(crate) fn apply(id: &str) -> Result<Value, String> {
 fn apply_to(host: &Host<'_>, id: &str, input: &str) -> Result<Value, String> {
     let request: FirewallRequest =
         serde_json::from_str(input.trim()).map_err(|e| format!("not a firewall request: {e}"))?;
-    if request.ssh_port == 0 {
-        return Err("0 is not the SSH port".to_owned());
-    }
+    check(&request)?;
     let (d, tools) = (&host.dir, host.tools);
     // The refusal of everyone on a port that is not known to be the
     // WAF's, kept for under the lock where the worker has an opening in
     // force that this one may be within. Without one it is refused here.
     let mut everyone = None;
-    if let Some(o) = &request.opening {
-        refuse_shape(o, request.ssh_port)?;
-        if let Some(refused) = refuse_everyone(o, wafctl::listen_port(&host.waf, id)) {
-            if !d.join("workers").join(format!("{id}.json")).exists() {
-                return Err(refused);
-            }
-            everyone = Some(refused);
+    if let Some(o) = &request.opening
+        && let Some(refused) = refuse_everyone(o, wafctl::listen_port(&host.waf, id))
+    {
+        if !d.join("workers").join(format!("{id}.json")).exists() {
+            return Err(refused);
         }
+        everyone = Some(refused);
     }
     let _lock = lock(d)?;
     std::fs::create_dir_all(d.join("workers"))
@@ -529,6 +568,138 @@ mod tests {
 
     use super::{Host, Tools};
     use crate::wafctl;
+
+    /// What the opening tests are made of: one address, 65 of them, 65
+    /// senders, and an opening that opens nothing.
+    fn parts() -> (
+        Vec<erpc_worker::net::Cidr>,
+        Vec<erpc_worker::net::Cidr>,
+        Vec<std::net::Ipv4Addr>,
+        erpc_worker::server::Opening,
+    ) {
+        use erpc_worker::net::Cidr;
+        let one = vec![Cidr::parse("198.51.100.7").expect("cidr")];
+        let many = (0..65)
+            .map(|i| Cidr::parse(&format!("10.0.0.{i}")).expect("cidr"))
+            .collect();
+        let senders = (0..65)
+            .map(|i| std::net::Ipv4Addr::new(10, 0, 1, i))
+            .collect();
+        let none = erpc_worker::server::Opening {
+            port: 0,
+            allow: Vec::new(),
+            limit: None,
+            udp: None,
+        };
+        (one, many, senders, none)
+    }
+
+    /// `none` with a UDP port for `allow`, or for any address.
+    fn with_udp(
+        none: &erpc_worker::server::Opening,
+        port: u16,
+        allow: &[std::net::Ipv4Addr],
+        any_source: bool,
+    ) -> erpc_worker::server::Opening {
+        erpc_worker::server::Opening {
+            udp: Some(erpc_worker::server::UdpOpening {
+                port,
+                allow: allow.to_vec(),
+                any_source,
+            }),
+            ..none.clone()
+        }
+    }
+
+    fn request(opening: erpc_worker::server::Opening) -> erpc_worker::server::FirewallRequest {
+        erpc_worker::server::FirewallRequest {
+            ssh_port: 22,
+            opening: Some(opening),
+        }
+    }
+
+    #[test]
+    fn an_opening_opens_a_tcp_port_a_udp_port_or_both() {
+        use erpc_worker::server::{FirewallRequest, Opening};
+        let (one, many, senders, none) = parts();
+        for good in [
+            Opening {
+                port: 3000,
+                allow: one,
+                limit: None,
+                udp: None,
+            },
+            with_udp(&none, 10001, &senders[..1], false),
+            // Any address, said.
+            with_udp(&none, 10001, &[], true),
+            Opening {
+                port: 3000,
+                allow: many[..64].to_vec(),
+                ..with_udp(&none, 10001, &senders[..64], false)
+            },
+        ] {
+            assert_eq!(super::check(&request(good.clone())), Ok(()), "{good:?}");
+        }
+        assert_eq!(
+            super::check(&FirewallRequest {
+                ssh_port: 22,
+                opening: None
+            }),
+            Ok(()),
+            "closing"
+        );
+        assert!(
+            super::check(&FirewallRequest {
+                ssh_port: 0,
+                opening: None
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn an_opening_that_opens_nothing_or_names_no_sender_is_refused() {
+        use erpc_worker::server::Opening;
+        let (one, many, senders, none) = parts();
+        for bad in [
+            // Opens nothing.
+            none.clone(),
+            // A TCP port for nobody, or port 0 for somebody.
+            Opening {
+                port: 3000,
+                ..none.clone()
+            },
+            Opening {
+                allow: one.clone(),
+                ..none.clone()
+            },
+            // SSH's port, and too many addresses.
+            Opening {
+                port: 22,
+                allow: one,
+                limit: None,
+                udp: None,
+            },
+            Opening {
+                port: 3000,
+                allow: many,
+                limit: None,
+                udp: None,
+            },
+            // A UDP port that is 0, SSH's, or for too many addresses.
+            with_udp(&none, 0, &senders[..1], false),
+            with_udp(&none, 22, &senders[..1], false),
+            with_udp(&none, 10001, &senders, false),
+            // A UDP port for nobody without saying any address: an empty
+            // list never means everyone.
+            with_udp(&none, 10001, &[], false),
+            // Addresses and any address at once.
+            with_udp(&none, 10001, &senders[..1], true),
+        ] {
+            let refused = super::check(&request(bad.clone())).expect_err("refused");
+            assert!(refused.starts_with("an opening"), "{bad:?}: {refused}");
+        }
+    }
 
     /// Tools that run nothing and write down what they were asked to.
     #[derive(Default)]

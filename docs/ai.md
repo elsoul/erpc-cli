@@ -8,7 +8,9 @@ SPDX-License-Identifier: Apache-2.0
 `erpc ai` opens a conversation with the ERPC assistant. It answers from
 ERPC's documentation and your account, and with your approval it can act:
 
-- start and end hourly products;
+- start and end hourly products, and point a UDP Forwarding line at a
+  server (it changes no firewall: `erpc worker deploy --udp` does both for
+  an app of erpc worker's);
 - buy ERPC Credit with EURC from your wallet;
 - wait for a new VPS to come up;
 - log in to the VPS once with the password ERPC set, put your key in place

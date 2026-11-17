@@ -59,6 +59,23 @@ Changes made for erpc worker:
   buy landed. buy_on_shreds buys a graduation from the Shreds stream; a pool
   seen twice is counted once against its creator. A buy can pay a priority
   fee (priority_fee_micro_lamports, compute_unit_limit), counted in its cost.
+  Each buy in GET /api/timing is stamped with the settings it was made under
+  (a count of the configuration's changes, with the settings that decide how
+  a buy goes out), and the report with those in force; src/timing_example.json
+  is a whole report, which the tests hold the report to.
+- With SHREDS_UDP_BIND, the raw shreds an ERPC UDP Forwarding line sends to
+  the server are received on that port and deshredded with the SDK's UDP
+  receiver (its udp feature), and the migrations in them go down the Shreds
+  path as Via::Udp; GET /api/timing times them against the Shreds stream,
+  Geyser and confirmation, and counts the datagrams, batches and migrations
+  that came in. A datagram is taken in only when it is for a slot near the
+  one Geyser is at and its shred is signed by that slot's leader, read from
+  the RPC's leader schedule; what is kept of incomplete batches is limited,
+  and so is the number of migrations followed up at once. The receiver is
+  behind the app's udp Cargo feature, on by default, which turns on
+  solana-stream-sdk 5.0.0's own shred decoder and signature check; built
+  with --no-default-features, the app says it has no UDP source and runs
+  on without one.
 - POST /api/bans/trace bans the wallet that first funded each banned
   creator and the other wallets it funded lately, leaving out wallets with
   long histories, funders paying many wallets, and the bot's own wallet;

@@ -14,6 +14,37 @@ whose version has no entry below.
 
 ### Added
 
+- `erpc worker deploy --udp` starts an hourly ERPC UDP Forwarding line for
+  the server: the leader's raw shreds, sent over UDP to a port of the
+  server's own (`--udp-port`, default 10001) from a node in its region
+  (`--udp-region`). The plan is Standard unless `--udp-plan` names Premium
+  by product id, and `deploy` shows the hourly catalogue's price before it
+  starts either. erpc points the line at the server's public IPv4 address,
+  opens the port in the server's firewall to the addresses ERPC sends from
+  and to no one else (when ERPC names none, the port stays closed unless
+  `--udp-any-source` opens it to any IPv4 address), and gives the app
+  `SHREDS_UDP_BIND`. What the UDP step would be refused for is checked
+  before the server or any line is bought. `status` shows the line and its
+  price, and `delete --release-server` ends it, also when the server has
+  ended outside erpc. While a UDP Forwarding line is on record and no server
+  it reached is (such a VPS left the record), every deploy stops before it
+  buys anything unless it has `--udp` or `--forget-line`, since the line
+  would go on sending where it was pointed and being charged. `erpc ai`
+  lists the account's UDP Forwarding lines (`my_services`) and points one at
+  a server after the person's yes (`point_udp_line`). The `solana/pumpfun`
+  template reads the UDP shreds with solana-stream-sdk 5.0.0 (its `udp`
+  Cargo feature, on by default, which needs Rust 1.98.1 or newer), takes in
+  only shreds their slot's leader signed, buys a graduation from whichever
+  source shows it first, stamps each buy in `/api/timing` with the settings
+  it was made under, and says there how much sooner the UDP shreds came; its
+  Geyser and Shreds streams use the SDK's 16 MiB HTTP/2 receive windows.
+  `deploy` names a Rust older than the app's `rust-version` before it buys
+  anything, and `build`, `run`, `check` and `deploy` given `--dir erpc.toml`
+  take the app's directory as `.`. In the template's lock, solana-stream-sdk
+  5.0.0 and the 31 agave and solana 4.4.1 crates its `=` pins bring in are
+  younger than the 14 days CONTRIBUTING asks. The maintainers made an
+  exception for them on 2026-11-13. It lapses on 2026-11-27, when the SDK is
+  14 days old. Every other crate in that lock is at least 14 days old.
 - `install.erpc.global` counts the installers it serves: each `GET` of an
   installer writes one data point to Workers Analytics Engine with the
   request's country, continent and Cloudflare data centre, the first language

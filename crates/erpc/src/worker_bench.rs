@@ -606,6 +606,7 @@ mod tests {
                     id: "300003".to_owned(),
                     endpoint: (*endpoint).to_owned(),
                     hourly: true,
+                    sources: Vec::new(),
                 })
                 .collect(),
             ..Env::default()

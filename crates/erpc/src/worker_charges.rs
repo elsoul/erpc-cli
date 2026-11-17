@@ -383,6 +383,52 @@ mod tests {
         charges.items.iter().map(|i| i.charge).collect()
     }
 
+    /// A UDP Forwarding line is charged as either of its products, and
+    /// listed and priced as the other lines are; one under another
+    /// product's type is not it.
+    #[test]
+    fn a_udp_forwarding_line_is_listed_and_priced_as_either_of_its_products() {
+        let mut env = env();
+        let udp = |id: &str, endpoint: &str| erpc_worker::manifest::Line {
+            kind: erpc_worker::manifest::LineKind::Udp,
+            id: id.to_owned(),
+            endpoint: endpoint.to_owned(),
+            hourly: true,
+            sources: vec!["198.51.100.20".parse().expect("ip")],
+        };
+        env.lines = vec![udp("400004", "0.0.0.0:10001")];
+        let standard = json!([
+            { "productType": "vps", "userProductId": 100_001, "hourlyCents": 7 },
+            { "productType": "one_hop_direct", "userProductId": 400_004, "hourlyCents": 69 },
+        ]);
+        let charges = of(&env, &snapshot(&standard));
+        assert_eq!(charges_of(&charges), [Charge::At(7.0), Charge::At(69.0)]);
+        let text = charges.lines(" --env prod").join("\n");
+        assert!(
+            text.contains("UDP Forwarding line 400004") && text.contains("€0.69 per hour"),
+            "{text}"
+        );
+        assert!(text.contains("€0.76 per hour"), "together: {text}");
+        let premium = json!([
+            { "productType": "udp_forwarding_premium", "userProductId": 400_004,
+              "hourlyCents": 139 },
+        ]);
+        assert_eq!(
+            charges_of(&of(&env, &snapshot(&premium)))[1],
+            Charge::At(139.0)
+        );
+        // Not yet charged (a Premium line is charged once it is pointed),
+        // or the same id as another product: not on the list.
+        let other = json!([
+            { "productType": "grpc", "userProductId": 400_004, "hourlyCents": 34 },
+        ]);
+        env.lines = vec![udp("400004", "")];
+        assert_eq!(
+            charges_of(&of(&env, &snapshot(&other)))[1],
+            Charge::NotListed
+        );
+    }
+
     #[test]
     fn each_item_on_record_gets_the_price_the_account_is_charged() {
         let charges = of(&env(), &snapshot(&all_three()));

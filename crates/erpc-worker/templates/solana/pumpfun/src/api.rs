@@ -60,7 +60,10 @@ pub struct ApiContext {
         crate::timing::TimingReport,
         crate::timing::Summary,
         crate::timing::BuyTiming,
+        crate::timing::Settings,
         crate::timing::Via,
+        crate::timing::UdpReport,
+        crate::timing::UdpDropped,
         crate::trace::TraceReport,
         crate::trace::TracedBan,
         crate::trace::Skipped,
@@ -301,7 +304,7 @@ async fn put_config(
             );
         }
     }
-    s.config = next;
+    s.set_config(next);
     Json(s.config.clone()).into_response()
 }
 
@@ -571,13 +574,18 @@ async fn post_grpc_stop(State(ctx): State<ApiContext>) -> impl IntoResponse {
     Json(serde_json::json!({ "grpc_streaming": false }))
 }
 
-/// How early graduations are seen (Shreds, Geyser at processed, confirmed)
-/// and how many slots after its pool each buy landed, in milliseconds and
-/// slots, over the last samples. Kept in memory: a restart starts over.
+/// How early graduations are seen (the UDP shreds, the Shreds stream, Geyser
+/// at processed, confirmed) and how many slots after its pool each buy
+/// landed, in milliseconds and slots, over the last samples, what came in
+/// over UDP, and the settings each buy was made under beside those in
+/// force. Kept in memory: a restart starts over.
 #[utoipa::path(get, path = "/api/timing", responses((status = 200, body = crate::timing::TimingReport)), tag = "Trade")]
 async fn get_timing(State(ctx): State<ApiContext>) -> impl IntoResponse {
-    let timing = ctx.state.read().await.timing.clone();
-    let report = timing.lock().expect("timing lock").report();
+    let (timing, settings) = {
+        let s = ctx.state.read().await;
+        (s.timing.clone(), s.settings())
+    };
+    let report = timing.lock().expect("timing lock").report(settings);
     Json(report)
 }
 
@@ -866,6 +874,53 @@ mod tests {
         for key in patch.keys() {
             assert!(config.contains_key(key), "{key} is not a setting");
         }
+    }
+
+    /// Each buy says which configuration it was made under: one more for
+    /// each `PUT /api/config` that changes it, whatever setting changed,
+    /// and the same for one that changes nothing.
+    #[tokio::test]
+    async fn the_timing_says_which_settings_each_buy_was_made_under() {
+        use crate::timing::{Sighting, Via};
+        let state = Arc::new(tokio::sync::RwLock::new(AppState::new(None)));
+        let ctx = ApiContext {
+            state: state.clone(),
+            rpc_client: Arc::new(RpcClient::new("http://127.0.0.1:1".to_owned())),
+            api_token: String::new(),
+        };
+        let put = |patch: serde_json::Value| {
+            let ctx = ctx.clone();
+            async move {
+                let patch: PartialTradeConfig = serde_json::from_value(patch).unwrap();
+                put_config(State(ctx), Json(patch)).await.status()
+            }
+        };
+        let timing = || {
+            let ctx = ctx.clone();
+            async move {
+                let body = get_timing(State(ctx)).await.into_response().into_body();
+                let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+                serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()
+            }
+        };
+        let bought = || async {
+            let s = state.read().await;
+            let seen = Sighting { slot: 1, seen: std::time::Instant::now(), via: Via::Shreds };
+            s.timing.lock().unwrap().on_buy_sent("P".into(), &seen, s.settings(), std::time::Instant::now());
+        };
+        bought().await;
+        assert_eq!(put(serde_json::json!({ "priority_fee_micro_lamports": 10_000 })).await, StatusCode::OK);
+        bought().await;
+        // Refused, and given what is in force already: no new configuration.
+        assert_eq!(put(serde_json::json!({ "buy_amount_lamports": 0 })).await, StatusCode::BAD_REQUEST);
+        assert_eq!(put(serde_json::json!({ "priority_fee_micro_lamports": 10_000 })).await, StatusCode::OK);
+        let report = timing().await;
+        assert_eq!(report["settings"]["rev"], 1);
+        assert_eq!(report["settings"]["priority_fee_micro_lamports"], 10_000);
+        assert_eq!((&report["buys"][0]["settings"]["rev"], &report["buys"][1]["settings"]["rev"]), (&0.into(), &1.into()));
+        // A setting the buys do not name is a new configuration all the same.
+        put(serde_json::json!({ "slippage_bps": 900 })).await;
+        assert_eq!(timing().await["settings"]["rev"], 2);
     }
 
     #[test]

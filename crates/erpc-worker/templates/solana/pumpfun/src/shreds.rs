@@ -8,6 +8,14 @@
 //! land in the pool's own slot, and can also land before the pool exists,
 //! and fail. The Geyser path still sees every pool; a pool bought from the
 //! Shreds stream is not bought again (`reserve_buy`).
+//!
+//! The raw shreds ERPC forwards over UDP (`shreds_udp`) carry the same
+//! migrations, and they go down the same path: `migration_in` finds one,
+//! `on_migration` times it and buys from it, as `Via::Udp`.
+//!
+//! A migration followed up costs a task and one or two RPC reads, so only
+//! `MIGRATIONS_AT_ONCE` are followed up at a time, from both sources
+//! together: one more is timed and left to Geyser.
 
 use crate::amm::{Migration, Read, PUMP_PROGRAM};
 use crate::state::AppState;
@@ -20,7 +28,9 @@ use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
 use solana_signature::Signature;
 use solana_stream_sdk::shredstream_proto::shredstream_proxy_client::ShredstreamProxyClient;
-use solana_stream_sdk::{decode_entries, ShredstreamClient, VersionedTransaction};
+use solana_stream_sdk::{
+    decode_entries, tune_grpc_endpoint, ShredstreamClient, VersionedTransaction,
+};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -29,6 +39,13 @@ use tonic::transport::{ClientTlsConfig, Endpoint};
 
 /// Where an address lookup table's addresses start.
 const LOOKUP_TABLE_META_SIZE: usize = 56;
+/// Migrations followed up at once. pump.fun graduates a few tokens a
+/// minute at most, and following one up takes well under a second, so
+/// eight at once is already a burst: more than that is a flood, and the
+/// RPC reads it would cost are not made.
+const MIGRATIONS_AT_ONCE: usize = 8;
+/// One permit per migration being followed up.
+static FOLLOWING: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(MIGRATIONS_AT_ONCE);
 /// A batch of entries can be larger than tonic's 4 MB default.
 const MAX_MESSAGE: usize = 64 * 1024 * 1024;
 
@@ -77,7 +94,7 @@ fn key(k: &impl AsRef<[u8]>) -> Pubkey {
 
 /// A migration found in a transaction: its signature, and its
 /// instruction's account indexes and data.
-struct Found {
+pub(crate) struct Found {
     signature: Signature,
     accounts: Vec<u8>,
     data: Vec<u8>,
@@ -85,7 +102,7 @@ struct Found {
 
 /// The `migrate_v2` in a transaction, if there is one. A program is always
 /// among the message's own keys, so nothing has to be looked up to find it.
-fn migration_in(tx: &VersionedTransaction) -> Option<Found> {
+pub(crate) fn migration_in(tx: &VersionedTransaction) -> Option<Found> {
     let keys = tx.message.static_account_keys();
     let ix = tx.message.instructions().iter().find(|ix| {
         keys.get(ix.program_id_index as usize).is_some_and(|p| key(p) == PUMP_PROGRAM)
@@ -154,7 +171,9 @@ async fn stream(
     rpc: &Arc<RpcClient>,
     send_rpc: &Arc<RpcClient>,
 ) -> anyhow::Result<bool> {
-    let mut channel = Endpoint::from_shared(endpoint.to_owned())?;
+    // The SDK's fixed 16 MiB HTTP/2 receive windows, as its own Shreds
+    // client has them, not tonic's defaults (2 MiB a stream, 5 MiB in all).
+    let mut channel = tune_grpc_endpoint(Endpoint::from_shared(endpoint.to_owned())?);
     if endpoint.starts_with("https://") {
         channel = channel.tls_config(ClientTlsConfig::new().with_native_roots())?;
     }
@@ -171,18 +190,23 @@ async fn stream(
         let Ok(decoded) = decode_entries(&message.entries) else { continue };
         for tx in decoded.iter().flat_map(|e| &e.transactions) {
             if let Some(found) = migration_in(tx) {
-                on_migration(found, tx, message.slot, seen, state, rpc, send_rpc).await;
+                let sighting = Sighting { slot: message.slot, seen, via: Via::Shreds };
+                on_migration(found, tx, sighting, state, rpc, send_rpc).await;
             }
         }
     }
     Ok(any)
 }
 
-async fn on_migration(
+/// A migration seen before it ran, in the Shreds stream or the UDP shreds
+/// (`sighting.via`): timed, and, with `buy_on_shreds`, bought from here,
+/// once, from the source that showed it first: the same migration seen in
+/// the other source after is timed and nothing more. No more than
+/// `MIGRATIONS_AT_ONCE` are followed up at a time.
+pub(crate) async fn on_migration(
     found: Found,
     tx: &VersionedTransaction,
-    slot: u64,
-    seen: Instant,
+    sighting: Sighting,
     state: &Arc<RwLock<AppState>>,
     rpc: &Arc<RpcClient>,
     send_rpc: &Arc<RpcClient>,
@@ -191,13 +215,30 @@ async fn on_migration(
         let s = state.read().await;
         (s.timing.clone(), s.luts.clone(), s.config.buy_on_shreds && s.grpc_streaming && s.running)
     };
-    timing.lock().expect("timing lock").on_shred(found.signature, slot, seen);
-    if !buy {
+    let first = timing
+        .lock()
+        .expect("timing lock")
+        .on_sighting(found.signature, sighting.slot, sighting.seen, sighting.via);
+    if !buy || !first {
         return;
     }
+    // Held until the reads are done; with none left this migration is not
+    // followed up. Over UDP that is counted and not logged, since a line
+    // each would be a flood of its own.
+    let Ok(following) = FOLLOWING.try_acquire() else {
+        match sighting.via {
+            Via::Udp => timing.lock().expect("timing lock").udp_counters().migration_dropped(),
+            _ => warn!(
+                "Migration {}: {MIGRATIONS_AT_ONCE} are being followed up already; left to Geyser",
+                found.signature
+            ),
+        }
+        return;
+    };
     let tx = tx.clone();
     let (state, rpc, send_rpc) = (state.clone(), rpc.clone(), send_rpc.clone());
     tokio::spawn(async move {
+        let _following = following;
         let keys = match resolve(&tx, &luts) {
             Ok(keys) => keys,
             Err(missing) => {
@@ -237,16 +278,15 @@ async fn on_migration(
         };
         match new_pool {
             Ok(new_pool) => {
-                let sighting = Sighting { slot, seen, via: Via::Shreds };
                 crate::handlers::processor::on_create_pool(new_pool, sighting, &state, &rpc, &send_rpc).await;
             }
-            Err(why) => info!("Pool {} not bought from the Shreds stream: {why}", migration.pool()),
+            Err(why) => info!("Pool {} not bought from {}: {why}", migration.pool(), sighting.via.source()),
         }
     });
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -261,7 +301,7 @@ mod tests {
     /// One entry holding one v0 transaction, as the ledger lays it out: a
     /// `migrate_v2` whose accounts are the message's own keys 0..=4 then
     /// the lookup table's, writable 0..14 and read-only 14..24.
-    fn entry_with_a_migration(table: Pubkey) -> Vec<u8> {
+    pub(crate) fn entry_with_a_migration(table: Pubkey) -> Vec<u8> {
         let mut msg = vec![0x80, 1, 0, 1, 5];
         for i in 0..5u8 {
             let k = if i == 4 { PUMP_PROGRAM } else { Pubkey::new_from_array([100 + i; 32]) };
@@ -286,6 +326,36 @@ mod tests {
         out.extend_from_slice(&[3; 64]);
         out.extend(msg);
         out
+    }
+
+    /// With as many migrations being followed up as the limit allows, one
+    /// more starts no task and makes no RPC read: it is timed, counted
+    /// (over UDP), and left to Geyser.
+    #[tokio::test]
+    async fn a_migration_past_the_limit_is_counted_and_not_followed_up() {
+        let state = Arc::new(RwLock::new(AppState::new(None)));
+        {
+            let mut s = state.write().await;
+            s.config.buy_on_shreds = true;
+            s.running = true;
+        }
+        // Never reached: nothing is read for a migration that is not followed up.
+        let rpc = Arc::new(RpcClient::new("http://127.0.0.1:1".to_owned()));
+        let entries = decode_entries(&entry_with_a_migration(Pubkey::new_from_array([42; 32]))).unwrap();
+        let tx = &entries[0].transactions[0];
+        let held = FOLLOWING.try_acquire_many(MIGRATIONS_AT_ONCE as u32).unwrap();
+        let sighting = |via| Sighting { slot: 7, seen: Instant::now(), via };
+        on_migration(migration_in(tx).unwrap(), tx, sighting(Via::Udp), &state, &rpc, &rpc).await;
+        let counters = state.read().await.timing.lock().unwrap().udp_counters();
+        assert_eq!(counters.report().migrations_dropped, 1);
+        // It was timed all the same: seen again, from either source, it is
+        // no first sighting, and is not counted twice.
+        on_migration(migration_in(tx).unwrap(), tx, sighting(Via::Udp), &state, &rpc, &rpc).await;
+        on_migration(migration_in(tx).unwrap(), tx, sighting(Via::Shreds), &state, &rpc, &rpc).await;
+        assert_eq!(counters.report().migrations_dropped, 1);
+        assert_eq!(FOLLOWING.available_permits(), 0);
+        drop(held);
+        assert_eq!(FOLLOWING.available_permits(), MIGRATIONS_AT_ONCE);
     }
 
     #[test]

@@ -32,6 +32,9 @@ new pool runs the whole trade: **buy → sell → close the token account**.
 - With a Shreds line, graduations are seen before any node has run them,
   timed against Geyser and confirmation (`GET /api/timing`), and bought
   from there when `buy_on_shreds` is set: see **Zero-block buys**.
+- With a UDP Forwarding line, the leader's raw shreds arrive on a UDP port
+  of the server itself, with no stream in between, and the same migrations
+  are seen, timed and bought from them sooner: see **Raw shreds over UDP**.
 - Status changes and notifications only after on-chain confirmation.
 - Forced exit after a timeout, or at once when pool liquidity collapses.
 - What is left after a sell is sold again only when the sell is sure to
@@ -55,8 +58,11 @@ erpc worker deploy --new-vps --grpc    # build for Linux, run it on a new hourly
 The same order `erpc worker init` prints. `GRPC_ENDPOINT` is not a secret:
 `--grpc` provides it, here or on the server. A deploy cross-builds for
 Linux, so the machine needs `rustup target add x86_64-unknown-linux-gnu`,
-`zig`, `cargo-zigbuild` and an SSH key first; `erpc worker check` says which
-is missing. `erpc worker stop` stops the bot and ends no hourly product;
+`zig`, `cargo-zigbuild` and an SSH key first; `erpc worker check` says
+which is missing, and a deploy refuses before it buys anything. The bot
+needs Rust 1.98.1 or newer (`rustup update`), as its `Cargo.toml` says
+(`rust-version`); `erpc worker deploy` names an older one before it buys
+anything. `erpc worker stop` stops the bot and ends no hourly product;
 `erpc worker status` names what the environment is charged for. Before
 leaving the bot alone on a server, set `WEBHOOK_URL` (a Discord webhook, as a
 secret): it is the only channel an unattended bot has, and `AUTO_LOOP` to
@@ -74,6 +80,10 @@ server's region, and the app sends its transactions through it
 shared RPC, since Unlimited does not serve `getProgramAccounts` or
 `getTokenAccountsByOwner`. It takes up to 45 minutes to be ready.
 `erpc worker bench` compares the two from the server.
+
+`deploy --udp` starts an hourly ERPC UDP Forwarding line, which sends the
+leader's raw shreds to a UDP port of the server, where the app receives
+them (`SHREDS_UDP_BIND`): see **Raw shreds over UDP**.
 
 To run it here instead, give this machine lines of its own, or set
 `GRPC_ENDPOINT` (and `X_TOKEN`, when that gRPC takes a token) yourself:
@@ -110,6 +120,7 @@ about 0.013 SOL: 0.0001 to buy, 0.004 of token-account rent, 0.01 for fees.
 |---|---|---|---|
 | `GRPC_ENDPOINT` | yes | — | Geyser gRPC endpoint |
 | `SHREDS_ENDPOINT` | | — | Shreds stream endpoint; `deploy --shreds` sets it. Without it pools are seen in Geyser only |
+| `SHREDS_UDP_BIND` | | — | Address and UDP port to receive ERPC's raw shreds on, `0.0.0.0:<port>`; `deploy --udp` sets it to its line's port. Without it nothing is taken in over UDP; a build without the `udp` Cargo feature (on by default) takes nothing in either, and says so. See **Raw shreds over UDP** |
 | `X_TOKEN` | | — | gRPC auth token, for a gRPC that takes one (a secret); ERPC lines do not |
 | `API_TOKEN` | yes | — | Bearer token every API request carries, 16+ characters (a secret) |
 | `API_PORT` | | `3000` | API port; keep `run.health` in `erpc.toml` in step |
@@ -217,12 +228,15 @@ each billed by the hour, its price shown and asked first.
 | Step | Line | The bot then | Read | Take the next step when |
 |---|---|---|---|---|
 | 1 | Geyser gRPC, `--grpc` | Sees every pool at processed and buys it with a simulation first; `graduated_only` keeps it to graduations | `/api/trades/profit`; each buy's `slots_late` in `/api/timing` | Buys land a slot or more after the pool, once its price has moved |
-| 2 | Shreds, `--shreds` | Sees a graduation before any node has run it; `buy_on_shreds` buys from there, with no read and no simulation | `shred_to_processed_ms`; `slots_late` for `via: shreds`; buys that landed and failed | `shred_to_processed_ms` is short and `slots_late` stays above 0: the bot is not what is slow, the send route is |
+| 2 | Shreds, `--shreds` | Sees a graduation before any node has run it; `buy_on_shreds` buys from there, with no read and no simulation | `shred_to_processed_ms`; `slots_late` for `via: shreds`; buys that landed and failed | `shred_to_processed_ms` is short (the shreds barely ahead of Geyser, `shred_offset_in_slot_ms` large) and `slots_late` stays above 0: the stream is what is slow (step 2b); `shred_to_processed_ms` is long and `slots_late` stays above 0: the stream is well ahead, the send route is what is slow (step 3) |
+| 2b | UDP Forwarding, `--udp` | Receives the leader's shreds on a UDP port of its own from an ERPC node in the server's region, with no gRPC stream in between, and buys from them as from Shreds | `udp_before_shreds_ms`; `udp.migrations`; `slots_late` for `via: udp` | Take it when the shared Shreds line is short of the slot: `shred_to_processed_ms` short, with `slots_late` still above 0 (Standard €0.69/h, Premium €1.39/h). Step on when `slots_late` for `via: udp` stays above 0 too |
 | 3 | Unlimited RPC, `--unlimited` | Sends through an RPC of its own in the server's region (up to 45 minutes to be ready; `erpc worker bench` compares it) | The same, and `bench` | Still late at a priority fee you will pay: the limit is bandwidth at the leader, not distance |
 | 4 | SWQoS (erpc does not start it) | Sends over a stake-backed connection, which leaders give most of their bandwidth to | `slots_late`; buys that failed | The top step |
 
 - One step at a time, `/api/timing` read before and after each; within
   step 2, **Zero-block buys** below gives the order.
+- Step 2b is the server's: the shreds are sent to its public IPv4, which
+  `erpc worker run` on a laptop behind NAT cannot receive.
 - Step down when buys fail more than they land, or the fee eats the profit:
   a failed buy pays its fee for nothing, and a step costs by the hour.
 - Measured from this machine (`erpc worker run --ip`) every number includes
@@ -236,12 +250,20 @@ the migration has already run on the node serving the stream, and a buy
 sent then lands a slot or more after the pool's. The Shreds stream carries
 the migration as the leader sends it out, before anyone has run it.
 
-With `SHREDS_ENDPOINT` set, every migration in the Shreds stream is timed:
-when it showed there, when Geyser showed it processed, and when its slot was
+With `SHREDS_ENDPOINT` set, every migration in the Shreds stream is timed
+(and with `SHREDS_UDP_BIND`, every one in the raw shreds over UDP): when it
+showed there, when Geyser showed it processed, and when its slot was
 confirmed, and how far into its slot each came. `GET /api/timing` gives
 each measure's p50, p90, min and max over the last 1000, and for each buy
-how long it took from first sight to sending and how many slots after the
-pool's it landed (0 is the pool's own slot):
+how long it took from first sight to sending, how many slots after the
+pool's it landed (0 is the pool's own slot), whether it landed and failed
+on chain (`failed`: it paid its fee and bought nothing, and is left out of
+the `slots_late` measure), and the settings it was made under (`settings`:
+`rev`, 0 at the start and one more each time `PUT /api/config` changes the
+configuration, with `buy_on_shreds`, the priority fee and the compute unit
+limit). The report's own `settings` are those in force: compare a buy's
+`rev` with it to tell the buys made since a change from those before.
+`src/timing_example.json` is a whole report:
 
 ```bash
 curl -s http://127.0.0.1:3000/api/timing -H "Authorization: Bearer $API_TOKEN"
@@ -264,9 +286,11 @@ Geyser, which shows a pool only once it exists.
 What to know before turning it on:
 
 - **The numbers decide, not the bot.** Sending is never delayed to aim at
-  a slot. Read `/api/timing` first: when `shred_to_processed_ms` is short
-  and `slots_late` stays above 0, the buy is not what is slow, and a
-  priority fee or a faster send route is what is left.
+  a slot. Read `/api/timing` first: with `slots_late` above 0, a short
+  `shred_to_processed_ms` says the stream shows the migration barely
+  before Geyser does, and a faster stream (`deploy --udp`) is what is
+  left; a long one says the stream is well ahead, and a priority fee or a
+  faster send route is.
 - **A buy can land before the pool exists, and fail, paying its fee.**
   Landing in the pool's slot needs the leader to place the buy after the
   migration: a priority fee (`priority_fee_micro_lamports`) and a send RPC
@@ -288,20 +312,24 @@ What to know before turning it on:
   sooner, so the confirmed measures shrink.
 
 Tuning it, one change at a time, on the server that will trade (numbers
-measured elsewhere include that machine's distance to the lines):
+measured elsewhere include that machine's distance to the lines). After
+each change, judge the buys whose `settings.rev` is the report's: the ones
+made since.
 
 1. **Measure with `buy_on_shreds` off.** Let a few dozen graduations go by.
    `shred_to_processed_ms` says how far ahead the Shreds stream is; the
    buys (`via: geyser`) give a `slots_late` to beat.
 2. **Turn on `buy_on_shreds`**, nothing else. Compare `slots_late` for
-   `via: shreds` with step 1, and read the wallet's transactions for buys
-   that landed and failed: those landed before the pool.
+   `via: shreds` with step 1, and count the buys `/api/timing` marks
+   `failed`: those landed and failed, most often before the pool.
 3. **Still late?** Raise `priority_fee_micro_lamports` in small steps,
    reading `/api/timing` after each. Every buy then pays
    `priority_fee_micro_lamports` × `compute_unit_limit` / 1,000,000 lamports
    more, and the take-profit target rises with it.
-4. **Still late at a fee you will pay?** The send route is what is left:
-   `deploy --unlimited`, then measure again.
+4. **Still late at a fee you will pay?** When `shred_to_processed_ms` is
+   short, the stream is what is left: a faster one, `deploy --udp`; when
+   it is long, the send route is: `deploy --unlimited`. Then measure
+   again.
 5. **Failing more than landing?** Lower the fee or turn `buy_on_shreds`
    off again: every failed buy pays its fee for nothing.
 
@@ -310,6 +338,128 @@ curl -X PUT http://127.0.0.1:3000/api/config \
   -H "Authorization: Bearer $API_TOKEN" -H 'Content-Type: application/json' \
   -d '{"buy_on_shreds": true, "priority_fee_micro_lamports": 10000}'
 ```
+
+## Raw shreds over UDP
+
+ERPC UDP Forwarding sends the leader's shreds, as a node of ERPC's in one
+region receives them, to one public IPv4 address and port of yours, with
+nothing in between: no gRPC stream, and no node that runs them first. Each
+datagram carries one shred; the bot gathers each batch, decodes it once
+its shreds are all here, and reads the migrations from it as it does from
+the Shreds stream, so `buy_on_shreds` buys from these too. Standard is
+€0.69 an hour and sends from one ERPC node; Premium, €1.39, sends the first
+copy of each shred from a mesh of nodes in its region, and from Dublin too
+(in ERPC's measurement in Frankfurt on 2026-10-30, Premium was first for
+98% of the shreds both carried, by a median of 1.78 ms). Prices are the
+catalogue's on 2026-11-13: `deploy` shows the current one before it asks.
+
+```bash
+erpc worker deploy --udp        # an hourly UDP Forwarding line for the server
+```
+
+`--udp-plan <PRODUCT_ID>` picks the plan (the default is the cheapest,
+Standard), `--udp-port <PORT>` the port (default: the port of the line on
+record, else 10001) and `--udp-region <REGION>` where the shreds are sent
+from (default: the server's ERPC region). erpc points the line at the
+server, sets `SHREDS_UDP_BIND` to `0.0.0.0:<port>`, and opens the port in
+the server's firewall to the IPv4 addresses ERPC sends from. When ERPC
+names none, the port stays closed and deploy says so; `--udp-any-source`
+opens it to any IPv4 address for that deploy, and the bot then has the
+checks below and nothing else between it and whoever sends. The shreds go
+to the server's public IPv4: this is a line for `erpc worker deploy`, not
+for `erpc worker run` on a laptop behind NAT.
+
+What `/api/timing` then shows:
+
+- `udp.datagrams` above 0 says the shreds arrive at all; `udp.batches`,
+  that they decode; `udp.migrations`, how many migrations came in them.
+- `udp_before_shreds_ms` says how much sooner than the shared Shreds line
+  each migration showed (`shreds_before_udp_ms` when that line was first).
+- `udp_to_processed_ms` is `shred_to_processed_ms` for these shreds, and a
+  buy from them is `via: udp` in `buys`.
+- `udp.dropped` counts the datagrams that were not taken in, by why (see
+  **What a datagram is trusted for**). `outside_window` rising with
+  `udp.batches` at 0 means Geyser reports no slot, or lags; `no_leader`
+  rising means the leader schedule cannot be read from the RPC. Counts
+  made in the first seconds after a start that then stay put are
+  expected: `outside_window` for what came before Geyser's first slot,
+  `no_leader` for what came in the second or so before the leader
+  schedule was read (a few thousand datagrams).
+- `udp.resets` and `udp.migrations_dropped` count the times a limit was
+  reached; both stay at 0 on a line that works.
+
+When nothing arrives, check on the server that the datagrams reach it,
+with one of the addresses the line sends from (`erpc worker deploy` names
+them, and `erpc worker firewall list` shows them as the `udp` row):
+
+```bash
+sudo tcpdump -ni any 'udp dst port 10001 and src host <source ip>'
+```
+
+The shreds are decoded, and their signatures checked, with the SDK's own
+shred decoder (`solana-stream-sdk` 5.0.0, its `udp` feature), which needs
+nothing beyond Rust: no `solana-ledger`, RocksDB or OpenSSL. The app's own
+`udp` Cargo feature, on by default, turns it on. To build the app without
+its UDP source:
+
+```toml
+[build]
+command = ["cargo", "build", "--release", "--no-default-features"]
+```
+
+Such a build says, when `SHREDS_UDP_BIND` is set, that it has no UDP
+source, and runs on without it.
+
+### What a datagram is trusted for
+
+A UDP datagram has no sender to trust. The server's firewall lets in the
+addresses ERPC sends from, and an address can be forged by whoever can put
+a packet on the way. So the bot takes nothing on the firewall's word:
+before anything of a datagram is kept, it has to
+
+1. be no longer than a packet, and name a slot;
+2. be for a slot from 32 before to 64 after the last one the Geyser stream
+   reported. Until Geyser reports a slot nothing passes, so a bot whose
+   Geyser stream is down takes no shreds in (it buys nothing then anyway);
+3. parse as a shred;
+4. be signed by the leader of its slot, as the RPC's leader schedule names
+   it (`getSlotLeaders`, 2000 slots at a time, read again about every nine
+   minutes). A slot whose leader is not known yet passes nothing.
+
+The signature is over the merkle root of the shred's FEC set, which the
+shred's own bytes and proof lead to, so it covers the slot, the index, the
+shred version and the data. That is why the shred version is not checked
+by itself: neither the SDK nor the Geyser stream gives the cluster's to
+compare with, and a shred that names another version than the leader
+signed fails the signature.
+
+A datagram that fails a check is dropped, counted in `udp.dropped`
+(`malformed`, `outside_window`, `no_leader`, `bad_signature`), and not
+logged: whoever can send one can send a million. What passes is what the
+leader sent, and from there a migration is believed no further than one
+from the Shreds stream: only when its accounts are its mint's own, and a
+buy needs the real, complete, unmigrated curve read from the RPC, with the
+pool's addresses derived from the mint. A leader can still send a
+migration in a block it then abandons; that can trigger a buy that fails,
+pays its fee, and makes the bot skip that pool from then on.
+
+The limits:
+
+| What | Limit | Past it |
+|---|---|---|
+| The slot a shred is for | 32 before to 64 after Geyser's last slot | the datagram is dropped (`udp.dropped.outside_window`) |
+| Shreds kept while their batch is incomplete | 4096 FEC sets, or 128 MiB | all of them are dropped, and the receiver goes on (`udp.resets`) |
+| Migrations followed up at once (the RPC reads, then the buy), from the Shreds stream and UDP together | 8 | one more is timed and left to Geyser (`udp.migrations_dropped` for UDP, a log line for the Shreds stream) |
+
+What these do not stop: someone who can send to the port can make the bot
+check a signature for every datagram aimed inside the slot window, tens of
+microseconds each. The datagrams are read one at a time, so a flood also
+fills the socket's buffer and genuine shreds are dropped while it lasts:
+the UDP source is lost for that time, and the Shreds and Geyser streams go
+on. Nothing they send is kept or acted on. A genuine shred they send again
+(one the leader signed, seen before) is taken once: the receiver holds one
+of each, and a replay adds nothing to what is counted against the limits
+above. Keep the port closed to addresses that are not ERPC's all the same.
 
 ## What it does not pay fees for
 

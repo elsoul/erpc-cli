@@ -35,6 +35,9 @@ script = "Shell 脚本"
 command = "命令"
 folder = "目录"
 ends = "期限"
+sends_to = "发送到"
+points_now = "当前"
+charged = "计费"
 
 [start]
 title = "以按小时计费方式开通 {product}？在终止之前会一直计费。"
@@ -81,3 +84,11 @@ title = "在本机运行命令"
 title = "在 erpc ai 退出之前允许所有命令吗？命令和 shell 脚本都将在本机直接运行，不再询问。"
 ends = "直到 erpc ai 退出，或开始新对话（/new 或 /clear）"
 note = "命令的输出会交给 ERPC AI，运行前也不再询问：命令可能会打印密钥文件或密码"
+
+[udp]
+title = "将 {name} 线路 {id} 指向 {destination}？"
+to = "{destination}（从 {region} 发送）"
+nowhere = "尚未指向任何服务器"
+charged_already = "无论是否指向服务器，已在按小时计费；此操作只改变发送目标，不改变费用"
+charged_when_pointed = "从指向服务器并生效时起按小时计费，直到终止"
+firewall = "erpc 不会更改防火墙：服务器需要允许该线路的发送地址接入 UDP 端口 {port}"

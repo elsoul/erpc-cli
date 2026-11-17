@@ -220,6 +220,7 @@ erpc worker check                      # what erpc.toml describes, and what is m
 erpc worker run --grpc --ip <IPV4>     # build and run here, with an hourly gRPC line letting this machine in
 erpc worker run --check --grpc --ip <IPV4>   # the same, stopped once healthy
 erpc worker deploy --new-vps --grpc    # a new hourly VPS and gRPC line, prices asked first
+erpc worker deploy --udp               # an hourly UDP Forwarding line: raw shreds to the server's own UDP port
 ```
 
 Before the first `deploy` from this machine: an SSH key (`ssh-keygen -t
@@ -235,6 +236,16 @@ app for the server, which is Linux:
   glibc it was linked against, which `build` and `deploy` name. With them
   installed it is built for glibc 2.31 and up, as from a Mac.
 - **An app built another way:** nothing; see **An app you already have**.
+
+The pumpfun template needs Rust 1.98.1 or newer (`rustup update`): its
+solana-stream-sdk 5.0.0 asks for it, and its `Cargo.toml` says so
+(`rust-version`). An app whose `Cargo.toml` says so (or whose
+workspace's does) is held to it: `deploy` names an older Rust, as the
+compiler cargo builds with gives it in the app's directory (the one
+`RUSTC`, else `CARGO_BUILD_RUSTC`, names when one is set, else `rustc`; a
+`build.rustc` in the app's cargo configuration is not read), before it
+buys anything.
+`check` runs nothing in the app's directory, so it does not.
 
 `erpc worker check` lists what is missing, and `deploy` refuses before it
 buys anything when something is.
@@ -301,8 +312,9 @@ chosen at the Solana RPC.
 `init` prints this order for the app it made, with a `secret put` for each
 setting the template needs and the line flags for the settings a line
 provides. A setting a line provides (`GRPC_ENDPOINT`, `SHREDS_ENDPOINT`,
-`SOLANA_SEND_RPC_ENDPOINT`) is never a secret: `--grpc`, `--shreds` and
-`--unlimited` set it. `run.requires` may hold a set of settings of which one
+`SHREDS_UDP_BIND`, `SOLANA_SEND_RPC_ENDPOINT`) is never a secret: `--grpc`,
+`--shreds`, `--udp` and `--unlimited` set it (`--udp` and `--unlimited` on
+`deploy` only). `run.requires` may hold a set of settings of which one
 is enough, as the pumpfun template does for its RPC: `["ERPC_API_KEY",
 "SOLANA_RPC_ENDPOINT"]`; `check` names the set when neither is set, and the
 first of the set is the one `init` suggests.
@@ -316,8 +328,9 @@ first of the set is the one `init` suggests.
 4. `--host <address>`, a server of your own: Ubuntu or Debian with systemd,
    nftables, `sudo` and Python 3 at `/usr/bin/python3`, reached as root or a
    user with passwordless sudo; the worker's firewall then drops every inbound
-   connection to that server but SSH and the app's port, so a server that
-   serves anything else is not the one to use;
+   connection to that server but SSH, the app's port when
+   `firewall.app_allow` lists someone and, with `--udp`, the UDP Forwarding
+   line's port, so a server that serves anything else is not the one to use;
 5. otherwise, at a terminal, a list of the account's running VPSs, with "start
    a new one" at the end.
 
@@ -340,7 +353,10 @@ erpc worker deploy pump-sniper                                     # then you, a
 ```
 
 - **`--yes`** answers what a start asks: the price of each hourly product the
-  command names (`--new-vps`, `--grpc`, `--shreds`, `--unlimited`). It also
+  command names (`--new-vps`, `--grpc`, `--shreds`, `--udp`, `--unlimited`).
+  It does not take up a UDP Forwarding line the account already has and
+  that points nowhere: that is no price, and the line may be another app's,
+  so the deploy stops and names it (**Data lines** below). It also
   answers the first login to a server erpc has not made key-only yet, a new
   one or one named with `--vps <ID>`: erpc logs in once with the server's
   password, puts your key in and turns password logins off. What would have
@@ -530,7 +546,9 @@ is bought.
      other rules, or was started by an agent from before the one
      installed, the port stays open to exactly those it was open to until
      step 10, unless the change only takes someone off, which is applied
-     here, with the limit on new connections that is in force.
+     here, with the limit on new connections that is in force. And a UDP
+     Forwarding line's port from the IPv4 addresses it sends from (below),
+     whatever is done with the TCP port: the UDP port is no WAF's.
 
    Each change runs under a 120-second rollback timer and is kept only once
    a fresh connection gets in, so a mistaken change cannot lock you out. The
@@ -539,8 +557,11 @@ is bought.
    server, or its provider's console for a server of your own (`--host`).
    So keep a second address you can reach the server from in
    `firewall.ssh_allow` (an office, a VPN exit) before trusting a home one.
-6. Starts the data lines asked for (`--grpc`, `--shreds`, `--unlimited`), or
-   takes up the ones already on record.
+6. Starts the data lines asked for (`--grpc`, `--shreds`, `--udp`,
+   `--unlimited`), or takes up the ones already on record. A UDP Forwarding
+   line (`--udp`) is pointed at the server, and its port is opened again
+   when the addresses it sends from have changed; the app gets the port as
+   `SHREDS_UDP_BIND`.
 7. Uploads the release, checks its digests, and installs it beside the
    earlier ones (`/opt/erpc/workers/<id>/releases/`). Several apps can
    share a server, each on a port of its own: a release whose health-check
@@ -588,9 +609,17 @@ What is bought goes on record at once:
   answer that question; with no terminal, or under `--json`, nothing is
   done. The next deploy asks whether to take a missing VPS it never
   reached off the record and choose a server, as for a new environment.
-  `delete --release-server` takes such a VPS off the record without
-  ending it; it asks the account only about a VPS never reached, or one
-  you say is not to be reached (`--forget`). A server that was reached is
+  While a UDP Forwarding line billed by the hour is on the record and no
+  server it reached is (such a VPS left it, one was bought and never
+  reached, or `delete --release-server` ended the server but not the
+  line), every deploy stops before it buys anything unless it has
+  `--udp` (which points the line at the server it reaches) or
+  `--forget-line <ID>` for the line: a line not asked for again keeps
+  sending where it was pointed, and is charged all the same. The error
+  names the line and how to point it or end it. `delete --release-server`
+  takes a VPS ended outside erpc off the record without ending it; it asks
+  the account only about a VPS never reached, or one you say is not to be
+  reached (`--forget`). A server that was reached is
   removed from and ended as before: erpc never takes a failure to reach
   it (its firewall, your network) for its end.
 - **The server's facts:** host, pinned key and allow list are written right
@@ -598,13 +627,21 @@ What is bought goes on record at once:
   reached by `logs`, `status` and the next deploy.
 - **A start's request:** before a start is sent, its request key goes into
   `[env.<name>.starting]` with what it was for, under `server`, `grpc`,
-  `shreds` or `unlimited`:
+  `shreds`, `udp` or `unlimited`:
 
   ```toml
   [env.default.starting]
   server = { key = "<32 hex digits>", family = "vps", product = "<product id>", region = "amsterdam" }
   grpc   = { key = "<32 hex digits>", family = "grpc", product = "<product id>", ip = "203.0.113.10" }
+  udp    = { key = "<32 hex digits>", family = "udp-forwarding", product = "<product id>" }
   ```
+
+  A UDP Forwarding start names no region and no address (where the line
+  sends from and to is set once it is started), so a deploy that asks for
+  another `--udp-port` or `--udp-region` sends the same request again. Its
+  route answers with codes of its own, read by the same rule: a held
+  purchase lock is `PURCHASE_IN_PROGRESS`, `UDP_FORWARDING_CONFLICT` is a
+  409 with another code, `UDP_FORWARDING_UPSTREAM_UNAVAILABLE` a 5xx.
 
   The entry is what the next run sends: the same key, and never a new one
   while it is there. What erpc does with each answer follows one rule: **a
@@ -656,19 +693,21 @@ What is bought goes on record at once:
     each make a request of their own before the other's is on record, and
     can buy two. That is not supported.
 
-## Data lines: gRPC, Shreds, Unlimited RPC
+## Data lines: gRPC, Shreds, UDP Forwarding, Unlimited RPC
 
-ERPC's hourly lines admit the server by its address and take no token. erpc
-starts them for the server and gives the app their endpoints:
+ERPC's hourly lines take no token: a gRPC, Shreds or Unlimited RPC line
+admits the server by its address, and a UDP Forwarding line sends to it.
+erpc starts them for the server and gives the app their endpoints:
 
 | Flag | Line | The app gets |
 |---|---|---|
 | `--grpc` | Geyser gRPC | `GRPC_ENDPOINT` |
 | `--shreds` | Shreds (Shredstream gRPC) | `SHREDS_ENDPOINT` |
+| `--udp` | UDP Forwarding (raw shreds over UDP) | `SHREDS_UDP_BIND` (`0.0.0.0:<port>`) |
 | `--unlimited` | Unlimited RPC in the server's region | `SOLANA_SEND_RPC_ENDPOINT` |
 
 - **Plans:** each line is the cheapest of its family unless `--grpc-plan`,
-  `--shreds-plan` or `--unlimited-plan` names one.
+  `--shreds-plan`, `--udp-plan` or `--unlimited-plan` names one.
 - **On record:** a line goes into `[env.<name>].lines` the moment user-api
   names it, its endpoint filled in later. A line whose endpoint is not known
   yet sets nothing the app gets.
@@ -694,6 +733,82 @@ starts them for the server and gives the app their endpoints:
     on).
   - A line not billed by the hour is never ended by erpc: it is named, to
     end in the dashboard.
+- **UDP Forwarding:** the leader's raw shreds, sent over UDP from an ERPC
+  node to a port of the server's own, with nothing in between. The app binds
+  that port (`SHREDS_UDP_BIND`) and decodes the shreds itself.
+  - **Before anything is bought,** the server and the other lines
+    included, erpc checks what the UDP step would refuse: the server's
+    address, which must be a public IPv4 one where it is known (a `--host`
+    server, or the one on record), the port (below),
+    the region where the deploy decides the server itself (`--udp-region`,
+    the server on record, or a new VPS's `--region` or nearest region; a
+    `--host` server needs `--udp-region`), the plan, and the product's list
+    of the account's lines, which every later step reads too. When user-api
+    does not let erpc's sign-in reach it, `deploy --udp` stops there, in
+    user-api's own words, and this deploy has started nothing. Once
+    the server is known (`--vps`, or one picked at the terminal) the region,
+    the port and the other workers' ports are checked again before any line
+    is started.
+  - **Plans:** Standard, €0.69 an hour, sends from one ERPC node; Premium,
+    €1.39 an hour, from a mesh of nodes in its region, the first copy of
+    each shred, and adds Dublin. In ERPC's own measurement (Frankfurt,
+    2026-10-30) Premium was first for 98% of the shreds both carried, by a
+    median of 1.78 ms ([ERPC's announcement](https://erpc.global/en/news/2026/11/03/erpc-shreds-udp-forwarding-premium-20261103/)). The cheapest the catalogue offers is taken unless
+    `--udp-plan <product id>` names one; the catalogue lists Premium for the
+    accounts it is on sale to. Prices are the catalogue's on 2026-11-13;
+    `deploy` shows the current one before it asks.
+  - **Region:** the shreds are sent from the server's ERPC region, or from
+    `--udp-region`: amsterdam, frankfurt, london, ny, tokyo or singapore,
+    and dublin with Premium. A `--host` server has no region on record, and
+    neither plan sends from sydney, so both need `--udp-region`.
+  - **Port:** `--udp-port`, else the port of the line on record, else 10001;
+    1024 or above (the worker cannot bind a lower one), not the SSH port or
+    `run.port`, nor a UDP port another worker on the
+    server receives on. erpc opens it in the server's firewall, for IPv4
+    only, to the addresses ERPC sends from, which go on record as the line's
+    `sources` and are read again at each deploy, since ERPC may change them.
+    An address that is not IPv4 is an error that names it.
+  - **When user-api names no address:** the port stays closed, and deploy,
+    `firewall sync` and `firewall list` say so. `deploy --udp
+    --udp-any-source` opens it to any IPv4 address for that deploy; nothing
+    on record keeps it open, so a later deploy or `firewall sync` without
+    the flag closes it again. A port open to any address takes in whatever
+    anyone sends it: the pumpfun template checks every shred against its
+    slot's leader, and an app of your own has to do as much.
+  - **Pointing it at the server:** erpc sets the line's destination to the
+    server's address and port and waits up to 10 minutes for it to be
+    active. Premium is charged only from then, Standard from the start; so a
+    line started and not yet pointed (a deploy that stopped there) is taken
+    up by the next deploy whether or not it is charged yet, and every
+    deploy's summary names it and says whether it is charged. A line just
+    started that user-api then does not list, or that does not become
+    active, is offered to be ended at once.
+  - **A line started elsewhere:** an hourly Standard line of the account
+    that is pointed nowhere (a deploy that stopped before pointing it, or
+    one started from the dashboard or `erpc ai` and not pointed yet) is
+    offered in place of a new one, and taken up only on your yes at a
+    terminal. Under `--yes` the deploy stops instead, before anything is
+    bought, and names the line:
+    whether it is this app's or another's is not a price `--yes` accepts.
+    Take it up at a terminal, or end it if nothing uses it, and deploy
+    again. While a start of this deploy's is on record no such line is
+    offered: the start is sent again with its key, which finds the line it
+    made.
+  - **Not on this machine:** `erpc worker run` does not take `--udp`. The
+    shreds go to one public IPv4 address, and a laptop behind NAT cannot
+    receive them.
+  - **Behind a WAF:** the UDP port is no WAF's. It is opened as the line's
+    record says whatever happens to the WAF's port, and a deploy whose
+    line was pointed again, or whose sources changed, applies the UDP port
+    again with the WAF's port left as step 5 left it.
+  - **What it costs:** `erpc worker status` lists it as `UDP Forwarding line
+    <id>` with its price per hour, as Standard or Premium, beside the server
+    and the other lines.
+  - **From `erpc ai`:** `my_services` lists the account's UDP Forwarding
+    lines (where each sends to and from), and `point_udp_line` points one at
+    an address and port after your yes. That changes no firewall: for an app
+    of erpc's, `deploy --udp` is the way.
+  - `erpc worker delete --release-server` ends it with the other lines.
 - **Unlimited RPC:**
   - It runs on a dedicated server, which takes up to 45 minutes to set up.
     erpc lets the worker's address in, and keeps waiting through that.
@@ -705,8 +820,8 @@ starts them for the server and gives the app their endpoints:
 
 ### Lines for a run on this machine
 
-`erpc worker run` takes `--grpc` and `--shreds` too, for trying the app here
-against real data before it goes to a server:
+`erpc worker run` takes `--grpc` and `--shreds` too (not `--udp`), for trying
+the app here against real data before it goes to a server:
 
 ```bash
 erpc worker run --grpc --shreds --ip "$(curl -4 -s https://api.ipify.org)"
@@ -1238,7 +1353,10 @@ port = 8080                          # what firewall.app_allow opens instead
 host     = "203.0.113.10"
 ssh_user = "ubuntu"
 host_key = "ssh-ed25519 AAAA…"
-lines    = [{ kind = "grpc", id = "<line id>", endpoint = "<the line's endpoint>", hourly = true }]
+lines    = [
+  { kind = "grpc", id = "<line id>", endpoint = "<the line's endpoint>", hourly = true },
+  { kind = "udp", id = "<line id>", endpoint = "0.0.0.0:10001", hourly = true, sources = ["192.0.2.21"] },
+]                                    # a udp line's sources: the addresses ERPC sends from
 
 [env.default.resource]
 kind   = "vps"
@@ -1302,9 +1420,10 @@ as a setting unless `[vars]` sets it, and `run.requires` counts it as set.
 Which to use: **Redis for what is kept a while** (a cache, a ban list, the
 last trades: fast, and losing it costs little), **PostgreSQL for what must
 last** (records, history, anything to query later). Nothing from outside the
-server reaches either: the firewall drops every inbound connection but SSH
-and `app_allow`. Their data lives on the server, outside the worker's state
-directory, so `erpc worker backup` does not cover it.
+server reaches either: the firewall drops every inbound connection but SSH,
+`app_allow` and a UDP Forwarding line's port. Their data lives on the
+server, outside the worker's state directory, so `erpc worker backup` does
+not cover it.
 
 `erpc worker check` says what the file describes, every problem at once, and
 the warnings:
@@ -1322,6 +1441,9 @@ ones a worker meets most:
 
 | Message (start of it) | Why | What to do |
 |---|---|---|
+| `Rust <version> builds the app here, and it needs <version> or newer (rust-version in its Cargo.toml)` | The app's `Cargo.toml` asks for a newer Rust (`package.rust-version`; the pumpfun template asks for 1.98.1) than the one that builds it here | `rustup update`, or install that version and make it the app's (`rustup override set <version>` in its directory; a `RUSTUP_TOOLCHAIN` set in the environment outranks that); then run it again. When `RUSTC` or `CARGO_BUILD_RUSTC` named the compiler, the hint is to make it name a newer one, or unset it. Nothing was bought |
+| `rustc does not run in the app's directory, so cargo would not build it either` | No Rust toolchain is chosen there: rustup has no default, and the app names none | `rustup default stable`, or a `rust-toolchain.toml` in the app; then run it again. Nothing was bought |
+| `the compiler RUSTC names does not run in the app's directory, so cargo would not build it either` (or `CARGO_BUILD_RUSTC`) | The variable names a program that does not run there | Unset it, or make it name a rustc that runs; then run it again. Nothing was bought |
 | `<app> cannot start without <SETTING>` | `run.requires` names a setting nothing sets | `erpc worker secret put <SETTING>`, set it in `[vars]`, or deploy with the line that sets it (`--grpc`, `--unlimited`). The hint names the command; for an app made from a template it carries `--generate` or `--from-account` where `init` named that flag for the setting |
 | `your key was added but does not get in` | The SSH agent did not sign: 1Password locked, or its request not allowed | Unlock 1Password, allow the request, run the same command again (it carries on) |
 | `1Password could not …: authorization timeout` | 1Password asked for approval and nobody answered | Allow the request in 1Password, and run it again |
@@ -1348,6 +1470,17 @@ ones a worker meets most:
 | `WAF: <state>, and its config on the server does not read (…)` (in `status`, `firewall list`) | The agent installed on the server does not take the WAF's config file | `erpc worker deploy` writes it again. Until then the port is opened no wider, as under other rules: it stays open to those it was open to, and `firewall deny` still narrows or closes it |
 | `WAF: not running (<state>)` (in `status`) | The WAF's unit ended and systemd did not bring it back, or it was stopped on the server | `erpc worker logs --waf` shows why; `erpc worker deploy` starts it again |
 | `could not let <ip> in to line <id>` | user-api did not take the Unlimited RPC's whitelist | Deploy again; the line is on record and is taken up |
+| `could not point UDP Forwarding line <id> at <ip>:<port> from <region>` | user-api did not take the line's destination; the code at the end says why. It may pass later when it is the region's (`REGION_DOWN`, or a code ending in `REGION_UNAVAILABLE`), a conflict, a change too soon or a request timed out (409, 429, 408), user-api failing or not answering (a 5xx, no reply, a reply it could not read), or a session to sign in again (`erpc login` first); any other refusal comes back the same (`INVALID_DESTINATION`, an address user-api does not send to although erpc took it for a public one; a route closed to the sign-in) | The hint says which. A line this deploy started is offered to be ended at once, to the person at the terminal (with nobody there it is kept, and the hint says how to end it). One that may pass: deploy again; a line on record is taken up (Standard is charged meanwhile, Premium only once it is pointed); for a region `--udp-region` names another. One that comes back the same: end the line alone (`erpc ai`, or the dashboard), then `--forget-line <id>` takes it off the record, as the hint says; `erpc worker delete --release-server` ends it with the server and everything else |
+| `UDP Forwarding sends only to a public IPv4 address, and the server is at <ip>` | A server behind NAT, on a private network, on a carrier or Tailscale address (`100.64.0.0/10`), or in a range set aside for documentation, benchmarks or other special purposes (`192.0.0.0/24`, `192.0.2.0/24`, `192.88.99.0/24`, `198.18.0.0/15`, `198.51.100.0/24`, `203.0.113.0/24`, `240.0.0.0/4`) | Nothing was started for UDP. Deploy `--udp` to a server with a public IPv4 address |
+| `UDP Forwarding line <id> on record is <product>, and --udp-plan <plan> is <other product>: a line keeps its product` | The environment's UDP Forwarding line is of the other product than `--udp-plan` names; refused before anything is bought | Deploy without `--udp-plan` to keep the line; for the other product, end it (`erpc ai`, or the dashboard), then deploy with `--forget-line <id> --udp --udp-plan <plan>` |
+| `UDP Forwarding line <id> is cancelled` | The environment's UDP Forwarding line on record has ended (in the dashboard, say); refused before anything is bought, or found so while it was waited for | It is charged no more. `--forget-line <id>` takes it off the record; deploy with `--udp` again for a new one |
+| `<line> <id> is suspended` | user-api suspended the line on record; a UDP Forwarding line is refused so before anything is bought | The dashboard says why |
+| `UDP Forwarding Standard: user-api refused the request (403): …; this deploy started nothing` | user-api does not let erpc's sign-in reach the UDP Forwarding routes | Nothing to undo. Signing in again does not change it; the dashboard starts and points UDP Forwarding lines, and the other lines are not affected |
+| `UDP Forwarding Standard: user-api refused the request …; no UDP Forwarding line was started` | The same refusal, at the UDP step of a deploy that had bought its server or other lines already (the list was readable before, and was refused then) | What else is charged is named after it; deploy again to carry on with it, or `erpc worker delete --release-server` to end it |
+| `the account has UDP Forwarding Standard line <id>, started before and pointed at no server, and --yes does not decide …` | A deploy under `--yes` found an unpointed hourly Standard line it could take up instead of starting one | Deploy at a terminal, which asks whether to take it up; or end the line (`erpc ai`, the dashboard) if nothing uses it, and deploy again |
+| `UDP port <port> stays closed: user-api names no address the line sends from` | The line is active and user-api lists no source address for it | Deploy with `--udp` again once it names them; or `deploy --udp --udp-any-source` to open the port to any IPv4 address |
+| `user-api names … as an address UDP Forwarding line <id> sends from, and that is not an IPv4 address` | A source erpc cannot write a firewall rule for | Nothing was opened; deploy again, and tell ERPC support if it stays |
+| `<region> is not a UDP Forwarding Standard region` | Neither the server's region nor `--udp-region` is one the plan sends from; dublin is Premium's alone | `--udp-region <another>`, or `--udp-plan` with Premium's product id for dublin |
 | `<kind> line <id> did not become active in <n> minutes` | The line is still being set up | Deploy again to wait more; `delete --release-server` ends it once it is active |
 | `user-api did not start it (HTTP 409): OUT_OF_STOCK` | No server of that plan free in that region | `--region <another>` |
 | `the start may or may not have gone through: …` | The request left and no answer came back, or user-api answered 5xx, 408 or 429 | Run the same command again: it sends the same request, which stays on record |

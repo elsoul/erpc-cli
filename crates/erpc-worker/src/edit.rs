@@ -248,6 +248,7 @@ mod tests {
                 id: "100003".to_owned(),
                 endpoint: String::new(),
                 hourly: true,
+                sources: Vec::new(),
             }],
             ..Env::default()
         };
@@ -379,13 +380,23 @@ mod tests {
         use crate::manifest::{Env, Firewall, Line, LineKind, Resource, ResourceKind};
         use crate::net::Cidr;
         let env = Env {
-            lines: vec![Line {
-                kind: LineKind::Grpc,
-                id: "42".to_owned(),
-                // Built, not written out: the endpoint gate reads literals.
-                endpoint: ["https", "edge.erpc.global"].join("://"),
-                hourly: true,
-            }],
+            lines: vec![
+                Line {
+                    kind: LineKind::Grpc,
+                    id: "42".to_owned(),
+                    // Built, not written out: the endpoint gate reads literals.
+                    endpoint: ["https", "edge.erpc.global"].join("://"),
+                    hourly: true,
+                    sources: Vec::new(),
+                },
+                Line {
+                    kind: LineKind::Udp,
+                    id: "43".to_owned(),
+                    endpoint: "0.0.0.0:10001".to_owned(),
+                    hourly: true,
+                    sources: vec![std::net::Ipv4Addr::new(198, 51, 100, 20)],
+                },
+            ],
             resource: Some(Resource {
                 kind: ResourceKind::Vps,
                 id: "123".to_owned(),
@@ -410,6 +421,7 @@ mod tests {
             "a line is one entry, not a block: {text}"
         );
         assert!(text.contains("lines = [{"), "{text}");
+        assert!(text.contains("sources = [\"198.51.100.20\"]"), "{text}");
         let m = Manifest::parse(&text).expect("valid");
         assert_eq!(m.env("default").expect("env"), &env);
         let other = Env {

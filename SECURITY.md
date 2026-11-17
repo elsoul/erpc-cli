@@ -272,14 +272,23 @@ ERPC's documentation (`read_skill`), asks the person to choose
   `crates/erpc-ai/src/tools.rs` and `services.rs`: figures, product names,
   plans, regions, states and dates, and a service endpoint only when it is
   an ERPC host with no query, fragment or user in it; for each of the
-  account's VPSs, its IP and login user, so the person can ask where it is.
+  account's VPSs, its IP and login user, so the person can ask where it is;
+  for each of its UDP Forwarding lines, its id, where it sends to (the
+  `destination`, the user's server and port), the addresses ERPC sends it
+  from (`sourceIp`, `sourceIps`) and user-api's last error text for it
+  (`lastError`), so the person can point it and open their firewall. A
+  UDP Forwarding list user-api refuses is passed on with its refusal, not
+  as a session to sign in again.
   From these tools, server passwords, IP whitelists, endpoints that carry a key,
   payment details, Stripe ids and metadata, API keys and the session never
   reach the model. None calls the `/list` catalogues, which open a Stripe
   checkout session each time they are read.
 - **Tools that act**: `start_hourly_product`, `end_hourly_product`,
-  `top_up_credit`, `create_credit_wallet`, `secure_vps` and `restrict_ssh`
-  change the account, spend credit or EURC, or change a server. Each asks
+  `point_udp_line`, `top_up_credit`, `create_credit_wallet`, `secure_vps`
+  and `restrict_ssh` change the account, spend credit or EURC, or change a
+  server. `point_udp_line` sends one of the account's UDP Forwarding lines
+  to a public IPv4 address and port the person confirms (a Premium line is
+  charged from then on); it changes no firewall. Each asks
   the person first, with the cursor on no, every time; allowing every
   command (below) does not change that.
 - **A new VPS's address reaches the model.** `wait_until_ready` returns the

@@ -23,7 +23,7 @@ pub const MAX_SELL_RETRY_SECS: i64 = 60;
 /// The wait before looking again at a sell that can still land.
 pub const PENDING_SELL_RECHECK_SECS: i64 = 2;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TradeConfig {
     pub buy_amount_lamports: u64,
     pub sell_multiplier: f64,
@@ -347,6 +347,9 @@ impl Position {
 
 pub struct AppState {
     pub config: TradeConfig,
+    /// Which configuration `config` is: 0 at the start, one more each time
+    /// `set_config` changes it. Each buy is stamped with it (`settings`).
+    pub config_rev: u64,
     pub running: bool,
     /// Whether gRPC streaming is active.
     pub grpc_streaming: bool,
@@ -382,6 +385,7 @@ impl AppState {
     pub fn new(webhook_url: Option<String>) -> Self {
         Self {
             config: TradeConfig::default(),
+            config_rev: 0,
             running: false,
             grpc_streaming: true,
             wallet: None,
@@ -397,6 +401,26 @@ impl AppState {
             started: std::time::Instant::now(),
             timing: Default::default(),
             luts: Default::default(),
+        }
+    }
+
+    /// Puts `next` in force. One that differs from the configuration in
+    /// force, in any setting, is a new configuration: buys made under it
+    /// are told from the ones before by their `settings.rev`.
+    pub fn set_config(&mut self, next: TradeConfig) {
+        if next != self.config {
+            self.config_rev += 1;
+        }
+        self.config = next;
+    }
+
+    /// The settings in force: what a buy made now is stamped with.
+    pub fn settings(&self) -> crate::timing::Settings {
+        crate::timing::Settings {
+            rev: self.config_rev,
+            buy_on_shreds: self.config.buy_on_shreds,
+            priority_fee_micro_lamports: self.config.priority_fee_micro_lamports,
+            compute_unit_limit: self.config.compute_unit_limit,
         }
     }
 
