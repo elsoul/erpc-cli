@@ -12,6 +12,14 @@ whose version has no entry below.
 
 ## [Unreleased]
 
+### Changed
+
+- The Intel macOS release (`x86_64-apple-darwin`) is cross-compiled on the
+  Apple Silicon `macos-15` runner, beside the Apple Silicon release. The
+  `macos-15-intel` runner took 15 to 43 minutes for that build, the longest
+  of the five. Worker-agent CI no longer runs there, and every pull request
+  now does the same cross build.
+
 ## [0.1.0-rc.6] - 2026-11-16
 
 ### Changed

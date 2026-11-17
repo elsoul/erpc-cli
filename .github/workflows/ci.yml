@@ -92,17 +92,19 @@ jobs:
       - run: cargo run --locked -- version --json
 
   # The worker agents erpc embeds are cross-built with zig before every
-  # release build (.github/build-setup.yml) on cargo-dist's five runners. Those
-  # steps never ran in CI before the first tag, so the same script runs here,
-  # on the same runner images (`dist plan` names them; rebuild-runners.test.sh
-  # checks the full runner set and the Linux rebuild pair). The agents' bytes are not compared across runners
-  # here; rebuild-compare does that for the Linux targets at release time.
+  # release build (.github/build-setup.yml) on cargo-dist's four runners; both
+  # macOS targets build on macos-15. Those steps never ran in CI before the
+  # first tag, so the same script runs here, on the same runner images
+  # (`dist plan` names them; rebuild-runners.test.sh checks the full runner set
+  # and the Linux rebuild pair). The agents' bytes are not compared across
+  # runners here; rebuild-compare does that for the Linux targets at release
+  # time.
   worker-agents:
     name: worker agents (${{ matrix.runner }})
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-22.04, ubuntu-22.04-arm, macos-15, macos-15-intel, windows-2022]
+        runner: [ubuntu-22.04, ubuntu-22.04-arm, macos-15, windows-2022]
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -130,6 +132,27 @@ jobs:
           # ERPC_REQUIRE_WORKER_AGENTS=1 for the steps after it; a build of
           # erpc here embeds them, as the release build does.
           cargo check -p erpc --locked
+      # The Intel macOS release is cross-compiled on this image
+      # (dist-workspace.toml), and a pull request runs only `dist plan`, so
+      # the cross build is done here too: a pull request finds out before a
+      # tag does. No other CI job builds for x86_64-apple-darwin.
+      - name: the Intel macOS binary cross-builds on Apple Silicon
+        if: matrix.runner == 'macos-15'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup target add x86_64-apple-darwin
+          cargo build -p erpc --locked --target x86_64-apple-darwin
+          bin=target/x86_64-apple-darwin/debug/erpc
+          archs=$(lipo -archs "$bin")
+          [ "$archs" = x86_64 ] || { echo "built for '$archs', not x86_64"; exit 1; }
+          # Run it where the image has Rosetta 2; it is not part of every
+          # Apple Silicon image, so its absence is reported, not failed.
+          if arch -x86_64 /usr/bin/true 2>/dev/null; then
+            arch -x86_64 "$bin" version --json
+          else
+            echo "no Rosetta 2 on this runner: built for x86_64, not run"
+          fi
 
   # The templates are not members of the workspace: nothing above compiles
   # them. This renders one as `erpc worker init` does and runs its own
