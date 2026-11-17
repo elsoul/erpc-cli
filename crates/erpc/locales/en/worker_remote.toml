@@ -65,6 +65,9 @@ none = "No releases on the server yet."
 
 [delete]
 refused = "nothing was removed"
+missing_ask = "Go ahead, taking {kind} {id} off the record without ending it? It is not on the account you are signed in to ({account}): it has ended, or it is another account's"
+missing_needs_person = "{kind} {id} is not on the account you are signed in to ({account}): it has ended, or it is another account's, and only a person at a terminal can say it leaves the record; nothing was done"
+missing_needs_person_hint = "run the same command yourself at a terminal, without `--json`; `--yes` does not answer this"
 not_removed = "could not remove it from the server ({error})"
 not_removed_ending = "could not remove it from the server ({error}); ending the server anyway"
 nothing_removed = "nothing was removed; {hint}"
@@ -80,6 +83,8 @@ forget_unreached = "Forget [env.{env}] without reaching {host}, as asked: {id} i
 remove = "Remove {id} from {host}: its unit, releases and state"
 never_reached = "Forget [env.{env}] (its server was never reached)"
 no_server = "Forget [env.{env}] (no server is on record)"
+then_missing = ", then take {kind} {id} off the record without ending it: it is not on the account you are signed in to ({account}), so it has ended, or it is another account's"
+then_lines_missing = ", then end its data lines and take {kind} {id} off the record without ending it: it is not on the account you are signed in to ({account}), so it has ended, or it is another account's"
 then_server = ", then end the hourly server"
 then_lines_and_server = ", then end its data lines and the hourly server"
 then_lines = ", then end its data lines (no hourly server is on record)"
@@ -106,6 +111,7 @@ line_not_hourly = "data line {ids} still runs and is not billed by the hour, and
 lines = " Its data lines are ended."
 dropped = " {line} was not among what the account is charged for; it leaves the record."
 server = " The hourly server is ended."
+server_gone = " {kind} {id} is not on the account you are signed in to ({account}): it was not ended, and it leaves the record."
 no_server = " There was no hourly ERPC server on record to end."
 kept = "{line} is not billed by the hour, so erpc did not end it; it still runs until it is ended in the dashboard"
 

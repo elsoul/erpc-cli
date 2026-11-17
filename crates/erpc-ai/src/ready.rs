@@ -27,8 +27,9 @@ const FAILED_READS: u32 = 3;
 /// answer: a VPS booting can pass through a state such as `off` on its way.
 const WRONG_READS: u32 = 3;
 /// How long a VPS just started may be missing from the list: user-api can
-/// take a moment to list it.
-const UNLISTED: Duration = Duration::from_secs(60);
+/// take a moment to list it. Whatever calls a VPS on record gone waits
+/// longer than this.
+pub const UNLISTED: Duration = Duration::from_secs(60);
 
 /// Where a VPS is on the way to being used.
 #[derive(Debug, PartialEq, Eq)]

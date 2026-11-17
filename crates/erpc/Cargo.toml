@@ -89,6 +89,8 @@ rustix = { workspace = true, features = ["std", "termios"] }
 rustix = { workspace = true, features = ["std", "termios", "pty"] }
 
 [dev-dependencies]
+# A paused clock, for the waits a test must see taken in full.
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true
