@@ -3,14 +3,26 @@
 
 //! Tiny metadata/archive and mocked host failure checks; no node binary is run.
 
+/// One test per Python fixture, named after its file: the fixtures run in
+/// parallel, and each one that fails is reported, not only the first. The
+/// modules that use it are `cfg(test)`, so their shared `fixture` helper may
+/// `expect` as a test does.
 #[cfg(unix)]
-#[test]
-fn snapshot_and_lifecycle_failures_preserve_ownership_and_existing_data() {
-    for script in [
-        "bootstrap_test.py",
-        "lifecycle_test.py",
-        "validator_custody_test.py",
-    ] {
+macro_rules! fixtures {
+    ($($fixture:ident),* $(,)?) => {
+        $(
+            #[test]
+            fn $fixture() {
+                fixture(concat!(stringify!($fixture), ".py"));
+            }
+        )*
+    };
+}
+
+#[cfg(unix)]
+#[cfg(test)]
+mod snapshot_and_lifecycle_failures_preserve_ownership_and_existing_data {
+    fn fixture(script: &str) {
         let output = std::process::Command::new("python3")
             .arg(
                 std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -25,6 +37,12 @@ fn snapshot_and_lifecycle_failures_preserve_ownership_and_existing_data() {
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    fixtures! {
+        bootstrap_test,
+        lifecycle_test,
+        validator_custody_test,
     }
 }
 

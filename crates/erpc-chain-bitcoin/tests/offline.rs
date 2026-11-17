@@ -49,20 +49,27 @@ fn actual_gpg_authenticates_public_release_fixture_and_rejects_tampering() {
     assert!(erpc_chain_bitcoin::download::authenticate(manifest, "not a signature").is_err());
 }
 
+/// One test per Python fixture, named after its file: the fixtures run in
+/// parallel, and each one that fails is reported, not only the first. The
+/// modules that use it are `cfg(test)`, so their shared `fixture` helper may
+/// `expect` as a test does.
 #[cfg(unix)]
-#[test]
-fn mutations_enforce_ownership_and_interrupted_installation_safety() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    for name in [
-        "lifecycle.py",
-        "cancellation_retry.py",
-        "accounts.py",
-        "volumes.py",
-        "authority.py",
-        "sources.py",
-        "processes.py",
-        "migration.py",
-    ] {
+macro_rules! fixtures {
+    ($($fixture:ident),* $(,)?) => {
+        $(
+            #[test]
+            fn $fixture() {
+                fixture(concat!(stringify!($fixture), ".py"));
+            }
+        )*
+    };
+}
+
+#[cfg(unix)]
+#[cfg(test)]
+mod mutations_enforce_ownership_and_interrupted_installation_safety {
+    fn fixture(name: &str) {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let result = std::process::Command::new("python3")
             .arg(root.join("tests").join(name))
             .arg(root.join("templates/node/control.py"))
@@ -74,6 +81,17 @@ fn mutations_enforce_ownership_and_interrupted_installation_safety() {
             "{name}: {}",
             String::from_utf8_lossy(&result.stderr)
         );
+    }
+
+    fixtures! {
+        lifecycle,
+        cancellation_retry,
+        accounts,
+        volumes,
+        authority,
+        sources,
+        processes,
+        migration,
     }
 }
 

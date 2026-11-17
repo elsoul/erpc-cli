@@ -1,21 +1,27 @@
 // SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
 // SPDX-License-Identifier: Apache-2.0
 //! Inert controller/ABI fixtures. No device, blockchain client or real key is executed.
+
+/// One test per Python fixture, named after its file: the fixtures run in
+/// parallel, and each one that fails is reported, not only the first. The
+/// modules that use it are `cfg(test)`, so their shared `fixture` helper may
+/// `expect` as a test does.
 #[cfg(unix)]
-#[test]
-fn native_failure_paths_preserve_ownership_identity_and_cancellation() {
-    for name in [
-        "device_identity.py",
-        "state_failures.py",
-        "host_failures.py",
-        "registration_observer.py",
-        "accounts_test.py",
-        "namespace_test.py",
-        "entrypoints_test.py",
-        "account_authority.py",
-        "data_layout.py",
-        "incomplete_data_recovery.py",
-    ] {
+macro_rules! fixtures {
+    ($($fixture:ident),* $(,)?) => {
+        $(
+            #[test]
+            fn $fixture() {
+                fixture(concat!(stringify!($fixture), ".py"));
+            }
+        )*
+    };
+}
+
+#[cfg(unix)]
+#[cfg(test)]
+mod native_failure_paths_preserve_ownership_identity_and_cancellation {
+    fn fixture(name: &str) {
         let result = std::process::Command::new("python3")
             .arg(
                 std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -31,7 +37,21 @@ fn native_failure_paths_preserve_ownership_identity_and_cancellation() {
             String::from_utf8_lossy(&result.stderr)
         );
     }
+
+    fixtures! {
+        device_identity,
+        state_failures,
+        host_failures,
+        registration_observer,
+        accounts_test,
+        namespace_test,
+        entrypoints_test,
+        account_authority,
+        data_layout,
+        incomplete_data_recovery,
+    }
 }
+
 #[test]
 fn embedded_runtime_contains_no_generated_bytecode_or_secret_files() {
     for path in erpc_chain_monad::files() {
