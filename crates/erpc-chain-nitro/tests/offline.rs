@@ -59,11 +59,28 @@ fn every_carried_document_is_pinned_to_a_node_only_host() {
         assert!(digest.bytes().all(|v| v.is_ascii_hexdigit()));
     }
 }
+
+/// One test per Python fixture, named after its file: the fixtures run in
+/// parallel, and each one that fails is reported, not only the first. The
+/// modules that use it are `cfg(test)`, so their shared `fixture` helper may
+/// `expect` as a test does.
 #[cfg(unix)]
-#[test]
-fn carried_controller_enforces_ownership_fences_credentials_and_service_contracts() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    for script in ["lifecycle.py", "recovery.py"] {
+macro_rules! fixtures {
+    ($($fixture:ident),* $(,)?) => {
+        $(
+            #[test]
+            fn $fixture() {
+                fixture(concat!(stringify!($fixture), ".py"));
+            }
+        )*
+    };
+}
+
+#[cfg(unix)]
+#[cfg(test)]
+mod carried_controller_enforces_ownership_fences_credentials_and_service_contracts {
+    fn fixture(script: &str) {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let output = std::process::Command::new("python3")
             .arg("-B")
             .arg(root.join("tests").join(script))
@@ -75,45 +92,18 @@ fn carried_controller_enforces_ownership_fences_credentials_and_service_contract
             String::from_utf8_lossy(&output.stderr)
         );
     }
+
+    fixtures! {
+        lifecycle,
+        recovery,
+    }
 }
 
 #[cfg(unix)]
-#[test]
-fn assertion_validator_authority_and_public_admission_are_exercised_offline() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    for name in [
-        "validator_artifact.py",
-        "validator_admission.py",
-        "validator_configuration.py",
-        "validator_state.py",
-        "validator_accounts.py",
-        "validator_crypto.py",
-        "validator_transactions.py",
-        "validator_transport.py",
-        "validator_observer.py",
-        "validator_host.py",
-        "validator_preflight.py",
-        "validator_custody.py",
-        "validator_wallet_stage.py",
-        "validator_provider_stage.py",
-        "validator_processes.py",
-        "validator_protocol.py",
-        "validator_authority.py",
-        "validator_container.py",
-        "validator_history.py",
-        "validator_volumes.py",
-        "validator_controller.py",
-        "validator_services.py",
-        "validator_bounded.py",
-        "validator_publication.py",
-        "validator_firewall.py",
-        "validator_runtime.py",
-        "validator_registration.py",
-        "validator_tls.py",
-        "validator_render.py",
-        "validator_credentials.py",
-        "validator_public_result.py",
-    ] {
+#[cfg(test)]
+mod assertion_validator_authority_and_public_admission_are_exercised_offline {
+    fn fixture(name: &str) {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let output = std::process::Command::new("python3")
             .arg(root.join("tests").join(name))
             .env("PYTHONDONTWRITEBYTECODE", "1")
@@ -124,6 +114,40 @@ fn assertion_validator_authority_and_public_admission_are_exercised_offline() {
             "{name}: {}",
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    fixtures! {
+        validator_artifact,
+        validator_admission,
+        validator_configuration,
+        validator_state,
+        validator_accounts,
+        validator_crypto,
+        validator_transactions,
+        validator_transport,
+        validator_observer,
+        validator_host,
+        validator_preflight,
+        validator_custody,
+        validator_wallet_stage,
+        validator_provider_stage,
+        validator_processes,
+        validator_protocol,
+        validator_authority,
+        validator_container,
+        validator_history,
+        validator_volumes,
+        validator_controller,
+        validator_services,
+        validator_bounded,
+        validator_publication,
+        validator_firewall,
+        validator_runtime,
+        validator_registration,
+        validator_tls,
+        validator_render,
+        validator_credentials,
+        validator_public_result,
     }
 }
 
