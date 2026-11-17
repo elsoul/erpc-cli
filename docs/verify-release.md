@@ -24,8 +24,8 @@ in `installer/src/index.ts`, that runs the installed binary with
 It also counts what it serves: each `GET` of an installer writes the
 request's country, continent and Cloudflare data centre, the first language
 of `Accept-Language`, the installer flavour, the version asked for and the
-version served, and the status to Workers Analytics Engine, and nothing that
-tells one person from another (no address, no user agent;
+version served, and the status to Workers Analytics Engine. That data point
+holds nothing that tells one person from another (no address, no user agent;
 [install counts](install-counts.md)). It
 verifies nothing itself, and neither
 does the installer script it serves. A self-updating command that would check

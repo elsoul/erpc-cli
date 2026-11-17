@@ -36,10 +36,11 @@
  * Cloudflare data centre of the request, the primary language tag of
  * `Accept-Language`, the installer flavour, the version asked for and the
  * version served, and the status. No address, no user agent, nothing that
- * tells one person from another. Recording cannot change or delay the
- * response: `writeDataPoint` does not wait on anything, and any error in it is
- * dropped. A daily job outside this repository turns these into counts
- * (docs/install-counts.md). The binding holds no secret, so this worker still
+ * tells one person from another, and no text a client chose: a pinned tag is
+ * recorded only when it was served, so it names a published release.
+ * Recording cannot change or delay the response: `writeDataPoint` does not
+ * wait on anything, and any error in it is dropped. The columns are in
+ * docs/install-counts.md. The binding holds no secret, so this worker still
  * holds none.
  */
 
@@ -152,7 +153,7 @@ function text(msg: string, status: number): Response {
  * One install, as a data point. The order of `blobs` is the column order the
  * daily export reads (`blob1` = country, …; docs/install-counts.md): append,
  * never reorder. `doubles` is `[status]`. The index is the flavour, which is
- * all Analytics Engine samples by, and at install volumes it does not sample.
+ * what Analytics Engine samples by.
  */
 export const INSTALL_BLOBS = [
   "country",
@@ -173,7 +174,10 @@ const UNKNOWN = "unknown";
 /**
  * The install event for a request. Every field is checked against a short
  * pattern and becomes `unknown` otherwise, so nothing a client sends can add a
- * free-form value (or a person's identity) to the dataset.
+ * free-form value (or a person's identity) to the dataset. The tag in a pinned
+ * path is the client's text until a release by that name is served, so it is
+ * recorded only then (status 200 and that tag in `x-erpc-tag`), and as
+ * `unknown` otherwise.
  *
  * `os` is the installer's platform family, because that is all the request
  * says: `sh` serves Linux and macOS, `ps1` serves Windows. `arch` is never in
@@ -195,7 +199,7 @@ export function installEvent(
     os: flavor === "sh" ? "unix" : "windows",
     arch: UNKNOWN,
     script: flavor,
-    requested: pinned === null ? "latest" : tagOrUnknown(pinned),
+    requested: pinned === null ? "latest" : servedTag(pinned, res),
     version: tagOrUnknown(res.headers.get("x-erpc-tag")),
     status: res.status,
   };
@@ -203,6 +207,11 @@ export function installEvent(
 
 function pick(v: unknown, re: RegExp): string {
   return typeof v === "string" && re.test(v) ? v : UNKNOWN;
+}
+
+/** `pinned`, when the response served that release; `unknown` otherwise. */
+function servedTag(pinned: string, res: Response): string {
+  return res.status === 200 && res.headers.get("x-erpc-tag") === pinned ? tagOrUnknown(pinned) : UNKNOWN;
 }
 
 /** A release tag of at most 64 characters, as recorded; anything else is `unknown`. */

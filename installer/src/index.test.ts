@@ -322,8 +322,8 @@ function cfRequest(path: string, init: RequestInit = {}, cf: Record<string, unkn
 const TOKYO = { country: "JP", continent: "AS", colo: "NRT", city: "Tokyo", latitude: "35.6" };
 
 /**
- * The worker with GitHub, the cache and the context stubbed, `v1.2.3` selected
- * at deployment (or nothing, with `selected: false`). The cache keeps what is
+ * The worker with GitHub, the cache and the context stubbed: `v1.2.3` is the
+ * only release, selected at deployment (or nothing, with `selected: false`). The cache keeps what is
  * put, so a second request is a cache hit.
  */
 function counting(t: TestContext, installs?: AnalyticsEngineDataset, selected = true) {
@@ -343,7 +343,8 @@ function counting(t: TestContext, installs?: AnalyticsEngineDataset, selected = 
   t.mock.method(globalThis, "fetch", async (input: RequestInfo | URL) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     fetched.push(url);
-    if (url.endsWith("/v9.9.9/erpc-installer.sh")) return new Response("not found", { status: 404 });
+    // Only v1.2.3 is published.
+    if (!url.includes("/releases/download/v1.2.3/")) return new Response("not found", { status: 404 });
     return new Response(url.endsWith(".ps1") ? REAL_PS1 : REAL_SH);
   });
   const writes: Promise<unknown>[] = [];
@@ -460,7 +461,7 @@ test("cache hits, PowerShell and failed serves are counted too", async t => {
     ["sh", "latest", "v1.2.3", 200],
     ["sh", "latest", "v1.2.3", 200],
     ["ps1", "latest", "v1.2.3", 200],
-    ["sh", "v9.9.9", "unknown", 502],
+    ["sh", "unknown", "unknown", 502],
   ]);
   assert.deepEqual(points[2].indexes, ["ps1"]);
 });
@@ -488,12 +489,33 @@ test("a failing Analytics Engine write still serves the install script", async t
 });
 
 test("no binding, HEAD, POST, health checks and unknown paths record nothing", async t => {
-  assert.equal((await counting(t).get(cfRequest("/", {}, TOKYO))).status, 200);
+  await t.test("no binding", async c => {
+    assert.equal((await counting(c).get(cfRequest("/", {}, TOKYO))).status, 200);
+  });
+  await t.test("not an installer GET", async c => {
+    const { points, ds } = collector();
+    const w = counting(c, ds);
+    assert.equal((await w.get(cfRequest("/", { method: "HEAD" }, TOKYO))).status, 200);
+    assert.equal((await w.get(cfRequest("/", { method: "POST" }, TOKYO))).status, 405);
+    assert.equal((await w.get(cfRequest("/healthz", {}, TOKYO))).status, 200);
+    assert.equal((await w.get(cfRequest("/wp-login.php", {}, TOKYO))).status, 404);
+    assert.equal(points.length, 0);
+  });
+});
+
+test("a pinned tag is recorded only once that release was served", async t => {
   const { points, ds } = collector();
   const w = counting(t, ds);
-  assert.equal((await w.get(cfRequest("/", { method: "HEAD" }, TOKYO))).status, 200);
-  assert.equal((await w.get(cfRequest("/", { method: "POST" }, TOKYO))).status, 405);
-  assert.equal((await w.get(cfRequest("/healthz", {}, TOKYO))).status, 200);
-  assert.equal((await w.get(cfRequest("/wp-login.php", {}, TOKYO))).status, 404);
-  assert.equal(points.length, 0);
+  // In range for the tag pattern and the length cap, but no such release.
+  const chosen = "v0.0.0-alice.example.com-0123456789";
+  assert.equal((await w.get(cfRequest(`/${chosen}`, {}, TOKYO))).status, 502);
+  assert.equal((await w.get(cfRequest("/v1.2.3/ps1", {}, TOKYO))).status, 200);
+  assert.deepEqual(points.map((p) => [blob(p, "requested"), blob(p, "version"), p.doubles?.[0]]), [
+    ["unknown", "unknown", 502],
+    ["v1.2.3", "v1.2.3", 200],
+  ]);
+  assert.ok(!JSON.stringify(points).includes("alice"));
+  // A response for another tag does not vouch for the one in the path.
+  const other = new Response("#!/bin/sh\n", { headers: { "x-erpc-tag": "v1.2.3" } });
+  assert.equal(installEvent(cfRequest("/v1.2.4"), "v1.2.4", "sh", other).requested, "unknown");
 });

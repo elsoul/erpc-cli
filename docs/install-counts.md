@@ -5,16 +5,15 @@ SPDX-License-Identifier: Apache-2.0
 
 # Install counts
 
-The `install.erpc.global` worker counts the installers it serves. A daily
-export to BigQuery belongs to ELSOUL's internal KPI pipeline, which already
-writes the company's other daily KPIs; this repository owns only the data
-point below, and this page is the contract that export reads.
+The `install.erpc.global` worker counts the installers it serves, so that
+ELSOUL can see how many installs there are and where they come from. This
+page says what one count holds.
 
 ## What is recorded
 
 Every `GET` of an installer (`/`, `/ps1`, `/vX.Y.Z`, `/vX.Y.Z/ps1`) writes one
-data point to Workers Analytics Engine after the response is ready: cache hits
-and failed serves included, with their status. `HEAD`, `/healthz`, other
+data point to Workers Analytics Engine after the response is ready, cache hits
+and 502 responses included, with their status. `HEAD`, `/healthz`, other
 methods and unknown paths write nothing.
 
 Dataset: `erpc_installs` (binding `INSTALLS`, `installer/wrangler.toml`), in
@@ -30,41 +29,30 @@ the Cloudflare account the installer worker is deployed to.
 | `blob5`     | `os`        | installer family: `unix` for `sh`, `windows` for `ps1` |
 | `blob6`     | `arch`      | always `unknown`: the installer picks it on the machine |
 | `blob7`     | `script`    | `sh` or `ps1` |
-| `blob8`     | `requested` | the tag in the path, or `latest` |
+| `blob8`     | `requested` | `latest`; the tag in the path when that release was served; otherwise `unknown` |
 | `blob9`     | `version`   | the tag served (`x-erpc-tag`), or `unknown` on an error |
 | `double1`   | `status`    | HTTP status; an installer served is `200` |
 | `timestamp` |             | Analytics Engine, UTC |
 
-The order is `INSTALL_BLOBS` in `installer/src/index.ts`, and a test pins
-it. Columns are only ever appended; changing the meaning of one breaks the
-export.
-
-A day's installs, as the export reads them (Analytics Engine SQL API, with a
-token that has *Account Analytics: Read*):
-
-```sql
-SELECT blob1 AS country, blob2 AS continent, blob4 AS language,
-       blob5 AS os, blob6 AS arch, blob7 AS script, blob9 AS version,
-       SUM(_sample_interval) AS count
-FROM erpc_installs
-WHERE timestamp >= toDateTime('2026-11-01 00:00:00')
-  AND timestamp <  toDateTime('2026-11-02 00:00:00')
-  AND double1 = 200
-GROUP BY blob1, blob2, blob4, blob5, blob6, blob7, blob9
-```
-
-`SUM(_sample_interval)` is exact while Analytics Engine does not sample, and
-the right estimate when it does. Analytics Engine keeps three months, which
-bounds how far back a day can be written again.
+Any value that does not fit its pattern, and any tag longer than 64
+characters, is `unknown`. The order is `INSTALL_BLOBS` in
+`installer/src/index.ts`, and a test pins it. Columns are only ever appended;
+the meaning of one is never changed.
 
 ## Privacy
 
-Every value is checked against a short pattern in the worker and becomes
-`unknown` otherwise, so a client cannot write a free-form value into the
-dataset. No IP address, user agent, city, coordinates or any other
-per-person value is read into the event. Recording cannot change or delay
-the response: `writeDataPoint` does not wait on anything, and an error in it
-is dropped (`recordInstall`).
+Every value is either Cloudflare's own (country, continent, data centre),
+one of a few constants, a language tag of two or three letters, or the name
+of a release this worker served. A client cannot write text of its choosing
+into the dataset: the tag in a pinned path is recorded only once a release by
+that name has been served, and as `unknown` otherwise. No IP address, user
+agent, city, coordinates or any other per-person value is read into the data
+point. Recording cannot change or delay the response: `writeDataPoint` does
+not wait on anything, and an error in it is dropped (`recordInstall`).
+
+This is about the data point. The worker also has Cloudflare's Workers
+observability turned on (`[observability]` in `installer/wrangler.toml`), as
+it had before counts were added.
 
 ## Reading the numbers
 
@@ -86,6 +74,5 @@ is dropped (`recordInstall`).
 
 The worker's trust model (top of `installer/src/index.ts`) is that it holds
 no secrets. An Analytics Engine binding is not a credential, so the worker
-stays that way; the credentials for reading the dataset and writing to
-BigQuery live with the export. A queue or a direct BigQuery write from the
-worker would need a Google credential in the worker.
+stays that way. Writing anywhere else from the worker would need a
+credential in it.
