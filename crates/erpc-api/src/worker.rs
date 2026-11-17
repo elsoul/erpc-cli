@@ -96,11 +96,16 @@ pub enum WorkerError {
         after_write: bool,
     },
     /// A wallet key the account does not take, caught before it was sent:
-    /// it takes a public key of 32 bytes, in base58.
-    #[error("wallet public key {key:?} is not 32 bytes in base58")]
+    /// it takes a public key of 32 bytes, in base58. Only the length of
+    /// what was given is kept, never the text: it may be a secret key
+    /// pasted in the wrong place.
+    #[error(
+        "the wallet's public key is not one: 32 bytes in base58 (what was given is {chars} \
+         characters long)"
+    )]
     WalletKey {
-        /// The key, as given.
-        key: String,
+        /// How many characters were given.
+        chars: usize,
     },
 }
 
@@ -332,8 +337,7 @@ open_enum! {
         SealKeyRevoked = "seal_key_revoked",
         /// A fingerprint that does not match the key.
         FingerprintMismatch = "fingerprint_mismatch",
-        /// The account is closed. Every route answers it, with status 401
-        /// (409 when the account closed while the request was handled),
+        /// The account is closed. Every route answers it, with status 401,
         /// and it is a refusal, not an ended session: signing in again
         /// does not help.
         AccountClosed = "ACCOUNT_CLOSED",
@@ -369,7 +373,7 @@ open_enum! {
     /// its product has there, or `gone` when it no longer is this
     /// account's, or no longer exists. Each kind of product has its own
     /// statuses (`available`, `provisioning`, `maintenance`, `suspended`,
-    /// and for some lines `applying`, `error` or `cancelled`, among
+    /// and for some products `applying`, `error` or `cancelled`, among
     /// others), and they grow with the products: only `active` and `gone`
     /// are named here, and the rest are kept as [`Other`](State::Other).
     State {
@@ -508,33 +512,52 @@ pub struct Wallet {
 /// The public side of an app's wallet, as a write sends it: its public key
 /// and where the private key is kept, which the account takes only
 /// together. Nothing else about the wallet is sent.
+///
+/// Its fields are set only by [`PutWallet::new`], which checks the key, so
+/// a key is checked before it is sent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-#[non_exhaustive]
 pub struct PutWallet {
-    /// The public key: 32 bytes, base58.
-    pub pubkey: String,
-    /// Where the private key is kept.
-    pub source_kind: WalletSource,
+    pubkey: String,
+    source_kind: WalletSource,
 }
 
 impl PutWallet {
     /// The wallet with public key `pubkey`, its private key kept in
     /// `source_kind`.
     ///
+    /// Only the key's shape is checked. A 32-byte secret seed has the same
+    /// shape as a public key and is not told from one: `pubkey` is to be
+    /// the public key the caller derived or read, never what it was
+    /// derived from.
+    ///
     /// # Errors
     ///
     /// [`WorkerError::WalletKey`] when `pubkey` is not 32 bytes in base58,
-    /// which the account would refuse.
+    /// which the account would refuse. The error keeps only its length.
     pub fn new(pubkey: impl Into<String>, source_kind: WalletSource) -> Result<Self, WorkerError> {
         let pubkey = pubkey.into();
         if base58_len(&pubkey) != Some(32) {
-            return Err(WorkerError::WalletKey { key: pubkey });
+            return Err(WorkerError::WalletKey {
+                chars: pubkey.chars().count(),
+            });
         }
         Ok(Self {
             pubkey,
             source_kind,
         })
+    }
+
+    /// The public key: 32 bytes, base58.
+    #[must_use]
+    pub fn pubkey(&self) -> &str {
+        &self.pubkey
+    }
+
+    /// Where the private key is kept.
+    #[must_use]
+    pub const fn source_kind(&self) -> &WalletSource {
+        &self.source_kind
     }
 }
 
@@ -637,7 +660,14 @@ pub struct EnvDetail {
     pub name: String,
     /// The revision of its record.
     pub revision: u64,
-    /// The format its facts are in ([`FACTS_FORMAT`]).
+    /// The format its facts were read in: [`FACTS_FORMAT`], or older. A
+    /// newer one is refused ([`WorkerError::NewerFormat`]).
+    ///
+    /// Below [`FACTS_FORMAT`] the record is not to be written back from
+    /// what was read. Format 1 kept the server and the lines inside the
+    /// facts, which this version does not read: such an environment reads
+    /// with no server and no lines although it may have them, and how the
+    /// account carries them over is not up to this client.
     pub facts_format: u32,
     /// What erpc wrote about the server.
     pub facts: Facts,
@@ -993,7 +1023,13 @@ impl PutApp {
     }
 }
 
-/// The body that makes or changes an environment's record.
+/// The body that makes or changes an environment's record, always in
+/// [`FACTS_FORMAT`].
+///
+/// An environment read in an older format ([`EnvDetail::facts_format`]) is
+/// not to be written back from what was read: its server and lines were
+/// only in the old facts, which this version does not read, so the write
+/// would describe an environment without them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
@@ -1270,17 +1306,34 @@ async fn post<B: Serialize>(
         .map_err(ApiError::from)?)
 }
 
+/// The URL that deletes the record at `url` if it is still at
+/// `expected_revision`.
+fn delete_url(url: &str, expected_revision: u64) -> String {
+    format!("{url}?expectedRevision={expected_revision}")
+}
+
 async fn delete(
     client: &AuthClient,
     access_token: &SecretString,
     url: &str,
     expected_revision: u64,
 ) -> Result<(u16, String), WorkerError> {
-    let url = format!("{url}?expectedRevision={expected_revision}");
+    let url = delete_url(url, expected_revision);
     Ok(client
         .delete_with_token(Audience::AuthApi, &url, access_token, None)
         .await
         .map_err(ApiError::from)?)
+}
+
+/// Reads the reply to a read of an environment.
+fn read_env(status: u16, text: &str) -> Result<EnvDetail, WorkerError> {
+    env_reply(status, text, false).map(|w| w.record)
+}
+
+/// Reads the reply to a write that answers with an environment: `put_env`,
+/// `adopt_server`, `adopt_line`.
+fn written_env(status: u16, text: &str) -> Result<Written<EnvDetail>, WorkerError> {
+    env_reply(status, text, true)
 }
 
 /// The account's apps, each with its environments and without secrets.
@@ -1368,12 +1421,17 @@ pub async fn get_env(
     env: &str,
 ) -> Result<EnvDetail, WorkerError> {
     let (status, text) = get(client, access_token, &env_url(app, env)?).await?;
-    env_reply(status, &text, false).map(|w| w.record)
+    read_env(status, &text)
 }
 
 /// Makes the environment `env` of `app` (expected revision 0) or replaces
 /// its record: its facts and its deploy (see [`PutEnv::deployed`]). Its
 /// servers and lines are not touched.
+///
+/// Not for an environment read in an older format than [`FACTS_FORMAT`]
+/// ([`EnvDetail::facts_format`]): what was read of it has no server and no
+/// lines, though the record may have them, and how the account carries
+/// them over is not something this client controls.
 ///
 /// # Errors
 ///
@@ -1391,7 +1449,7 @@ pub async fn put_env(
     body: &PutEnv,
 ) -> Result<Written<EnvDetail>, WorkerError> {
     let (status, text) = put(client, access_token, &env_url(app, env)?, body).await?;
-    env_reply(status, &text, true)
+    written_env(status, &text)
 }
 
 /// Deletes the environment `env` of `app`'s record. Nothing it runs on is
@@ -1437,7 +1495,7 @@ pub async fn adopt_server(
 ) -> Result<Written<EnvDetail>, WorkerError> {
     let url = format!("{}/server/adopt", env_url(app, env)?);
     let (status, text) = post(client, access_token, &url, body).await?;
-    env_reply(status, &text, true)
+    written_env(status, &text)
 }
 
 /// Takes a data line the account already has into the environment `env` of
@@ -1462,7 +1520,7 @@ pub async fn adopt_line(
 ) -> Result<Written<EnvDetail>, WorkerError> {
     let url = format!("{}/lines/adopt", env_url(app, env)?);
     let (status, text) = post(client, access_token, &url, body).await?;
-    env_reply(status, &text, true)
+    written_env(status, &text)
 }
 
 #[cfg(test)]
@@ -1572,6 +1630,18 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn a_delete_names_the_revision_it_expects() {
+        assert_eq!(
+            delete_url(&app_url("pump-sniper").expect("app"), 3),
+            "https://user-api.erpc.global/v3/worker/apps/pump-sniper?expectedRevision=3"
+        );
+        assert_eq!(
+            delete_url(&env_url("pump-sniper", "prod").expect("env"), 0),
+            "https://user-api.erpc.global/v3/worker/apps/pump-sniper/envs/prod?expectedRevision=0"
+        );
     }
 
     #[test]
@@ -1757,13 +1827,16 @@ mod tests {
         ] {
             let wallet = PutWallet::new(key, WalletSource::OnePassword).expect(key);
             assert_eq!(
+                (wallet.pubkey(), wallet.source_kind()),
+                (key, &WalletSource::OnePassword)
+            );
+            assert_eq!(
                 serde_json::to_value(&wallet).expect("encodes"),
                 json!({ "pubkey": key, "sourceKind": "1password" })
             );
         }
         let long = "z".repeat(44);
         let longer = "1".repeat(45);
-        let secret_shaped = "2".repeat(88);
         for key in [
             "",
             "1111",
@@ -1773,16 +1846,46 @@ mod tests {
             "So1111111111111111111111111111111111111111+",
             long.as_str(),
             longer.as_str(),
-            secret_shaped.as_str(),
         ] {
             match PutWallet::new(key, WalletSource::Keystore) {
                 Err(e @ WorkerError::WalletKey { .. }) => assert_eq!(
                     e.to_string(),
-                    format!("wallet public key {key:?} is not 32 bytes in base58")
+                    format!(
+                        "the wallet's public key is not one: 32 bytes in base58 (what was given \
+                         is {} characters long)",
+                        key.chars().count()
+                    )
                 ),
                 other => panic!("{key:?}: expected WalletKey, got {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn a_secret_key_given_as_the_wallet_key_is_never_printed() {
+        // A 64-byte key as a wallet exports it is 88 base58 characters.
+        let alphabet = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+        let secret: String = (0..88)
+            .map(|i| char::from(alphabet[(i * 37 + 11) % 58]))
+            .collect();
+        // A 32-byte key in hexadecimal, as other chains write one.
+        let hex: String = (0..64)
+            .map(|i| char::from(b"0123456789abcdef"[(i * 5 + 3) % 16]))
+            .collect();
+        for given in [secret.as_str(), hex.as_str()] {
+            let e = PutWallet::new(given, WalletSource::Keystore).expect_err(given);
+            assert!(matches!(e, WorkerError::WalletKey { chars } if chars == given.len()));
+            for shown in [e.to_string(), format!("{e:?}")] {
+                for part in given.as_bytes().windows(8) {
+                    let part = std::str::from_utf8(part).expect("ascii");
+                    assert!(!shown.contains(part), "{shown}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn base58_is_measured_in_bytes_with_leading_zeros() {
         // A leading `1` is a zero byte; 255 is "5Q" and 256, two bytes, "5R".
         assert_eq!(base58_len("1"), Some(1));
         assert_eq!(base58_len("2"), Some(1));
@@ -1851,9 +1954,25 @@ mod tests {
                 }
             })
         );
-        let plain = serde_json::to_value(PutEnv::new(0, Facts::default())).expect("encodes");
-        assert!(plain.get("deployed").is_none() && plain.get("deployedApp").is_none());
-        assert!(plain["facts"].get("resource").is_none() && plain["facts"].get("lines").is_none());
+        // With nothing known, every fact is still there: `null`, two empty
+        // lists, an empty map. No server, no line, no deploy.
+        assert_eq!(
+            serde_json::to_value(PutEnv::new(0, Facts::default())).expect("encodes"),
+            json!({
+                "expectedRevision": 0,
+                "factsFormat": 2,
+                "facts": {
+                    "host": null,
+                    "sshUser": null,
+                    "sshPort": null,
+                    "hostKey": null,
+                    "firewall": { "sshAllow": [], "appAllow": [] },
+                    "starting": {},
+                    "backup": null,
+                    "desiredCores": null
+                }
+            })
+        );
     }
 
     #[test]
@@ -1958,7 +2077,7 @@ mod tests {
             (409, "seal_key_unusable", Code::SealKeyUnusable),
             (409, "seal_key_revoked", Code::SealKeyRevoked),
             (409, "fingerprint_mismatch", Code::FingerprintMismatch),
-            (409, "ACCOUNT_CLOSED", Code::AccountClosed),
+            (401, "ACCOUNT_CLOSED", Code::AccountClosed),
             (409, "already_attached", Code::AlreadyAttached),
             (409, "slot_occupied", Code::SlotOccupied),
             (409, "app_running_elsewhere", Code::AppRunningElsewhere),
@@ -2059,8 +2178,6 @@ mod tests {
                 }))
             ));
         }
-        // The same code while the request was handled.
-        assert_eq!(refusal(409, &closed).code, Some(Code::AccountClosed));
     }
 
     #[test]
@@ -2141,11 +2258,16 @@ mod tests {
             "deployedApp": null,
             "updatedAt": "2026-10-29T15:40:37.000Z"
         });
-        for (status, after_write) in [(200, false), (200, true), (201, true)] {
+        let (status, text) = ok(200, &older);
+        let read = read_env(status, &text).expect("format 1 reads");
+        let mut envs = vec![read];
+        for status in [200, 201] {
             let (status, text) = ok(status, &older);
-            let env = env_reply(status, &text, after_write)
-                .expect("format 1 reads")
-                .record;
+            envs.push(written_env(status, &text).expect("format 1 reads").record);
+        }
+        for env in envs {
+            // The format it was read in is there to see: it is not to be
+            // written back from what was read.
             assert_eq!(env.facts_format, 1);
             assert_eq!(env.facts.host.as_deref(), Some("203.0.113.10"));
             assert_eq!(env.facts.desired_cores, None);
@@ -2169,7 +2291,7 @@ mod tests {
 
         // get_env: the record is refused, and erpc is to be updated.
         let (status, text) = ok(200, &newer);
-        match env_reply(status, &text, false) {
+        match read_env(status, &text) {
             Err(
                 e @ WorkerError::NewerFormat {
                     found: 3,
@@ -2190,7 +2312,7 @@ mod tests {
         // one sent again): the account took the write before it answered.
         for status in [200, 201] {
             let (status, text) = ok(status, &newer);
-            match env_reply(status, &text, true) {
+            match written_env(status, &text) {
                 Err(
                     e @ WorkerError::NewerFormat {
                         found: 3,
@@ -2214,8 +2336,8 @@ mod tests {
             let mut detail = env_detail_json();
             detail["factsFormat"] = json!(format);
             let (status, text) = ok(200, &detail);
-            assert!(env_reply(status, &text, false).is_ok(), "{format}");
-            assert!(env_reply(status, &text, true).is_ok(), "{format}");
+            assert!(read_env(status, &text).is_ok(), "{format}");
+            assert!(written_env(status, &text).is_ok(), "{format}");
         }
 
         // Only an environment's record is checked: delete_env, and every
