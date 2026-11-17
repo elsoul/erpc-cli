@@ -86,8 +86,7 @@ jobs:
           fallback: none
       # cargo-nextest runs the test binaries side by side, each test in a
       # process of its own, where cargo test runs the binaries one after
-      # another. The same tests run either way, on macOS and Linux in less
-      # than half the time.
+      # another. The same tests run either way.
       # Keep going after a failing test, so one run reports every failure.
       - run: cargo nextest run --workspace --locked --no-fail-fast
       # cargo-nextest does not run doctests. They run after a failing test
