@@ -36,8 +36,9 @@
  * Cloudflare data centre of the request, the primary language tag of
  * `Accept-Language`, the installer flavour, the version asked for and the
  * version served, and the status. No address, no user agent, nothing that
- * tells one person from another, and no text a client chose: a pinned tag is
- * recorded only when it was served, so it names a published release.
+ * tells one person from another, and no text a client chose beyond a two- or
+ * three-letter language subtag: a pinned tag is recorded only when it was
+ * served, so it names a published release.
  * Recording cannot change or delay the response: `writeDataPoint` does not
  * wait on anything, and any error in it is dropped. The columns are in
  * docs/install-counts.md. The binding holds no secret, so this worker still
@@ -150,9 +151,9 @@ function text(msg: string, status: number): Response {
 }
 
 /**
- * One install, as a data point. The order of `blobs` is the column order the
- * daily export reads (`blob1` = country, …; docs/install-counts.md): append,
- * never reorder. `doubles` is `[status]`. The index is the flavour, which is
+ * One install, as a data point. The order of `blobs` is the column order in
+ * docs/install-counts.md (`blob1` = country, …), which readers of the dataset
+ * rely on: append, never reorder. `doubles` is `[status]`. The index is the flavour, which is
  * what Analytics Engine samples by.
  */
 export const INSTALL_BLOBS = [

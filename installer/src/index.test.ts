@@ -427,8 +427,8 @@ test("the primary language is the first range's primary subtag", () => {
   assert.equal(primaryLanguage("x-klingon"), "unknown");
 });
 
-test("a served installer writes one data point in the export's column order", async t => {
-  // The export reads blobN by position (docs/install-counts.md): append only.
+test("a served installer writes one data point in the documented column order", async t => {
+  // Readers of the dataset take blobN by position (docs/install-counts.md): append only.
   assert.deepEqual(
     [...INSTALL_BLOBS],
     ["country", "continent", "colo", "language", "os", "arch", "script", "requested", "version"],
@@ -515,6 +515,11 @@ test("a pinned tag is recorded only once that release was served", async t => {
     ["v1.2.3", "v1.2.3", 200],
   ]);
   assert.ok(!JSON.stringify(points).includes("alice"));
+  // A served tag longer than 64 characters is still `unknown`.
+  const long = `v1.0.0-${"a".repeat(60)}`;
+  const servedLong = new Response("#!/bin/sh\n", { headers: { "x-erpc-tag": long } });
+  const e = installEvent(cfRequest(`/${long}`), long, "sh", servedLong);
+  assert.deepEqual([e.requested, e.version], ["unknown", "unknown"]);
   // A response for another tag does not vouch for the one in the path.
   const other = new Response("#!/bin/sh\n", { headers: { "x-erpc-tag": "v1.2.3" } });
   assert.equal(installEvent(cfRequest("/v1.2.4"), "v1.2.4", "sh", other).requested, "unknown");

@@ -43,8 +43,8 @@ the meaning of one is never changed.
 
 Every value is either Cloudflare's own (country, continent, data centre),
 one of a few constants, a language tag of two or three letters, or the name
-of a release this worker served. A client cannot write text of its choosing
-into the dataset: the tag in a pinned path is recorded only once a release by
+of a release this worker served. Beyond that language subtag, a client cannot
+write text of its choosing into the dataset: the tag in a pinned path is recorded only once a release by
 that name has been served, and as `unknown` otherwise. No IP address, user
 agent, city, coordinates or any other per-person value is read into the data
 point. Recording cannot change or delay the response: `writeDataPoint` does
