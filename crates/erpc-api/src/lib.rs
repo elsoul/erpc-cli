@@ -20,6 +20,7 @@ pub mod ai;
 pub mod gasless;
 pub mod hourly;
 pub mod storage;
+pub mod worker;
 
 /// The account endpoint. A constant for the same reason the identity
 /// endpoints are: a destination that configuration can move is one that
