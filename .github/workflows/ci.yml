@@ -26,13 +26,24 @@ env:
 
 # clippy and test (ubuntu-latest) run on the repository's self-hosted Linux
 # runners when the repository variable CI_SELF_HOSTED_LINUX names their label,
-# and only for code from this repository: a pull request from a fork and any
-# run Dependabot starts stay on ubuntu-latest. The runners refuse such jobs on
-# their own as well. Clearing the variable sends every job back to
-# ubuntu-latest; nothing else changes. A self-hosted job neither restores nor
-# saves the Rust cache, so nothing it builds reaches a GitHub-hosted job
-# through the cache. The template jobs stay on ubuntu-latest: with the Rust
-# cache they finish there sooner than a cold build does on the runners.
+# and only for code from this repository. A pull request from a fork stays on
+# ubuntu-latest, and so does any run of a dependency-update bot: Dependabot or
+# Renovate as the actor, the triggering actor, the sender or the pull
+# request's author, or a dependabot/ or renovate/ branch. The runners refuse
+# the same jobs themselves and end them before their first step.
+#
+# This routing is not a guard: a fork's pull request can rewrite runs-on. A
+# run from an outside contributor's fork waits for a maintainer's approval,
+# and the runners refuse a fork's jobs.
+# scripts/tests/self-hosted-routing.test.sh is a regression check on these
+# workflows: it expects each runs-on to be a GitHub-hosted label, a matrix of
+# them, release.yml's `dist plan` matrix, or this expression with exactly
+# these conditions, and a cache step in a job routed here to keep
+# `if: runner.environment == 'github-hosted'`.
+#
+# Clearing the variable sends every job back to ubuntu-latest; nothing else
+# changes. The template jobs stay on ubuntu-latest: with the Rust cache they
+# finish there sooner than a cold build does on the runners.
 jobs:
   fmt:
     name: rustfmt
@@ -49,7 +60,18 @@ jobs:
 
   clippy:
     name: clippy
-    runs-on: ${{ vars.CI_SELF_HOSTED_LINUX != '' && github.actor != 'dependabot[bot]' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_SELF_HOSTED_LINUX || 'ubuntu-latest' }}
+    runs-on: >-
+      ${{
+        vars.CI_SELF_HOSTED_LINUX != ''
+        && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        && !contains(fromJSON('["dependabot[bot]","dependabot-preview[bot]","renovate[bot]"]'), github.actor)
+        && !contains(fromJSON('["dependabot[bot]","dependabot-preview[bot]","renovate[bot]"]'), github.triggering_actor)
+        && !contains(fromJSON('["dependabot[bot]","dependabot-preview[bot]","renovate[bot]"]'), github.event.sender.login)
+        && !contains(fromJSON('["dependabot[bot]","dependabot-preview[bot]","renovate[bot]"]'), github.event.pull_request.user.login)
+        && !contains(github.head_ref, 'dependabot/') && !contains(github.head_ref, 'renovate/')
+        && !contains(github.ref, 'dependabot/') && !contains(github.ref, 'renovate/')
+        && vars.CI_SELF_HOSTED_LINUX || 'ubuntu-latest'
+      }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -68,7 +90,19 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os == 'ubuntu-latest' && vars.CI_SELF_HOSTED_LINUX != '' && github.actor != 'dependabot[bot]' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_SELF_HOSTED_LINUX || matrix.os }}
+    runs-on: >-
+      ${{
+        matrix.os == 'ubuntu-latest'
+        && vars.CI_SELF_HOSTED_LINUX != ''
+        && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        && !contains(fromJSON('["dependabot[bot]","dependabot-preview[bot]","renovate[bot]"]'), github.actor)
+        && !contains(fromJSON('["dependabot[bot]","dependabot-preview[bot]","renovate[bot]"]'), github.triggering_actor)
+        && !contains(fromJSON('["dependabot[bot]","dependabot-preview[bot]","renovate[bot]"]'), github.event.sender.login)
+        && !contains(fromJSON('["dependabot[bot]","dependabot-preview[bot]","renovate[bot]"]'), github.event.pull_request.user.login)
+        && !contains(github.head_ref, 'dependabot/') && !contains(github.head_ref, 'renovate/')
+        && !contains(github.ref, 'dependabot/') && !contains(github.ref, 'renovate/')
+        && vars.CI_SELF_HOSTED_LINUX || matrix.os
+      }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -314,6 +348,7 @@ jobs:
           scripts/tests/build-manifest.test.sh
           scripts/tests/release-wiring.test.sh
           scripts/tests/workflow-audit.test.sh
+          scripts/tests/self-hosted-routing.test.sh
       - name: hygiene gate (all tracked files)
         run: scripts/check-oss-hygiene.sh
       - name: endpoint allowlist (all tracked files)
@@ -342,6 +377,7 @@ jobs:
           /bin/bash scripts/tests/build-manifest.test.sh
           /bin/bash scripts/tests/release-wiring.test.sh
           /bin/bash scripts/tests/workflow-audit.test.sh
+          /bin/bash scripts/tests/self-hosted-routing.test.sh
 
   zizmor:
     name: zizmor (workflow audit)
