@@ -14,6 +14,11 @@ whose version has no entry below.
 
 ### Changed
 
+- The Intel macOS release (`x86_64-apple-darwin`) is cross-compiled on the
+  Apple Silicon `macos-15` runner, beside the Apple Silicon release. The
+  `macos-15-intel` runner took 15 to 43 minutes for that build, the longest
+  of the five. Worker-agent CI no longer runs there, and every pull request
+  now does the same cross build.
 - The `solana/pumpfun` template is on `solana-stream-sdk` 4.0.0
   (Yellowstone gRPC client 17, Agave 4.4.1 crates), vendored again from
   solana-stream's `trade-app` at `32dabe7c`, and an app made from it needs

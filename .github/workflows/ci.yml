@@ -24,6 +24,15 @@ env:
   CARGO_INCREMENTAL: "0"
   RUSTFLAGS: "-D warnings"
 
+# clippy and test (ubuntu-latest) run on the repository's self-hosted Linux
+# runners when the repository variable CI_SELF_HOSTED_LINUX names their label,
+# and only for code from this repository: a pull request from a fork and any
+# run Dependabot starts stay on ubuntu-latest. The runners refuse such jobs on
+# their own as well. Clearing the variable sends every job back to
+# ubuntu-latest; nothing else changes. A self-hosted job neither restores nor
+# saves the Rust cache, so nothing it builds reaches a GitHub-hosted job
+# through the cache. The template jobs stay on ubuntu-latest: with the Rust
+# cache they finish there sooner than a cold build does on the runners.
 jobs:
   fmt:
     name: rustfmt
@@ -40,7 +49,7 @@ jobs:
 
   clippy:
     name: clippy
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_SELF_HOSTED_LINUX != '' && github.actor != 'dependabot[bot]' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_SELF_HOSTED_LINUX || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -49,7 +58,8 @@ jobs:
         with:
           toolchain: 1.98.0
           components: clippy
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - if: runner.environment == 'github-hosted'
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   test:
@@ -58,7 +68,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && vars.CI_SELF_HOSTED_LINUX != '' && github.actor != 'dependabot[bot]' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_SELF_HOSTED_LINUX || matrix.os }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -66,23 +76,26 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: 1.98.0
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - if: runner.environment == 'github-hosted'
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       # Keep going after a failing target, so one run reports every failure.
       - run: cargo test --workspace --locked --no-fail-fast
       - run: cargo run --locked -- version --json
 
   # The worker agents erpc embeds are cross-built with zig before every
-  # release build (.github/build-setup.yml) on cargo-dist's five runners. Those
-  # steps never ran in CI before the first tag, so the same script runs here,
-  # on the same runner images (`dist plan` names them; rebuild-runners.test.sh
-  # checks the full runner set and the Linux rebuild pair). The agents' bytes are not compared across runners
-  # here; rebuild-compare does that for the Linux targets at release time.
+  # release build (.github/build-setup.yml) on cargo-dist's four runners; both
+  # macOS targets build on macos-15. Those steps never ran in CI before the
+  # first tag, so the same script runs here, on the same runner images
+  # (`dist plan` names them; rebuild-runners.test.sh checks the full runner set
+  # and the Linux rebuild pair). The agents' bytes are not compared across
+  # runners here; rebuild-compare does that for the Linux targets at release
+  # time.
   worker-agents:
     name: worker agents (${{ matrix.runner }})
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-22.04, ubuntu-22.04-arm, macos-15, macos-15-intel, windows-2022]
+        runner: [ubuntu-22.04, ubuntu-22.04-arm, macos-15, windows-2022]
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -110,6 +123,27 @@ jobs:
           # ERPC_REQUIRE_WORKER_AGENTS=1 for the steps after it; a build of
           # erpc here embeds them, as the release build does.
           cargo check -p erpc --locked
+      # The Intel macOS release is cross-compiled on this image
+      # (dist-workspace.toml), and a pull request runs only `dist plan`, so
+      # the cross build is done here too: a pull request finds out before a
+      # tag does. No other CI job builds for x86_64-apple-darwin.
+      - name: the Intel macOS binary cross-builds on Apple Silicon
+        if: matrix.runner == 'macos-15'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup target add x86_64-apple-darwin
+          cargo build -p erpc --locked --target x86_64-apple-darwin
+          bin=target/x86_64-apple-darwin/debug/erpc
+          archs=$(lipo -archs "$bin")
+          [ "$archs" = x86_64 ] || { echo "built for '$archs', not x86_64"; exit 1; }
+          # Run it where the image has Rosetta 2; it is not part of every
+          # Apple Silicon image, so its absence is reported, not failed.
+          if arch -x86_64 /usr/bin/true 2>/dev/null; then
+            arch -x86_64 "$bin" version --json
+          else
+            echo "no Rosetta 2 on this runner: built for x86_64, not run"
+          fi
 
   # The templates are not members of the workspace: nothing above compiles
   # them. This renders one as `erpc worker init` does and runs its own

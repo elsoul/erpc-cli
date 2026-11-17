@@ -145,6 +145,14 @@ if [ "$apple_runner" = macos-15 ]; then
 else
   bad "Apple Silicon releases use the supported macos-15 image" "$apple_runner"
 fi
+# The Intel macOS binary is cross-compiled on the same Apple Silicon image:
+# the macos-15-intel image was the slowest release build (15 to 43 minutes).
+intel_runner=$(printf '%s' "$plan" | jq -r '.ci.github.artifacts_matrix.include[] | select(.targets[] == "x86_64-apple-darwin") | .runner')
+if [ "$intel_runner" = macos-15 ]; then
+  ok "Intel macOS releases are cross-compiled on macos-15"
+else
+  bad "Intel macOS releases are cross-compiled on macos-15" "$intel_runner"
+fi
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
