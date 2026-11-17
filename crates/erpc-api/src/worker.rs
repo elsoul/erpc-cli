@@ -28,10 +28,12 @@
 //! [`WorkerError::NewerFormat`], so that it is never edited and written back
 //! by a version that would drop what it does not know.
 //!
-//! What this module prints is safe on a terminal: an unknown value kept as
-//! `Other`, and everything a [`Refusal`] hands out, is cleaned of control
-//! and reordering characters. The fields of a record (a host, a host key, a
-//! template, a region, …) are the account's text as sent; a caller escapes
+//! Cleaned of control and reordering characters, and so safe to print: an
+//! unknown value an open enum keeps as `Other`, and of a [`Refusal`] its
+//! Display (and so [`WorkerError`]'s), its `code`, its `message`, and
+//! [`Refusal::field`], [`Refusal::limit`] and [`Refusal::envs`]. A
+//! refusal's `data`, and the fields of a record (a host, a host key, a
+//! template, a region, …), are the account's text as sent: a caller escapes
 //! them before printing.
 
 use std::collections::BTreeMap;
@@ -78,15 +80,31 @@ pub enum WorkerError {
     },
     /// The environment's facts are in a format newer than this version
     /// reads ([`FACTS_FORMAT`]). Reading them anyway and writing them back
-    /// would drop what this version does not know.
-    #[error(
-        "the environment's record is in format {found}, newer than this erpc reads ({FACTS_FORMAT}); \
-         update erpc"
-    )]
+    /// would drop what this version does not know. When the reply answered
+    /// a write, the account had already taken the write.
+    #[error("{}", newer_format_line(*found, *after_write))]
     NewerFormat {
         /// The format the record is in.
         found: u64,
+        /// Whether the reply answered a write (`put_env`, `adopt_server`,
+        /// `adopt_line`), which the account may already have applied.
+        after_write: bool,
     },
+}
+
+fn newer_format_line(found: u64, after_write: bool) -> String {
+    let newer = format!(
+        "the environment's record is in format {found}, newer than this erpc reads \
+         ({FACTS_FORMAT})"
+    );
+    if after_write {
+        format!(
+            "{newer}; the write may already have been applied: update erpc before touching this \
+             environment again"
+        )
+    } else {
+        format!("{newer}; update erpc")
+    }
 }
 
 /// A refusal from the account: the HTTP status, the code when there is one,
@@ -200,7 +218,7 @@ fn token(text: &str) -> String {
     text.chars()
         .take(OTHER_MAX)
         .map(|c| {
-            if (c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.')) && !crate::reorders(c) {
+            if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.') {
                 c
             } else {
                 '?'
@@ -1020,8 +1038,8 @@ pub struct Deleted {
     pub deleted: bool,
 }
 
-/// The rule app and environment names follow: a lowercase letter first,
-/// then lowercase letters and digits, single dashes between them.
+/// The rule an app name follows: up to 32 characters, a lowercase letter
+/// first, then lowercase letters and digits, single dashes between them.
 const NAME_RULE: &str = "up to 32 characters: a lowercase letter, then lowercase letters, digits \
                          and single dashes, not ending in a dash";
 
@@ -1085,11 +1103,6 @@ fn message_of(body: &Value) -> Option<String> {
 
 /// Reads a reply: `data` of a success, with whether it was a 201, or the
 /// refusal.
-///
-/// A success whose `data` is an environment with facts in a format newer
-/// than [`FACTS_FORMAT`] is [`WorkerError::NewerFormat`], whichever call it
-/// answered (reading the environment, writing it, taking a server or a line
-/// in), and before its facts are read at all: they may not even parse.
 fn reply<T: DeserializeOwned>(status: u16, text: &str) -> Result<Written<T>, WorkerError> {
     let body: Value = serde_json::from_str(text).unwrap_or(Value::Null);
     if (200..300).contains(&status) {
@@ -1098,11 +1111,6 @@ fn reply<T: DeserializeOwned>(status: u16, text: &str) -> Result<Written<T>, Wor
             .filter(|_| body.get("success").and_then(Value::as_bool) != Some(false))
             .cloned()
             .ok_or_else(|| ApiError::Malformed("a success without data".to_owned()))?;
-        if let Some(found) = data.get("factsFormat").and_then(Value::as_u64)
-            && found > u64::from(FACTS_FORMAT)
-        {
-            return Err(WorkerError::NewerFormat { found });
-        }
         let record =
             serde_json::from_value(data).map_err(|e| ApiError::Malformed(e.to_string()))?;
         return Ok(Written {
@@ -1122,60 +1130,78 @@ fn reply<T: DeserializeOwned>(status: u16, text: &str) -> Result<Written<T>, Wor
     .into())
 }
 
+/// Reads a reply that is an environment's record: as [`reply`], except that
+/// a success with facts in a format newer than [`FACTS_FORMAT`] is
+/// [`WorkerError::NewerFormat`], before its facts are read at all (they may
+/// not even parse). `after_write` says the reply answered a write.
+fn env_reply(
+    status: u16,
+    text: &str,
+    after_write: bool,
+) -> Result<Written<EnvDetail>, WorkerError> {
+    if (200..300).contains(&status)
+        && let Ok(body) = serde_json::from_str::<Value>(text)
+        && let Some(found) = body
+            .get("data")
+            .and_then(|data| data.get("factsFormat"))
+            .and_then(Value::as_u64)
+        && found > u64::from(FACTS_FORMAT)
+    {
+        return Err(WorkerError::NewerFormat { found, after_write });
+    }
+    reply(status, text)
+}
+
 fn encode<T: Serialize>(body: &T) -> Result<Vec<u8>, WorkerError> {
     serde_json::to_vec(body).map_err(|e| ApiError::Malformed(e.to_string()).into())
 }
 
-async fn get<T: DeserializeOwned>(
+async fn get(
     client: &AuthClient,
     access_token: &SecretString,
     url: &str,
-) -> Result<T, WorkerError> {
-    let (status, text) = client
+) -> Result<(u16, String), WorkerError> {
+    Ok(client
         .get_with_token(Audience::AuthApi, url, access_token)
         .await
-        .map_err(ApiError::from)?;
-    reply(status, &text).map(|w| w.record)
+        .map_err(ApiError::from)?)
 }
 
-async fn put<T: DeserializeOwned, B: Serialize>(
+async fn put<B: Serialize>(
     client: &AuthClient,
     access_token: &SecretString,
     url: &str,
     body: &B,
-) -> Result<Written<T>, WorkerError> {
-    let (status, text) = client
+) -> Result<(u16, String), WorkerError> {
+    Ok(client
         .put_with_token(Audience::AuthApi, url, access_token, encode(body)?)
         .await
-        .map_err(ApiError::from)?;
-    reply(status, &text)
+        .map_err(ApiError::from)?)
 }
 
-async fn post<T: DeserializeOwned, B: Serialize>(
+async fn post<B: Serialize>(
     client: &AuthClient,
     access_token: &SecretString,
     url: &str,
     body: &B,
-) -> Result<Written<T>, WorkerError> {
-    let (status, text) = client
+) -> Result<(u16, String), WorkerError> {
+    Ok(client
         .post_with_token(Audience::AuthApi, url, access_token, encode(body)?, None)
         .await
-        .map_err(ApiError::from)?;
-    reply(status, &text)
+        .map_err(ApiError::from)?)
 }
 
-async fn delete<T: DeserializeOwned>(
+async fn delete(
     client: &AuthClient,
     access_token: &SecretString,
     url: &str,
     expected_revision: u64,
-) -> Result<T, WorkerError> {
+) -> Result<(u16, String), WorkerError> {
     let url = format!("{url}?expectedRevision={expected_revision}");
-    let (status, text) = client
+    Ok(client
         .delete_with_token(Audience::AuthApi, &url, access_token, None)
         .await
-        .map_err(ApiError::from)?;
-    reply(status, &text).map(|w| w.record)
+        .map_err(ApiError::from)?)
 }
 
 /// The account's apps, each with its environments and without secrets.
@@ -1187,7 +1213,8 @@ pub async fn list_apps(
     client: &AuthClient,
     access_token: &SecretString,
 ) -> Result<Vec<App>, WorkerError> {
-    get(client, access_token, APPS_URL).await
+    let (status, text) = get(client, access_token, APPS_URL).await?;
+    reply(status, &text).map(|w| w.record)
 }
 
 /// The app `app`, with its environments and its secrets' records.
@@ -1201,7 +1228,8 @@ pub async fn get_app(
     access_token: &SecretString,
     app: &str,
 ) -> Result<App, WorkerError> {
-    get(client, access_token, &app_url(app)?).await
+    let (status, text) = get(client, access_token, &app_url(app)?).await?;
+    reply(status, &text).map(|w| w.record)
 }
 
 /// Makes the app `app` (expected revision 0) or changes it.
@@ -1217,7 +1245,8 @@ pub async fn put_app(
     app: &str,
     body: &PutApp,
 ) -> Result<Written<App>, WorkerError> {
-    put(client, access_token, &app_url(app)?, body).await
+    let (status, text) = put(client, access_token, &app_url(app)?, body).await?;
+    reply(status, &text)
 }
 
 /// Deletes the app `app`'s record: its environments, lines and secrets
@@ -1235,7 +1264,8 @@ pub async fn delete_app(
     app: &str,
     expected_revision: u64,
 ) -> Result<Deleted, WorkerError> {
-    delete(client, access_token, &app_url(app)?, expected_revision).await
+    let (status, text) = delete(client, access_token, &app_url(app)?, expected_revision).await?;
+    reply(status, &text).map(|w| w.record)
 }
 
 /// The environment `env` of `app`, whole: its facts, servers, lines with
@@ -1244,15 +1274,17 @@ pub async fn delete_app(
 /// # Errors
 ///
 /// [`Code::WorkerNotFound`] or [`Code::EnvNotFound`] when there is no such
-/// app or environment, and [`WorkerError`] when the request fails or is
-/// refused otherwise.
+/// app or environment, [`WorkerError::NewerFormat`] when its facts are in a
+/// format newer than this version reads, and [`WorkerError`] when the
+/// request fails or is refused otherwise.
 pub async fn get_env(
     client: &AuthClient,
     access_token: &SecretString,
     app: &str,
     env: &str,
 ) -> Result<EnvDetail, WorkerError> {
-    get(client, access_token, &env_url(app, env)?).await
+    let (status, text) = get(client, access_token, &env_url(app, env)?).await?;
+    env_reply(status, &text, false).map(|w| w.record)
 }
 
 /// Makes the environment `env` of `app` (expected revision 0) or changes
@@ -1262,7 +1294,9 @@ pub async fn get_env(
 ///
 /// [`Code::AlreadyExists`] or [`Code::RevisionConflict`] when the record is
 /// not where `body` expects it, [`Code::InvalidRequest`] and
-/// [`Code::ResourceNotFound`] for a fact the account does not take, and
+/// [`Code::ResourceNotFound`] for a fact the account does not take,
+/// [`WorkerError::NewerFormat`] when the record comes back in a newer format
+/// than this version reads (the write may already have been applied), and
 /// [`WorkerError`] when the request fails or is refused otherwise.
 pub async fn put_env(
     client: &AuthClient,
@@ -1271,7 +1305,8 @@ pub async fn put_env(
     env: &str,
     body: &PutEnv,
 ) -> Result<Written<EnvDetail>, WorkerError> {
-    put(client, access_token, &env_url(app, env)?, body).await
+    let (status, text) = put(client, access_token, &env_url(app, env)?, body).await?;
+    env_reply(status, &text, true)
 }
 
 /// Deletes the environment `env` of `app`'s record. Nothing it runs on is
@@ -1289,7 +1324,9 @@ pub async fn delete_env(
     env: &str,
     expected_revision: u64,
 ) -> Result<Value, WorkerError> {
-    delete(client, access_token, &env_url(app, env)?, expected_revision).await
+    let (status, text) =
+        delete(client, access_token, &env_url(app, env)?, expected_revision).await?;
+    reply(status, &text).map(|w| w.record)
 }
 
 /// Takes a server the account already has into the environment `env` of
@@ -1300,8 +1337,10 @@ pub async fn delete_env(
 ///
 /// [`Code::ResourceNotFound`] when the server is not this account's,
 /// [`Code::AlreadyAttached`], [`Code::SlotOccupied`] and
-/// [`Code::AppRunningElsewhere`] when it cannot go where asked, and
-/// [`WorkerError`] when the request fails or is refused otherwise.
+/// [`Code::AppRunningElsewhere`] when it cannot go where asked,
+/// [`WorkerError::NewerFormat`] when the environment comes back in a newer
+/// format than this version reads (the server may already have been taken
+/// in), and [`WorkerError`] when the request fails or is refused otherwise.
 pub async fn adopt_server(
     client: &AuthClient,
     access_token: &SecretString,
@@ -1310,7 +1349,8 @@ pub async fn adopt_server(
     body: &AdoptServer,
 ) -> Result<Written<EnvDetail>, WorkerError> {
     let url = format!("{}/server/adopt", env_url(app, env)?);
-    post(client, access_token, &url, body).await
+    let (status, text) = post(client, access_token, &url, body).await?;
+    env_reply(status, &text, true)
 }
 
 /// Takes a data line the account already has into the environment `env` of
@@ -1322,7 +1362,10 @@ pub async fn adopt_server(
 /// [`Code::ResourceNotFound`] when the line is not this account's,
 /// [`Code::AlreadyAttached`] when another environment has it,
 /// [`Code::LimitExceeded`] when the environment has as many lines as it
-/// may, and [`WorkerError`] when the request fails or is refused otherwise.
+/// may, [`WorkerError::NewerFormat`] when the environment comes back in a
+/// newer format than this version reads (the line may already have been
+/// taken in), and [`WorkerError`] when the request fails or is refused
+/// otherwise.
 pub async fn adopt_line(
     client: &AuthClient,
     access_token: &SecretString,
@@ -1331,7 +1374,8 @@ pub async fn adopt_line(
     body: &AdoptLine,
 ) -> Result<Written<EnvDetail>, WorkerError> {
     let url = format!("{}/lines/adopt", env_url(app, env)?);
-    post(client, access_token, &url, body).await
+    let (status, text) = post(client, access_token, &url, body).await?;
+    env_reply(status, &text, true)
 }
 
 #[cfg(test)]
@@ -1907,28 +1951,76 @@ mod tests {
         newer["factsFormat"] = json!(3);
         // A field of the newer format this version could not even parse.
         newer["facts"]["host"] = json!({ "v4": "203.0.113.10" });
-        // 200 answers reading it (and a write sent again); 201 answers
-        // making it or taking a server or a line into it.
+
+        // get_env: the record is refused, and erpc is to be updated.
+        let (status, text) = ok(200, &newer);
+        match env_reply(status, &text, false) {
+            Err(
+                e @ WorkerError::NewerFormat {
+                    found: 3,
+                    after_write: false,
+                },
+            ) => {
+                let shown = e.to_string();
+                assert_eq!(
+                    shown,
+                    "the environment's record is in format 3, newer than this erpc reads (2); \
+                     update erpc"
+                );
+            }
+            other => panic!("expected NewerFormat after a read, got {other:?}"),
+        }
+
+        // put_env (200, 201) and adopt_server / adopt_line (201, and 200 for
+        // one sent again): the account took the write before it answered.
         for status in [200, 201] {
             let (status, text) = ok(status, &newer);
-            match reply::<EnvDetail>(status, &text) {
-                Err(WorkerError::NewerFormat { found }) => assert_eq!(found, 3),
-                other => panic!("{status}: expected NewerFormat, got {other:?}"),
+            match env_reply(status, &text, true) {
+                Err(
+                    e @ WorkerError::NewerFormat {
+                        found: 3,
+                        after_write: true,
+                    },
+                ) => {
+                    assert!(
+                        e.to_string().ends_with(
+                            "; the write may already have been applied: update erpc before \
+                             touching this environment again"
+                        ),
+                        "{e}"
+                    );
+                }
+                other => panic!("{status}: expected NewerFormat after a write, got {other:?}"),
             }
         }
-        let err = reply::<EnvDetail>(200, &ok(200, &newer).1).expect_err("refused");
-        assert!(
-            err.to_string()
-                .contains("format 3, newer than this erpc reads (2)"),
-            "{err}"
-        );
+
         // The format this version writes, and an older one, are read.
         for format in [1, 2] {
             let mut detail = env_detail_json();
             detail["factsFormat"] = json!(format);
             let (status, text) = ok(200, &detail);
-            assert!(reply::<EnvDetail>(status, &text).is_ok(), "{format}");
+            assert!(env_reply(status, &text, false).is_ok(), "{format}");
+            assert!(env_reply(status, &text, true).is_ok(), "{format}");
         }
+
+        // Only an environment's record is checked: delete_env, and every
+        // other call, read their reply with `reply`, which does not look.
+        let (status, text) = ok(200, &json!({ "name": "prod", "factsFormat": 3 }));
+        assert!(reply::<Value>(status, &text).is_ok());
+        // A refusal is a refusal, whatever its data says.
+        let r = refusal(
+            409,
+            &json!({ "code": "revision_conflict", "data": { "factsFormat": 3 } }),
+        );
+        assert_eq!(r.code, Some(Code::RevisionConflict));
+        assert!(matches!(
+            env_reply(
+                409,
+                &json!({ "code": "revision_conflict", "data": { "factsFormat": 3 } }).to_string(),
+                true
+            ),
+            Err(WorkerError::Refused(_))
+        ));
     }
 
     #[test]
