@@ -620,8 +620,11 @@ mod tests {
 
     impl Child {
         fn spawn(setup: &Setup<'_>) -> Self {
+            // libtest names a test by its path without the crate's name.
+            let (_, module) = module_path!().split_once("::").expect("a crate's module");
+            let child = format!("{module}::child");
             let mut process = Command::new(std::env::current_exe().expect("this test binary"))
-                .args(["--exact", "interrupt::tests::child", "--nocapture"])
+                .args(["--exact", &child, "--nocapture"])
                 .env(CASE, setup.case)
                 .env(DIR, setup.dir)
                 .env(GRACE_MS, setup.grace.as_millis().to_string())

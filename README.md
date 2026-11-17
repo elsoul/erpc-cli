@@ -71,8 +71,8 @@ irm https://install.erpc.global/ps1 | iex
 
 These URLs select the latest stable release. While the project has only
 prereleases, they select the most recently published prerelease. To pin a
-version, use `https://install.erpc.global/v0.1.0-rc.4` or
-`https://install.erpc.global/v0.1.0-rc.4/ps1`. The release workflow updates the selected version after publication and approval
+version, use `https://install.erpc.global/v0.1.0-rc.6` or
+`https://install.erpc.global/v0.1.0-rc.6/ps1`. The release workflow updates the selected version after publication and approval
 of the protected installer deployment. Edge and client caches may delay what
 clients see.
 
@@ -449,7 +449,7 @@ The rules for these, and for writing a message, are in
 
 ## Status
 
-Pre-release (`v0.1.0-rc.4`). The commands above exist and pass their offline
+Pre-release (`v0.1.0-rc.6`). The commands above exist and pass their offline
 checks; acceptance on real hosts is still under way for most chains, and each
 chain's guide says where it stands. erpc is the Rust successor of
 [SLV](https://github.com/ValidatorsDAO/slv).

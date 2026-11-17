@@ -8,7 +8,7 @@ SPDX-License-Identifier: Apache-2.0
 Every erpc command reports a failure the same way: one **code** a script can
 branch on, one **exit status**, a **message** a person can read, and, when
 there is one, a **hint** saying what to do next. The code lives in
-`crates/erpc/src/error.rs`; `finish` in `main.rs` is the only place a failure
+`crates/erpc/src/cli/error.rs`; `finish` in `main.rs` is the only place a failure
 is printed.
 
 ## What it looks like

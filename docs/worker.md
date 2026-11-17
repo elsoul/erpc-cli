@@ -577,6 +577,22 @@ What is bought goes on record at once:
   `erpc worker delete --release-server` ends it. Its price was the
   question, asked or answered by `--yes`; a deploy asks no second "Go
   ahead?" after it.
+- **A VPS ended outside erpc** (in the dashboard, or by support): erpc
+  asks the account you are signed in to. A VPS is missing from it when it
+  is neither among its servers nor charged for at every look over a
+  little more than a minute; a VPS bought a moment ago can take that long
+  to be listed, and is never missing. erpc.toml does not say which account
+  bought it, so a VPS missing from the account you are signed in to may be
+  another account's: erpc names the account it looked at, and only you,
+  at a terminal, can say the VPS leaves the record. `--yes` does not
+  answer that question; with no terminal, or under `--json`, nothing is
+  done. The next deploy asks whether to take a missing VPS it never
+  reached off the record and choose a server, as for a new environment.
+  `delete --release-server` takes such a VPS off the record without
+  ending it; it asks the account only about a VPS never reached, or one
+  you say is not to be reached (`--forget`). A server that was reached is
+  removed from and ended as before: erpc never takes a failure to reach
+  it (its firewall, your network) for its end.
 - **The server's facts:** host, pinned key and allow list are written right
   after the firewall (step 5), so a deploy that fails later can still be
   reached by `logs`, `status` and the next deploy.
@@ -784,7 +800,7 @@ configuration: it is on no command line and in no journal. An app with no
 | `erpc worker firewall allow --to ssh\|app <addresses>` | Lets addresses in, and applies it. `--to app` is the WAF's port for an app behind one, and only then takes everyone (`0.0.0.0/0`, `::/0`). A WAF's port is not opened wider while the WAF on the server does not run `erpc.toml`'s rules: the change is kept in `erpc.toml`, held on the server, and the command fails saying so ([The WAF](#the-waf-a-public-api-behind-waf)). Addresses that are all let in already change nothing: the command says so, names `firewall sync` for applying `erpc.toml` again, and exits 0 without asking the server |
 | `erpc worker firewall deny --to ssh\|app <addresses>` | Stops letting them in. For a WAF's port it is applied at once whatever rules the WAF runs, unless `app_allow` still names someone the port is not open to yet: then it is held with that, as for `allow`. Addresses of which none is on the list change nothing, as for `allow` |
 | `erpc worker firewall sync` | Makes the server's firewall what erpc.toml says again; a WAF's port is held as for `allow` |
-| `erpc worker delete`, `delete --release-server` | Removes the worker; `--release-server` also ends its lines and its hourly server. A plain delete refuses a VPS bought and never reached (it would forget it while charged), and one of a reached hourly VPS takes it off the record while it is still charged, which it warns of. What could not be removed or ended stays on record. `--forget` leaves a server that can no longer be reached unreached; `--forget-line <id>` takes off the record a line ended outside erpc |
+| `erpc worker delete`, `delete --release-server` | Removes the worker; `--release-server` also ends its lines and its hourly server. A plain delete refuses a VPS bought and never reached (it would forget it while charged), and one of a reached hourly VPS takes it off the record while it is still charged, which it warns of. What could not be removed or ended stays on record; an hourly VPS never reached (or not to be reached, with `--forget`) that is missing from the account you are signed in to is not among it (`--release-server` takes it off the record without ending it, on your yes at a terminal, naming the account; `--yes` does not answer that). `--forget` leaves a server that can no longer be reached unreached; `--forget-line <id>` takes off the record a line ended outside erpc |
 | `erpc worker import [DIR]` | Takes an app you already have: writes its `erpc.toml` (above) |
 | `erpc worker list` | The apps on this machine and where each is deployed; `--prune` takes those whose erpc.toml is gone off the list |
 | `erpc worker backup on [--at 03:00]`, `off`, `status`, `now` | Backs the app's state up every day to ERPC Global Storage (below) |

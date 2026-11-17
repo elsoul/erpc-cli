@@ -31,7 +31,7 @@ erpc-wallet.workspace = true
 erpc-x402.workspace = true
 clap_complete.workspace = true
 tokio-tungstenite.workspace = true
-# `string` for help headings in the language of the run (src/i18n.rs).
+# `string` for help headings in the language of the run (src/cli/i18n.rs).
 clap = { workspace = true, features = ["string"] }
 serde.workspace = true
 serde_json.workspace = true
@@ -81,14 +81,16 @@ erpc-worker = { workspace = true, features = ["templates"] }
 libc.workspace = true
 signal-hook.workspace = true
 # The terminal's echo, held off across the keystore's passphrase prompts
-# (src/echo.rs).
+# (src/cli/echo.rs).
 rustix = { workspace = true, features = ["std", "termios"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-# A pseudoterminal, for the test of src/echo.rs.
+# A pseudoterminal, for the test of src/cli/echo.rs.
 rustix = { workspace = true, features = ["std", "termios", "pty"] }
 
 [dev-dependencies]
+# A paused clock, for the waits a test must see taken in full.
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

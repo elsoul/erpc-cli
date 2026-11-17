@@ -11,7 +11,9 @@
 use clap::{Arg, ArgMatches, Command};
 use erpc_core::chain::{COMMON_VERBS, Chain, Role, Source, Verb, guard_mainnet, resolve};
 
+use crate::cli::ui;
 use crate::commands::Outcome;
+use crate::error::{CliError, Code};
 
 /// Finds `--chain X` or `--chain=X` without parsing anything else, so the
 /// tree can be built for that chain first.
@@ -60,45 +62,255 @@ fn last_verb(read: &ArgMatches) -> Option<&str> {
     last
 }
 
-/// For a bare `erpc <role>` whose chain is not set anywhere, while more
-/// than one chain has the role: how to see each chain's commands. `None`
-/// when the chain is known, so its own help is shown.
-fn overview(role: Role) -> Option<String> {
+/// What `erpc <role> <args>` is before a chain is resolved.
+#[derive(Debug, PartialEq, Eq)]
+enum Opening {
+    /// Help, or nothing at all, with no chain to show it for: the
+    /// overview, with what a request for help asked about.
+    Overview(Option<crate::node_help::Asked>),
+    /// A chain named where the verb goes (`erpc validator solana …`): its
+    /// help when that is what the line asks, else refused with the line
+    /// meant. It is never read as `--chain` to run anything.
+    ChainWord(Chain),
+    /// `erpc rpc help call` or `help list-networks`: that command's own
+    /// help, which needs no chain.
+    Chainless(String),
+    /// Anything else, read as it always was.
+    Command,
+}
+
+/// Reads what `args` ask for before a chain is resolved, `set_elsewhere`
+/// when `ERPC_CHAIN` or the `default_chain` setting names one
+/// ([`chain_set_elsewhere`]). Help never asks for a chain nor fails for
+/// want of one; an empty `--chain` names none.
+fn opening(role: Role, args: &[String], set_elsewhere: bool) -> Opening {
+    if let Some(chain) = chain_word(role, args) {
+        return Opening::ChainWord(chain);
+    }
+    if role == Role::Rpc
+        && args.first().is_some_and(|a| a == "help")
+        && let Some(verb @ ("call" | "list-networks")) = args.get(1).map(String::as_str)
+    {
+        return Opening::Chainless(verb.to_owned());
+    }
+    let unresolved =
+        !chain_named(args) && !set_elsewhere && crate::node_help::chains_of(role).len() > 1;
+    if unresolved && (args.is_empty() || asks_help(role, args)) {
+        return Opening::Overview(asked_about(role, args));
+    }
+    Opening::Command
+}
+
+/// Whether `args` name a chain with `--chain`: an empty one names none.
+fn chain_named(args: &[String]) -> bool {
+    chain_flag(args).is_some_and(|named| !named.is_empty())
+}
+
+/// Whether `ERPC_CHAIN` or the `default_chain` setting names a chain, or
+/// a name [`chain_for`] refuses.
+fn chain_set_elsewhere() -> bool {
     let env = std::env::var("ERPC_CHAIN").ok();
     let configured = crate::session::config_path()
         .ok()
         .and_then(|path| crate::config::get(&path, "default_chain").ok().flatten());
-    if !matches!(
+    !matches!(
         resolve(None, env.as_deref(), configured.as_deref()),
         Ok(None)
-    ) {
-        return None;
-    }
-    let chains: Vec<Chain> = Chain::ALL
-        .into_iter()
-        .filter(|c| c.roles().contains(&role))
-        .collect();
-    if chains.len() < 2 {
-        return None;
-    }
-    Some(overview_text(role, &chains))
+    )
 }
 
-fn overview_text(role: Role, chains: &[Chain]) -> String {
-    use core::fmt::Write as _;
-    let names: Vec<&str> = chains.iter().map(|c| c.as_str()).collect();
-    let mut text = format!(
-        "erpc {role}: commands on {}. Pick the chain with --chain:\n\n",
-        names.join(", ")
+/// Whether `args` ask for help: `--help` or `-h` before any `--`, `help`
+/// as the first word, or a line clap reads as a request for help on some
+/// chain of the role (`migration help`).
+fn asks_help(role: Role, args: &[String]) -> bool {
+    let textual = args
+        .iter()
+        .take_while(|a| *a != "--")
+        .any(|a| a == "--help" || a == "-h")
+        || args.first().is_some_and(|a| a == "help");
+    textual
+        || crate::node_help::chains_of(role).into_iter().any(|chain| {
+            let full = std::iter::once(format!("erpc {role}")).chain(args.iter().cloned());
+            command(role, chain)
+                .try_get_matches_from(full)
+                .is_err_and(|e| e.kind() == clap::error::ErrorKind::DisplayHelp)
+        })
+}
+
+/// The chain `args` name where the verb goes, as in `erpc validator
+/// solana deploy`, when no `--chain` names one and the word is no verb of
+/// the role.
+fn chain_word(role: Role, args: &[String]) -> Option<Chain> {
+    let first = args.first()?;
+    if chain_named(args) {
+        return None;
+    }
+    let chain = Chain::parse(first)?;
+    (!is_verb(role, first)).then_some(chain)
+}
+
+/// Whether `word` is a verb of `role` on some chain.
+fn is_verb(role: Role, word: &str) -> bool {
+    crate::node_help::chains_of(role)
+        .into_iter()
+        .any(|chain| command(role, chain).find_subcommand(word).is_some())
+}
+
+/// What a request for help with no chain asks about: the first verb it
+/// names, or its first word when that is a word and no verb at all.
+fn asked_about(role: Role, args: &[String]) -> Option<crate::node_help::Asked> {
+    command_word(role, args).map(|word| crate::node_help::Asked::of(role, word))
+}
+
+/// The word where the command goes: the first that is no option and no
+/// value of one of the options every chain's tree takes before its
+/// command (`--chain`, `--network`, `--name`), and after a leading `help`,
+/// the word it asks about.
+fn command_word(role: Role, args: &[String]) -> Option<&str> {
+    let chain = crate::node_help::chains_of(role).first().copied()?;
+    let root = command(role, chain);
+    let takes_value = |arg: &str| {
+        root.get_arguments().any(|a| {
+            a.get_action().takes_values()
+                && (arg
+                    .strip_prefix("--")
+                    .is_some_and(|l| a.get_long() == Some(l))
+                    || arg
+                        .strip_prefix('-')
+                        .filter(|s| s.chars().count() == 1)
+                        .and_then(|s| s.chars().next())
+                        .is_some_and(|c| a.get_short() == Some(c)))
+        })
+    };
+    let mut words = args.iter().take_while(|a| *a != "--");
+    let mut after_help = false;
+    while let Some(arg) = words.next() {
+        if arg.starts_with('-') {
+            if takes_value(arg) {
+                words.next();
+            }
+            continue;
+        }
+        if arg == "help" && !after_help {
+            after_help = true;
+            continue;
+        }
+        return (!arg.is_empty()).then_some(arg.as_str());
+    }
+    None
+}
+
+/// `erpc rpc help call`: what `erpc rpc call --help` prints, from the same
+/// definition, in the operator's language and plain for a script.
+fn chainless_help(verb: &str, json: bool) -> Outcome {
+    let cli = crate::cli::i18n::localized(
+        <crate::Cli as clap::CommandFactory>::command().styles(ui::help_styles()),
+        crate::cli::i18n::lang(),
     );
-    if role == Role::Rpc {
-        text.push_str("  erpc rpc call <METHOD> [PARAMS]\n  erpc rpc list-networks\n\n");
+    // The program as clap names it in usage lines, from how it was run
+    // (`erpc.exe` on Windows), so that this is what `erpc rpc <verb>
+    // --help` prints.
+    let program = std::env::args_os()
+        .next()
+        .unwrap_or_else(|| std::ffi::OsString::from("erpc"));
+    let line = [program, "rpc".into(), verb.into(), "--help".into()];
+    match cli.try_get_matches_from(line) {
+        Err(error) => parse_outcome(&error, json),
+        Ok(_) => Outcome::Usage(format!("`erpc rpc {verb} --help` lists what it takes")),
     }
-    for chain in chains {
-        let _ = writeln!(text, "  erpc {role} --chain {chain} --help");
+}
+
+/// A chain named where the verb goes: refused, with the line meant. For
+/// rpc's `call` and `list-networks`, which take no chain, that is the line
+/// without it.
+fn chain_word_refused(role: Role, chain: Chain, args: &[String]) -> Outcome {
+    let word = args.first().map_or("", String::as_str);
+    let verb = args.get(1).map(String::as_str);
+    let chainless = role == Role::Rpc && matches!(verb, Some("call" | "list-networks"));
+    let mut command = if chainless {
+        "erpc rpc".to_owned()
+    } else {
+        format!("erpc {role} --chain {chain}")
+    };
+    for word in args.iter().skip(1) {
+        command.push(' ');
+        command.push_str(&crate::worker::shell_word(word));
     }
-    text.push_str("\nOr set a default: erpc config set default_chain <chain>\n");
-    text
+    let message = match verb {
+        Some(verb) if chainless => t!("node_help.chain_word.takes_none", word, verb),
+        _ => t!("node_help.chain_word.refused", word, role),
+    };
+    Outcome::Error(
+        CliError::new(Code::Usage, message).hint(t!("node_help.chain_word.hint", command)),
+    )
+}
+
+/// `erpc <role> <chain> …`: the chain's help when the line, read with
+/// `--chain <chain>`, asks for help or names no verb; anything clap would
+/// run, or refuses, is refused as a chain where the verb goes, with the
+/// line meant. A chain without the role says why first.
+fn chain_help(role: Role, chain: Chain, args: &[String], json: bool) -> Outcome {
+    if let Some(refused) = role_refused(role, chain, "the command line") {
+        return refused;
+    }
+    let full = [
+        format!("erpc {role}"),
+        "--chain".to_owned(),
+        chain.to_string(),
+    ]
+    .into_iter()
+    .chain(args.iter().skip(1).cloned());
+    match crate::node_help::tree(role, chain).try_get_matches_from(full) {
+        Err(error) if !error.use_stderr() => parse_outcome(&error, json),
+        Ok(matches) if matches.subcommand().is_none() => no_verb(role, chain, json),
+        Ok(_) => chain_word_refused(role, chain, args),
+        // clap refuses the line with `--chain`: no line to offer, but the
+        // chains the command is on, or rpc's line without a chain, or
+        // clap's own words.
+        Err(error) => match args.get(1).map(String::as_str) {
+            Some("call" | "list-networks") if role == Role::Rpc => {
+                chain_word_refused(role, chain, args)
+            }
+            Some(verb)
+                if is_verb(role, verb) && command(role, chain).find_subcommand(verb).is_none() =>
+            {
+                Outcome::Usage(crate::node_help::Asked::of(role, verb).said(role))
+            }
+            _ => parse_outcome(&error, json),
+        },
+    }
+}
+
+/// `erpc <role> --chain <chain>` with no verb: what the verbs are, as
+/// `--help` shows them; a script (`--json`) gets an error it can test for.
+fn no_verb(role: Role, chain: Chain, json: bool) -> Outcome {
+    if json {
+        return Outcome::Usage(format!(
+            "erpc {role} needs a verb; `erpc {role} --chain {chain} --help` lists them"
+        ));
+    }
+    let help = crate::node_help::tree(role, chain).render_help();
+    Outcome::Done(crate::node_help::shown(&help, false))
+}
+
+/// Why `chain` has no `role` commands, when it has none; `from` says
+/// where the chain came from.
+fn role_refused(role: Role, chain: Chain, from: &str) -> Option<Outcome> {
+    if chain.roles().contains(&role) {
+        return None;
+    }
+    if role == Role::Validator
+        && let Some(reason) = chain.validator_na_reason()
+    {
+        return Some(Outcome::Usage(format!(
+            "validator N/A for {chain}: {reason}"
+        )));
+    }
+    let roles: Vec<&str> = chain.roles().iter().map(|r| r.as_str()).collect();
+    Some(Outcome::Usage(format!(
+        "{chain} has no {role} commands (chain from {from}); use `erpc {}`",
+        roles.join("` or `erpc ")
+    )))
 }
 
 /// Resolves the chain for `role`, asking at a terminal when nothing names
@@ -140,12 +352,13 @@ pub(crate) fn command(role: Role, chain: Chain) -> Command {
     let networks: Vec<&'static str> = chain.networks().to_vec();
     let mut command = Command::new(role.as_str())
         .bin_name(format!("erpc {role}"))
+        .styles(ui::help_styles())
         .about(format!("{role} commands on {chain}"))
         .arg(
             Arg::new("chain")
                 .long("chain")
                 .global(true)
-                .help(format!("The chain: {}", Chain::names())),
+                .help(format!("The chain: {}", crate::node_help::names_of(role))),
         )
         .arg(
             Arg::new("network")
@@ -908,50 +1121,35 @@ fn keys_command() -> Command {
 
 /// Runs `erpc <role> ...`.
 pub async fn run(role: Role, args: &[String], json: bool) -> Outcome {
-    // Nothing after the role, or only a request for help: its help,
-    // without asking for a chain first.
-    let help_only = matches!(args, [one] if ["--help", "-h", "help"].contains(&one.as_str()));
     if args.is_empty() && json {
         // A script gets an error it can test for, not help text.
         return Outcome::Usage(format!(
             "erpc {role} needs a verb; `erpc {role} --help` lists them"
         ));
     }
-    if (args.is_empty() || help_only)
-        && let Some(overview) = overview(role)
-    {
-        return Outcome::Done(overview);
+    // Help, without asking for a chain first.
+    match opening(role, args, chain_set_elsewhere()) {
+        Opening::Overview(asked) => {
+            return Outcome::Done(crate::node_help::overview(role, asked.as_ref(), json));
+        }
+        Opening::ChainWord(chain) => return chain_help(role, chain, args, json),
+        Opening::Chainless(verb) => return chainless_help(&verb, json),
+        Opening::Command => {}
     }
     let (chain, source) = match chain_for(role, args, json) {
         Ok(found) => found,
         Err(outcome) => return outcome,
     };
-    if !chain.roles().contains(&role) {
-        if role == Role::Validator
-            && let Some(reason) = chain.validator_na_reason()
-        {
-            return Outcome::Usage(format!("validator N/A for {chain}: {reason}"));
-        }
-        let roles: Vec<&str> = chain.roles().iter().map(|r| r.as_str()).collect();
-        return Outcome::Usage(format!(
-            "{chain} has no {role} commands (chain from {source}); use `erpc {}`",
-            roles.join("` or `erpc ")
-        ));
+    if let Some(refused) = role_refused(role, chain, &source.to_string()) {
+        return refused;
     }
     let full = std::iter::once(format!("erpc {role}")).chain(args.iter().cloned());
-    let matches = match command(role, chain).try_get_matches_from(full) {
+    let matches = match crate::node_help::tree(role, chain).try_get_matches_from(full) {
         Ok(matches) => matches,
         Err(error) => return parse_outcome(&error, json),
     };
     let Some((name, sub)) = matches.subcommand() else {
-        // No verb: what the verbs are, as --help shows them; a script
-        // (--json) gets an error it can test for instead.
-        if json {
-            return Outcome::Usage(format!(
-                "erpc {role} needs a verb; `erpc {role} --chain {chain} --help` lists them"
-            ));
-        }
-        return Outcome::Done(command(role, chain).render_help().to_string());
+        return no_verb(role, chain, json);
     };
     if role == Role::Validator && chain == Chain::Eth {
         return crate::eth_validator_tree::run(name, sub, source, json).await;
@@ -1017,13 +1215,13 @@ pub async fn run(role: Role, args: &[String], json: bool) -> Outcome {
 }
 
 fn parse_outcome(error: &clap::Error, json: bool) -> Outcome {
+    if !json && !error.use_stderr() {
+        // --help: drawn as erpc draws help, wrapped for the language.
+        return Outcome::Done(crate::node_help::shown(&error.render(), false));
+    }
     if !json {
         let _ = error.print();
-        return if error.use_stderr() {
-            Outcome::Usage(String::new())
-        } else {
-            Outcome::Done(String::new())
-        };
+        return Outcome::Usage(String::new());
     }
     if !error.use_stderr() {
         // --help and --version: clap's text is the output, whole.
@@ -1619,6 +1817,24 @@ mod tests {
         list.iter().map(|s| (*s).to_owned()).collect()
     }
 
+    /// `text` without its escape sequences.
+    fn without_escapes(text: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        let mut chars = text.chars();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' {
+                for e in chars.by_ref() {
+                    if e.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
     /// Every path of subcommands under `command`.
     fn paths(command: &clap::Command, at: &mut Vec<String>, out: &mut Vec<Vec<String>>) {
         for sub in command.get_subcommands() {
@@ -2079,7 +2295,209 @@ mod tests {
             .try_get_matches_from(["erpc validator"])
             .expect("no verb is not an error");
         assert!(parsed.subcommand().is_none());
-        let text = super::overview_text(Role::Rpc, &[Chain::Solana, Chain::Arc]);
-        assert!(text.contains("erpc rpc --chain arc --help"), "{text}");
+        // For a script the overview is plain wherever it is run.
+        let text = crate::node_help::overview(Role::Rpc, None, true);
+        assert!(!text.contains('\x1b'), "plain for a script: {text:?}");
+        assert!(
+            text.contains("Usage: erpc rpc --chain <chain> <COMMAND>"),
+            "{text}"
+        );
+        assert!(text.contains("erpc rpc --chain solana --help"), "{text}");
+    }
+
+    #[test]
+    fn help_never_asks_for_a_chain_and_a_chain_where_the_verb_goes_never_runs() {
+        use super::{Opening, opening};
+        use crate::node_help::Asked;
+        let o = |list: &[&str], elsewhere| opening(Role::Validator, &args(list), elsewhere);
+        let on = |verb: &str, chains: &[Chain]| {
+            Opening::Overview(Some(Asked::On(verb.to_owned(), chains.to_vec())))
+        };
+        let everywhere = |verb: &str| Opening::Overview(Some(Asked::Everywhere(verb.to_owned())));
+        for help in [
+            &[][..],
+            &["--help"],
+            &["-h"],
+            &["help"],
+            &["-n", "testnet", "-h"],
+            &["--chain=", "--help"],
+            &["--chain", "", "-h"],
+        ] {
+            assert_eq!(o(help, false), Opening::Overview(None), "{help:?}");
+        }
+        assert_eq!(o(&["deploy", "--help"], false), everywhere("deploy"));
+        assert_eq!(o(&["help", "deploy"], false), everywhere("deploy"));
+        assert_eq!(
+            o(&["--chain", "", "deploy", "--help"], false),
+            everywhere("deploy")
+        );
+        assert_eq!(o(&["keys", "-h"], false), on("keys", &[Chain::Solana]));
+        // `help` where clap reads it as a request for help.
+        assert_eq!(
+            o(&["migration", "help"], false),
+            on("migration", &[Chain::Solana])
+        );
+        assert_eq!(
+            o(&["bogus", "--help"], false),
+            Opening::Overview(Some(Asked::Nowhere("bogus".to_owned())))
+        );
+        // A value is no command, and after a leading `help` comes the word
+        // it asks about.
+        assert_eq!(
+            o(&["--name", "bogus", "-h"], false),
+            Opening::Overview(None)
+        );
+        assert_eq!(
+            o(&["-n", "testnet", "--name", "keys", "deploy", "-h"], false),
+            everywhere("deploy")
+        );
+        assert_eq!(
+            o(&["help", "bogus"], false),
+            Opening::Overview(Some(Asked::Nowhere("bogus".to_owned())))
+        );
+        // rpc's commands without a chain: their own help.
+        let rpc = |list: &[&str]| opening(Role::Rpc, &args(list), false);
+        assert_eq!(
+            rpc(&["help", "call"]),
+            Opening::Chainless("call".to_owned())
+        );
+        assert_eq!(
+            rpc(&["help", "list-networks"]),
+            Opening::Chainless("list-networks".to_owned())
+        );
+        assert_eq!(
+            rpc(&["help", "bogus"]),
+            Opening::Overview(Some(Asked::Nowhere("bogus".to_owned())))
+        );
+        // A chain set on the line or elsewhere shows its own help.
+        assert_eq!(o(&["--help"], true), Opening::Command);
+        assert_eq!(o(&["deploy", "--help"], true), Opening::Command);
+        assert_eq!(o(&["--chain", "solana", "--help"], false), Opening::Command);
+        assert_eq!(o(&["--chain=eth", "-h"], false), Opening::Command);
+        // A chain where the verb goes, whatever follows: chain_help decides.
+        for line in [
+            &["solana", "--help"][..],
+            &["sol"],
+            &["solana", "deploy"],
+            &["solana", "logs", "--", "--help"],
+        ] {
+            assert_eq!(
+                o(line, false),
+                Opening::ChainWord(Chain::Solana),
+                "{line:?}"
+            );
+        }
+        assert_eq!(
+            o(&["eth", "deploy", "-h"], true),
+            Opening::ChainWord(Chain::Eth)
+        );
+        // Anything else is read as it always was: a verb with no chain
+        // asks at a terminal.
+        assert_eq!(o(&["deploy"], false), Opening::Command);
+        assert_eq!(o(&["logs", "--name", "help"], false), Opening::Command);
+        assert_eq!(o(&["--chain", "solana", "deploy"], false), Opening::Command);
+    }
+
+    #[test]
+    fn a_chain_where_the_verb_goes_is_its_help_or_refused_with_the_line_meant() {
+        use crate::commands::Outcome;
+        let refused = |role: Role, chain: Chain, line: &[&str]| match super::chain_help(
+            role,
+            chain,
+            &args(line),
+            false,
+        ) {
+            Outcome::Error(e) if e.code == crate::error::Code::Usage => {
+                (e.message, e.hint.unwrap_or_default())
+            }
+            other => panic!("{line:?}: refused, not {other:?}"),
+        };
+        let (message, hint) = refused(
+            Role::Validator,
+            Chain::Solana,
+            &["sol", "logs", "--name", "my node"],
+        );
+        assert!(message.contains("`sol` is a chain"), "{message}");
+        assert_eq!(
+            hint,
+            "run it as: erpc validator --chain solana logs --name 'my node'"
+        );
+        // A line clap refuses even with `--chain` gets no line to run: its
+        // own words (logs takes nothing after `--`; bogus is no command;
+        // status has no --bogus), or the chains a command is on.
+        for line in [
+            &["solana", "logs", "--", "--help"][..],
+            &["solana", "bogus"],
+            &["solana", "status", "--bogus"],
+        ] {
+            let said = super::chain_help(Role::Validator, Chain::Solana, &args(line), false);
+            assert!(
+                matches!(&said, Outcome::Usage(m) if m.is_empty()),
+                "{line:?}: clap's own words, not {said:?}"
+            );
+        }
+        for line in [&["eth", "keys"][..], &["eth", "keys", "-h"]] {
+            let said = super::chain_help(Role::Validator, Chain::Eth, &args(line), false);
+            assert!(
+                matches!(&said, Outcome::Usage(m)
+                    if m == "keys is on solana only: erpc validator --chain solana keys --help"),
+                "{line:?}: {said:?}"
+            );
+        }
+        // rpc's call and list-networks take no chain: the line meant has none.
+        let (message, hint) = refused(Role::Rpc, Chain::Solana, &["solana", "call", "getSlot"]);
+        assert!(message.contains("erpc rpc call takes none"), "{message}");
+        assert_eq!(hint, "run it as: erpc rpc call getSlot");
+        // A chain without the role says why, and names no line to run.
+        for line in [&["bitcoin", "--help"][..], &["bitcoin", "deploy"]] {
+            let bitcoin = super::chain_help(Role::Validator, Chain::Bitcoin, &args(line), false);
+            assert!(
+                matches!(&bitcoin, Outcome::Usage(m) if m.starts_with("validator N/A for bitcoin")),
+                "{bitcoin:?}"
+            );
+        }
+        let node = super::chain_help(Role::Node, Chain::Solana, &args(&["solana", "-h"]), false);
+        assert!(
+            matches!(&node, Outcome::Usage(m) if m.contains("(chain from the command line)")),
+            "{node:?}"
+        );
+        // Help asked, or nothing after the chain: its help.
+        for line in [
+            &["eth"][..],
+            &["eth", "--help"],
+            &["eth", "help"],
+            &["eth", "status", "-h"],
+        ] {
+            // Coloured at a terminal: read without its escapes.
+            let help = super::chain_help(Role::Rpc, Chain::Eth, &args(line), false);
+            assert!(
+                matches!(&help, Outcome::Done(t) if without_escapes(t).contains("Usage: erpc rpc")),
+                "{line:?}: {help:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_chains_help_offers_only_the_chains_that_have_the_role() {
+        let chain_help = |role: Role, chain: Chain| {
+            super::command(role, chain)
+                .get_arguments()
+                .find(|a| a.get_id() == "chain")
+                .and_then(clap::Arg::get_help)
+                .map(ToString::to_string)
+                .unwrap_or_default()
+        };
+        let validator = chain_help(Role::Validator, Chain::Solana);
+        assert!(
+            validator.contains("solana") && validator.contains("tron"),
+            "{validator}"
+        );
+        assert!(!validator.contains("bitcoin"), "{validator}");
+        assert!(chain_help(Role::Rpc, Chain::Solana).contains("bitcoin"));
+        // A chain word is no grammar: it is never a deploy.
+        assert!(!super::deploys(
+            Role::Validator,
+            &args(&["solana", "deploy"])
+        ));
     }
 }

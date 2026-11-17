@@ -167,7 +167,7 @@ fn color(look: Look, pixel: u32) -> Color {
 
 /// The nearest colour in the 256-colour palette: the 6x6x6 cube or the
 /// grey ramp, whichever is closer.
-fn nearest_256(r: u8, g: u8, b: u8) -> u8 {
+pub(crate) fn nearest_256(r: u8, g: u8, b: u8) -> u8 {
     const LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
     let step = |c: u8| {
         (0..6_u8)

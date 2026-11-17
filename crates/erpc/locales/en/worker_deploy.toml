@@ -87,6 +87,12 @@ not_seen_yet = "it was started, and neither user-api's list nor the account's ch
 not_kept = "VPS {id} was started and could not be put on record: {error}"
 not_kept_hint = "it is charged by the hour: `erpc worker deploy --vps {id}{scope}` takes it up, or end it in the dashboard"
 taking_up = "taking up VPS {id}, on record from an earlier deploy"
+missing = "VPS {id}, on record from an earlier deploy that never reached it, is not on the account you are signed in to ({account}): it has ended, or it is another account's, and only a person at a terminal can say it leaves the record; nothing was deployed"
+missing_hint = "run this deploy, or `{delete}`, yourself at a terminal, without `--json`: either takes it off the record without ending it (the delete also ends the environment's data lines); or sign in to the account that has it"
+missing_ask = "VPS {id}, on record from an earlier deploy that never reached it, is not on the account you are signed in to ({account}): it has ended, or it is another account's. Take it off the record (nothing is ended) and choose a server?"
+missing_kept = "VPS {id} stays on record; nothing was deployed"
+dropped = "VPS {id} leaves the record; a server is chosen as for a new environment"
+not_dropped = "VPS {id} could not be taken off the record: {error}"
 
 [server]
 no_terminal = "erpc.toml has no [env.{env}], and no one is at a terminal to choose a server"

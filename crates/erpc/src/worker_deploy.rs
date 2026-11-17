@@ -1128,8 +1128,9 @@ async fn server(
         ));
     }
     // A VPS an earlier deploy bought and put on record, which stopped
-    // before the VPS was ready: taken up rather than bought again.
-    if let Some(resource) = pending_vps(m.env.get(env_name)) {
+    // before the VPS was ready: taken up rather than bought again. `base`
+    // is the record, less a VPS the person took off it ([`drop_ended_vps`]).
+    if let Some(resource) = pending_vps(Some(base)) {
         say.line(&t!("worker_deploy.vps.taking_up", id = resource.id));
         on_record.borrow_mut().push(format!("VPS {}", resource.id));
         let api = Api::open().await?.accepting(at.starts.accepted());
@@ -1227,6 +1228,120 @@ fn on_record_said(lang: Lang, env: &Env, resource: &Resource, scope: &str) -> Ve
         text.push(said_in!(lang, t!("worker_deploy.done.hourly_vps", scope)));
     }
     text
+}
+
+/// Takes off the record (`kept`) a VPS an earlier deploy bought and never
+/// reached that is missing from the account signed in to
+/// ([`worker_vps::on_account`]), once the person at the terminal says so:
+/// it has ended outside erpc (in the dashboard, or by support), or it is
+/// another account's, which only they can tell. Then this
+/// deploy goes on as for an environment with no server, asking for one as
+/// it would, instead of waiting for one that is not there. With nobody to
+/// ask (no terminal, `--json`) it stops and says how to take it off the
+/// record; `--yes` does not answer this. When the account cannot be read,
+/// or has it, the record stays and the deploy takes the VPS up.
+async fn drop_ended_vps(
+    env: &mut Env,
+    kept: &EnvRecord<'_>,
+    scope: &str,
+    say: &Say,
+) -> Result<(), CliError> {
+    let Some(resource) = pending_vps(Some(env)).cloned() else {
+        return Ok(());
+    };
+    let Ok(api) = Api::open().await else {
+        return Ok(());
+    };
+    let seen = worker_vps::on_account(&api, &resource, say).await;
+    let asking = Asking {
+        can_ask: worker_vps::can_ask(say.quiet, crate::session::has_terminal()),
+        ask: |question: &str| crate::node_common::confirm(question).map_err(failed),
+    };
+    let save = |without: &Env| kept.save(without, None);
+    record_without_missing(env, &seen, scope, asking, save, say)
+}
+
+/// Whether a person can be asked (`can_ask`), and how (`ask`).
+struct Asking<A> {
+    can_ask: bool,
+    ask: A,
+}
+
+/// [`drop_ended_vps`] once the account was asked (`seen`): the record
+/// without the VPS is saved (`save`) and becomes `env` when it leaves
+/// ([`without_missing_vps`]); otherwise nothing is written.
+fn record_without_missing(
+    env: &mut Env,
+    seen: &worker_vps::OnAccount,
+    scope: &str,
+    asking: Asking<impl FnOnce(&str) -> Result<bool, CliError>>,
+    save: impl FnOnce(&Env) -> Result<(), String>,
+    say: &Say,
+) -> Result<(), CliError> {
+    let id = pending_vps(Some(env))
+        .map(|r| r.id.clone())
+        .unwrap_or_default();
+    let Some(without) = without_missing_vps(env, seen, scope, asking.can_ask, asking.ask)? else {
+        return Ok(());
+    };
+    save(&without).map_err(|e| failed(t!("worker_deploy.vps.not_dropped", id, error = e)))?;
+    *env = without;
+    say.line(&t!("worker_deploy.vps.dropped", id));
+    Ok(())
+}
+
+/// The record to write in place of `env`, without the VPS bought and never
+/// reached that is on it, when it leaves ([`forget_missing`]); `None` when
+/// the record stays as it is.
+fn without_missing_vps(
+    env: &Env,
+    seen: &worker_vps::OnAccount,
+    scope: &str,
+    can_ask: bool,
+    ask: impl FnOnce(&str) -> Result<bool, CliError>,
+) -> Result<Option<Env>, CliError> {
+    let Some(resource) = pending_vps(Some(env)) else {
+        return Ok(None);
+    };
+    Ok(
+        forget_missing(seen, &resource.id, scope, can_ask, ask)?.then(|| Env {
+            resource: None,
+            ..env.clone()
+        }),
+    )
+}
+
+/// Whether VPS `id`, bought and never reached, leaves the record, from
+/// what the account signed in to says of it (`seen`): only when it is
+/// missing from it and the person says so (`ask`, when `can_ask`). With
+/// nobody to ask, or a no, the deploy stops with the way to take it off
+/// the record by hand.
+fn forget_missing(
+    seen: &worker_vps::OnAccount,
+    id: &str,
+    scope: &str,
+    can_ask: bool,
+    ask: impl FnOnce(&str) -> Result<bool, CliError>,
+) -> Result<bool, CliError> {
+    let Some(account) = seen.missing_from() else {
+        return Ok(false);
+    };
+    let hint = t!(
+        "worker_deploy.vps.missing_hint",
+        delete = format!("erpc worker delete --release-server{scope}")
+    );
+    if !can_ask {
+        return Err(CliError::new(
+            Code::NeedsTerminal,
+            t!("worker_deploy.vps.missing", id, account),
+        )
+        .hint(hint));
+    }
+    if ask(&t!("worker_deploy.vps.missing_ask", id, account))? {
+        Ok(true)
+    } else {
+        Err(CliError::new(Code::Declined, t!("worker_deploy.vps.missing_kept", id)).hint(hint))
+    }
 }
 
 /// The VPS `env` has on record without a server to reach yet: one a deploy
@@ -1404,13 +1519,14 @@ async fn run(
     // person is asked at the start and not after it. A new environment's
     // record starts as where it is kept, so that a VPS bought here goes on
     // record at once.
-    let env_before = match m.env.get(&app.env) {
+    let mut env_before = match m.env.get(&app.env) {
         Some(env) => env.clone(),
         None => Env {
             inventory: new_inventory(at)?,
             ..Env::default()
         },
     };
+    drop_ended_vps(&mut env_before, &kept, &scope, say).await?;
     let Found {
         server,
         new_env,
@@ -2971,5 +3087,184 @@ mod tests {
             "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
         let key = HostKey::parse(line).expect("key");
         assert_eq!(key.to_openssh(), line);
+    }
+
+    /// A VPS bought and never reached leaves the record only when it is
+    /// missing from the account signed in to and the person, asked with
+    /// that account named, says so. With nobody to ask, or a no, the deploy
+    /// stops with the way to take it off the record by hand; when the
+    /// account has it or cannot be read, nobody is asked and it stays.
+    #[test]
+    fn a_vps_missing_from_the_account_leaves_the_record_only_on_the_persons_yes() {
+        use super::forget_missing;
+        use crate::error::Code;
+        use crate::worker_vps::OnAccount;
+        use std::cell::RefCell;
+
+        let missing = OnAccount::Missing {
+            account: "Example Account".to_owned(),
+        };
+        let asked = RefCell::new(Vec::new());
+        let answer = |yes: bool| {
+            let asked = &asked;
+            move |q: &str| {
+                asked.borrow_mut().push(q.to_owned());
+                Ok(yes)
+            }
+        };
+        let scope = " --env prod --dir app";
+        for seen in [OnAccount::There, OnAccount::Unknown] {
+            assert!(!forget_missing(&seen, "100001", scope, true, answer(true)).expect("kept"));
+        }
+        assert!(asked.borrow().is_empty(), "nobody is asked");
+
+        assert!(forget_missing(&missing, "100001", scope, true, answer(true)).expect("yes"));
+        assert!(
+            asked.borrow()[0].contains("VPS 100001")
+                && asked.borrow()[0].contains("(Example Account)"),
+            "{:?}",
+            asked.borrow()
+        );
+
+        let no = forget_missing(&missing, "100001", scope, true, answer(false)).expect_err("no");
+        assert_eq!(no.code, Code::Declined);
+        let hint = no.hint.unwrap_or_default();
+        assert!(
+            hint.contains("`erpc worker delete --release-server --env prod --dir app`"),
+            "{hint}"
+        );
+
+        let before = asked.borrow().len();
+        let nobody =
+            forget_missing(&missing, "100001", scope, false, answer(true)).expect_err("nobody");
+        assert_eq!(nobody.code, Code::NeedsTerminal);
+        assert!(
+            nobody.message.contains("(Example Account)"),
+            "{}",
+            nobody.message
+        );
+        assert_eq!(asked.borrow().len(), before, "nobody to ask is never asked");
+
+        let broken = forget_missing(&missing, "100001", scope, true, |_| {
+            Err(super::failed("the terminal went away"))
+        });
+        assert!(broken.is_err());
+    }
+
+    /// The record is rewritten without the VPS only when it is missing and
+    /// the person says so; a VPS that is there or not known, or a record
+    /// with no VPS bought and never reached, is left as it is, and nobody
+    /// is asked. A person is asked only at a terminal and not under
+    /// `--json`.
+    #[test]
+    fn the_record_loses_a_vps_only_when_it_is_missing_and_the_person_says_so() {
+        use super::without_missing_vps;
+        use crate::worker_vps::OnAccount;
+        use crate::worker_vps::can_ask;
+        use erpc_worker::manifest::{Env, Resource, ResourceKind};
+
+        let pending = Env {
+            resource: Some(Resource {
+                kind: ResourceKind::Vps,
+                id: "100001".to_owned(),
+                region: None,
+                hourly: true,
+            }),
+            ..Env::default()
+        };
+        let reached = Env {
+            host: Some("203.0.113.10".to_owned()),
+            ..pending.clone()
+        };
+        let missing = OnAccount::Missing {
+            account: "Example Account".to_owned(),
+        };
+        let never =
+            |_: &str| -> Result<bool, crate::error::CliError> { panic!("nobody is to be asked") };
+        for seen in [OnAccount::There, OnAccount::Unknown] {
+            assert_eq!(
+                without_missing_vps(&pending, &seen, "", true, never).expect("kept"),
+                None
+            );
+        }
+        assert_eq!(
+            without_missing_vps(&reached, &missing, "", true, never).expect("kept"),
+            None
+        );
+        assert_eq!(
+            without_missing_vps(&Env::default(), &missing, "", true, never).expect("kept"),
+            None
+        );
+        let without = without_missing_vps(&pending, &missing, "", true, |_| Ok(true))
+            .expect("asked")
+            .expect("rewritten");
+        assert_eq!(without, Env::default());
+        assert!(without_missing_vps(&pending, &missing, "", true, |_| Ok(false)).is_err());
+        assert!(without_missing_vps(&pending, &missing, "", false, never).is_err());
+
+        assert!(can_ask(false, true));
+        assert!(!can_ask(true, true), "--json");
+        assert!(!can_ask(false, false), "no terminal");
+        assert!(!can_ask(true, false));
+    }
+
+    /// Once the account was asked, the record is written without the VPS,
+    /// and the deploy goes on with that record, only when it is missing
+    /// and the person says so; otherwise nothing is written and the record
+    /// the deploy goes on with is the one it had.
+    #[test]
+    fn the_record_without_the_vps_is_written_and_used_only_after_a_yes() {
+        use super::{Asking, record_without_missing};
+        use crate::worker_vps::OnAccount;
+        use erpc_worker::manifest::{Env, Resource, ResourceKind};
+        use std::cell::RefCell;
+
+        let pending = Env {
+            resource: Some(Resource {
+                kind: ResourceKind::Vps,
+                id: "100001".to_owned(),
+                region: None,
+                hourly: true,
+            }),
+            ..Env::default()
+        };
+        let missing = OnAccount::Missing {
+            account: "Example Account".to_owned(),
+        };
+        let quiet = crate::node_common::Say { quiet: true };
+        let saved = RefCell::new(Vec::new());
+        let save = |env: &Env| {
+            saved.borrow_mut().push(env.clone());
+            Ok(())
+        };
+        let yes = || Asking {
+            can_ask: true,
+            ask: |_: &str| Ok(true),
+        };
+
+        let mut env = pending.clone();
+        record_without_missing(&mut env, &missing, "", yes(), save, &quiet).expect("dropped");
+        assert_eq!(env, Env::default(), "the deploy goes on without it");
+        assert_eq!(saved.borrow().as_slice(), [Env::default()]);
+
+        for seen in [OnAccount::There, OnAccount::Unknown] {
+            let mut env = pending.clone();
+            record_without_missing(&mut env, &seen, "", yes(), save, &quiet).expect("kept");
+            assert_eq!(env, pending);
+        }
+        let mut env = pending.clone();
+        let no = Asking {
+            can_ask: true,
+            ask: |_: &str| Ok(false),
+        };
+        assert!(record_without_missing(&mut env, &missing, "", no, save, &quiet).is_err());
+        assert_eq!(env, pending);
+        let mut env = pending.clone();
+        let failing = |_: &Env| Err("read-only".to_owned());
+        let refused = record_without_missing(&mut env, &missing, "", yes(), failing, &quiet)
+            .expect_err("not written");
+        assert!(refused.message.contains("read-only"), "{}", refused.message);
+        assert_eq!(env, pending, "a record not written is not gone on with");
+        assert_eq!(saved.borrow().len(), 1, "only the one yes wrote");
     }
 }

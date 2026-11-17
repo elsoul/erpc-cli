@@ -20,7 +20,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use erpc_auth::store::{StoreError, StoreKind};
 
 #[macro_use]
-mod i18n;
+mod cli;
 mod account_secret;
 mod ai;
 mod arbitrum_bundle;
@@ -46,7 +46,6 @@ mod backup;
 mod backup_schedule;
 mod bitcoin_rpc;
 mod bitcoin_tree;
-mod browser;
 mod bsc_backup;
 mod bsc_owned;
 mod bsc_rpc;
@@ -57,9 +56,7 @@ mod config;
 mod conversations;
 mod credit_wallet;
 mod doctor;
-mod echo;
 mod elf;
-mod error;
 mod eth_authority;
 mod eth_authority_evidence;
 mod eth_deploy;
@@ -73,14 +70,12 @@ mod hyperliquid_aqa;
 mod hyperliquid_ops;
 mod hyperliquid_tree;
 mod hyperliquid_validator;
-mod interrupt;
 mod kaia_backup;
 mod kaia_owned;
 mod kaia_rpc;
 mod kaia_signer;
 mod kaia_tree;
 mod keyless;
-mod long_commands;
 mod memory;
 mod near_rpc;
 mod near_tree;
@@ -90,12 +85,12 @@ mod monad_tree;
 mod nitro_rpc;
 mod nitro_tree;
 mod node_common;
+mod node_help;
 mod node_report;
 mod nodes;
 mod polygon_custody;
 mod polygon_rpc;
 mod polygon_tree;
-mod prompt;
 mod restic;
 mod robinhood_admission;
 mod robinhood_admission_input;
@@ -134,8 +129,6 @@ mod sui_tree;
 mod tree;
 mod tron_node;
 mod tron_tree;
-mod tui;
-mod ui;
 mod validator_deploy;
 mod validator_init;
 mod validator_keys;
@@ -159,6 +152,10 @@ mod worker_run;
 mod worker_secrets;
 mod worker_vps;
 mod worker_waf;
+
+// Temporary: the old paths of the modules that moved into `cli/`, so the
+// move changes no imports. Each goes when its users import from `cli::`.
+pub(crate) use cli::{browser, echo, error, i18n, interrupt, long_commands, prompt, tui, ui};
 
 /// Exit statuses outside a failure's own ([`error::Code::exit`]).
 mod exit {
@@ -264,7 +261,12 @@ enum Command {
         args: Vec<String>,
     },
     /// Send JSON-RPC requests or manage RPC nodes with --chain.
-    #[command(visible_alias = "r", disable_help_flag = true)]
+    // `help` goes to the node tree too, as it does for validator and node.
+    #[command(
+        visible_alias = "r",
+        disable_help_flag = true,
+        disable_help_subcommand = true
+    )]
     Rpc {
         #[command(subcommand)]
         action: Option<RpcAction>,
@@ -616,7 +618,8 @@ fn run_to_end<F: std::future::Future>(work: F) -> std::io::Result<F::Output> {
 
 async fn run() -> ExitCode {
     let lang = i18n::choose();
-    let parsed = i18n::localized(<Cli as clap::CommandFactory>::command(), lang)
+    let command = <Cli as clap::CommandFactory>::command().styles(cli::ui::help_styles());
+    let parsed = i18n::localized(command, lang)
         .try_get_matches()
         .and_then(|mut m| <Cli as clap::FromArgMatches>::from_arg_matches_mut(&mut m));
     let cli = match parsed {

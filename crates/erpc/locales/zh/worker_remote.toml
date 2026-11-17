@@ -62,6 +62,9 @@ none = "服务器上还没有版本。"
 
 [delete]
 refused = "未移除任何内容"
+missing_ask = "要继续，并在不终止 {kind} {id} 的情况下将其从记录中移除吗？它不在当前登录的账户（{account}）中：它已终止，或属于另一个账户"
+missing_needs_person = "{kind} {id} 不在当前登录的账户（{account}）中：它已终止，或属于另一个账户；是否将其从记录中移除，只有终端前的人才能回答；未做任何操作"
+missing_needs_person_hint = "请您自己在终端中运行同一命令，不要加 `--json`；`--yes` 不会回答这个问题"
 not_removed = "无法从服务器移除它（{error}）"
 not_removed_ending = "无法从服务器移除它（{error}）；仍将终止服务器"
 nothing_removed = "未移除任何内容；{hint}"
@@ -77,6 +80,8 @@ forget_unreached = "按要求不连接 {host}，将 [env.{env}] 从记录中移�
 remove = "从 {host} 移除 {id}：其服务单元、版本和状态"
 never_reached = "将 [env.{env}] 从记录中移除（从未连接过其服务器）"
 no_server = "将 [env.{env}] 从记录中移除（记录中没有服务器）"
+then_missing = "，然后在不终止 {kind} {id} 的情况下将其从记录中移除：它不在当前登录的账户（{account}）中，因此已终止，或属于另一个账户"
+then_lines_missing = "，然后终止其数据线路，并在不终止 {kind} {id} 的情况下将其从记录中移除：它不在当前登录的账户（{account}）中，因此已终止，或属于另一个账户"
 then_server = "，然后终止按小时计费的服务器"
 then_lines_and_server = "，然后终止其数据线路和按小时计费的服务器"
 then_lines = "，然后终止其数据线路（记录中没有按小时计费的服务器）"
@@ -103,6 +108,7 @@ line_not_hourly = "数据线路 {ids} 仍在运行（不按小时计费），而
 lines = "其数据线路已终止。"
 dropped = "{line} 不在账户的计费项中；已从记录中移除。"
 server = "按小时计费的服务器已终止。"
+server_gone = "{kind} {id} 不在当前登录的账户（{account}）中：未终止它，已将其从记录中移除。"
 no_server = "记录中没有需要终止的按小时计费 ERPC 服务器。"
 kept = "{line} 不按小时计费，因此 erpc 没有终止它；在控制面板中终止之前它会一直运行"
 

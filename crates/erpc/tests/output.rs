@@ -705,13 +705,252 @@ fn a_solana_verb_without_its_network_or_name_is_a_usage_error() {
     }
 }
 
+/// Help erpc prints itself -- a role with no verb, and Japanese help, which
+/// it wraps itself -- is coloured when clap's own help is: plain off a
+/// terminal, as scripts and logs read it; coloured when `CLICOLOR_FORCE`
+/// asks for colour anyway; plain again when `NO_COLOR` is set as well.
+#[test]
+fn help_erpc_prints_itself_is_coloured_when_clap_help_is() {
+    let home = tempfile::tempdir().expect("isolated configuration");
+    let commands: [(&[&str], &str); 10] = [
+        (&["--help"], "Usage: erpc"),
+        (&["v", "--chain", "solana"], "Usage: erpc validator"),
+        (
+            &["v", "--chain", "solana", "--help"],
+            "Usage: erpc validator",
+        ),
+        (&["--lang", "ja", "--help"], "使い方: erpc"),
+        // The overview, before a chain is chosen.
+        (&["v"], "Usage: erpc validator --chain <chain> <COMMAND>"),
+        (
+            &["rpc", "--help"],
+            "Usage: erpc rpc --chain <chain> <COMMAND>",
+        ),
+        (
+            &["--lang", "ja", "v"],
+            "使い方: erpc validator --chain <chain>",
+        ),
+        // A chain where the verb goes, with help asked: its help.
+        (&["v", "solana", "--help"], "validator commands on solana"),
+        (
+            &["v", "eth", "deploy", "-h"],
+            "Usage: erpc validator deploy",
+        ),
+        (
+            &["--lang", "ja", "rpc", "--chain", "solana", "--help"],
+            "使い方: erpc rpc",
+        ),
+    ];
+    let settings: [(&[(&str, &str)], bool); 3] = [
+        (&[], false),
+        (&[("CLICOLOR_FORCE", "1")], true),
+        (&[("CLICOLOR_FORCE", "1"), ("NO_COLOR", "1")], false),
+    ];
+    for (arguments, usage) in commands {
+        for (variables, coloured) in settings {
+            let output =
+                isolated_with(home.path(), arguments, variables).expect("isolated command route");
+            assert_eq!(output.status.code(), Some(0), "{arguments:?} {variables:?}");
+            let help = String::from_utf8(output.stdout).expect("UTF-8 help");
+            assert_eq!(
+                help.contains('\x1b'),
+                coloured,
+                "{arguments:?} {variables:?}: {help:?}"
+            );
+            assert!(
+                without_escapes(&help).contains(usage),
+                "{arguments:?} {variables:?}: {help:?}"
+            );
+        }
+    }
+}
+
+/// Help never needs a chain: with none chosen, a verb's help is the
+/// overview and where that verb's options are, not "no chain is chosen".
+/// A chain where the verb goes runs nothing: it is refused with the line
+/// meant, as text and as one JSON record.
+#[test]
+fn help_needs_no_chain_and_a_chain_where_the_verb_goes_runs_nothing() {
+    let home = tempfile::tempdir().expect("isolated configuration");
+    let output = isolated(home.path(), &["v", "deploy", "--help"]).expect("isolated route");
+    assert_eq!(output.status.code(), Some(0));
+    let help = String::from_utf8(output.stdout).expect("UTF-8 help");
+    assert!(help.contains("Commands every chain has:"), "{help}");
+    assert!(
+        help.trim_end().ends_with(
+            "What deploy takes depends on the chain: erpc validator --chain <chain> deploy --help"
+        ),
+        "{help}"
+    );
+
+    let output =
+        isolated(home.path(), &["v", "solana", "deploy", "--name", "a b"]).expect("isolated route");
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    let said = String::from_utf8(output.stderr).expect("UTF-8 error");
+    assert!(
+        said.contains("`solana` is a chain, not a command"),
+        "{said}"
+    );
+    assert!(
+        said.contains("erpc validator --chain solana deploy --name 'a b'"),
+        "{said}"
+    );
+
+    let output =
+        isolated(home.path(), &["--json", "rpc", "eth", "status"]).expect("isolated route");
+    assert_eq!(output.status.code(), Some(2));
+    let record: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("one JSON record");
+    assert_eq!(record["error"]["code"], "usage", "{record}");
+    assert!(
+        record["error"]["hint"]
+            .as_str()
+            .is_some_and(|h| h.ends_with("erpc rpc --chain eth status")),
+        "{record}"
+    );
+}
+
+/// The overview is plain for a script (`--json`, `ERPC_JSON`), even when
+/// colour is forced; and help never asks which chain nor fails for want
+/// of one: an empty `--chain` names none, `help` where clap reads it as a
+/// request for help is one, and rpc's `help` is the overview too.
+#[test]
+fn help_for_a_script_is_plain_and_help_never_asks_for_a_chain() {
+    let home = tempfile::tempdir().expect("isolated configuration");
+    let forced = [("CLICOLOR_FORCE", "1")];
+    let by_variable = [("CLICOLOR_FORCE", "1"), ("ERPC_JSON", "true")];
+    let script: [(&[&str], &[_]); 4] = [
+        (&["--json", "v", "--help"], &forced),
+        (&["--json", "v", "deploy", "--help"], &forced),
+        (&["--json", "rpc", "--help"], &forced),
+        (&["v", "--help"], &by_variable),
+    ];
+    for (arguments, variables) in script {
+        let output = isolated_with(home.path(), arguments, variables).expect("isolated route");
+        assert_eq!(output.status.code(), Some(0), "{arguments:?}");
+        let help = String::from_utf8(output.stdout).expect("UTF-8 help");
+        assert!(!help.contains('\x1b'), "{arguments:?}: {help:?}");
+        assert!(
+            help.contains("Chains and their networks:"),
+            "{arguments:?}: {help}"
+        );
+    }
+    let lines: [&[&str]; 6] = [
+        &["v", "--chain=", "--help"],
+        &["v", "--chain", "", "deploy", "--help"],
+        &["v", "migration", "help"],
+        &["rpc", "help"],
+        &["rpc", "help", "deploy"],
+        &["node", "-h"],
+    ];
+    for arguments in lines {
+        let output = isolated(home.path(), arguments).expect("isolated route");
+        let said = String::from_utf8_lossy(&output.stderr).into_owned();
+        assert_eq!(output.status.code(), Some(0), "{arguments:?}: {said}");
+        assert!(
+            !said.contains("no chain is chosen"),
+            "{arguments:?}: {said}"
+        );
+        let help = String::from_utf8(output.stdout).expect("UTF-8 help");
+        assert!(
+            help.contains("Chains and their networks:"),
+            "{arguments:?}: {help}"
+        );
+    }
+}
+
+/// `erpc rpc help call` and `help list-networks` print what `erpc rpc call
+/// --help` and `list-networks --help` print, coloured or not, in English
+/// and in Japanese.
+#[test]
+fn rpc_help_of_a_command_without_a_chain_is_that_commands_own_help() {
+    let home = tempfile::tempdir().expect("isolated configuration");
+    for verb in ["call", "list-networks"] {
+        for variables in [&[][..], &[("CLICOLOR_FORCE", "1")]] {
+            for lang in ["en", "ja"] {
+                let run = |line: &[&str]| {
+                    let mut full = vec!["--lang", lang];
+                    full.extend(line);
+                    isolated_with(home.path(), &full, variables).expect("isolated route")
+                };
+                let asked = run(&["rpc", "help", verb]);
+                let own = run(&["rpc", verb, "--help"]);
+                assert_eq!(asked.status.code(), Some(0), "{verb} {lang} {variables:?}");
+                assert_eq!(own.status.code(), Some(0), "{verb} {lang} {variables:?}");
+                assert_eq!(
+                    String::from_utf8_lossy(&asked.stdout),
+                    String::from_utf8_lossy(&own.stdout),
+                    "{verb} {lang} {variables:?}"
+                );
+            }
+        }
+    }
+}
+
+/// Every `list` example an overview gives runs as it says on a machine
+/// with nothing set up.
+#[test]
+fn the_list_examples_of_each_overview_run_as_they_say() {
+    let home = tempfile::tempdir().expect("isolated configuration");
+    for (role, expected) in [("validator", 1), ("rpc", 1), ("node", 0)] {
+        let output = isolated(home.path(), &[role, "--help"]).expect("isolated route");
+        let help = String::from_utf8(output.stdout).expect("UTF-8 help");
+        let lists: Vec<String> = help
+            .lines()
+            .skip_while(|l| !l.starts_with("Examples:"))
+            .filter_map(|l| l.trim().split("  ").next().map(str::to_owned))
+            .filter(|example| example.ends_with(" list"))
+            .collect();
+        assert_eq!(lists.len(), expected, "{role}: {help}");
+        for example in lists {
+            let words: Vec<&str> = example.split_whitespace().skip(1).collect();
+            let output = isolated(home.path(), &words).expect("isolated route");
+            assert_eq!(
+                output.status.code(),
+                Some(0),
+                "{example}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+}
+
+/// `text` without its escape sequences.
+fn without_escapes(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            for e in chars.by_ref() {
+                if e.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// erpc, isolated: no configuration, no PATH, nothing on standard input.
 fn isolated(home: &std::path::Path, arguments: &[&str]) -> std::io::Result<std::process::Output> {
+    isolated_with(home, arguments, &[])
+}
+
+/// erpc, isolated, with only `variables` set besides its own.
+fn isolated_with(
+    home: &std::path::Path,
+    arguments: &[&str],
+    variables: &[(&str, &str)],
+) -> std::io::Result<std::process::Output> {
     let mut command = Command::new(env!("CARGO_BIN_EXE_erpc"));
     command.env_clear().env("ERPC_HOME", home).env("PATH", home);
     if let Some(root) = std::env::var_os("SYSTEMROOT") {
         command.env("SYSTEMROOT", root);
     }
+    command.envs(variables.iter().copied());
     command.args(arguments).stdin(Stdio::null()).output()
 }
 

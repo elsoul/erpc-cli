@@ -317,7 +317,7 @@ mod tests {
 
     #[test]
     fn the_documented_table_is_the_one_in_the_code() {
-        let doc = include_str!("../../../docs/errors.md");
+        let doc = include_str!("../../../../docs/errors.md");
         for code in Code::ALL {
             let row = format!("| `{}` | {} |", code.as_str(), code.exit());
             assert!(doc.contains(&row), "docs/errors.md lacks {row}");
