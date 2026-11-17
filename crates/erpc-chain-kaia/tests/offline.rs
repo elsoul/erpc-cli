@@ -3,17 +3,26 @@
 
 //! Offline failure paths and the exact installed helper contract.
 
+/// One test per Python fixture, named after its file: the fixtures run in
+/// parallel, and each one that fails is reported, not only the first. The
+/// modules that use it are `cfg(test)`, so their shared `fixture` helper may
+/// `expect` as a test does.
 #[cfg(unix)]
-#[test]
-fn bootstrap_and_owned_lifecycle_failures() {
-    for script in [
-        "bootstrap_test.py",
-        "lifecycle_test.py",
-        "custody_test.py",
-        "corecell_test.py",
-        "corecell_lifecycle_test.py",
-        "coreaccount_test.py",
-    ] {
+macro_rules! fixtures {
+    ($($fixture:ident),* $(,)?) => {
+        $(
+            #[test]
+            fn $fixture() {
+                fixture(concat!(stringify!($fixture), ".py"));
+            }
+        )*
+    };
+}
+
+#[cfg(unix)]
+#[cfg(test)]
+mod bootstrap_and_owned_lifecycle_failures {
+    fn fixture(script: &str) {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests")
             .join(script);
@@ -25,6 +34,15 @@ fn bootstrap_and_owned_lifecycle_failures() {
                 .expect("Python is required")
                 .success()
         );
+    }
+
+    fixtures! {
+        bootstrap_test,
+        lifecycle_test,
+        custody_test,
+        corecell_test,
+        corecell_lifecycle_test,
+        coreaccount_test,
     }
 }
 
