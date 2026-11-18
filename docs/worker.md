@@ -391,8 +391,13 @@ without asking, and prints what each was and its price on standard error,
 with `--json` too: a command line that carries `--release-server` and
 `--yes` is the yes. It does not end a server another app or environment is
 on, as this machine's list of apps (`erpc worker list`) and the app's own
-erpc.toml have it: it stops before anything is removed and names them. An
-app deployed to the same server from another machine is not on that list.
+erpc.toml have it, with the server facts of an environment kept in
+1Password read from its item: it stops before anything is removed and names
+them. It stops too, naming it, for an environment whose server cannot be
+read (an item that does not open, an erpc.toml that does not parse). Servers
+are compared by ERPC server id, or by address as written. An app deployed
+to the same server from another machine is not on that list, nor is one
+whose erpc.toml is gone.
 No other end is answered by `--yes`: a line a deploy offers to end after a
 failed step, and `run`'s lines, are still asked at a terminal. Without
 `--yes` and without a terminal, the delete is refused before anything is

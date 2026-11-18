@@ -62,8 +62,9 @@ none = "服务器上还没有版本。"
 
 [delete]
 refused = "未移除任何内容"
-server_shared = "按本机的应用列表，{others} 也在这台服务器上：`--yes` 不会结束还有其他应用或环境的服务器；未删除任何内容"
+server_shared = "按本机的应用列表，{others} 也在或可能在这台服务器上：`--yes` 不会结束可能还有其他应用或环境的服务器；未删除任何内容"
 server_shared_hint = "先删除它们，或在终端中不带 `--yes` 自己运行 `{delete}`，每次结束前都会询问"
+server_unknown = "{name}（无法读取其服务器）"
 missing_ask = "要继续，并在不终止 {kind} {id} 的情况下将其从记录中移除吗？它不在当前登录的账户（{account}）中：它已终止，或属于另一个账户"
 missing_needs_person = "{kind} {id} 不在当前登录的账户（{account}）中：它已终止，或属于另一个账户；是否将其从记录中移除，只有终端前的人才能回答；未做任何操作"
 missing_needs_person_hint = "请您自己在终端中运行同一命令，不要加 `--json`；`--yes` 不会回答这个问题"

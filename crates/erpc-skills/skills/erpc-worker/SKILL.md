@@ -33,7 +33,8 @@ in the erpc repository.
   when the user asked for it, and say what it costs per hour and that `erpc worker delete
   --release-server` ends it all. End it only when the user asked: `erpc worker delete <app>
   --release-server --yes` then ends the lines and the server and prints each. It stops, and
-  removes nothing, when another app on this machine is on that server: say so to the user.
+  removes nothing, when another app or environment on this machine is, or may be, on that
+  server: say so to the user. An app deployed there from another machine is not seen.
 - **1Password approvals:** reading a secret or using an SSH key in 1Password may show an
   approval prompt in the 1Password app. "authorization timeout" means nobody allowed it.
 
