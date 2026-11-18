@@ -574,38 +574,60 @@ impl AppState {
     /// those traced, and whether trading was on (so a crash restart or a
     /// reboot does not leave the bot idle on paid lines); then bans the
     /// creators the configuration lists. True when trading resumed.
-    pub async fn take_up_saved(&mut self) -> bool {
-        let mut resumed = false;
-        if let Some(client) = self.redis_client.clone() {
-            let bans = crate::creators::load_bans(&client).await;
-            let traced = crate::trace::load_traced(&client).await;
-            let kept_in_full = bans.is_some() && traced.is_some();
-            for (creator, reason) in bans.unwrap_or_default() {
-                self.creators.ban(creator, &reason);
+    pub async fn take_up_saved(&mut self) -> Resumed {
+        let resumed = match self.redis_client.clone() {
+            Some(client) => {
+                let bans = crate::creators::load_bans(&client).await;
+                let traced = crate::trace::load_traced(&client).await;
+                let wanted = load_trading(&client).await;
+                self.take_up(bans, traced, wanted)
             }
-            for creator in traced.unwrap_or_default() {
-                self.creators.mark_traced(creator);
-            }
-            let wanted = load_trading(&client).await;
-            let back = resumed_trading(wanted, kept_in_full);
-            if back != wanted {
-                log::warn!(
-                    "Trading was on before the restart and comes back sell-only: the banned or \
-                     traced creators could not be read from Redis, and buying without them could \
-                     buy from a creator banned before. Turn buying on again once Redis answers."
-                );
-            }
-            if let Some(wanted) = back {
-                resumed = wanted != Trading::Stopped;
-                self.running = resumed;
-                self.sell_only = wanted == Trading::SellOnly;
-            }
-        }
+            None => Resumed::No,
+        };
         let listed: Vec<Pubkey> = self.config.banned_creators.iter().filter_map(|c| c.parse().ok()).collect();
         for creator in listed {
             self.creators.ban(creator, "listed in banned_creators");
         }
         resumed
+    }
+
+    /// Takes up what a start read back from Redis: the bans (`bans`) and the
+    /// traced creators (`traced`), `None` where a read failed, and what the
+    /// operator last asked (`wanted`). Trading comes back as it was, but
+    /// sell-only in place of running when either list was not read: a bot
+    /// buying without them could buy from a creator banned before.
+    fn take_up(
+        &mut self,
+        bans: Option<Vec<(Pubkey, String)>>,
+        traced: Option<Vec<Pubkey>>,
+        wanted: Option<Trading>,
+    ) -> Resumed {
+        let kept_in_full = bans.is_some() && traced.is_some();
+        for (creator, reason) in bans.unwrap_or_default() {
+            self.creators.ban(creator, &reason);
+        }
+        for creator in traced.unwrap_or_default() {
+            self.creators.mark_traced(creator);
+        }
+        let back = resumed_trading(wanted, kept_in_full);
+        let Some(now) = back else {
+            return Resumed::No;
+        };
+        self.running = now != Trading::Stopped;
+        self.sell_only = now == Trading::SellOnly;
+        if !self.running {
+            Resumed::No
+        } else if back == wanted {
+            Resumed::AsBefore
+        } else {
+            log::warn!(
+                "Trading was on before the restart and comes back sell-only: the banned or traced \
+                 creators could not be read from Redis, and buying without them could buy from a \
+                 creator banned before. Restart the app (erpc worker restart) once Redis answers: \
+                 a start reads them again."
+            );
+            Resumed::SellOnlyInstead
+        }
     }
 
     /// Keeps whether trading is on, so that the next start resumes it.
@@ -626,6 +648,19 @@ impl AppState {
             .filter(|p| p.status == PositionStatus::Active || p.status == PositionStatus::Selling)
             .count()
     }
+}
+
+/// What a start made of what was kept in Redis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Resumed {
+    /// Trading is off: it was, nothing said it was on, or Redis could not
+    /// be reached.
+    No,
+    /// Trading is back as it was before the restart.
+    AsBefore,
+    /// Sell-only, though buying was on: the bans or the traced creators
+    /// could not be read back.
+    SellOnlyInstead,
 }
 
 /// What the operator last asked of the bot, kept in Redis so a restart
@@ -662,7 +697,6 @@ pub fn persist_trading(client: Option<&redis::Client>, wanted: Trading) {
     });
 }
 
-/// What the operator last asked, read at start; none when nothing is kept.
 /// What trading comes back as after a restart: as the operator last asked
 /// (`wanted`), but sell-only in place of running when the bans and traced
 /// creators were not read back in full (`kept_in_full`): a bot buying
@@ -675,6 +709,8 @@ fn resumed_trading(wanted: Option<Trading>, kept_in_full: bool) -> Option<Tradin
     }
 }
 
+/// What the operator last asked, read at start; none when nothing is kept,
+/// or when it could not be read (logged).
 pub async fn load_trading(client: &redis::Client) -> Option<Trading> {
     let read: Result<Option<String>, redis::RedisError> = async {
         let mut con = client.get_multiplexed_async_connection().await?;
@@ -753,6 +789,47 @@ pub fn persist_trade_log_to_redis(client: &redis::Client, log: &TradeLog) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_start_takes_up_what_it_read_and_buys_only_with_the_bans() {
+        let creator = Pubkey::new_from_array([7; 32]);
+        let banned = || Some(vec![(creator, "pulled the pool".to_owned())]);
+        // Everything read: as before.
+        let mut s = AppState::new(None);
+        assert_eq!(s.take_up(banned(), Some(Vec::new()), Some(Trading::Running)), Resumed::AsBefore);
+        assert!(s.running && !s.sell_only && s.creators.is_banned(&creator));
+        // The traced creators not read: sell-only instead; the bans read are kept.
+        let mut s = AppState::new(None);
+        assert_eq!(s.take_up(banned(), None, Some(Trading::Running)), Resumed::SellOnlyInstead);
+        assert!(s.running && s.sell_only && s.creators.is_banned(&creator));
+        // The bans not read: sell-only instead.
+        let mut s = AppState::new(None);
+        assert_eq!(s.take_up(None, Some(Vec::new()), Some(Trading::Running)), Resumed::SellOnlyInstead);
+        assert!(s.running && s.sell_only);
+        // Sell-only before: as before, the lists read or not.
+        let mut s = AppState::new(None);
+        assert_eq!(s.take_up(None, None, Some(Trading::SellOnly)), Resumed::AsBefore);
+        assert!(s.running && s.sell_only);
+        // Stopped, or nothing kept: off.
+        for wanted in [Some(Trading::Stopped), None] {
+            let mut s = AppState::new(None);
+            assert_eq!(s.take_up(banned(), Some(Vec::new()), wanted), Resumed::No);
+            assert!(!s.running);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_start_with_redis_unreachable_comes_up_with_trading_off() {
+        let client = redis::Client::open("redis://127.0.0.1:1/").expect("a Redis URL");
+        // Each read says it failed, rather than reading as empty.
+        assert!(crate::creators::load_bans(&client).await.is_none());
+        assert!(crate::trace::load_traced(&client).await.is_none());
+        assert!(load_trading(&client).await.is_none());
+        let mut s = AppState::new(None);
+        s.redis_client = Some(client);
+        assert_eq!(s.take_up_saved().await, Resumed::No);
+        assert!(!s.running);
+    }
 
     #[test]
     fn a_restart_buys_again_only_with_the_bans_read_back() {

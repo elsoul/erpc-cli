@@ -123,12 +123,18 @@ async fn main() -> Result<(), anyhow::Error> {
     // Creators banned before: saved in Redis, or listed in the config.
     {
         let mut s = app_state.write().await;
-        if s.take_up_saved().await {
+        let resumed = s.take_up_saved().await;
+        if resumed != state::Resumed::No {
             // Trading was on when the last process ended: it is on again,
-            // as a reboot or a crash restart should not leave the bot idle.
+            // as a reboot or a crash restart should not leave the bot idle;
+            // sell-only when the bans could not be read back.
             let sell_only = s.sell_only;
-            log::info!("Trading resumed as before the restart (sell_only = {sell_only})");
-            let msg = i18n::trading_resumed(sell_only);
+            let msg = if resumed == state::Resumed::AsBefore {
+                log::info!("Trading resumed as before the restart (sell_only = {sell_only})");
+                i18n::trading_resumed(sell_only)
+            } else {
+                i18n::trading_resumed_sell_only_instead()
+            };
             s.push_notification(
                 solana_sdk::pubkey::Pubkey::default(),
                 solana_sdk::pubkey::Pubkey::default(),
