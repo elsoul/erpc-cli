@@ -394,7 +394,8 @@ on, as this machine's list of apps (`erpc worker list`) and the app's own
 erpc.toml have it, with the server facts of an environment kept in
 1Password read from its item: it stops before anything is removed and names
 them. It stops too, naming it, for an environment whose server cannot be
-read (an item that does not open, an erpc.toml that does not parse). Servers
+read (an item that does not open, an erpc.toml that is there and cannot be
+read or parsed). Servers
 are compared by ERPC server id, or by address as written. An app deployed
 to the same server from another machine is not on that list, nor is one
 whose erpc.toml is gone.

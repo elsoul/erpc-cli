@@ -874,7 +874,7 @@ pub(crate) async fn delete(json: bool, app: &App, ask: &DeleteAsk) -> Outcome {
     if let Some(e) = shared_server_stop(
         (release_server, ask.yes),
         &env,
-        || listed_besides(&app_dir(&path), &m, &app.env),
+        || listed_on_this_machine(&app_dir(&path), &m, &app.env),
         &scope,
     ) {
         return e.into();
@@ -1411,22 +1411,20 @@ fn app_dir(path: &std::path::Path) -> std::path::PathBuf {
 
 /// An environment on this machine's list besides the one being deleted:
 /// what to call it, and its record with the server facts, or `None` when
-/// they could not be read (its 1Password item, or its app's erpc.toml).
+/// they could not be read (its 1Password item, or its app's erpc.toml that
+/// is there).
 struct Listed {
     name: String,
     record: Option<Env>,
 }
 
-/// The other environments of `m` (`env_name` aside) and of the apps on
-/// this machine's list besides the one in `dir`, each with its server
-/// facts: from erpc.toml, or for one kept in 1Password, from its item. An
-/// app whose erpc.toml is gone is passed over; one whose erpc.toml or item
-/// cannot be read is listed with no facts.
+/// [`listed_besides`] on this machine's list, with the facts of an
+/// environment kept in 1Password read from its item.
 ///
 /// # Errors
 ///
 /// When the list itself cannot be read.
-fn listed_besides(
+fn listed_on_this_machine(
     dir: &std::path::Path,
     m: &Manifest,
     env_name: &str,
@@ -1434,39 +1432,63 @@ fn listed_besides(
     let index = crate::worker::index_path().and_then(|p| {
         erpc_worker::index::Index::load(&p).map_err(|e| CliError::new(Code::Failed, e))
     })?;
+    Ok(listed_besides(
+        dir,
+        (m, env_name),
+        &index.workers,
+        &crate::worker_inventory::read,
+    ))
+}
+
+/// What reads environment `env` of app `app` from its item in `vault`, as
+/// [`crate::worker_inventory::read`] does.
+type ItemReader<'a> = &'a dyn Fn(&str, &str, &str) -> Result<Option<Env>, String>;
+
+/// The other environments of `m` and of the apps in `entries` besides the
+/// one in `dir`, each with its server facts: from erpc.toml, or for one
+/// kept in 1Password, from its item through `read`. The environment being
+/// deleted (`env_name`) is left out under any checkout of the app: the
+/// same app and environment is the same worker. An app whose erpc.toml is
+/// gone is passed over; one whose erpc.toml is there and cannot be read or
+/// parsed, and one whose item cannot be read, are listed with no facts.
+fn listed_besides(
+    dir: &std::path::Path,
+    (m, env_name): (&Manifest, &str),
+    entries: &[erpc_worker::index::Entry],
+    read: ItemReader<'_>,
+) -> Vec<Listed> {
     let canonical =
         |d: &std::path::Path| std::fs::canonicalize(d).unwrap_or_else(|_| d.to_path_buf());
     let this = canonical(dir);
-    let mut listed: Vec<Listed> = m
-        .env
-        .iter()
-        .filter(|(name, _)| name.as_str() != env_name)
-        .map(|(name, e)| with_facts(&m.name, name, e))
-        .collect();
-    for entry in index.workers.iter().filter(|e| canonical(&e.dir) != this) {
-        match Manifest::load(&entry.dir.join(erpc_worker::manifest::FILE_NAME)) {
-            Ok(other) => listed.extend(
-                other
-                    .env
-                    .iter()
-                    .map(|(name, e)| with_facts(&other.name, name, e)),
-            ),
-            Err(erpc_worker::manifest::ManifestError::Read(_)) => {}
+    let others = |app: &Manifest| {
+        app.env
+            .iter()
+            .filter(|(name, _)| !(app.name == m.name && name.as_str() == env_name))
+            .map(|(name, e)| with_facts(&app.name, name, e, read))
+            .collect::<Vec<_>>()
+    };
+    let mut listed = others(m);
+    for entry in entries.iter().filter(|e| canonical(&e.dir) != this) {
+        let file = entry.dir.join(erpc_worker::manifest::FILE_NAME);
+        match Manifest::load(&file) {
+            Ok(other) => listed.extend(others(&other)),
+            Err(_) if matches!(file.try_exists(), Ok(false)) => {}
             Err(_) => listed.push(Listed {
                 name: entry.name.clone(),
                 record: None,
             }),
         }
     }
-    Ok(listed)
+    listed
 }
 
 /// Environment `name` of app `app` as `<app> --env <name>`, with its
-/// server facts: those in `env`, or for one kept in 1Password, its item's.
-fn with_facts(app: &str, name: &str, env: &Env) -> Listed {
+/// server facts: those in `env`, or for one kept in 1Password, its item's
+/// through `read`.
+fn with_facts(app: &str, name: &str, env: &Env, read: ItemReader<'_>) -> Listed {
     let record = match &env.inventory {
         None => Some(env.clone()),
-        Some(inventory) => match crate::worker_inventory::read(&inventory.vault, app, name) {
+        Some(inventory) => match read(&inventory.vault, app, name) {
             Ok(Some(facts)) => Some(erpc_worker::inventory::merged(env, facts)),
             // No item yet: nothing was deployed, so there is no server.
             Ok(None) => Some(env.clone()),
@@ -1482,13 +1504,18 @@ fn with_facts(app: &str, name: &str, env: &Env) -> Listed {
 /// What of `listed` is, or may be, on the server `env` is on, as each is
 /// named: one on the same server, and one whose server could not be read.
 fn sharing_server(env: &Env, listed: &[Listed]) -> Vec<String> {
-    listed
-        .iter()
-        .filter_map(|l| match &l.record {
-            Some(record) => same_server(env, record).then(|| l.name.clone()),
-            None => Some(t!("worker_remote.delete.server_unknown", name = l.name)),
-        })
-        .collect()
+    let mut named: Vec<String> = Vec::new();
+    for l in listed {
+        let name = match &l.record {
+            Some(record) if same_server(env, record) => l.name.clone(),
+            Some(_) => continue,
+            None => t!("worker_remote.delete.server_unknown", name = l.name),
+        };
+        if !named.contains(&name) {
+            named.push(name);
+        }
+    }
+    named
 }
 
 /// Whether records `a` and `b` are on one server: the same ERPC server, by
@@ -3046,6 +3073,95 @@ mod tests {
             ..env()
         };
         assert!(shared_server_stop((true, true), &no_server, unread, "").is_none());
+    }
+
+    /// What this machine's list gives the stop: what is on the same server
+    /// is named, what cannot be read is named, what is gone or is the
+    /// environment being deleted is not.
+    #[test]
+    fn the_list_names_what_shares_the_server_and_what_cannot_be_read() {
+        use super::{listed_besides, sharing_server};
+        use erpc_worker::index::Entry;
+        use erpc_worker::manifest::Manifest;
+        const VAULT_OK: &str = "abcdefghijklmnopqrstuvwxyz";
+        const VAULT_SHUT: &str = "zyxwvutsrqponmlkjihgfedcba";
+        let root = std::env::temp_dir().join(format!("erpc-w-shared-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let toml = |name: &str, envs: &str| {
+            format!("name = \"{name}\"\nchain = \"solana\"\n[run]\nport = 3000\n{envs}")
+        };
+        // `env()` is VPS 100001 at 203.0.113.10.
+        let here = "[env.prod]\nhost = \"203.0.113.10\"\n\
+                    resource = { kind = \"vps\", id = \"100001\", hourly = true }\n";
+        let apps: [(&str, Option<String>); 9] = [
+            // The app itself, and another checkout of it: left out.
+            ("bot", Some(toml("bot", here))),
+            ("bot-copy", Some(toml("bot", here))),
+            // Kept in 1Password, its item on the same server: named.
+            (
+                "sniper",
+                Some(toml(
+                    "sniper",
+                    &format!("[env.prod]\ninventory = {{ vault = \"{VAULT_OK}\" }}\n"),
+                )),
+            ),
+            // Kept in 1Password, its item does not open: named.
+            (
+                "vaulted",
+                Some(toml(
+                    "vaulted",
+                    &format!("[env.prod]\ninventory = {{ vault = \"{VAULT_SHUT}\" }}\n"),
+                )),
+            ),
+            // On another server: not named.
+            (
+                "relay",
+                Some(toml("relay", "[env.prod]\nhost = \"203.0.113.30\"\n")),
+            ),
+            // An erpc.toml that does not parse: named.
+            ("broken", Some("name = \n".to_owned())),
+            // An erpc.toml that is there and cannot be read: named.
+            ("locked", None),
+            // Gone: passed over.
+            ("gone", Some(String::new())),
+            // Never deployed: nothing on record.
+            ("fresh", Some(toml("fresh", ""))),
+        ];
+        let mut entries = Vec::new();
+        for (name, text) in &apps {
+            let dir = root.join(name);
+            std::fs::create_dir_all(&dir).expect("app dir");
+            let file = dir.join("erpc.toml");
+            match (name, text) {
+                (&"gone", _) => {}
+                // A directory where erpc.toml should be: it cannot be read.
+                (_, None) => std::fs::create_dir(&file).expect("erpc.toml dir"),
+                (_, Some(text)) => std::fs::write(&file, text).expect("erpc.toml"),
+            }
+            entries.push(Entry {
+                name: (*name).to_owned(),
+                dir,
+            });
+        }
+        let m = Manifest::parse(&toml("bot", here)).expect("valid");
+        let read = |vault: &str, _app: &str, _env: &str| match vault {
+            VAULT_OK => Ok(Some(env())),
+            _ => Err("the item did not open".to_owned()),
+        };
+        let listed = listed_besides(&root.join("bot"), (&m, "prod"), &entries, &read);
+        let named = sharing_server(&env(), &listed);
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(named.len(), 4, "{named:?}");
+        assert_eq!(named[0], "sniper --env prod");
+        assert!(named[1].starts_with("vaulted --env prod "), "{named:?}");
+        assert!(named[2].starts_with("broken "), "{named:?}");
+        assert!(named[3].starts_with("locked "), "{named:?}");
+        assert!(
+            !named
+                .iter()
+                .any(|n| n.starts_with("bot") || n.starts_with("gone")),
+            "{named:?}"
+        );
     }
 
     /// A server missing from the account signed in to has nothing to end:
