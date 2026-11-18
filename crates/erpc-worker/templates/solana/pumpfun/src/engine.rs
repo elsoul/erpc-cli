@@ -5,7 +5,6 @@ use crate::i18n;
 use crate::webhook::notify;
 use chrono::Utc;
 use log::{error, info, warn};
-use rand::Rng;
 use solana_commitment_config::{CommitmentConfig, CommitmentLevel};
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_rpc_client_api::config::RpcSendTransactionConfig;
@@ -435,7 +434,7 @@ async fn buy_new_pool(
         }
     };
 
-    let fee_idx = rand::thread_rng().gen_range(0..FEE_RECIPIENT_COUNT);
+    let fee_idx = rand::random_range(0..FEE_RECIPIENT_COUNT);
 
     info!(
         "Buying at least {} token atoms for at most {} lamports on pool {} ({:?})",
@@ -836,7 +835,7 @@ pub async fn check_and_sell_positions(
             Plan::Burn { .. } | Plan::Sell { .. } => {}
         }
 
-        let fee_idx = rand::thread_rng().gen_range(0..FEE_RECIPIENT_COUNT);
+        let fee_idx = rand::random_range(0..FEE_RECIPIENT_COUNT);
 
         let pool_account = match rpc_client
             .get_account_with_commitment(&pool_address, CommitmentConfig::confirmed())

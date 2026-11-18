@@ -181,20 +181,21 @@ pub fn persist_ban(client: Option<&redis::Client>, creator: Pubkey, reason: Stri
 }
 
 /// The bans saved in Redis, read at start.
-pub async fn load_bans(client: &redis::Client) -> Vec<(Pubkey, String)> {
+pub async fn load_bans(client: &redis::Client) -> Option<Vec<(Pubkey, String)>> {
     let result: Result<Vec<(String, String)>, redis::RedisError> = async {
         let mut con = client.get_multiplexed_async_connection().await?;
         redis::cmd("HGETALL").arg(REDIS_KEY).query_async(&mut con).await
     }
     .await;
     match result {
-        Ok(rows) => rows
-            .into_iter()
-            .filter_map(|(k, v)| k.parse().ok().map(|p| (p, v)))
-            .collect(),
+        Ok(rows) => Some(
+            rows.into_iter()
+                .filter_map(|(k, v)| k.parse().ok().map(|p| (p, v)))
+                .collect(),
+        ),
         Err(e) => {
             log::warn!("Could not read banned creators from Redis: {e:?}");
-            Vec::new()
+            None
         }
     }
 }

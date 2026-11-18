@@ -56,6 +56,21 @@ whose version has no entry below.
 
 ### Changed
 
+- The pumpfun template's own dependencies move up a major version where
+  nothing else in its build holds them: redis 1.8.1 with its default
+  features off, rand 0.10 and utoipa 6. redis 1.x gives up after 500 ms
+  waiting for an answer and 1 s connecting, where 0.27 waited for ever; a
+  write that fails is logged and not retried, as before. At start the
+  template reads back its bans, its traced creators and whether trading was
+  on: a failed read is logged, and a bot that was trading but could not read
+  back its bans comes back sell-only, says so in its notifications, and buys
+  again after a restart once Redis answers; traced creators it could not
+  read back stop no buy, and later traces follow them again. With
+  Redis not reachable at all a start comes up with trading off, as without
+  Redis. reqwest stays at 0.12, which the Solana RPC clients use, and the
+  template's own Solana crates at 3.x, which ultima-swap-pumpfun pins. Its
+  cargo-deny list allows BSL-1.0 for xxhash-rust alone, which redis 1.x
+  needs.
 - `erpc worker delete --release-server --yes` ends the app's lines and its
   hourly server without asking, and prints what each was and its price (on
   standard error, with `--json` too), as `deploy --yes` does for what it

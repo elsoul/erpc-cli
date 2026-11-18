@@ -84,6 +84,11 @@ exceptions = [
   # It is what lets the app do without the system's OpenSSL. In the lock
   # before the UDP source.
   { allow = ["CDLA-Permissive-2.0"], crate = "webpki-roots" },
+  # 2026-11-18: BSL-1.0 (Boost Software License), permissive, OSI- and
+  # FSF-approved. xxhash-rust 0.8.19, which redis 1.8.1 requires (it is not
+  # optional there); redis is the template's own dependency, for its
+  # records, its bans and whether trading was on.
+  { allow = ["BSL-1.0"], crate = "xxhash-rust" },
 ]
 
 [licenses.private]
