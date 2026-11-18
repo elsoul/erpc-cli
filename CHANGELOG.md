@@ -63,8 +63,9 @@ whose version has no entry below.
   write that fails is logged and not retried, as before. At start the
   template reads back its bans, its traced creators and whether trading was
   on: a failed read is logged, and a bot that was trading but could not read
-  back its bans or traced creators comes back sell-only, says so in its
-  notifications, and buys again after a restart once Redis answers. With
+  back its bans comes back sell-only, says so in its notifications, and buys
+  again after a restart once Redis answers; traced creators it could not
+  read back stop no buy, and the next trace follows them again. With
   Redis not reachable at all a start comes up with trading off, as without
   Redis. reqwest stays at 0.12, which the Solana RPC clients use, and the
   template's own Solana crates at 3.x, which ultima-swap-pumpfun pins. Its

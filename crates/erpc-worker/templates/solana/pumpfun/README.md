@@ -179,12 +179,14 @@ is banned, and their pools skipped, once they open more than
 banned and why. With `REDIS_URL` set, bans are kept in the Redis hash
 `pumpfun:banned_creators` and read back at start; without it they last as
 long as the bot runs. When Redis tells a start whether trading was on but
-not the bans or the traced creators (each read gives up after 500 ms), a bot
-that was trading comes back sell-only, and says so in its log and its
-notifications: buying without them could buy from a creator banned before.
-Restart the app (`erpc worker restart`) once Redis answers; a start reads
-them again. When Redis cannot be reached at all, a start comes up with
-trading off, as without Redis.
+not the bans (a read gives up after 500 ms without an answer, or 1 s without
+a connection), a bot that was trading comes back sell-only, and says so in
+its log and its notifications: buying without them could buy from a creator
+banned before. Restart the app (`erpc worker restart`) once Redis answers; a
+start reads them again. The traced creators stop no buy: when a start cannot
+read them, the next `POST /api/bans/trace` follows those creators' funding
+again. When Redis cannot be reached at all, a start comes up with trading
+off, as without Redis.
 
 **Following their money.** A wallet opened to pull pools is cheap to
 replace, and usually replaced from the same purse.
@@ -585,10 +587,9 @@ the token is read here and never shown.
 
 Whether trading was on is kept in Redis (`pumpfun:trading`), so a crash
 restart or a reboot followed by `erpc worker start` comes back trading, or
-in sell-only mode, as it was, but sell-only when the banned or traced
-creators could not be read back (above). Without Redis, or when it cannot be
-reached, a start comes up with
-trading off. On start the bot looks at the wallet's token holdings and takes
+in sell-only mode, as it was, but sell-only when the banned creators could
+not be read back (above). Without Redis, or when it cannot be reached, a
+start comes up with trading off. On start the bot looks at the wallet's token holdings and takes
 up the positions it finds again, so a restart does not strand a position. Only a
 token with a WSOL/token PumpSwap pool is taken up (WSOL on either side),
 the deepest such pool, and not one that its holders can be stopped from
