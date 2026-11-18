@@ -204,7 +204,8 @@ pub struct StartResponse {
 pub struct StatusResponse {
     running: bool,
     /// Positions are sold, nothing is bought: started with
-    /// `?mode=sell_only`, or paused after a position was given up.
+    /// `?mode=sell_only`, paused after a position was given up, or back
+    /// from a restart that found trading on but could not read the bans.
     sell_only: bool,
     grpc_streaming: bool,
     active_positions: usize,

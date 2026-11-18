@@ -184,9 +184,10 @@ a connection), a bot that was trading comes back sell-only, and says so in
 its log and its notifications: buying without them could buy from a creator
 banned before. Restart the app (`erpc worker restart`) once Redis answers; a
 start reads them again. The traced creators stop no buy: when a start cannot
-read them, the next `POST /api/bans/trace` follows those creators' funding
-again. When Redis cannot be reached at all, a start comes up with trading
-off, as without Redis.
+read them, `POST /api/bans/trace` follows those creators' funding again
+(each call takes up to `limit` of the creators not traced yet; `left` says
+how many remain). When Redis cannot be reached at all, a start comes up
+with trading off, as without Redis.
 
 **Following their money.** A wallet opened to pull pools is cheap to
 replace, and usually replaced from the same purse.
@@ -589,7 +590,8 @@ Whether trading was on is kept in Redis (`pumpfun:trading`), so a crash
 restart or a reboot followed by `erpc worker start` comes back trading, or
 in sell-only mode, as it was, but sell-only when the banned creators could
 not be read back (above). Without Redis, or when it cannot be reached, a
-start comes up with trading off. On start the bot looks at the wallet's token holdings and takes
+start comes up with trading off.
+On start the bot looks at the wallet's token holdings and takes
 up the positions it finds again, so a restart does not strand a position. Only a
 token with a WSOL/token PumpSwap pool is taken up (WSOL on either side),
 the deepest such pool, and not one that its holders can be stopped from

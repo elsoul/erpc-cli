@@ -596,7 +596,7 @@ impl AppState {
     /// operator last asked (`wanted`). Trading comes back as it was, but
     /// sell-only in place of running when the bans were not read: a bot
     /// buying without them could buy from a creator banned before. The
-    /// traced creators stop no buy; unread, the next trace follows them again.
+    /// traced creators stop no buy; unread, later traces follow them again.
     fn take_up(
         &mut self,
         bans: Option<Vec<(Pubkey, String)>>,
