@@ -406,9 +406,9 @@ pub(crate) enum Action {
         #[arg(long)]
         prepare: bool,
         /// Go ahead without asking: a new VPS's or line's price is said, not
-        /// asked (it is paid from ERPC Credit; ending one is always asked,
-        /// and so is a VPS on record, never reached, that is not on the
-        /// account signed in to).
+        /// asked (it is paid from ERPC Credit; a line the deploy offers to end
+        /// is still asked about, and so is a VPS on record, never reached,
+        /// that is not on the account signed in to).
         #[arg(long, short = 'y')]
         yes: bool,
     },
@@ -547,9 +547,10 @@ pub(crate) enum Action {
         /// one ended outside erpc. Repeatable.
         #[arg(long, value_name = "LINE_ID")]
         forget_line: Vec<String>,
-        /// Go ahead without asking (with `--release-server`: a VPS never
-        /// reached, or one passed with `--forget`, that is not on the
-        /// account signed in to is still asked about, at a terminal).
+        /// Go ahead without asking: with `--release-server`, the app's lines
+        /// and its hourly server are ended too, and each is said (a VPS never
+        /// reached, or one passed with `--forget`, that is not on the account
+        /// signed in to is still asked about, at a terminal).
         #[arg(long, short = 'y')]
         yes: bool,
     },
@@ -2022,7 +2023,7 @@ fn repository(dir: &Path) -> Repository {
 }
 
 /// Where the index of apps on this machine is.
-fn index_path() -> Result<PathBuf, CliError> {
+pub(crate) fn index_path() -> Result<PathBuf, CliError> {
     crate::session::beside_config(index::FILE_NAME).map_err(|e| CliError::new(Code::Failed, e))
 }
 

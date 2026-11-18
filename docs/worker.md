@@ -339,7 +339,9 @@ long the credit lasts. At a terminal it starts only after a yes. With `--yes`
 it is said and started: an hourly product is paid from ERPC Credit, which is
 bought beforehand, and user-api refuses a start the credit does not cover, so
 a command line that names what to start and carries `--yes` is the yes.
-Ending something is asked at a terminal whatever the flags.
+Ending something is asked at a terminal too, with one exception:
+`erpc worker delete --release-server --yes` ends the app's lines and its
+hourly server and says each (**Without a person** below).
 
 ### Without a person: `--yes` and `--prepare`
 
@@ -382,6 +384,25 @@ erpc worker deploy pump-sniper                                     # then you, a
   For what the app keeps in erpc's keystore, `--prepare` looks that each
   entry is there and asks for no passphrase, so a locked keystore does not
   stop it; the deploy that hands the key over opens it.
+
+What such a deploy started, `erpc worker delete <app> --release-server --yes`
+ends: it removes the app, then ends each of its lines and its hourly server
+without asking, and prints what each was and its price on standard error,
+with `--json` too: a command line that carries `--release-server` and
+`--yes` is the yes. It does not end a server another app or environment is
+on, as this machine's list of apps (`erpc worker list`) and the app's own
+erpc.toml have it, with the server facts of an environment kept in
+1Password read from its item: it stops before anything is removed and names
+them. It stops too, naming it, for an environment whose server cannot be
+read (an item that does not open, an erpc.toml that is there and cannot be
+read or parsed). Servers
+are compared by ERPC server id, or by address as written. An app deployed
+to the same server from another machine is not on that list, nor is one
+whose erpc.toml is gone.
+No other end is answered by `--yes`: a line a deploy offers to end after a
+failed step, and `run`'s lines, are still asked at a terminal. Without
+`--yes` and without a terminal, the delete is refused before anything is
+removed.
 
 ## An app you already have: `erpc worker import`
 
@@ -1501,7 +1522,8 @@ ones a worker meets most:
   keystore on your machine, where each is encrypted under your passphrase. On
   a server, `erpc worker backup on` leaves the server's own backup keys in a
   root-only file.
-- Start anything without showing its price, or end anything without asking.
-  A start is asked at a terminal, and said and started under `--yes`.
+- Start or end anything without showing what it is and its price. Each is
+  asked at a terminal; under `--yes` it is said instead: what a deploy
+  starts, and what `delete --release-server` ends.
 - Leave a server open: the firewall is in force before the app first starts.
 - Reach a server whose host key does not match the pinned one.

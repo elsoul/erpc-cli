@@ -56,6 +56,16 @@ whose version has no entry below.
 
 ### Changed
 
+- `erpc worker delete --release-server --yes` ends the app's lines and its
+  hourly server without asking, and prints what each was and its price (on
+  standard error, with `--json` too), as `deploy --yes` does for what it
+  starts. Each end used to be asked at a terminal whatever the flags; with
+  `--yes` and no terminal the app was removed and its lines and server
+  stayed charged, with an error meant for `erpc ai`. No other end is
+  answered by `--yes`, and it does not end a server another app or
+  environment on this machine's list is on (an environment kept in
+  1Password is read from its item), or may be on (its server cannot be
+  read): it stops before anything is removed and names them.
 - The Intel macOS release (`x86_64-apple-darwin`) is cross-compiled on the
   Apple Silicon `macos-15` runner, beside the Apple Silicon release. The
   `macos-15-intel` runner took 15 to 43 minutes for that build, the longest

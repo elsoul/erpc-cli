@@ -871,6 +871,14 @@ pub(crate) async fn delete(json: bool, app: &App, ask: &DeleteAsk) -> Outcome {
     if let Some(e) = refuse_delete(&env, release_server, &scope) {
         return e.into();
     }
+    if let Some(e) = shared_server_stop(
+        (release_server, ask.yes),
+        &env,
+        || listed_on_this_machine(&app_dir(&path), &m, &app.env),
+        &scope,
+    ) {
+        return e.into();
+    }
     let seen = account_view(&env, release_server, ask.forget, &say).await;
     let missing = seen.missing_from();
     // Only a worker that ran on a server can hold positions.
@@ -956,7 +964,7 @@ pub(crate) async fn delete(json: bool, app: &App, ask: &DeleteAsk) -> Outcome {
         say.line(line);
     }
     let released = if release_server {
-        release(&env, &say, server_end(agreed_missing, &removal)).await
+        release(&env, &say, server_end(agreed_missing, &removal), ask.yes).await
     } else {
         Released::default()
     };
@@ -1358,6 +1366,172 @@ fn refuse_delete(env: &Env, release_server: bool, scope: &str) -> Option<CliErro
     )
 }
 
+/// The stop `delete --release-server --yes` makes before anything is
+/// removed when the server it would end is, or may be, another app's or
+/// environment's too: named by `listed`, which gives what else this
+/// machine's list has and is read only when `--yes` (`yes`) would end the
+/// server on record. Without `--yes` each end is asked, and nothing stops
+/// here.
+fn shared_server_stop(
+    (release_server, yes): (bool, bool),
+    env: &Env,
+    listed: impl FnOnce() -> Result<Vec<Listed>, CliError>,
+    scope: &str,
+) -> Option<CliError> {
+    if !(release_server && yes && ends_server(env)) {
+        return None;
+    }
+    let sharing = match listed() {
+        Ok(listed) => sharing_server(env, &listed),
+        Err(e) => return Some(e),
+    };
+    (!sharing.is_empty()).then(|| {
+        CliError::new(
+            Code::Usage,
+            t!(
+                "worker_remote.delete.server_shared",
+                others = sharing.join(", ")
+            ),
+        )
+        .hint(t!(
+            "worker_remote.delete.server_shared_hint",
+            delete = format!("erpc worker delete --release-server{scope}")
+        ))
+    })
+}
+
+/// The directory of the app whose erpc.toml is at `path`, made absolute:
+/// a bare `erpc.toml` has an empty parent, which names no directory.
+fn app_dir(path: &std::path::Path) -> std::path::PathBuf {
+    std::path::absolute(path)
+        .ok()
+        .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
+        .unwrap_or_default()
+}
+
+/// An environment on this machine's list besides the one being deleted:
+/// what to call it, and its record with the server facts, or `None` when
+/// they could not be read (its 1Password item, or its app's erpc.toml that
+/// is there).
+struct Listed {
+    name: String,
+    record: Option<Env>,
+}
+
+/// [`listed_besides`] on this machine's list, with the facts of an
+/// environment kept in 1Password read from its item.
+///
+/// # Errors
+///
+/// When the list itself cannot be read.
+fn listed_on_this_machine(
+    dir: &std::path::Path,
+    m: &Manifest,
+    env_name: &str,
+) -> Result<Vec<Listed>, CliError> {
+    let index = crate::worker::index_path().and_then(|p| {
+        erpc_worker::index::Index::load(&p).map_err(|e| CliError::new(Code::Failed, e))
+    })?;
+    Ok(listed_besides(
+        dir,
+        (m, env_name),
+        &index.workers,
+        &crate::worker_inventory::read,
+    ))
+}
+
+/// What reads environment `env` of app `app` from its item in `vault`, as
+/// [`crate::worker_inventory::read`] does.
+type ItemReader<'a> = &'a dyn Fn(&str, &str, &str) -> Result<Option<Env>, String>;
+
+/// The other environments of `m` and of the apps in `entries` besides the
+/// one in `dir`, each with its server facts: from erpc.toml, or for one
+/// kept in 1Password, from its item through `read`. The environment being
+/// deleted (`env_name`) is left out under any checkout of the app: the
+/// same app and environment is the same worker. An app whose erpc.toml is
+/// gone is passed over; one whose erpc.toml is there and cannot be read or
+/// parsed, and one whose item cannot be read, are listed with no facts.
+fn listed_besides(
+    dir: &std::path::Path,
+    (m, env_name): (&Manifest, &str),
+    entries: &[erpc_worker::index::Entry],
+    read: ItemReader<'_>,
+) -> Vec<Listed> {
+    let canonical =
+        |d: &std::path::Path| std::fs::canonicalize(d).unwrap_or_else(|_| d.to_path_buf());
+    let this = canonical(dir);
+    let others = |app: &Manifest| {
+        app.env
+            .iter()
+            .filter(|(name, _)| !(app.name == m.name && name.as_str() == env_name))
+            .map(|(name, e)| with_facts(&app.name, name, e, read))
+            .collect::<Vec<_>>()
+    };
+    let mut listed = others(m);
+    for entry in entries.iter().filter(|e| canonical(&e.dir) != this) {
+        let file = entry.dir.join(erpc_worker::manifest::FILE_NAME);
+        match Manifest::load(&file) {
+            Ok(other) => listed.extend(others(&other)),
+            Err(_) if matches!(file.try_exists(), Ok(false)) => {}
+            Err(_) => listed.push(Listed {
+                name: entry.name.clone(),
+                record: None,
+            }),
+        }
+    }
+    listed
+}
+
+/// Environment `name` of app `app` as `<app> --env <name>`, with its
+/// server facts: those in `env`, or for one kept in 1Password, its item's
+/// through `read`.
+fn with_facts(app: &str, name: &str, env: &Env, read: ItemReader<'_>) -> Listed {
+    let record = match &env.inventory {
+        None => Some(env.clone()),
+        Some(inventory) => match read(&inventory.vault, app, name) {
+            Ok(Some(facts)) => Some(erpc_worker::inventory::merged(env, facts)),
+            // No item yet: nothing was deployed, so there is no server.
+            Ok(None) => Some(env.clone()),
+            Err(_) => None,
+        },
+    };
+    Listed {
+        name: format!("{app} --env {name}"),
+        record,
+    }
+}
+
+/// What of `listed` is, or may be, on the server `env` is on, as each is
+/// named: one on the same server, and one whose server could not be read.
+fn sharing_server(env: &Env, listed: &[Listed]) -> Vec<String> {
+    let mut named: Vec<String> = Vec::new();
+    for l in listed {
+        let name = match &l.record {
+            Some(record) if same_server(env, record) => l.name.clone(),
+            Some(_) => continue,
+            None => t!("worker_remote.delete.server_unknown", name = l.name),
+        };
+        if !named.contains(&name) {
+            named.push(name);
+        }
+    }
+    named
+}
+
+/// Whether records `a` and `b` are on one server: the same ERPC server, by
+/// kind and id, or the same address as written.
+fn same_server(a: &Env, b: &Env) -> bool {
+    let id = |e: &Env| {
+        e.resource
+            .as_ref()
+            .filter(|r| !r.id.is_empty())
+            .map(|r| (r.kind.as_str(), r.id.clone()))
+    };
+    let same_id = id(a).is_some() && id(a) == id(b);
+    let same_host = a.host.is_some() && a.host == b.host;
+    same_id || same_host
+}
+
 /// Why the record must stay after the removal and the release: a worker
 /// that could not be removed may still run (with its key), unless its
 /// server was ended.
@@ -1580,23 +1754,31 @@ fn ends_server(env: &Env) -> bool {
 
 /// Ends `env`'s lines, then its hourly server as `server` says, whatever
 /// happens to each line: a line that cannot be ended never keeps the
-/// server charged.
-async fn release(env: &Env, say: &Say, server: ServerEnd<'_>) -> Released {
-    release_through(env, say, server, crate::worker_vps::Api::open).await
+/// server charged. With `--yes` (`yes`) each end is said and done; without
+/// it, each is asked at a terminal.
+async fn release(env: &Env, say: &Say, server: ServerEnd<'_>, yes: bool) -> Released {
+    release_through(env, say, server, yes, crate::worker_vps::Api::open).await
 }
 
-/// [`release`], with the lines ended through the session `open` gives. The
+/// [`release`], with the lines ended through the session `open` gives,
+/// in which `--yes` (`yes`) answers each end as it does the server's. The
 /// lines are ended whatever becomes of the server: one missing from the
 /// account (`ServerEnd::Gone`) leaves its lines, a UDP Forwarding line
 /// sending to it among them, to be ended like any other.
-async fn release_through<O, F>(env: &Env, say: &Say, server: ServerEnd<'_>, open: O) -> Released
+async fn release_through<O, F>(
+    env: &Env,
+    say: &Say,
+    server: ServerEnd<'_>,
+    yes: bool,
+    open: O,
+) -> Released
 where
     O: FnOnce() -> F,
     F: core::future::Future<Output = Result<crate::worker_vps::Api, CliError>>,
 {
     let mut out = Released::default();
     if !env.lines.is_empty() {
-        match open().await {
+        match open().await.map(|api| api.releasing(yes)) {
             Ok(api) => {
                 // What the account is charged for: a line on record that is
                 // not among it has nothing to end.
@@ -1659,7 +1841,7 @@ where
                     account: account.to_owned(),
                 });
             }
-            ServerEnd::End => match crate::worker_vps::end(env, say).await {
+            ServerEnd::End => match crate::worker_vps::end(env, say, yes).await {
                 Ok(answer) => out.server = Some(answer),
                 Err(e) => out
                     .failed
@@ -2797,6 +2979,191 @@ mod tests {
         }
     }
 
+    /// `--yes` does not end a server another app or environment on this
+    /// machine's list is on, or may be on: the delete names them before
+    /// anything is removed.
+    #[test]
+    fn yes_does_not_end_a_server_another_app_on_this_machine_is_on() {
+        use super::{Listed, app_dir, sharing_server};
+        let on = |name: &str, host: Option<&str>, id: Option<&str>| Listed {
+            name: name.to_owned(),
+            record: Some(Env {
+                host: host.map(str::to_owned),
+                resource: id.map(|id| Resource {
+                    kind: ResourceKind::Vps,
+                    id: id.to_owned(),
+                    region: None,
+                    hourly: true,
+                }),
+                ..Env::default()
+            }),
+        };
+        // `env()` is VPS 100001 at 203.0.113.10.
+        let listed = [
+            // Another environment of the app, at the same address.
+            on("bot --env staging", Some("203.0.113.10"), None),
+            // Another app on the same ERPC server, by id, with no address.
+            on("sniper --env prod", None, Some("100001")),
+            // Another app on another server.
+            on("relay --env prod", Some("203.0.113.30"), Some("100009")),
+            // One whose server could not be read: a 1Password item that
+            // did not open, or an erpc.toml that does not parse.
+            Listed {
+                name: "vault-bot --env prod".to_owned(),
+                record: None,
+            },
+        ];
+        let sharing = sharing_server(&env(), &listed);
+        assert_eq!(sharing.len(), 3, "{sharing:?}");
+        assert_eq!(sharing[0], "bot --env staging");
+        assert_eq!(sharing[1], "sniper --env prod");
+        assert!(
+            sharing[2].starts_with("vault-bot --env prod"),
+            "{sharing:?}"
+        );
+        // Alone on its server, nothing stops the delete.
+        assert!(sharing_server(&env(), &listed[2..3]).is_empty());
+        // A bare erpc.toml's app is the current directory, not "".
+        assert_eq!(
+            app_dir(std::path::Path::new("erpc.toml")),
+            std::env::current_dir().expect("cwd")
+        );
+    }
+
+    /// The decision `delete` makes before anything is removed: it stops only
+    /// on `--release-server --yes`, with a server to end that another app or
+    /// environment is, or may be, on; and it reads the list only then.
+    #[test]
+    fn a_delete_halts_on_yes_only_when_it_would_end_a_shared_server() {
+        use super::{Listed, shared_server_stop};
+        use crate::error::{CliError, Code};
+        let shared = || {
+            Ok(vec![Listed {
+                name: "sniper --env prod".to_owned(),
+                record: Some(env()),
+            }])
+        };
+        let e = shared_server_stop((true, true), &env(), shared, " --env prod").expect("stopped");
+        assert_eq!(e.code, Code::Usage);
+        assert!(e.message.contains("sniper --env prod"), "{}", e.message);
+        let hint = e.hint.expect("a hint");
+        assert!(
+            hint.contains("erpc worker delete --release-server --env prod"),
+            "{hint}"
+        );
+        // Alone on its server: it goes ahead.
+        assert!(shared_server_stop((true, true), &env(), || Ok(Vec::new()), "").is_none());
+        // A list that cannot be read stops it too.
+        assert!(
+            shared_server_stop(
+                (true, true),
+                &env(),
+                || Err(CliError::new(Code::Failed, "unreadable")),
+                ""
+            )
+            .is_some()
+        );
+        // Without --yes, without --release-server, or with no hourly server
+        // on record, nothing is ended on --yes: the list is not read.
+        let unread = || -> Result<Vec<Listed>, CliError> { panic!("the list was read") };
+        assert!(shared_server_stop((true, false), &env(), unread, "").is_none());
+        assert!(shared_server_stop((false, true), &env(), unread, "").is_none());
+        let no_server = Env {
+            resource: None,
+            ..env()
+        };
+        assert!(shared_server_stop((true, true), &no_server, unread, "").is_none());
+    }
+
+    /// What this machine's list gives the stop: what is on the same server
+    /// is named, what cannot be read is named, what is gone or is the
+    /// environment being deleted is not.
+    #[test]
+    fn the_list_names_what_shares_the_server_and_what_cannot_be_read() {
+        use super::{listed_besides, sharing_server};
+        use erpc_worker::index::Entry;
+        use erpc_worker::manifest::Manifest;
+        const VAULT_OK: &str = "abcdefghijklmnopqrstuvwxyz";
+        const VAULT_SHUT: &str = "zyxwvutsrqponmlkjihgfedcba";
+        let root = std::env::temp_dir().join(format!("erpc-w-shared-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let toml = |name: &str, envs: &str| {
+            format!("name = \"{name}\"\nchain = \"solana\"\n[run]\nport = 3000\n{envs}")
+        };
+        // `env()` is VPS 100001 at 203.0.113.10.
+        let here = "[env.prod]\nhost = \"203.0.113.10\"\n\
+                    resource = { kind = \"vps\", id = \"100001\", hourly = true }\n";
+        let apps: [(&str, Option<String>); 9] = [
+            // The app itself, and another checkout of it: left out.
+            ("bot", Some(toml("bot", here))),
+            ("bot-copy", Some(toml("bot", here))),
+            // Kept in 1Password, its item on the same server: named.
+            (
+                "sniper",
+                Some(toml(
+                    "sniper",
+                    &format!("[env.prod]\ninventory = {{ vault = \"{VAULT_OK}\" }}\n"),
+                )),
+            ),
+            // Kept in 1Password, its item does not open: named.
+            (
+                "vaulted",
+                Some(toml(
+                    "vaulted",
+                    &format!("[env.prod]\ninventory = {{ vault = \"{VAULT_SHUT}\" }}\n"),
+                )),
+            ),
+            // On another server: not named.
+            (
+                "relay",
+                Some(toml("relay", "[env.prod]\nhost = \"203.0.113.30\"\n")),
+            ),
+            // An erpc.toml that does not parse: named.
+            ("broken", Some("name = \n".to_owned())),
+            // An erpc.toml that is there and cannot be read: named.
+            ("locked", None),
+            // Gone: passed over.
+            ("gone", Some(String::new())),
+            // Never deployed: nothing on record.
+            ("fresh", Some(toml("fresh", ""))),
+        ];
+        let mut entries = Vec::new();
+        for (name, text) in &apps {
+            let dir = root.join(name);
+            std::fs::create_dir_all(&dir).expect("app dir");
+            let file = dir.join("erpc.toml");
+            match (name, text) {
+                (&"gone", _) => {}
+                // A directory where erpc.toml should be: it cannot be read.
+                (_, None) => std::fs::create_dir(&file).expect("erpc.toml dir"),
+                (_, Some(text)) => std::fs::write(&file, text).expect("erpc.toml"),
+            }
+            entries.push(Entry {
+                name: (*name).to_owned(),
+                dir,
+            });
+        }
+        let m = Manifest::parse(&toml("bot", here)).expect("valid");
+        let read = |vault: &str, _app: &str, _env: &str| match vault {
+            VAULT_OK => Ok(Some(env())),
+            _ => Err("the item did not open".to_owned()),
+        };
+        let listed = listed_besides(&root.join("bot"), (&m, "prod"), &entries, &read);
+        let named = sharing_server(&env(), &listed);
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(named.len(), 4, "{named:?}");
+        assert_eq!(named[0], "sniper --env prod");
+        assert!(named[1].starts_with("vaulted --env prod "), "{named:?}");
+        assert!(named[2].starts_with("broken "), "{named:?}");
+        assert!(named[3].starts_with("locked "), "{named:?}");
+        assert!(
+            !named
+                .iter()
+                .any(|n| n.starts_with("bot") || n.starts_with("gone")),
+            "{named:?}"
+        );
+    }
+
     /// A server missing from the account signed in to has nothing to end:
     /// a release asks user-api nothing about it, takes it off the record
     /// naming that account, and leaves nothing to do again.
@@ -2809,7 +3176,14 @@ mod tests {
             ..env()
         };
         let quiet = Say { quiet: true };
-        let released = release(&never_reached, &quiet, ServerEnd::Gone("Example Account")).await;
+        // Even under --yes, which ends what is on the account.
+        let released = release(
+            &never_reached,
+            &quiet,
+            ServerEnd::Gone("Example Account"),
+            true,
+        )
+        .await;
         assert!(released.failed.is_empty(), "{:?}", released.failed);
         assert!(released.server.is_none(), "nothing was ended");
         assert_eq!(
@@ -2881,6 +3255,7 @@ mod tests {
             &gone,
             &quiet,
             ServerEnd::Gone("Example Account"),
+            false,
             || async { Ok(api) },
         )
         .await;
