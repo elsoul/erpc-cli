@@ -178,7 +178,9 @@ is banned, and their pools skipped, once they open more than
 `withdraw` takes liquidity out of a pool they created. The log says who was
 banned and why. With `REDIS_URL` set, bans are kept in the Redis hash
 `pumpfun:banned_creators` and read back at start; without it they last as
-long as the bot runs.
+long as the bot runs. When they cannot be read back (Redis down, or slow to
+answer), a bot that was trading comes back sell-only and says so in its log:
+buying without them could buy from a creator banned before.
 
 **Following their money.** A wallet opened to pull pools is cheap to
 replace, and usually replaced from the same purse.
@@ -579,8 +581,9 @@ the token is read here and never shown.
 
 Whether trading was on is kept in Redis (`pumpfun:trading`), so a crash
 restart or a reboot followed by `erpc worker start` comes back trading, or
-in sell-only mode, as it was; without Redis every start comes up with
-trading off. On start the bot looks at the wallet's token holdings and takes
+in sell-only mode, as it was, except that it comes back sell-only when the
+banned or traced creators could not be read back; without Redis every start
+comes up with trading off. On start the bot looks at the wallet's token holdings and takes
 up the positions it finds again, so a restart does not strand a position. Only a
 token with a WSOL/token PumpSwap pool is taken up (WSOL on either side),
 the deepest such pool, and not one that its holders can be stopped from

@@ -265,17 +265,17 @@ fn persist_traced(client: Option<&redis::Client>, creator: Pubkey) {
 }
 
 /// The creators traced before, read at start.
-pub async fn load_traced(client: &redis::Client) -> Vec<Pubkey> {
+pub async fn load_traced(client: &redis::Client) -> Option<Vec<Pubkey>> {
     let result: Result<Vec<String>, redis::RedisError> = async {
         let mut con = client.get_multiplexed_async_connection().await?;
         redis::cmd("SMEMBERS").arg(TRACED_KEY).query_async(&mut con).await
     }
     .await;
     match result {
-        Ok(rows) => rows.iter().filter_map(|k| k.parse().ok()).collect(),
+        Ok(rows) => Some(rows.iter().filter_map(|k| k.parse().ok()).collect()),
         Err(e) => {
             log::warn!("Could not read traced creators from Redis: {e:?}");
-            Vec::new()
+            None
         }
     }
 }
