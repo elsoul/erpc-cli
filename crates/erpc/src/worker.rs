@@ -2023,7 +2023,7 @@ fn repository(dir: &Path) -> Repository {
 }
 
 /// Where the index of apps on this machine is.
-fn index_path() -> Result<PathBuf, CliError> {
+pub(crate) fn index_path() -> Result<PathBuf, CliError> {
     crate::session::beside_config(index::FILE_NAME).map_err(|e| CliError::new(Code::Failed, e))
 }
 

@@ -120,9 +120,10 @@ pub(crate) struct Api {
     /// Whether `--yes` answers what a start asks; `None` for a command that
     /// has no such flag, which a refusal then does not name.
     yes: Option<bool>,
-    /// Whether `yes` answers an end too: only in the session that ends what
-    /// `erpc worker delete --release-server` names ([`Api::releasing`]).
-    release: bool,
+    /// In the session that ends what `erpc worker delete --release-server`
+    /// names ([`Api::releasing`]): whether its `--yes` answers those ends.
+    /// `None` elsewhere, where `--yes` answers no end.
+    release: Option<bool>,
     accepted: Accepted,
     /// In a test, the loopback server that stands in for user-api
     /// ([`stub`]): the reads, and the pointing of a UDP Forwarding line, go
@@ -149,7 +150,7 @@ impl Api {
             token,
             confirm: crate::ai::TerminalConfirm::default(),
             yes: None,
-            release: false,
+            release: None,
             accepted: Accepted,
             #[cfg(test)]
             stub: None,
@@ -169,11 +170,11 @@ impl Api {
     /// The same session, for what `erpc worker delete --release-server`
     /// ends (the environment's lines and its hourly server): `--yes`
     /// (`yes`) answers each end, which is said on standard error; without
-    /// it each is the person's to say, at a terminal.
+    /// it each is the person's to say, at a terminal. It answers no start
+    /// and no first login.
     #[must_use]
     pub(crate) fn releasing(mut self, yes: bool) -> Self {
-        self.yes = Some(yes);
-        self.release = true;
+        self.release = Some(yes);
         self
     }
 
@@ -185,7 +186,7 @@ impl Api {
             token: SecretString::from(String::new()),
             confirm: crate::ai::TerminalConfirm::default(),
             yes: None,
-            release: false,
+            release: None,
             accepted: Accepted,
             stub: None,
         }
@@ -218,12 +219,18 @@ impl Api {
         if self.stub.is_some() {
             return None;
         }
-        let asked = if self.release {
-            Asked::Release
-        } else {
-            Asked::End
-        };
-        answerer(asked, self.yes, crate::session::has_terminal()).map(|who| self.by(who))
+        self.end_answerer(crate::session::has_terminal())
+            .map(|who| self.by(who))
+    }
+
+    /// Who answers an end, with a person at a terminal (`terminal`) or
+    /// not: `--yes`, in a session [`Api::releasing`] made with it; else the
+    /// person, or nobody.
+    fn end_answerer(&self, terminal: bool) -> Option<Answerer> {
+        match self.release {
+            Some(yes) => answerer(Asked::Release, Some(yes), terminal),
+            None => answerer(Asked::End, self.yes, terminal),
+        }
     }
 
     /// Who answers a start: `--yes`, else the person at the terminal.
@@ -3591,11 +3598,13 @@ mod tests {
         // The session a deploy --yes makes hands out, for an end, what the
         // decision above says: the person's confirmation, or none.
         let api = super::Api::offline().accepting(true);
-        assert_eq!(
-            api.confirm().is_some(),
-            crate::session::has_terminal(),
-            "an end was answered by --yes, or not asked of the person"
-        );
+        for terminal in [true, false] {
+            assert_eq!(
+                api.end_answerer(terminal),
+                terminal.then_some(Answerer::Person),
+                "an end was answered by --yes, or not asked of the person"
+            );
+        }
         assert!(api.confirm_start().is_ok(), "--yes answers a start");
     }
 
@@ -3619,17 +3628,25 @@ mod tests {
             );
             assert_eq!(answerer(Asked::Release, yes, false), None, "{yes:?}");
         }
-        // The session delete --release-server --yes makes answers an end
-        // with nobody at a terminal; the one without --yes leaves it to the
+        // The session delete --release-server --yes makes has --yes answer
+        // an end, a terminal or not; the one without --yes leaves it to the
         // person.
-        assert!(
-            super::Api::offline().releasing(true).confirm().is_some(),
-            "--yes did not answer the end"
-        );
-        assert_eq!(
-            super::Api::offline().releasing(false).confirm().is_some(),
-            crate::session::has_terminal(),
-        );
+        for terminal in [true, false] {
+            assert_eq!(
+                super::Api::offline().releasing(true).end_answerer(terminal),
+                Some(Answerer::Yes),
+                "{terminal}"
+            );
+            assert_eq!(
+                super::Api::offline()
+                    .releasing(false)
+                    .end_answerer(terminal),
+                terminal.then_some(Answerer::Person),
+                "{terminal}"
+            );
+        }
+        // It is for those ends only: its --yes answers no start.
+        assert_eq!(super::Api::offline().releasing(true).yes, None);
     }
 
     #[test]

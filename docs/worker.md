@@ -389,10 +389,14 @@ What such a deploy started, `erpc worker delete <app> --release-server --yes`
 ends: it removes the app, then ends each of its lines and its hourly server
 without asking, and prints what each was and its price on standard error,
 with `--json` too: a command line that carries `--release-server` and
-`--yes` is the yes. No other end is answered by `--yes`: a line a deploy
-offers to end after a failed step, and `run`'s lines, are still asked at a
-terminal. Without `--yes` and without a terminal, the delete is refused
-before anything is removed.
+`--yes` is the yes. It does not end a server another app or environment is
+on, as this machine's list of apps (`erpc worker list`) and the app's own
+erpc.toml have it: it stops before anything is removed and names them. An
+app deployed to the same server from another machine is not on that list.
+No other end is answered by `--yes`: a line a deploy offers to end after a
+failed step, and `run`'s lines, are still asked at a terminal. Without
+`--yes` and without a terminal, the delete is refused before anything is
+removed.
 
 ## An app you already have: `erpc worker import`
 

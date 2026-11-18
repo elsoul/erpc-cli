@@ -62,7 +62,9 @@ whose version has no entry below.
   starts. Each end used to be asked at a terminal whatever the flags; with
   `--yes` and no terminal the app was removed and its lines and server
   stayed charged, with an error meant for `erpc ai`. No other end is
-  answered by `--yes`.
+  answered by `--yes`, and it does not end a server another app or
+  environment on this machine's list is on: it stops before anything is
+  removed and names them.
 - The Intel macOS release (`x86_64-apple-darwin`) is cross-compiled on the
   Apple Silicon `macos-15` runner, beside the Apple Silicon release. The
   `macos-15-intel` runner took 15 to 43 minutes for that build, the longest

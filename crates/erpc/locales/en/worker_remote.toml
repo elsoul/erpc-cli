@@ -65,6 +65,8 @@ none = "No releases on the server yet."
 
 [delete]
 refused = "nothing was removed"
+server_shared = "the server is also {others}'s, by this machine's list of apps: `--yes` does not end a server another app or environment is on; nothing was removed"
+server_shared_hint = "delete those first, or run `{delete}` yourself at a terminal without `--yes`, which asks before each end"
 missing_ask = "Go ahead, taking {kind} {id} off the record without ending it? It is not on the account you are signed in to ({account}): it has ended, or it is another account's"
 missing_needs_person = "{kind} {id} is not on the account you are signed in to ({account}): it has ended, or it is another account's, and only a person at a terminal can say it leaves the record; nothing was done"
 missing_needs_person_hint = "run the same command yourself at a terminal, without `--json`; `--yes` does not answer this"
