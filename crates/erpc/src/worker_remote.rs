@@ -956,7 +956,7 @@ pub(crate) async fn delete(json: bool, app: &App, ask: &DeleteAsk) -> Outcome {
         say.line(line);
     }
     let released = if release_server {
-        release(&env, &say, server_end(agreed_missing, &removal)).await
+        release(&env, &say, server_end(agreed_missing, &removal), ask.yes).await
     } else {
         Released::default()
     };
@@ -1580,23 +1580,31 @@ fn ends_server(env: &Env) -> bool {
 
 /// Ends `env`'s lines, then its hourly server as `server` says, whatever
 /// happens to each line: a line that cannot be ended never keeps the
-/// server charged.
-async fn release(env: &Env, say: &Say, server: ServerEnd<'_>) -> Released {
-    release_through(env, say, server, crate::worker_vps::Api::open).await
+/// server charged. With `--yes` (`yes`) each end is said and done; without
+/// it, each is asked at a terminal.
+async fn release(env: &Env, say: &Say, server: ServerEnd<'_>, yes: bool) -> Released {
+    release_through(env, say, server, yes, crate::worker_vps::Api::open).await
 }
 
-/// [`release`], with the lines ended through the session `open` gives. The
+/// [`release`], with the lines ended through the session `open` gives,
+/// in which `--yes` (`yes`) answers each end as it does the server's. The
 /// lines are ended whatever becomes of the server: one missing from the
 /// account (`ServerEnd::Gone`) leaves its lines, a UDP Forwarding line
 /// sending to it among them, to be ended like any other.
-async fn release_through<O, F>(env: &Env, say: &Say, server: ServerEnd<'_>, open: O) -> Released
+async fn release_through<O, F>(
+    env: &Env,
+    say: &Say,
+    server: ServerEnd<'_>,
+    yes: bool,
+    open: O,
+) -> Released
 where
     O: FnOnce() -> F,
     F: core::future::Future<Output = Result<crate::worker_vps::Api, CliError>>,
 {
     let mut out = Released::default();
     if !env.lines.is_empty() {
-        match open().await {
+        match open().await.map(|api| api.releasing(yes)) {
             Ok(api) => {
                 // What the account is charged for: a line on record that is
                 // not among it has nothing to end.
@@ -1659,7 +1667,7 @@ where
                     account: account.to_owned(),
                 });
             }
-            ServerEnd::End => match crate::worker_vps::end(env, say).await {
+            ServerEnd::End => match crate::worker_vps::end(env, say, yes).await {
                 Ok(answer) => out.server = Some(answer),
                 Err(e) => out
                     .failed
@@ -2809,7 +2817,14 @@ mod tests {
             ..env()
         };
         let quiet = Say { quiet: true };
-        let released = release(&never_reached, &quiet, ServerEnd::Gone("Example Account")).await;
+        // Even under --yes, which ends what is on the account.
+        let released = release(
+            &never_reached,
+            &quiet,
+            ServerEnd::Gone("Example Account"),
+            true,
+        )
+        .await;
         assert!(released.failed.is_empty(), "{:?}", released.failed);
         assert!(released.server.is_none(), "nothing was ended");
         assert_eq!(
@@ -2881,6 +2896,7 @@ mod tests {
             &gone,
             &quiet,
             ServerEnd::Gone("Example Account"),
+            false,
             || async { Ok(api) },
         )
         .await;

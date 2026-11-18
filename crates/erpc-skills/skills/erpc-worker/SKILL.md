@@ -31,7 +31,8 @@ in the erpc repository.
   on `deploy`, `--yes` answers it (the price is still printed), since an hourly product is
   paid from prepaid ERPC Credit and refused when the credit does not cover it. Start one only
   when the user asked for it, and say what it costs per hour and that `erpc worker delete
-  --release-server` ends it all. Ending is always the user's to say, at a terminal.
+  --release-server` ends it all. End it only when the user asked: `erpc worker delete <app>
+  --release-server --yes` then ends the lines and the server and prints each.
 - **1Password approvals:** reading a secret or using an SSH key in 1Password may show an
   approval prompt in the 1Password app. "authorization timeout" means nobody allowed it.
 
@@ -75,9 +76,9 @@ directory.
     newer agent was installed (the command says so). Then hand over one line, `erpc worker
     deploy <app>`, which hands the key over and starts the app: it builds and installs a
     release of its own, from the cached build, and starts that one.
-  - Anything that ends an hourly product (`delete --release-server`, `run`'s lines when it
-    ends): the user's yes at a terminal. `run --grpc`/`--shreds` has no `--yes`: its price
-    prompt needs the terminal too.
+  - `run`'s lines when it ends, and a line a deploy offers to end after a failed step: the
+    user's yes at a terminal. `run --grpc`/`--shreds` has no `--yes`: its price prompt needs
+    the terminal too.
   - `logs -f`, `backup now`: longer than five minutes.
 - **Build before you buy:** before a deploy that starts something, run `erpc worker build
   <app>` and wait until it has finished. A deploy buys the server first and builds after:

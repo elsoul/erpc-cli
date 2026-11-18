@@ -12,7 +12,9 @@
 //! go through the same steps `erpc ai` uses. A start shows the price and
 //! the balance, which user-api gives, and is answered by the person at the
 //! terminal, or by `--yes` on a deploy, which says them and goes ahead.
-//! Ending one is always the person's to answer.
+//! Ending one is the person's to answer, but for what `erpc worker delete
+//! --release-server --yes` names: that command line is the yes, and each
+//! end is said.
 //!
 //! A data line (an hourly gRPC, Shreds, UDP Forwarding or Unlimited RPC
 //! line) is started for the server the same way, at the cheapest plan
@@ -82,11 +84,14 @@ fn failed(message: impl Into<String>) -> CliError {
     CliError::new(Code::Failed, message)
 }
 
-/// Says what a start would have asked, and goes ahead: the answer `--yes`
-/// gives. An hourly product is paid from ERPC Credit, which is bought
+/// Says what would have been asked, and goes ahead: the answer `--yes`
+/// gives to a start, and to the ends `erpc worker delete --release-server`
+/// names. An hourly product is paid from ERPC Credit, which is bought
 /// beforehand, and user-api refuses a start the credit does not cover; so
-/// a command line that names what to start, with `--yes`, is the yes. The
-/// product, its price, the credit and how long it lasts are still said, on
+/// a command line that names what to start, with `--yes`, is the yes. A
+/// delete that ends the server, with `--yes`, is the yes to ending the
+/// lines and the server on its record. The product and its price (on a
+/// start, the credit and how long it lasts too) are still said, on
 /// standard error, whether or not the output is JSON.
 #[derive(Default)]
 struct Accepted;
@@ -115,6 +120,9 @@ pub(crate) struct Api {
     /// Whether `--yes` answers what a start asks; `None` for a command that
     /// has no such flag, which a refusal then does not name.
     yes: Option<bool>,
+    /// Whether `yes` answers an end too: only in the session that ends what
+    /// `erpc worker delete --release-server` names ([`Api::releasing`]).
+    release: bool,
     accepted: Accepted,
     /// In a test, the loopback server that stands in for user-api
     /// ([`stub`]): the reads, and the pointing of a UDP Forwarding line, go
@@ -141,6 +149,7 @@ impl Api {
             token,
             confirm: crate::ai::TerminalConfirm::default(),
             yes: None,
+            release: false,
             accepted: Accepted,
             #[cfg(test)]
             stub: None,
@@ -149,11 +158,22 @@ impl Api {
 
     /// The same session, with `--yes` answering what a start asks (the
     /// price of an hourly product) and the first login to a server erpc
-    /// has not made key-only yet. Ending something is still the person's
-    /// to say.
+    /// has not made key-only yet. An end it makes is still the person's to
+    /// say.
     #[must_use]
     pub(crate) fn accepting(mut self, yes: bool) -> Self {
         self.yes = Some(yes);
+        self
+    }
+
+    /// The same session, for what `erpc worker delete --release-server`
+    /// ends (the environment's lines and its hourly server): `--yes`
+    /// (`yes`) answers each end, which is said on standard error; without
+    /// it each is the person's to say, at a terminal.
+    #[must_use]
+    pub(crate) fn releasing(mut self, yes: bool) -> Self {
+        self.yes = Some(yes);
+        self.release = true;
         self
     }
 
@@ -165,6 +185,7 @@ impl Api {
             token: SecretString::from(String::new()),
             confirm: crate::ai::TerminalConfirm::default(),
             yes: None,
+            release: false,
             accepted: Accepted,
             stub: None,
         }
@@ -188,8 +209,8 @@ impl Api {
         }
     }
 
-    /// Who answers an end: the person at the terminal, or nobody, whatever
-    /// `--yes` says.
+    /// Who answers an end: `--yes`, in a session [`Api::releasing`] made
+    /// with it; else the person at the terminal, or nobody.
     fn confirm(&self) -> Option<&dyn Confirm> {
         // A stubbed session has no one to ask, so no end gets as far as a
         // request.
@@ -197,7 +218,12 @@ impl Api {
         if self.stub.is_some() {
             return None;
         }
-        answerer(Asked::End, self.yes, crate::session::has_terminal()).map(|who| self.by(who))
+        let asked = if self.release {
+            Asked::Release
+        } else {
+            Asked::End
+        };
+        answerer(asked, self.yes, crate::session::has_terminal()).map(|who| self.by(who))
     }
 
     /// Who answers a start: `--yes`, else the person at the terminal.
@@ -294,6 +320,9 @@ enum Asked {
     Login,
     /// The end of an hourly product.
     End,
+    /// The end of what `erpc worker delete --release-server` names: one of
+    /// the environment's lines, or its hourly server.
+    Release,
 }
 
 /// Who answers what is asked.
@@ -307,13 +336,14 @@ enum Answerer {
 
 /// Who answers `asked`, from whether `--yes` was given (`None`: the
 /// command has no such flag) and whether a person is at a terminal; `None`
-/// when nobody can. `--yes` answers a start and a first login, and comes
-/// first there, so that a script, an agent or a person who passed it is not
-/// asked again. It never answers an end: ending something is the person's
-/// to say, at a terminal.
+/// when nobody can. `--yes` answers a start, a first login and the ends a
+/// `delete --release-server` names, and comes first there, so that a
+/// script, an agent or a person who passed it is not asked again. It
+/// answers no other end (one a deploy offers after a step failed, `run`'s
+/// lines): those are the person's to say, at a terminal.
 fn answerer(asked: Asked, yes: Option<bool>, terminal: bool) -> Option<Answerer> {
     match (asked, yes) {
-        (Asked::Start | Asked::Login, Some(true)) => Some(Answerer::Yes),
+        (Asked::Start | Asked::Login | Asked::Release, Some(true)) => Some(Answerer::Yes),
         _ => terminal.then_some(Answerer::Person),
     }
 }
@@ -331,10 +361,10 @@ fn nobody(asked: Asked, yes: Option<bool>) -> CliError {
             t!("worker_vps.login.needs_yes"),
             t!("worker_vps.login.needs_terminal_hint"),
         ),
-        (Asked::Start | Asked::End, Some(_)) => {
+        (Asked::Start | Asked::End | Asked::Release, Some(_)) => {
             (t!("worker_vps.needs_yes"), t!("worker_vps.needs_yes_hint"))
         }
-        (Asked::Start | Asked::End, None) => (
+        (Asked::Start | Asked::End | Asked::Release, None) => (
             t!("worker_vps.needs_yes"),
             t!("worker_vps.needs_terminal_hint"),
         ),
@@ -1331,8 +1361,10 @@ pub(crate) async fn secure(api: &Api, resource: &Resource) -> Result<Server, Cli
     Ok(server)
 }
 
-/// Ends the hourly VPS `env` runs on, after the person's yes.
-pub(crate) async fn end(env: &Env, say: &Say) -> Result<Value, CliError> {
+/// Ends the hourly VPS `env` runs on, as `erpc worker delete
+/// --release-server` asks: on its `--yes` (`yes`), else after the person's
+/// yes.
+pub(crate) async fn end(env: &Env, say: &Say, yes: bool) -> Result<Value, CliError> {
     let resource = env
         .resource
         .as_ref()
@@ -1346,7 +1378,7 @@ pub(crate) async fn end(env: &Env, say: &Say) -> Result<Value, CliError> {
         ResourceKind::BareMetal => "bare_metal",
         _ => "vps",
     };
-    let api = Api::open().await?;
+    let api = Api::open().await?.releasing(yes);
     say.line(&t!("worker_vps.end.ending", kind = product_type, id));
     let ended = erpc_ai::actions::end_hourly_product(
         &api.client,
@@ -2883,7 +2915,9 @@ async fn udp_product_type(api: &Api, id: i64) -> &'static str {
     }
 }
 
-/// Ends hourly data line `line`, after the person's yes.
+/// Ends hourly data line `line`, after the yes `api` gives for an end
+/// ([`Api::confirm`]): `--yes`, in a session [`Api::releasing`] made with
+/// it; else the person's.
 pub(crate) async fn end_line(api: &Api, line: &Line, say: &Say) -> Result<Value, CliError> {
     let id: i64 = line
         .id
@@ -3563,6 +3597,39 @@ mod tests {
             "an end was answered by --yes, or not asked of the person"
         );
         assert!(api.confirm_start().is_ok(), "--yes answers a start");
+    }
+
+    #[test]
+    fn yes_answers_the_ends_a_delete_release_server_names() {
+        use super::{Answerer, Asked, answerer};
+        // With --yes each end is said and done, a terminal or not.
+        for terminal in [true, false] {
+            assert_eq!(
+                answerer(Asked::Release, Some(true), terminal),
+                Some(Answerer::Yes),
+                "{terminal}"
+            );
+        }
+        // Without it, the person at the terminal, or nobody.
+        for yes in [Some(false), None] {
+            assert_eq!(
+                answerer(Asked::Release, yes, true),
+                Some(Answerer::Person),
+                "{yes:?}"
+            );
+            assert_eq!(answerer(Asked::Release, yes, false), None, "{yes:?}");
+        }
+        // The session delete --release-server --yes makes answers an end
+        // with nobody at a terminal; the one without --yes leaves it to the
+        // person.
+        assert!(
+            super::Api::offline().releasing(true).confirm().is_some(),
+            "--yes did not answer the end"
+        );
+        assert_eq!(
+            super::Api::offline().releasing(false).confirm().is_some(),
+            crate::session::has_terminal(),
+        );
     }
 
     #[test]
