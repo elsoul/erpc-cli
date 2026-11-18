@@ -12,6 +12,8 @@ whose version has no entry below.
 
 ## [Unreleased]
 
+## [0.1.0-rc.7] - 2026-11-18
+
 ### Added
 
 - `erpc worker deploy --udp` starts an hourly ERPC UDP Forwarding line for
@@ -884,7 +886,8 @@ version.
 - `docs/verify-release.md`: verify signatures against a key saved once from
   `main`, not against `pubkey.txt` at the tag being checked.
 
-[Unreleased]: https://github.com/elsoul/erpc-cli/compare/v0.1.0-rc.6...HEAD
+[Unreleased]: https://github.com/elsoul/erpc-cli/compare/v0.1.0-rc.7...HEAD
+[0.1.0-rc.7]: https://github.com/elsoul/erpc-cli/releases/tag/v0.1.0-rc.7
 [0.1.0-rc.6]: https://github.com/elsoul/erpc-cli/releases/tag/v0.1.0-rc.6
 [0.1.0-rc.5]: https://github.com/elsoul/erpc-cli/releases/tag/v0.1.0-rc.5
 [0.1.0-rc.4]: https://github.com/elsoul/erpc-cli/releases/tag/v0.1.0-rc.4
