@@ -12,6 +12,16 @@ whose version has no entry below.
 
 ## [Unreleased]
 
+### Fixed
+
+- An app made from the `solana/pumpfun` template exits, with the server's
+  message in its log, when the gRPC server ends its Geyser subscription with
+  `RESOURCE_EXHAUSTED` (a request over Yellowstone gRPC 17's
+  `max_decoding_message_size`), instead of sending the same request again
+  without end. The template's Geyser runner is vendored again from
+  solana-stream's `trade-app`, at `39491c96`, which is on
+  `solana-stream-sdk` 5.0.0 like the template.
+
 ## [0.1.0-rc.7] - 2026-11-18
 
 ### Added
