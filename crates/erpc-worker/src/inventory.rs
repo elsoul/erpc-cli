@@ -282,13 +282,26 @@ mod tests {
                 ssh_allow: vec![Cidr::parse("198.51.100.7").expect("cidr")],
                 app_allow: vec![Cidr::parse("198.51.100.0/24").expect("cidr")],
             },
-            lines: vec![Line {
-                kind: LineKind::Unlimited,
-                id: "100002".to_owned(),
-                // Built, not written out: the endpoint gate reads literals.
-                endpoint: ["http", "203.0.113.5:8899"].join("://"),
-                hourly: true,
-            }],
+            lines: vec![
+                Line {
+                    kind: LineKind::Udp,
+                    id: "100004".to_owned(),
+                    endpoint: "0.0.0.0:10001".to_owned(),
+                    hourly: true,
+                    sources: vec![
+                        std::net::Ipv4Addr::new(198, 51, 100, 20),
+                        std::net::Ipv4Addr::new(198, 51, 100, 21),
+                    ],
+                },
+                Line {
+                    kind: LineKind::Unlimited,
+                    id: "100002".to_owned(),
+                    // Built, not written out: the endpoint gate reads literals.
+                    endpoint: ["http", "203.0.113.5:8899"].join("://"),
+                    hourly: true,
+                    sources: Vec::new(),
+                },
+            ],
             starting: BTreeMap::new(),
             backup: Some(Backup {
                 access_key: 42,
@@ -360,6 +373,7 @@ mod tests {
                 id: "100003".to_owned(),
                 endpoint: String::new(),
                 hourly: true,
+                sources: Vec::new(),
             }],
             ..Env::default()
         };

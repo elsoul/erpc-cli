@@ -1,0 +1,126 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+#
+# cargo-deny for the lock of the pumpfun template
+# (templates/solana/pumpfun/Cargo.lock.tmpl), which becomes the Cargo.lock
+# of every app `erpc worker init` makes from it: built on the operator's
+# machine, and run beside a funded key. The workspace's deny.toml does not
+# see that lock, since the template is no member of the workspace. The
+# `template` job in .github/workflows/ci.yml renders the template and runs,
+# in the rendered app:
+#
+#   cargo deny --locked --config <this file> check
+#
+# The policy is the workspace's: the same licences, no OpenSSL, no unknown
+# source, no yanked crate. Where the template's graph does not meet it, the
+# exception is here, with the date it was written, the crate that brings the
+# dependency in, and why it is left. audit.toml beside this file ignores the
+# same advisories for cargo-audit, and a test in src/template.rs keeps the
+# two lists the same and every entry dated.
+#
+# 2026-11-13: the template is on solana-stream-sdk 5.0.0, whose `udp`
+# feature decodes and checks shreds itself; the lock has no OpenSSL,
+# RocksDB or bzip2.
+
+[graph]
+# What an app made from the template is built for: the servers, and the
+# operator's own machine for `erpc worker run`.
+targets = [
+  "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
+  "x86_64-apple-darwin",
+  "aarch64-apple-darwin",
+]
+all-features = false
+
+[output]
+feature-depth = 1
+
+[advisories]
+db-path = "$CARGO_HOME/advisory-dbs"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+version = 2
+yanked = "deny"
+# As cargo-audit reports them: for every crate in the graph, not only the
+# app's own dependencies.
+unmaintained = "all"
+unsound = "all"
+ignore = [
+  # Unmaintained, with no vulnerability reported. Each is pinned by the
+  # crate that brings it in; there is nothing to move to without changing
+  # that crate.
+  { id = "RUSTSEC-2025-0012", reason = "2026-11-11: backoff 0.4.0, a dependency of the template itself (the reconnect pauses of the Geyser, Shreds and UDP sources), as upstream's trade-app has it. In the lock before the UDP source." },
+  { id = "RUSTSEC-2024-0384", reason = "2026-11-11: instant 0.1.13, from backoff 0.4.0 (the template). In the lock before the UDP source." },
+  { id = "RUSTSEC-2025-0141", reason = "2026-11-11: bincode 1.3.3, from the Solana crates (solana-account, solana-instruction, solana-message and others). In the lock before the UDP source." },
+  { id = "RUSTSEC-2026-0543", reason = "2026-11-17: chrono 0.4.45, a dependency of the template itself (timestamps) and of solana-stream-sdk 5.0.0. Every version is affected, so there is none to move to. In the lock before the UDP source; the advisory was published on 2026-11-17." },
+]
+
+[licenses]
+version = 2
+# The workspace's list.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-3.0",
+  "Zlib",
+  "MPL-2.0",
+  "CC0-1.0",
+]
+confidence-threshold = 0.9
+exceptions = [
+  # 2026-11-11: 0BSD, a licence with no conditions at all. enum-iterator
+  # 2.3.0 and its derive 1.5.0, from solana-svm-timings (the Solana runtime
+  # crates; 4.4.1 under solana-entry, through solana-stream-sdk 5.0.0). In
+  # the lock before the UDP source.
+  { allow = ["0BSD"], crate = "enum-iterator" },
+  { allow = ["0BSD"], crate = "enum-iterator-derive" },
+  # 2026-11-11: CDLA-Permissive-2.0, the licence of the data in
+  # webpki-roots 1.0.11: Mozilla's root certificates, which rustls checks
+  # servers against (hyper-rustls 0.27.10, reqwest 0.12.28, tonic 0.14.9).
+  # It is what lets the app do without the system's OpenSSL. In the lock
+  # before the UDP source.
+  { allow = ["CDLA-Permissive-2.0"], crate = "webpki-roots" },
+  # 2026-11-18: BSL-1.0 (Boost Software License), permissive, OSI- and
+  # FSF-approved. xxhash-rust 0.8.19, which redis 1.8.1 requires (it is not
+  # optional there); redis is the template's own dependency, for its
+  # records, its bans and whether trading was on.
+  { allow = ["BSL-1.0"], crate = "xxhash-rust" },
+]
+
+[licenses.private]
+ignore = false
+
+[bans]
+multiple-versions = "warn"
+# 2026-11-11: the template has one dependency with no version, which is
+# what this lint looks for: ultima-swap-pumpfun, from git. It is pinned to
+# a commit in Cargo.toml (`rev`), which fixes more than a version would,
+# and its source is the one git source allowed below.
+wildcards = "allow"
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+allow = []
+deny = [
+  # As in the workspace: the app is cross-built and should need no libssl.
+  { crate = "openssl", reason = "use rustls" },
+  { crate = "openssl-sys", reason = "use rustls" },
+  { crate = "native-tls", reason = "use rustls" },
+]
+skip = []
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# 2026-11-11: ultima-swap-pumpfun, the PumpSwap instruction builders of the
+# same authors as the template's upstream, is not on crates.io. The
+# template's Cargo.toml pins it to commit
+# dbbe5f6e595369d12b8c30a58fc05a01126f4519 (templates/PROVENANCE.md). In
+# the lock before the UDP source.
+allow-git = ["https://github.com/ValidatorsDAO/ultima"]

@@ -26,6 +26,7 @@
 
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
+use std::net::Ipv4Addr;
 use std::path::{Component, Path, PathBuf};
 
 use erpc_secret::OpRef;
@@ -635,6 +636,10 @@ pub enum LineKind {
     Grpc,
     /// A Shreds Shared (Shredstream gRPC) line.
     Shreds,
+    /// ERPC UDP Forwarding: the leader's raw shreds, forwarded over UDP to
+    /// a port of the server's own, with no stream in between. The app
+    /// binds that port, so the line's endpoint is the address it binds.
+    Udp,
     /// An Unlimited RPC: a dedicated RPC endpoint in the server's region.
     /// It serves `sendTransaction` and a short list of reads, not
     /// `getProgramAccounts` and the like, so the app sends through it and
@@ -653,7 +658,7 @@ impl Line {
 
 impl LineKind {
     /// Every kind, in order.
-    pub const ALL: [Self; 3] = [Self::Grpc, Self::Shreds, Self::Unlimited];
+    pub const ALL: [Self; 4] = [Self::Grpc, Self::Shreds, Self::Udp, Self::Unlimited];
 
     /// The setting the line's endpoint is given to the app as.
     #[must_use]
@@ -661,6 +666,7 @@ impl LineKind {
         match self {
             Self::Grpc => "GRPC_ENDPOINT",
             Self::Shreds => "SHREDS_ENDPOINT",
+            Self::Udp => "SHREDS_UDP_BIND",
             Self::Unlimited => "SOLANA_SEND_RPC_ENDPOINT",
         }
     }
@@ -671,23 +677,35 @@ impl LineKind {
         match self {
             Self::Grpc => "gRPC",
             Self::Shreds => "Shreds",
+            Self::Udp => "UDP Forwarding",
             Self::Unlimited => "Unlimited RPC",
         }
     }
 
     /// The flag that starts a line of this kind on `deploy` (and on `run`,
-    /// for gRPC and Shreds), without its dashes.
+    /// where [`Self::on_run`] says so), without its dashes.
     #[must_use]
     pub const fn flag(self) -> &'static str {
         match self {
             Self::Grpc => "grpc",
             Self::Shreds => "shreds",
+            Self::Udp => "udp",
             Self::Unlimited => "unlimited",
         }
     }
 
+    /// Whether `erpc worker run` can start a line of this kind for the
+    /// machine it runs on: gRPC and Shreds, which the app connects out to.
+    /// Unlimited RPC is tied to a server's region, and UDP Forwarding is
+    /// sent to a server's public IPv4, which a laptop behind NAT has not.
+    #[must_use]
+    pub const fn on_run(self) -> bool {
+        matches!(self, Self::Grpc | Self::Shreds)
+    }
+
     /// Whether `endpoint` is one a line of this kind has: `https://<host>`
-    /// for gRPC and Shreds, `http://<address>:<port>` for Unlimited, which
+    /// for gRPC and Shreds, `0.0.0.0:<port>` (the address the app binds)
+    /// for UDP Forwarding, `http://<address>:<port>` for Unlimited, which
     /// is served without TLS.
     #[must_use]
     pub fn endpoint_ok(self, endpoint: &str) -> bool {
@@ -695,6 +713,9 @@ impl LineKind {
             Self::Grpc | Self::Shreds => endpoint
                 .strip_prefix("https://")
                 .is_some_and(|host| is_host(host.trim_end_matches('/'))),
+            Self::Udp => endpoint
+                .parse::<std::net::SocketAddrV4>()
+                .is_ok_and(|bind| bind.port() != 0),
             Self::Unlimited => endpoint
                 .strip_prefix("http://")
                 .and_then(|rest| rest.trim_end_matches('/').rsplit_once(':'))
@@ -707,7 +728,9 @@ impl LineKind {
 
 /// A data line ERPC sells by the hour, opened for the environment's server
 /// by its address. Its endpoint is no secret: the line lets in the
-/// server's address and nothing else.
+/// server's address and nothing else. A UDP Forwarding line is the other
+/// way about: ERPC sends to a port of the server's own, and the server's
+/// firewall lets in the addresses the line sends from (`sources`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Line {
@@ -715,11 +738,19 @@ pub struct Line {
     pub kind: LineKind,
     /// Its id in the ERPC account.
     pub id: String,
-    /// Where the app connects.
+    /// Where the app connects; for a UDP Forwarding line, the address the
+    /// app binds (`0.0.0.0:<port>`), where the shreds are sent.
     pub endpoint: String,
     /// Whether it is billed by the hour, and so ends when it is released.
     #[serde(default)]
     pub hourly: bool,
+    /// The addresses a UDP Forwarding line sends from, which the server's
+    /// firewall lets in on the line's port. Empty for the other kinds, and
+    /// for a UDP Forwarding line user-api names no address for: its port
+    /// then stays closed, unless `--udp-any-source` opens it to any
+    /// address.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<Ipv4Addr>,
 }
 
 /// What a start with no outcome on record yet was starting: the
@@ -733,6 +764,8 @@ pub enum StartOf {
     Grpc,
     /// A Shreds line.
     Shreds,
+    /// A UDP Forwarding line.
+    Udp,
     /// An Unlimited RPC.
     Unlimited,
 }
@@ -744,6 +777,7 @@ impl StartOf {
         match kind {
             LineKind::Grpc => Self::Grpc,
             LineKind::Shreds => Self::Shreds,
+            LineKind::Udp => Self::Udp,
             LineKind::Unlimited => Self::Unlimited,
         }
     }
@@ -755,6 +789,7 @@ impl StartOf {
             Self::Server => "server",
             Self::Grpc => "grpc",
             Self::Shreds => "shreds",
+            Self::Udp => "udp",
             Self::Unlimited => "unlimited",
         }
     }
@@ -1241,7 +1276,7 @@ impl Manifest {
                 .into_iter()
                 .find(|k| k.setting() == req.first());
             out.push(match line {
-                Some(kind) if kind == LineKind::Unlimited => format!(
+                Some(kind) if !kind.on_run() => format!(
                     "{req} is required (run.requires) and not set; `--{}` on deploy starts a \
                      line that provides it, or add it to [vars]",
                     kind.flag()
@@ -1662,8 +1697,17 @@ fn line_problems(at: &str, lines: &[Line], out: &mut Vec<String>) {
         if !id_ok || !(line.is_pending() || line.kind.endpoint_ok(&line.endpoint)) {
             out.push(format!(
                 "{at}: a line is a numeric id and its endpoint (https://<host>; \
-                 http://<address>:<port> for unlimited)"
+                 http://<address>:<port> for unlimited; 0.0.0.0:<port> for udp)"
             ));
+        }
+        if line.kind != LineKind::Udp && !line.sources.is_empty() {
+            out.push(format!("{at}: only a UDP Forwarding line has sources"));
+        }
+        let mut sources = BTreeSet::new();
+        for source in &line.sources {
+            if !sources.insert(source) {
+                out.push(format!("{at}: source {source} is listed twice"));
+            }
         }
         if !kinds.insert(line.kind) {
             out.push(format!("{at}: one line of each kind"));
@@ -2589,6 +2633,8 @@ fn is_pubkey(chain: Chain, key: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::net::Ipv4Addr;
+
     use super::{
         Chain, Credential, FILE_NAME, LineKind, Manifest, ManifestError, SecretRef, Target,
         is_key_account, locate,
@@ -3454,6 +3500,76 @@ ssh_allow = ["198.51.100.7", "198.51.100.7/32"]
         assert!(!LineKind::Unlimited.endpoint_ok(&url("http", "203.0.113.5:0")));
         assert!(!LineKind::Unlimited.endpoint_ok(&url("https", "edge.erpc.global")));
         assert_eq!(LineKind::Unlimited.setting(), "SOLANA_SEND_RPC_ENDPOINT");
+        // A UDP Forwarding line's endpoint is the address the app binds.
+        assert!(LineKind::Udp.endpoint_ok("0.0.0.0:10001"));
+        assert!(LineKind::Udp.endpoint_ok("203.0.113.10:10001"));
+        for bad in ["0.0.0.0:0", "0.0.0.0", "[::]:10001", "10001", ""] {
+            assert!(!LineKind::Udp.endpoint_ok(bad), "{bad}");
+        }
+        assert!(!LineKind::Udp.endpoint_ok(&url("http", "203.0.113.5:8899")));
+        assert!(!LineKind::Grpc.endpoint_ok("0.0.0.0:10001"));
+        assert_eq!(LineKind::Udp.setting(), "SHREDS_UDP_BIND");
+        assert_eq!(LineKind::Udp.label(), "UDP Forwarding");
+        // `ALL` is the order lines are kept in.
+        assert!(LineKind::ALL.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    #[test]
+    fn a_udp_line_round_trips_with_its_sources_and_sets_the_bind() {
+        let line = "lines = [{ kind = \"udp\", id = \"9\", endpoint = \"0.0.0.0:10001\", \
+                    hourly = true, sources = [\"198.51.100.20\", \"198.51.100.21\"] }]\n";
+        let text = format!(
+            "name = \"bot\"\nchain = \"solana\"\n[run]\nrequires = [\"SHREDS_UDP_BIND\"]\n\
+             [env.default]\nhost = \"203.0.113.10\"\n{line}"
+        );
+        let m = Manifest::parse(&text).expect("valid");
+        let env = &m.env["default"];
+        assert_eq!(
+            env.lines[0].sources,
+            [
+                Ipv4Addr::new(198, 51, 100, 20),
+                Ipv4Addr::new(198, 51, 100, 21)
+            ]
+        );
+        // The app binds the address, so the endpoint is given as it is.
+        assert_eq!(
+            env.line_vars().collect::<Vec<_>>(),
+            [("SHREDS_UDP_BIND", "0.0.0.0:10001")]
+        );
+        assert!(
+            !m.warnings().iter().any(|w| w.contains("SHREDS_UDP_BIND")),
+            "{:?}",
+            m.warnings()
+        );
+        let written = toml::to_string(&m).expect("serialize");
+        assert!(written.contains("sources = ["), "{written}");
+        assert_eq!(Manifest::parse(&written).expect("reparse"), m);
+        // Only a UDP Forwarding line has sources, and each is listed once.
+        let found = problems(&text.replace("kind = \"udp\"", "kind = \"grpc\""));
+        for needle in [
+            "only a UDP Forwarding line has sources",
+            "0.0.0.0:<port> for udp",
+        ] {
+            assert!(
+                found.iter().any(|p| p.contains(needle)),
+                "missing {needle} in {found:#?}"
+            );
+        }
+        let twice = problems(&text.replace("198.51.100.21", "198.51.100.20"));
+        assert!(
+            twice
+                .iter()
+                .any(|p| p.contains("198.51.100.20 is listed twice")),
+            "{twice:#?}"
+        );
+        // Pending, it sets nothing: the endpoint and sources come later.
+        let pending = text.replace(
+            "endpoint = \"0.0.0.0:10001\", hourly = true, sources = [\"198.51.100.20\", \"198.51.100.21\"]",
+            "endpoint = \"\", hourly = true",
+        );
+        let m = Manifest::parse(&pending).expect("valid");
+        assert!(m.env["default"].lines[0].is_pending());
+        assert_eq!(m.env["default"].line_vars().count(), 0);
     }
 
     #[test]

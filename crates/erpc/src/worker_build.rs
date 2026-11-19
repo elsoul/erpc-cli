@@ -135,6 +135,16 @@ pub(crate) fn build(json: bool, dir: &Dir) -> Outcome {
     Outcome::Done(drawn.or_plain(lines.join("\n")))
 }
 
+/// The app's directory, from the path of its erpc.toml: the file's
+/// directory, or `.` for one given with none (`--dir erpc.toml`), whose
+/// parent is the empty path, where no program can be started.
+pub(crate) fn app_root(manifest_path: &Path) -> PathBuf {
+    match manifest_path.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir.to_owned(),
+        _ => PathBuf::from("."),
+    }
+}
+
 /// Builds the app at `manifest_path` for its servers and writes its
 /// `release.json`.
 pub(crate) fn for_servers(
@@ -142,9 +152,7 @@ pub(crate) fn for_servers(
     manifest_path: &Path,
     say: &Say,
 ) -> Result<Built, CliError> {
-    let root = manifest_path
-        .parent()
-        .map_or_else(|| PathBuf::from("."), Path::to_owned);
+    let root = app_root(manifest_path);
     let triple = m.build.target.triple();
     let files = shipped(m, &root)?;
     let (binary, glibc, bytes) = binary_for_servers(m, &root, say)?;
@@ -259,11 +267,26 @@ pub(crate) fn way(m: &Manifest, root: &Path, probe: Probe) -> Result<Way, Vec<(S
         ));
         return Err(lacking);
     }
+    // The Rust that would build the app, whichever way it is built: none
+    // that runs, or one older than the app asks for, and cargo refuses the
+    // build, which for a deploy is after the server was bought.
+    if probe == Probe::Toolchain {
+        let (rustc, named) = compiler();
+        lacking.extend(rust_lacking(
+            rust_here(root, &rustc),
+            rust_needed(root),
+            named,
+        ));
+    }
     let (zig, zigbuild) = (on_path("zig", &search), on_path("cargo-zigbuild", &search));
     if !(zig && zigbuild)
         && builds_natively(m.build.target, std::env::consts::OS, std::env::consts::ARCH)
     {
-        return Ok(Way::Native);
+        return if lacking.is_empty() {
+            Ok(Way::Native)
+        } else {
+            Err(lacking)
+        };
     }
     if !zig {
         lacking.push((t!("worker_build.no_zig"), t!("worker_build.no_zig_hint")));
@@ -297,6 +320,121 @@ pub(crate) fn way(m: &Manifest, root: &Path, probe: Probe) -> Result<Way, Vec<(S
     } else {
         Err(lacking)
     }
+}
+
+/// What the Rust that would build the app lacks: the compiler not running
+/// there at all (`have` is `None`), or older than the app asks for
+/// (`need`). `named` is the variable that named the compiler, when one did
+/// ([`compiler`]): what to do is then about that variable, not rustup.
+fn rust_lacking(
+    have: Option<String>,
+    need: Option<String>,
+    named: Option<&str>,
+) -> Option<(String, String)> {
+    let Some(have) = have else {
+        return Some(match named {
+            Some(var) => (
+                t!("worker_build.no_rustc_named", var),
+                t!("worker_build.no_rustc_named_hint", var),
+            ),
+            None => (
+                t!("worker_build.no_rustc"),
+                t!("worker_build.no_rustc_hint"),
+            ),
+        });
+    };
+    let need = need.filter(|need| older(&have, need))?;
+    let hint = match named {
+        Some(var) => t!("worker_build.old_rust_named_hint", var, need),
+        None => t!("worker_build.old_rust_hint", need),
+    };
+    Some((t!("worker_build.old_rust", have, need), hint))
+}
+
+/// The Rust the app at `root` says it needs: `package.rust-version` in its
+/// `Cargo.toml`, or, where that is `{ workspace = true }`, the workspace's
+/// (`workspace.package.rust-version`), in that file or the first
+/// `Cargo.toml` above it that has a `[workspace]`.
+fn rust_needed(root: &Path) -> Option<String> {
+    // Walked up from the app's absolute path: a relative one (`--dir .` in
+    // a workspace's member) has no parent to walk to.
+    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_owned());
+    let read = |dir: &Path| -> Option<toml::Table> {
+        std::fs::read_to_string(dir.join("Cargo.toml"))
+            .ok()?
+            .parse()
+            .ok()
+    };
+    let cargo = read(&root)?;
+    let declared = cargo.get("package")?.get("rust-version")?;
+    if let Some(version) = declared.as_str() {
+        return Some(version.to_owned());
+    }
+    if declared.get("workspace").and_then(toml::Value::as_bool) != Some(true) {
+        return None;
+    }
+    let workspace = std::iter::once(cargo)
+        .chain(root.ancestors().skip(1).filter_map(read))
+        .find_map(|table| table.get("workspace").cloned())?;
+    workspace
+        .get("package")?
+        .get("rust-version")?
+        .as_str()
+        .map(str::to_owned)
+}
+
+/// The compiler cargo builds with, as cargo picks it from the
+/// environment: the one `RUSTC` names, else `CARGO_BUILD_RUSTC`, else
+/// `rustc`; with the variable that named it. A `build.rustc` in the app's
+/// cargo configuration is not read.
+fn compiler() -> (std::ffi::OsString, Option<&'static str>) {
+    ["RUSTC", "CARGO_BUILD_RUSTC"]
+        .into_iter()
+        .find_map(|var| {
+            std::env::var_os(var)
+                .filter(|named| !named.is_empty())
+                .map(|named| (named, Some(var)))
+        })
+        .unwrap_or_else(|| ("rustc".into(), None))
+}
+
+/// The Rust that builds the app at `root`: `rustc --version` asked of the
+/// compiler cargo builds with ([`compiler`]), run there, where a
+/// `rust-toolchain.toml` of the app's picks it (a `RUSTUP_TOOLCHAIN` in the
+/// environment outranks that file). `None` when it does not run, which
+/// cargo then says.
+fn rust_here(root: &Path, rustc: &std::ffi::OsStr) -> Option<String> {
+    let out = Command::new(rustc)
+        .arg("--version")
+        .current_dir(root)
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    out.status
+        .success()
+        .then(|| rust_version_of(&String::from_utf8_lossy(&out.stdout)))
+        .flatten()
+}
+
+/// The version in `rustc --version`'s line (`rustc 1.98.0 (…)`), without a
+/// pre-release tag (`1.99.0-nightly` is `1.99.0`).
+fn rust_version_of(line: &str) -> Option<String> {
+    let version = line.strip_prefix("rustc ")?.split_whitespace().next()?;
+    Some(version.split('-').next().unwrap_or(version).to_owned())
+}
+
+/// Whether Rust `have` is older than `need`, each `major.minor` or
+/// `major.minor.patch`, as Cargo compares `rust-version`.
+fn older(have: &str, need: &str) -> bool {
+    let parts = |version: &str| {
+        let mut parts: Vec<u64> = version
+            .split('.')
+            .map(|part| part.parse().unwrap_or(0))
+            .collect();
+        parts.resize(3, 0);
+        parts
+    };
+    parts(have) < parts(need)
 }
 
 /// Whether a machine running `os` on `arch` builds for `target` with its
@@ -567,9 +705,10 @@ pub(crate) enum Probe {
     /// `rustup` read the directory they run in (`.cargo/config.toml`,
     /// `rust-toolchain.toml`), and an alias there runs whatever it names.
     Look,
-    /// Also ask `rustup`, in the app's directory, whether the target's
-    /// standard library is installed. For a build, which runs cargo there
-    /// anyway.
+    /// Also ask, in the app's directory, `rustc` which Rust would build
+    /// the app, and `rustup` whether the target's standard library is
+    /// installed. For a build (a deploy's, before it buys anything), which
+    /// runs cargo there anyway.
     Toolchain,
 }
 
@@ -774,21 +913,92 @@ mod tests {
         assert!(!super::on_path("absent", &dirs));
     }
 
-    /// The child's side of the probe tests: runs [`super::missing_tools`]
-    /// in the directory it was started in. Without `ERPC_TEST_PROBE` it
-    /// does nothing, which is how it runs among the other tests.
+    /// The child's side of the probe tests, run in the directory it was
+    /// started in: `look` and `toolchain` run [`super::missing_tools`] with
+    /// that probe, `check` runs what `erpc worker check` runs
+    /// ([`crate::worker::deploy_needs`]), and `needed` reads the Rust the
+    /// app asks for from the root a relative `erpc.toml` gives, as `--dir`
+    /// gives it. What it found goes to `ERPC_TEST_PROBE_OUT`, a line each.
+    /// Without `ERPC_TEST_PROBE` it does nothing, which is how it runs
+    /// among the other tests.
     #[test]
     fn probe_child() {
         let Ok(probe) = std::env::var("ERPC_TEST_PROBE") else {
             return;
         };
-        let probe = match probe.as_str() {
-            "look" => super::Probe::Look,
-            _ => super::Probe::Toolchain,
-        };
         let root = std::env::current_dir().expect("a directory");
         let m = Manifest::parse("name = \"bot\"\nchain = \"solana\"\n").expect("a manifest");
-        let _ = super::missing_tools(&m, &root, probe);
+        let found: Vec<String> =
+            crate::i18n::speaking(erpc_core::i18n::Lang::En, || match probe.as_str() {
+                "look" => super::missing_tools(&m, &root, super::Probe::Look)
+                    .into_iter()
+                    .map(|(what, _)| what)
+                    .collect(),
+                "check" => crate::worker::deploy_needs(&m, &root.join("erpc.toml")),
+                "needed" => ["erpc.toml", "./erpc.toml"]
+                    .into_iter()
+                    .map(|path| {
+                        let root = super::app_root(std::path::Path::new(path));
+                        super::rust_needed(&root).unwrap_or_default()
+                    })
+                    .collect(),
+                _ => super::missing_tools(&m, &root, super::Probe::Toolchain)
+                    .into_iter()
+                    .map(|(what, _)| what)
+                    .collect(),
+            });
+        if let Some(out) = std::env::var_os("ERPC_TEST_PROBE_OUT") {
+            std::fs::write(out, found.join("\n")).expect("what was found");
+        }
+    }
+
+    /// Runs [`probe_child`] as `probe`, from `app`, with `env` besides, and
+    /// returns what it found.
+    fn child(probe: &str, app: &std::path::Path, env: &[(&str, &std::ffi::OsStr)]) -> String {
+        let out = app.with_file_name("found");
+        let status = std::process::Command::new(std::env::current_exe().expect("this test binary"))
+            .args(["--exact", "worker_build::tests::probe_child", "--nocapture"])
+            .env("ERPC_TEST_PROBE", probe)
+            .env("ERPC_TEST_PROBE_OUT", &out)
+            .envs(env.iter().copied())
+            .current_dir(app)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("the child");
+        assert!(status.success(), "the child failed: {status}");
+        std::fs::read_to_string(&out).unwrap_or_default()
+    }
+
+    /// A `rust-version` the app takes from the workspace it is a member of
+    /// is read whether the app is named by an absolute path or a relative
+    /// one: `--dir .` in the member, or `--dir erpc.toml`, whose directory
+    /// is the empty path.
+    #[test]
+    fn a_workspaces_rust_version_is_read_from_a_relative_root() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let member = dir.path().join("bot");
+        std::fs::create_dir_all(&member).expect("a directory");
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"bot\"]\n[workspace.package]\nrust-version = \"1.98.1\"\n",
+        )
+        .expect("Cargo.toml");
+        std::fs::write(
+            member.join("Cargo.toml"),
+            "[package]\nname = \"bot\"\nrust-version.workspace = true\n",
+        )
+        .expect("Cargo.toml");
+        assert_eq!(super::rust_needed(&member).as_deref(), Some("1.98.1"));
+        assert_eq!(child("needed", &member, &[]), "1.98.1\n1.98.1");
+        assert_eq!(
+            super::app_root(std::path::Path::new("erpc.toml")),
+            std::path::Path::new(".")
+        );
+        assert_eq!(
+            super::app_root(std::path::Path::new("bot/erpc.toml")),
+            std::path::Path::new("bot")
+        );
     }
 
     fn app(build: &str) -> Manifest {
@@ -796,6 +1006,131 @@ mod tests {
             "name = \"bot\"\nchain = \"solana\"\n[build]\n{build}\n"
         ))
         .expect("a manifest")
+    }
+
+    #[test]
+    fn a_rust_that_does_not_run_or_is_too_old_is_named() {
+        use super::rust_lacking;
+        let v = |s: &str| Some(s.to_owned());
+        let what = |lacking: Option<(String, String)>| lacking.map(|(what, _)| what);
+        // No rustc that runs in the app's directory: cargo would not build.
+        assert!(what(rust_lacking(None, None, None)).is_some_and(|w| w.contains("rustc")));
+        assert!(rust_lacking(None, v("1.98.1"), None).is_some());
+        // Older than the app asks for, with a hint that makes the newer
+        // one the app's, not only installs it, and says what outranks that.
+        let (old, hint) = rust_lacking(v("1.98.0"), v("1.98.1"), None).expect("too old");
+        assert!(old.contains("1.98.0") && old.contains("1.98.1"), "{old}");
+        assert!(hint.contains("rustup override set 1.98.1"), "{hint}");
+        assert!(
+            hint.contains("a RUSTUP_TOOLCHAIN set in the environment outranks that override"),
+            "{hint}"
+        );
+        // A compiler a variable named: what to do is about the variable.
+        let (none, hint) = rust_lacking(None, v("1.98.1"), Some("RUSTC")).expect("none");
+        assert!(
+            none.contains("the compiler RUSTC names does not run"),
+            "{none}"
+        );
+        assert!(
+            hint.contains("unset RUSTC") && !hint.contains("rustup"),
+            "{hint}"
+        );
+        let (_, hint) =
+            rust_lacking(v("1.98.0"), v("1.98.1"), Some("CARGO_BUILD_RUSTC")).expect("too old");
+        assert!(
+            hint.contains("make CARGO_BUILD_RUSTC name a rustc of 1.98.1 or newer")
+                && !hint.contains("rustup"),
+            "{hint}"
+        );
+        // New enough, or asked for nothing.
+        assert!(rust_lacking(v("1.98.1"), v("1.98.1"), None).is_none());
+        assert!(rust_lacking(v("1.98.0"), None, Some("RUSTC")).is_none());
+    }
+
+    #[test]
+    fn a_rust_version_a_workspace_gives_its_members_is_read() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let member = dir.path().join("bot");
+        std::fs::create_dir_all(&member).expect("a directory");
+        std::fs::write(
+            member.join("Cargo.toml"),
+            "[package]\nname = \"bot\"\nrust-version.workspace = true\n",
+        )
+        .expect("Cargo.toml");
+        // No workspace above it says one: nothing asked for.
+        assert_eq!(super::rust_needed(&member), None);
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"bot\"]\n[workspace.package]\nrust-version = \"1.98.1\"\n",
+        )
+        .expect("Cargo.toml");
+        assert_eq!(super::rust_needed(&member).as_deref(), Some("1.98.1"));
+        // The app is the workspace itself.
+        std::fs::write(
+            member.join("Cargo.toml"),
+            "[package]\nname = \"bot\"\nrust-version.workspace = true\n\
+             [workspace]\n[workspace.package]\nrust-version = \"1.99\"\n",
+        )
+        .expect("Cargo.toml");
+        assert_eq!(super::rust_needed(&member).as_deref(), Some("1.99"));
+    }
+
+    #[test]
+    fn the_rust_an_app_asks_for_is_compared_as_cargo_compares_it() {
+        use super::{older, rust_version_of};
+        assert_eq!(
+            rust_version_of("rustc 1.98.0 (17067e9ac 2026-08-04)\n").as_deref(),
+            Some("1.98.0")
+        );
+        assert_eq!(
+            rust_version_of("rustc 1.99.0-nightly (abc 2026-09-01)").as_deref(),
+            Some("1.99.0")
+        );
+        assert_eq!(rust_version_of("cargo 1.98.0"), None);
+        assert!(older("1.98.0", "1.98.1"));
+        assert!(older("1.97.1", "1.98"));
+        assert!(!older("1.98.1", "1.98.1"));
+        assert!(!older("1.98.0", "1.98"));
+        assert!(!older("1.99.0", "1.98.1"));
+        assert!(!older("2.0.0", "1.98.1"));
+    }
+
+    /// An app that asks for a newer Rust than the one that would build it
+    /// is told so before anything is bought, whichever way it is built;
+    /// one that asks for none, or for an older one, is not.
+    #[test]
+    fn an_app_that_needs_a_newer_rust_is_told_before_anything_is_bought() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let m = app("");
+        let cargo = |rust: &str| {
+            let package = format!("[package]\nname = \"bot\"\nversion = \"0.1.0\"\n{rust}");
+            std::fs::write(dir.path().join("Cargo.toml"), package).expect("Cargo.toml");
+        };
+        let said = |probe| match super::way(&m, dir.path(), probe) {
+            Ok(_) => Vec::new(),
+            Err(lacking) => lacking.into_iter().map(|(what, _)| what).collect(),
+        };
+        cargo("rust-version = \"99.0\"\n");
+        assert_eq!(super::rust_needed(dir.path()).as_deref(), Some("99.0"));
+        let lacking = said(super::Probe::Toolchain);
+        assert!(
+            lacking.iter().any(|what| what.contains("99.0")),
+            "{lacking:?}"
+        );
+        // Looking only runs nothing, rustc included.
+        assert!(
+            !said(super::Probe::Look)
+                .iter()
+                .any(|what| what.contains("99.0"))
+        );
+        cargo("rust-version = \"1.0\"\n");
+        assert!(
+            !said(super::Probe::Toolchain)
+                .iter()
+                .any(|what| what.contains("rust-version"))
+        );
+        cargo("");
+        assert_eq!(super::rust_needed(dir.path()), None);
     }
 
     #[test]
@@ -1011,21 +1346,54 @@ mod tests {
     /// Runs the probe in a child process, as `erpc ai` would run `check`:
     /// from an app's directory whose cargo configuration runs its own code
     /// for `cargo zigbuild`, with a `PATH` that holds only a `cargo`, a
-    /// `rustup`, a `zig` and a `cargo-zigbuild` that each write their name
-    /// when run. Returns the names written: what the probe ran.
+    /// `rustup`, a `zig`, a `cargo-zigbuild` and a `rustc` that each write
+    /// their name when run (the `rustc` then fails: no Rust runs there).
+    /// Returns the names written, what the probe ran, and what it found.
     #[cfg(unix)]
-    fn ran_by(probe: &str) -> String {
+    fn ran_by(probe: &str) -> (String, String) {
+        ran_by_with(probe, None)
+    }
+
+    /// [`ran_by`], with `var` (`RUSTC` or `CARGO_BUILD_RUSTC`) naming a
+    /// compiler of its own, `named-rustc`, that says it is Rust `version`
+    /// (or fails, for an empty one), for an app that asks for 1.98.1.
+    #[cfg(unix)]
+    fn ran_by_with(probe: &str, named: Option<(&str, &str)>) -> (String, String) {
         use std::os::unix::fs::PermissionsExt as _;
         let dir = tempfile::tempdir().expect("a temporary directory");
         let (bin, app) = (dir.path().join("bin"), dir.path().join("app"));
         let marker = dir.path().join("ran");
         std::fs::create_dir_all(app.join(".cargo")).expect("the app");
         std::fs::create_dir(&bin).expect("bin");
-        for tool in ["cargo", "rustup", "zig", "cargo-zigbuild"] {
+        for tool in ["cargo", "rustup", "zig", "cargo-zigbuild", "rustc"] {
             let file = bin.join(tool);
-            let script = format!("#!/bin/sh\necho {tool} >> '{}'\nexit 0\n", marker.display());
+            let exit = u8::from(tool == "rustc");
+            let script = format!(
+                "#!/bin/sh\necho {tool} >> '{}'\nexit {exit}\n",
+                marker.display()
+            );
             std::fs::write(&file, script).expect("a tool");
             std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).expect("mode");
+        }
+        let named_rustc = bin.join("named-rustc");
+        if let Some((_, version)) = named {
+            let says = if version.is_empty() {
+                "exit 1".to_owned()
+            } else {
+                format!("echo 'rustc {version} (0 2026-11-01)'")
+            };
+            let script = format!(
+                "#!/bin/sh\necho named-rustc >> '{}'\n{says}\n",
+                marker.display()
+            );
+            std::fs::write(&named_rustc, script).expect("a compiler");
+            std::fs::set_permissions(&named_rustc, std::fs::Permissions::from_mode(0o755))
+                .expect("mode");
+            std::fs::write(
+                app.join("Cargo.toml"),
+                "[package]\nname = \"bot\"\nversion = \"0.1.0\"\nrust-version = \"1.98.1\"\n",
+            )
+            .expect("Cargo.toml");
         }
         // What made the look dangerous: cargo run from here runs the app.
         std::fs::write(
@@ -1038,36 +1406,85 @@ mod tests {
             "[toolchain]\nchannel = \"1.98.0\"\n",
         )
         .expect("the app's toolchain");
-        let status = std::process::Command::new(std::env::current_exe().expect("this test binary"))
-            .args(["--exact", "worker_build::tests::probe_child", "--nocapture"])
-            .env("ERPC_TEST_PROBE", probe)
-            .env("PATH", &bin)
-            .env("HOME", dir.path())
-            .env("CARGO_HOME", dir.path().join("cargo-home"))
-            .current_dir(&app)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .expect("the child");
-        assert!(status.success(), "the child failed: {status}");
-        std::fs::read_to_string(&marker).unwrap_or_default()
+        // Both variables are given, empty unless named: none of the
+        // environment's own reaches the child.
+        let var = |which: &str| {
+            if named.is_some_and(|(var, _)| var == which) {
+                named_rustc.clone().into_os_string()
+            } else {
+                std::ffi::OsString::new()
+            }
+        };
+        let (rustc, cargo_build_rustc) = (var("RUSTC"), var("CARGO_BUILD_RUSTC"));
+        let found = child(
+            probe,
+            &app,
+            &[
+                ("PATH", bin.as_os_str()),
+                ("HOME", dir.path().as_os_str()),
+                ("ERPC_HOME", dir.path().join("erpc-home").as_os_str()),
+                ("CARGO_HOME", dir.path().join("cargo-home").as_os_str()),
+                ("RUSTC", rustc.as_os_str()),
+                ("CARGO_BUILD_RUSTC", cargo_build_rustc.as_os_str()),
+            ],
+        );
+        (std::fs::read_to_string(&marker).unwrap_or_default(), found)
     }
 
     /// `check`'s look starts no program at all, so nothing in the app's
     /// directory gets to run: not cargo with the app's aliases, not
-    /// rustup with its toolchain file, not the tools themselves.
+    /// rustup with its toolchain file, not rustc, not the tools themselves.
+    /// Held for the look itself and for what `erpc worker check` runs.
     #[cfg(unix)]
     #[test]
     fn a_look_runs_nothing_from_the_apps_directory() {
-        assert_eq!(ran_by("look"), "", "the look ran a program");
+        assert_eq!(ran_by("look").0, "", "the look ran a program");
+        let (ran, found) = ran_by("check");
+        assert_eq!(ran, "", "check ran a program");
+        // It looked all the same: what a deploy would lack is said.
+        assert!(found.contains("SSH key"), "{found}");
     }
 
     /// The harness catches a program that is run: a build's probe does ask
-    /// rustup, and only rustup.
+    /// rustc and rustup, and only those; a rustc that does not run there is
+    /// named, as cargo would not build either.
     #[cfg(unix)]
     #[test]
-    fn a_builds_probe_asks_rustup_and_runs_no_tool() {
-        assert_eq!(ran_by("toolchain"), "rustup\n");
+    fn a_builds_probe_asks_rustc_and_rustup_and_runs_no_tool() {
+        let (ran, found) = ran_by("toolchain");
+        assert_eq!(ran, "rustc\nrustup\n");
+        assert!(
+            found.contains("rustc does not run in the app's directory"),
+            "{found}"
+        );
+        assert!(!ran_by("look").1.contains("rustc"));
+    }
+
+    /// The Rust asked is the one cargo builds with: the compiler `RUSTC`,
+    /// else `CARGO_BUILD_RUSTC`, names, when one is set, not the `rustc` on
+    /// `PATH`. Older than the app asks for, or not running, it is named
+    /// with the variable; new enough, nothing is.
+    #[cfg(unix)]
+    #[test]
+    fn a_builds_probe_asks_the_compiler_the_environment_names() {
+        for var in ["RUSTC", "CARGO_BUILD_RUSTC"] {
+            let (ran, found) = ran_by_with("toolchain", Some((var, "1.98.1")));
+            assert_eq!(ran, "named-rustc\nrustup\n", "{var}");
+            assert!(
+                !found.contains("does not run") && !found.contains("builds the app here"),
+                "{var}: {found}"
+            );
+            let (_, found) = ran_by_with("toolchain", Some((var, "1.98.0")));
+            assert!(
+                found.contains("Rust 1.98.0 builds the app here, and it needs 1.98.1"),
+                "{var}: {found}"
+            );
+            let (_, found) = ran_by_with("toolchain", Some((var, "")));
+            assert!(
+                found.contains(&format!("the compiler {var} names does not run")),
+                "{var}: {found}"
+            );
+        }
     }
     use super::cargo_build_args;
     use erpc_worker::manifest::Manifest;

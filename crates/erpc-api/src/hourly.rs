@@ -212,11 +212,22 @@ pub const FAMILIES: &[Family] = &[
         "userBundleId",
         false,
     ),
+    // UDP Forwarding's start routes take no body: each family has one plan,
+    // and the catalogue lists Premium only for accounts it is on sale to.
     family(
         "udp-forwarding",
         "/v3/udp-forwarding/start-hourly",
         "/v3/udp-forwarding/end-hourly",
-        &["subscriptionId"],
+        &[],
+        &[],
+        "subscriptionId",
+        true,
+    ),
+    family(
+        "udp-forwarding-premium",
+        "/v3/udp-forwarding-premium/start-hourly",
+        "/v3/udp-forwarding-premium/end-hourly",
+        &[],
         &[],
         "subscriptionId",
         true,
@@ -241,6 +252,7 @@ pub fn for_product_type(product_type: &str) -> Option<&'static Family> {
         "erpc_plan" => "erpc",
         "slv_ai_plan" => "ai",
         "one_hop_direct" => "udp-forwarding",
+        "udp_forwarding_premium" => "udp-forwarding-premium",
         _ => return None,
     };
     find(name)
@@ -365,7 +377,7 @@ pub async fn end(
 #[cfg(test)]
 mod tests {
     use super::{FAMILIES, find};
-    use serde_json::json;
+    use serde_json::{Map, json};
 
     #[test]
     fn every_route_is_user_apis_and_every_family_is_found_by_name() {
@@ -405,5 +417,38 @@ mod tests {
         );
         let extra = json!({ "productId": "prod_x", "region": "frankfurt", "price": 0 });
         assert!(vps.start_body(extra.as_object().expect("object")).is_err());
+    }
+
+    #[test]
+    fn a_start_that_requires_nothing_is_an_empty_body_that_takes_no_field() {
+        for name in ["udp-forwarding", "udp-forwarding-premium"] {
+            let udp = find(name).expect(name);
+            assert_eq!(udp.start_body(&Map::new()), Ok(json!({})), "{name}");
+            let stray = json!({ "subscriptionId": 7 });
+            assert!(
+                udp.start_body(stray.as_object().expect("object")).is_err(),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn both_udp_forwarding_families_are_found_by_name_and_by_product_type() {
+        let premium = find("udp-forwarding-premium").expect("premium");
+        assert_eq!(
+            premium.start_path,
+            "/v3/udp-forwarding-premium/start-hourly"
+        );
+        assert_eq!(premium.end_path, "/v3/udp-forwarding-premium/end-hourly");
+        assert_eq!(premium.end_id, "subscriptionId");
+        assert!(premium.idempotent);
+        assert_eq!(
+            super::for_product_type("one_hop_direct").map(|f| f.name),
+            Some("udp-forwarding")
+        );
+        assert_eq!(
+            super::for_product_type("udp_forwarding_premium").map(|f| f.name),
+            Some("udp-forwarding-premium")
+        );
     }
 }

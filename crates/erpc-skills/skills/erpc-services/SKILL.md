@@ -1,6 +1,6 @@
 ---
 name: erpc-services
-description: What ERPC sells and which to recommend -- shared RPC, Unlimited RPC, Dedicated RPC, Geyser gRPC, Shreds, bundles, SWQoS, VPS, Super VPS, Premium VPS and bare metal -- with their prices, the stock by region, hourly billing from ERPC Credit, and what erpc can start for the user.
+description: What ERPC sells and which to recommend -- shared RPC, Unlimited RPC, Dedicated RPC, Geyser gRPC, Shreds, UDP Forwarding, bundles, SWQoS, VPS, Super VPS, Premium VPS and bare metal -- with their prices, the stock by region, hourly billing from ERPC Credit, and what erpc can start for the user.
 ---
 
 # ERPC services: what to recommend, and where to get it
@@ -62,6 +62,18 @@ erpc cannot do it yet. Price page: https://erpc.global/en/price/.
 - Refusals carry user-api's message and code: the card authorisation is missing
   (`PAYMENT_AUTH_REQUIRED`), the credit does not cover it, or there is no stock in that region.
   Say which and what fixes it (buy credit, another region); never retry on your own.
+- UDP Forwarding (`udp-forwarding`, Standard; `udp-forwarding-premium`, Premium) sends the
+  leader's raw shreds over UDP to an address and UDP port of the user's own server. Its start
+  takes no fields; the line is then pointed with `point_udp_line` (the line's id from
+  `my_services` or the start's `subscriptionId`, the server's public IPv4 address and port,
+  and the region it sends from), which asks the person. Standard is charged from its start,
+  pointed or not; Premium from when it is pointed. `point_udp_line` changes no firewall: the
+  server has to let in the addresses the line sends from (`sourceIp`, `sourceIps` in
+  `my_services`) on that port. For an app deployed with `erpc worker`, `erpc worker deploy
+  --udp` starts, points and opens the firewall in one step: suggest that instead. When
+  `my_services` has a UDP list under `refused`, user-api does not let erpc reach that route
+  yet: say so in its words (signing in again does not help) and that the dashboard points the
+  line meanwhile.
 - End one only when the user asked (`end_hourly_product`, with productType and userProductId
   from the credit balance's `hourlyResources`). It stops and stops being charged, and cannot be
   undone; when the balance says it cannot be ended now, say why.

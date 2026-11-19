@@ -1,0 +1,42 @@
+{
+  "shred_to_processed_ms": { "count": 42, "p50": 18, "p90": 44, "min": 3, "max": 97 },
+  "shred_to_confirmed_ms": { "count": 42, "p50": 960, "p90": 1310, "min": 610, "max": 2200 },
+  "udp_to_processed_ms": { "count": 40, "p50": 31, "p90": 60, "min": 9, "max": 120 },
+  "udp_to_confirmed_ms": { "count": 40, "p50": 975, "p90": 1330, "min": 620, "max": 2210 },
+  "processed_to_confirmed_ms": { "count": 45, "p50": 940, "p90": 1280, "min": 590, "max": 2150 },
+  "udp_before_shreds_ms": { "count": 38, "p50": 12, "p90": 25, "min": 0, "max": 61 },
+  "shreds_before_udp_ms": { "count": 0, "p50": null, "p90": null, "min": null, "max": null },
+  "shred_offset_in_slot_ms": { "count": 42, "p50": 210, "p90": 350, "min": 20, "max": 398 },
+  "udp_offset_in_slot_ms": { "count": 40, "p50": 198, "p90": 340, "min": 12, "max": 390 },
+  "processed_offset_in_slot_ms": { "count": 45, "p50": 231, "p90": 371, "min": 40, "max": 420 },
+  "detect_to_send_ms": { "count": 4, "p50": 41, "p90": 58, "min": 29, "max": 58 },
+  "slots_late": { "count": 2, "p50": 1, "p90": 1, "min": 0, "max": 1 },
+  "buys": [
+    {
+      "pool": "PoolA", "via": "udp", "pool_slot": 301, "detect_to_send_ms": 37,
+      "landed_slot": 301, "slots_late": 0, "failed": false,
+      "settings": { "rev": 1, "buy_on_shreds": true, "priority_fee_micro_lamports": 10000, "compute_unit_limit": 200000 }
+    },
+    {
+      "pool": "PoolB", "via": "shreds", "pool_slot": 310, "detect_to_send_ms": 41,
+      "landed_slot": 311, "slots_late": 1, "failed": false,
+      "settings": { "rev": 1, "buy_on_shreds": true, "priority_fee_micro_lamports": 10000, "compute_unit_limit": 200000 }
+    },
+    {
+      "pool": "PoolC", "via": "geyser", "pool_slot": 322, "detect_to_send_ms": 58,
+      "landed_slot": null, "slots_late": null, "failed": false,
+      "settings": { "rev": 1, "buy_on_shreds": true, "priority_fee_micro_lamports": 10000, "compute_unit_limit": 200000 }
+    },
+    {
+      "pool": "PoolD", "via": "shreds", "pool_slot": 330, "detect_to_send_ms": 29,
+      "landed_slot": 330, "slots_late": 0, "failed": true,
+      "settings": { "rev": 2, "buy_on_shreds": true, "priority_fee_micro_lamports": 20000, "compute_unit_limit": 200000 }
+    }
+  ],
+  "udp": {
+    "bound": "0.0.0.0:10001", "datagrams": 918234, "batches": 40112, "migrations": 40,
+    "dropped": { "malformed": 3, "outside_window": 12, "no_leader": 0, "bad_signature": 1 },
+    "resets": 0, "migrations_dropped": 0
+  },
+  "settings": { "rev": 2, "buy_on_shreds": true, "priority_fee_micro_lamports": 20000, "compute_unit_limit": 200000 }
+}

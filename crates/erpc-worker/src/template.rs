@@ -585,6 +585,52 @@ mod tests {
         assert!(listed.is_empty(), "listed but not there: {listed:?}");
     }
 
+    /// The exceptions the pumpfun template's lock is checked with in CI
+    /// (`template-checks/`): cargo-deny and cargo-audit ignore the same
+    /// advisories, and each says when it was written, so an exception
+    /// cannot be added to one tool alone, or without its date.
+    #[test]
+    fn the_exceptions_for_the_templates_lock_are_dated_and_the_same_for_both_tools() {
+        fn dated(text: &str) -> bool {
+            let b = text.as_bytes();
+            b.len() > 12
+                && b[..10].iter().enumerate().all(|(i, c)| match i {
+                    4 | 7 => *c == b'-',
+                    _ => c.is_ascii_digit(),
+                })
+                && text.starts_with("20")
+                && &b[10..12] == b": "
+        }
+        let deny: toml::Table = include_str!("../template-checks/solana/pumpfun/deny.toml")
+            .parse()
+            .expect("deny.toml");
+        let mut for_deny = Vec::new();
+        for entry in deny["advisories"]["ignore"].as_array().expect("ignores") {
+            let id = entry["id"].as_str().expect("an id");
+            let reason = entry["reason"].as_str().expect("a reason");
+            assert!(dated(reason), "{id}: its reason starts with its date");
+            for_deny.push(id);
+        }
+        assert!(!for_deny.is_empty());
+        let text = include_str!("../template-checks/solana/pumpfun/audit.toml");
+        let audit: toml::Table = text.parse().expect("audit.toml");
+        let mut for_audit = Vec::new();
+        for id in audit["advisories"]["ignore"].as_array().expect("ignores") {
+            let id = id.as_str().expect("an id");
+            let line = text
+                .lines()
+                .find(|l| l.contains(&format!("\"{id}\"")))
+                .expect("its line");
+            let reason = line.split_once("# ").map(|(_, reason)| reason);
+            assert!(reason.is_some_and(dated), "{id}: a dated reason follows it");
+            for_audit.push(id);
+        }
+        for_deny.sort_unstable();
+        for_audit.sort_unstable();
+        assert_eq!(for_deny, for_audit);
+        assert!(dated("2026-11-11: why") && !dated("soon: why") && !dated("2026-11-11 why"));
+    }
+
     #[test]
     fn the_app_entry_of_a_lock_goes_where_cargo_sorts_it() {
         let lock = "# header\nversion = 4\n\n[[package]]\nname = \"alpha\"\nversion = \"1.0.0\"\n\

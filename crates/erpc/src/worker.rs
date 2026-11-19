@@ -325,7 +325,7 @@ pub(crate) enum Action {
     Deploy {
         #[command(flatten)]
         app: App,
-        /// A server of your own, by address, when erpc.toml has no server for the environment: Ubuntu or Debian with systemd and nftables, reached as root or a user with passwordless sudo; the worker's firewall then drops every inbound connection to it but SSH and the app's port.
+        /// A server of your own, by address, when erpc.toml has no server for the environment: Ubuntu or Debian with systemd and nftables, reached as root or a user with passwordless sudo; the worker's firewall then drops every inbound connection to it but SSH, the app's port when `firewall.app_allow` lists someone and, with --udp, the UDP Forwarding line's port.
         #[arg(long, value_name = "ADDRESS")]
         host: Option<String>,
         /// The account to log in to on --host.
@@ -371,6 +371,23 @@ pub(crate) enum Action {
         /// The hourly plan of the Unlimited RPC, by product id (default: the cheapest).
         #[arg(long, value_name = "PRODUCT_ID", requires = "unlimited")]
         unlimited_plan: Option<String>,
+        /// Start an hourly UDP Forwarding line for the server: raw shreds sent
+        /// over UDP to a port of its own, which the app gets as
+        /// `SHREDS_UDP_BIND` (its price is shown first).
+        #[arg(long)]
+        udp: bool,
+        /// The hourly plan of the UDP Forwarding line, by product id (default: the cheapest, Standard; Premium is the other).
+        #[arg(long, value_name = "PRODUCT_ID", requires = "udp")]
+        udp_plan: Option<String>,
+        /// The UDP port the shreds are sent to on the server, 1024 or above (default: the port of the line on record, else 10001).
+        #[arg(long, value_name = "PORT", requires = "udp", value_parser = clap::value_parser!(u16).range(1024..))]
+        udp_port: Option<u16>,
+        /// The ERPC region the shreds are sent from (default: the server's).
+        #[arg(long, value_name = "REGION", requires = "udp")]
+        udp_region: Option<String>,
+        /// Open the UDP port to any IPv4 address when ERPC names no address the line sends from. Without this the port then stays closed: a port open to any address takes in whatever anyone sends it, and the firewall is all that tells the line's shreds from a stranger's.
+        #[arg(long, requires = "udp")]
+        udp_any_source: bool,
         /// For a new environment: keep its server facts in this 1Password
         /// vault (default: the one `erpc login` keeps the session in, when
         /// that is 1Password).
@@ -389,9 +406,9 @@ pub(crate) enum Action {
         #[arg(long)]
         prepare: bool,
         /// Go ahead without asking: a new VPS's or line's price is said, not
-        /// asked (it is paid from ERPC Credit; ending one is always asked,
-        /// and so is a VPS on record, never reached, that is not on the
-        /// account signed in to).
+        /// asked (it is paid from ERPC Credit; a line the deploy offers to end
+        /// is still asked about, and so is a VPS on record, never reached,
+        /// that is not on the account signed in to).
         #[arg(long, short = 'y')]
         yes: bool,
     },
@@ -530,9 +547,10 @@ pub(crate) enum Action {
         /// one ended outside erpc. Repeatable.
         #[arg(long, value_name = "LINE_ID")]
         forget_line: Vec<String>,
-        /// Go ahead without asking (with `--release-server`: a VPS never
-        /// reached, or one passed with `--forget`, that is not on the
-        /// account signed in to is still asked about, at a terminal).
+        /// Go ahead without asking: with `--release-server`, the app's lines
+        /// and its hourly server are ended too, and each is said (a VPS never
+        /// reached, or one passed with `--forget`, that is not on the account
+        /// signed in to is still asked about, at a terminal).
         #[arg(long, short = 'y')]
         yes: bool,
     },
@@ -912,6 +930,11 @@ pub(crate) async fn run(json: bool, action: Action) -> Outcome {
             shreds_plan,
             unlimited,
             unlimited_plan,
+            udp,
+            udp_plan,
+            udp_port,
+            udp_region,
+            udp_any_source,
             vault,
             inline,
             forget_line,
@@ -930,12 +953,16 @@ pub(crate) async fn run(json: bool, action: Action) -> Outcome {
                 lines: [
                     (LineKind::Grpc, grpc, grpc_plan),
                     (LineKind::Shreds, shreds, shreds_plan),
+                    (LineKind::Udp, udp, udp_plan),
                     (LineKind::Unlimited, unlimited, unlimited_plan),
                 ]
                 .into_iter()
                 .filter(|(_, asked, _)| *asked)
                 .map(|(kind, _, plan)| (kind, plan))
                 .collect(),
+                udp_port,
+                udp_region,
+                udp_any_source,
                 vault,
                 inline,
                 forget_lines: forget_line,
@@ -1233,6 +1260,29 @@ fn manifest_error(path: &Path, error: &ManifestError) -> CliError {
     ))
 }
 
+/// What a deploy from this machine would lack, as `check` says it, for the
+/// app whose erpc.toml is at `path`: looked for, and nothing run. `check`
+/// runs nothing in the app's directory, since `erpc ai` runs it without
+/// asking, in a directory that may be anyone's.
+pub(crate) fn deploy_needs(manifest: &Manifest, path: &Path) -> Vec<String> {
+    let root = crate::worker_build::app_root(path);
+    let probe = crate::worker_build::Probe::Look;
+    let mut needs: Vec<String> = crate::worker_build::missing_tools(manifest, &root, probe)
+        .into_iter()
+        .map(|(what, hint)| {
+            if hint.is_empty() {
+                what
+            } else {
+                format!("{what}; {hint}")
+            }
+        })
+        .collect();
+    if let Err(no_key) = crate::vps_access::login_key() {
+        needs.push(no_key);
+    }
+    needs
+}
+
 /// `erpc worker check`: what erpc.toml describes, or every problem with it.
 fn check(json: bool, dir: &Dir, env: Option<&str>) -> Outcome {
     let path = match locate(dir) {
@@ -1261,21 +1311,8 @@ fn check(json: bool, dir: &Dir, env: Option<&str>) -> Outcome {
     }
     // What a deploy from this machine would lack, said now rather than
     // after a server is bought.
-    let root = path
-        .parent()
-        .map_or_else(|| PathBuf::from("."), Path::to_owned);
-    // Looked for, not run: `check` runs nothing in the app's directory.
-    let probe = crate::worker_build::Probe::Look;
-    for (what, hint) in crate::worker_build::missing_tools(&manifest, &root, probe) {
-        let what = if hint.is_empty() {
-            what
-        } else {
-            format!("{what}; {hint}")
-        };
+    for what in deploy_needs(&manifest, &path) {
         warnings.push(t!("worker.check.deploy_needs", what));
-    }
-    if let Err(no_key) = crate::vps_access::login_key() {
-        warnings.push(t!("worker.check.deploy_needs", what = no_key));
     }
     warnings.extend(keystore_warnings(&manifest));
     if json {
@@ -1774,7 +1811,7 @@ fn next_steps(dest: &Path, dir_scope: &str, flag_scope: &str, made_from: &Templa
             .into_iter()
             .find(|k| k.setting() == req.first())
         {
-            Some(LineKind::Unlimited) => {}
+            Some(kind) if !kind.on_run() => {}
             Some(kind) => {
                 run_flags.push_str(" --");
                 run_flags.push_str(kind.flag());
@@ -1986,7 +2023,7 @@ fn repository(dir: &Path) -> Repository {
 }
 
 /// Where the index of apps on this machine is.
-fn index_path() -> Result<PathBuf, CliError> {
+pub(crate) fn index_path() -> Result<PathBuf, CliError> {
     crate::session::beside_config(index::FILE_NAME).map_err(|e| CliError::new(Code::Failed, e))
 }
 
@@ -2669,6 +2706,65 @@ mod tests {
         assert!(parses("erpc worker init"));
         assert!(!parses(&format!("erpc worker init{}", app.dir.scope())));
         assert!(parses("erpc worker list"));
+    }
+
+    #[test]
+    fn a_udp_line_is_asked_for_with_its_plan_port_and_region() {
+        let parse =
+            |line: &str| <crate::Cli as clap::Parser>::try_parse_from(line.split_whitespace());
+        let cli =
+            parse("erpc worker deploy --udp --udp-plan prod_x --udp-port 20000 --udp-region tokyo")
+                .expect("parses");
+        let Some(crate::Command::Worker { action }) = cli.command else {
+            panic!("a worker command");
+        };
+        let super::Action::Deploy {
+            udp,
+            udp_plan,
+            udp_port,
+            udp_region,
+            udp_any_source,
+            ..
+        } = *action
+        else {
+            panic!("a deploy");
+        };
+        assert!(udp);
+        assert_eq!(udp_plan.as_deref(), Some("prod_x"));
+        assert_eq!(udp_port, Some(20000));
+        assert_eq!(udp_region.as_deref(), Some("tokyo"));
+        // Opening the port to any address is asked for, never the default.
+        assert!(!udp_any_source);
+        let any = parse("erpc worker deploy --udp --udp-any-source").expect("parses");
+        assert!(matches!(
+            any.command,
+            Some(crate::Command::Worker { action })
+                if matches!(*action, super::Action::Deploy { udp_any_source: true, .. })
+        ));
+        // These say how the line is started: without --udp they mean
+        // nothing, and are refused.
+        for flags in [
+            "--udp-port 20000",
+            "--udp-plan prod_x",
+            "--udp-region tokyo",
+            "--udp-any-source",
+        ] {
+            assert!(
+                parse(&format!("erpc worker deploy {flags}")).is_err(),
+                "{flags}"
+            );
+        }
+        assert!(parse("erpc worker deploy --udp").is_ok());
+        // A port the worker can bind: its unit has no capability for one
+        // below 1024, so such a line would be charged and receive nothing.
+        for low in ["0", "22", "1023"] {
+            assert!(
+                parse(&format!("erpc worker deploy --udp --udp-port {low}")).is_err(),
+                "{low}"
+            );
+        }
+        assert!(parse("erpc worker deploy --udp --udp-port 1024").is_ok());
+        assert!(parse("erpc worker run --udp").is_err());
     }
 
     /// `erpc worker secret put`'s value comes from one place: the flags

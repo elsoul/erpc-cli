@@ -4,8 +4,8 @@ use futures::{SinkExt, StreamExt};
 use log::{error, info, warn};
 use solana_stream_sdk::yellowstone_grpc_proto::geyser::SubscribeRequestPing;
 use solana_stream_sdk::{
-    GeyserGrpcClient, GeyserGrpcClientError, GeyserSubscribeRequest, GeyserSubscribeUpdate,
-    GeyserUpdateOneof,
+    tune_geyser_grpc_builder, GeyserGrpcClient, GeyserGrpcClientError, GeyserSubscribeRequest,
+    GeyserSubscribeUpdate, GeyserUpdateOneof,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -48,8 +48,11 @@ pub async fn run_geyser_stream(
                         let grpc_endpoint = grpc_endpoint.clone();
                         let x_token = x_token.clone();
                         async move {
-                            let mut builder =
-                                GeyserGrpcClient::build_from_shared(grpc_endpoint.clone())?;
+                            // The SDK's fixed 16 MiB HTTP/2 receive windows,
+                            // not tonic's defaults (2 MiB a stream, 5 MiB in all).
+                            let mut builder = tune_geyser_grpc_builder(
+                                GeyserGrpcClient::build_from_shared(grpc_endpoint.clone())?,
+                            );
                             if let Some(token) = x_token {
                                 builder = builder.x_token(Some(token))?;
                             }

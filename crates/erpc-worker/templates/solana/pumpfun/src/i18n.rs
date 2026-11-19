@@ -551,6 +551,16 @@ pub fn trading_resumed(sell_only: bool) -> String {
     }
 }
 
+pub fn trading_resumed_sell_only_instead() -> String {
+    match lang() {
+        Lang::En => "⏸️ Resumed after a restart in sell-only mode, not buying as before: the banned creators could not be read from Redis. Restart the app once Redis answers".to_string(),
+        Lang::Ja => "⏸️ 再起動後、買いは再開せず売りのみモードで再開しました。BAN した creator を Redis から読めなかったためです。Redis が応答するようになったらアプリを再起動してください".to_string(),
+        Lang::Zh => "⏸️ 重启后以仅卖出模式恢复，未恢复买入：无法从 Redis 读取已封禁的创建者。Redis 恢复响应后请重启应用".to_string(),
+        Lang::Ru => "⏸️ После перезапуска возобновлён только режим продажи, без покупок: не удалось прочитать из Redis заблокированных создателей. Перезапустите приложение, когда Redis снова ответит".to_string(),
+        Lang::Vi => "⏸️ Đã tiếp tục ở chế độ chỉ bán sau khi khởi động lại, không mua như trước: không đọc được danh sách người tạo bị chặn từ Redis. Hãy khởi động lại ứng dụng khi Redis phản hồi".to_string(),
+    }
+}
+
 pub fn auto_loop_disabled_stopped() -> String {
     match lang() {
         Lang::En => "🏁 Single-shot cycle complete — trading stopped (set AUTO_LOOP=true to keep running)".to_string(),

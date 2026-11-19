@@ -5,7 +5,6 @@ use crate::i18n;
 use crate::webhook::notify;
 use chrono::Utc;
 use log::{error, info, warn};
-use rand::Rng;
 use solana_commitment_config::{CommitmentConfig, CommitmentLevel};
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_rpc_client_api::config::RpcSendTransactionConfig;
@@ -302,7 +301,7 @@ async fn buy_new_pool(
         webhook_url,
         wallet,
         (cu_price, cu_limit, priority_fee),
-        timing,
+        (timing, settings),
     ) = {
         let s = state.read().await;
         let wallet = s.wallet.clone();
@@ -314,7 +313,9 @@ async fn buy_new_pool(
             s.webhook_url.clone(),
             wallet,
             (s.config.priority_fee_micro_lamports, s.config.compute_unit_limit, s.config.priority_fee_lamports()),
-            s.timing.clone(),
+            // The settings the buy is made under, read with those it is
+            // sent with: what its timing is stamped with.
+            (s.timing.clone(), s.settings()),
         )
     };
 
@@ -433,7 +434,7 @@ async fn buy_new_pool(
         }
     };
 
-    let fee_idx = rand::thread_rng().gen_range(0..FEE_RECIPIENT_COUNT);
+    let fee_idx = rand::random_range(0..FEE_RECIPIENT_COUNT);
 
     info!(
         "Buying at least {} token atoms for at most {} lamports on pool {} ({:?})",
@@ -485,14 +486,15 @@ async fn buy_new_pool(
         // Sent, or an error that can follow a transaction that went out:
         // watched until it lands, fails, or its blockhash is past.
         sent => {
-            timing.lock().expect("timing lock").on_buy_sent(pool_address.to_string(), &sighting, sending);
+            timing.lock().expect("timing lock").on_buy_sent(pool_address.to_string(), &sighting, settings, sending);
             match &sent {
                 Ok(_) => info!("Buy tx sent: sig={} tokens={}", sig_str, base_amount_out),
                 Err(e) => warn!("Buy tx send returned an error, and it may have gone out: {:?}", e),
             }
             let settled = settle_buy(&rpc_client, &sig, last_valid_block_height).await;
             if matches!(settled, Pending::Landed | Pending::FailedOnChain) {
-                record_landing(rpc_client.clone(), timing.clone(), pool_address, sig);
+                let failed = matches!(settled, Pending::FailedOnChain);
+                record_landing(rpc_client.clone(), timing.clone(), pool_address, sig, failed);
             }
             match settled {
                 Pending::Landed => true,
@@ -596,12 +598,13 @@ fn record_landing(
     timing: Arc<std::sync::Mutex<crate::timing::Timing>>,
     pool: Pubkey,
     sig: Signature,
+    failed: bool,
 ) {
     tokio::spawn(async move {
         match rpc_client.get_signature_statuses_with_history(&[sig]).await {
             Ok(resp) => {
                 if let Some(Some(status)) = resp.value.first() {
-                    timing.lock().expect("timing lock").on_buy_landed(&pool.to_string(), status.slot);
+                    timing.lock().expect("timing lock").on_buy_landed(&pool.to_string(), status.slot, failed);
                 }
             }
             Err(e) => warn!("Could not read the slot buy {} landed in: {:?}", sig, e),
@@ -832,7 +835,7 @@ pub async fn check_and_sell_positions(
             Plan::Burn { .. } | Plan::Sell { .. } => {}
         }
 
-        let fee_idx = rand::thread_rng().gen_range(0..FEE_RECIPIENT_COUNT);
+        let fee_idx = rand::random_range(0..FEE_RECIPIENT_COUNT);
 
         let pool_account = match rpc_client
             .get_account_with_commitment(&pool_address, CommitmentConfig::confirmed())

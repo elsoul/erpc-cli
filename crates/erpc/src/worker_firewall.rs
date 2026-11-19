@@ -12,7 +12,12 @@
 //!   always added so erpc cannot shut itself out.
 //! - The worker firewall (`inet erpc_worker`, made by the agent from every
 //!   worker's opening): every other inbound connection dropped, but for
-//!   each worker's `run.port` from its `firewall.app_allow`.
+//!   each worker's `run.port` from its `firewall.app_allow`, and the UDP
+//!   port of its UDP Forwarding line from the IPv4 addresses the line
+//!   sends from (`lines[].sources`). When user-api names none the port
+//!   stays closed, unless the operator opens it to any IPv4 address for
+//!   that deploy (`deploy --udp-any-source`): nothing on record says so,
+//!   and a sync from the record closes it again, saying so.
 //!
 //! An app behind a WAF (`[waf]`) has the WAF's port opened in place of its
 //! own, with the firewall's limit on new connections, and only once the
@@ -42,19 +47,25 @@
 //! then in force. Outside a deploy that limit stays, and `allow`, `deny`
 //! and `sync` say so ([`Synced::limit_kept`]).
 //!
+//! The UDP port is no WAF's: what is said above of holding and narrowing
+//! is of the TCP port alone. A sync opens the UDP port as the line's
+//! record says, whatever it does with the TCP port, and a deploy whose
+//! lines changed what the UDP port lets in applies it again, the TCP port
+//! as the sync left it ([`reopen`]).
+//!
 //! What a sync and the last step of a deploy ask of the server is a
 //! [`Server`], so that the tests run the same steps against one that
 //! writes down what it was asked, in order. What the firewall step found
 //! and did reaches the last step as one value, a [`Synced`], which only a
 //! sync makes.
 
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 
 use erpc_ssh::worker::{UnitId, Verb};
 use erpc_ssh::{RemoteCommand, Session, Target};
-use erpc_worker::manifest::{Env, Manifest};
+use erpc_worker::manifest::{Env, Line, LineKind, Manifest};
 use erpc_worker::net::Cidr;
-use erpc_worker::server::{FirewallRequest, NewConnections, Opening};
+use erpc_worker::server::{FirewallRequest, NewConnections, Opening, UdpOpening};
 use erpc_worker::waf::WafConfig;
 use serde_json::{Value, json};
 
@@ -377,6 +388,89 @@ fn in_force(shown: &Value, worker: &str) -> Result<Option<Opening>, CliError> {
     }
 }
 
+/// What a sync is asked besides what is on record.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Ask<'a> {
+    /// Open the UDP Forwarding line's port to any IPv4 address when
+    /// user-api names none it sends from (`deploy --udp-any-source`).
+    pub(crate) udp_any_source: bool,
+    /// The app and environment, as a hint's command names them.
+    pub(crate) scope: &'a str,
+}
+
+impl<'a> Ask<'a> {
+    /// What `firewall allow`, `deny` and `sync` ask: the record and nothing
+    /// more. Opening a UDP port to any address is for a deploy to be told.
+    pub(crate) const fn from_record(scope: &'a str) -> Self {
+        Self {
+            udp_any_source: false,
+            scope,
+        }
+    }
+}
+
+/// The UDP Forwarding line on record that has its port, which is once it
+/// is pointed at the server, with that port.
+fn udp_line(env: &Env) -> Option<(&Line, u16)> {
+    let line = env
+        .lines
+        .iter()
+        .find(|l| l.kind == LineKind::Udp && !l.is_pending())?;
+    Some((line, crate::worker_vps::udp_port(line)?))
+}
+
+/// The UDP part of the worker's opening: the port of the line on record,
+/// to the addresses it sends from. A line that names none opens nothing,
+/// unless `any_source`: an empty list is never read as "everyone".
+pub(crate) fn udp_opening(env: &Env, any_source: bool) -> Option<UdpOpening> {
+    let (line, port) = udp_line(env)?;
+    if line.sources.is_empty() && !any_source {
+        return None;
+    }
+    Some(UdpOpening {
+        port,
+        allow: line.sources.clone(),
+        any_source: line.sources.is_empty(),
+    })
+}
+
+/// The TCP part of `opening`: none when it opens no TCP port (port 0,
+/// for a worker that opens its UDP port alone), else it without its UDP
+/// port. What a WAF's rules decide, and what is said of the app's port.
+fn tcp_part(opening: Option<&Opening>) -> Option<Opening> {
+    opening.filter(|o| o.port != 0).map(|o| Opening {
+        udp: None,
+        ..o.clone()
+    })
+}
+
+/// IPv4 addresses as a message lists them.
+fn senders(allow: &[Ipv4Addr]) -> String {
+    allow
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// What the firewall does about the UDP Forwarding line's port, as a step
+/// says it: open to the line's addresses, open to any as asked, closed for
+/// want of an address (with how to open it), or no line at all.
+pub(crate) fn say_udp(env: &Env, ask: Ask<'_>) -> String {
+    let Some((line, port)) = udp_line(env) else {
+        return t!("worker_firewall.udp_closed");
+    };
+    match (line.sources.is_empty(), ask.udp_any_source) {
+        (false, _) => t!(
+            "worker_firewall.udp_open",
+            port,
+            addresses = senders(&line.sources)
+        ),
+        (true, true) => t!("worker_firewall.udp_open_any", port),
+        (true, false) => t!("worker_firewall.udp_unnamed", port, scope = ask.scope),
+    }
+}
+
 /// What a sync applied, and what it left for a deploy. Only [`sync`]
 /// makes one, and a deploy hands the one its firewall step made to its
 /// last step whole ([`open_as_asked`]): what was asked for, held or
@@ -385,7 +479,7 @@ pub(crate) struct Synced {
     /// The addresses SSH is allowed from.
     ssh_allow: Vec<IpAddr>,
     /// The opening erpc.toml asks for; none when `firewall.app_allow`
-    /// lists nobody.
+    /// lists nobody and no UDP port is opened.
     wanted: Option<Opening>,
     /// The worker's opening now in force.
     opening: Option<Opening>,
@@ -408,7 +502,10 @@ impl Synced {
     /// None when the limit in force is erpc.toml's, when the port is
     /// closed, and when the opening was held, which is said as that.
     fn limit_kept(&self) -> Option<(Option<NewConnections>, Option<NewConnections>)> {
-        let (wanted, now) = (self.wanted.as_ref()?, self.opening.as_ref()?);
+        let (wanted, now) = (
+            tcp_part(self.wanted.as_ref())?,
+            tcp_part(self.opening.as_ref())?,
+        );
         (self.held.is_none() && wanted.limit != now.limit).then_some((now.limit, wanted.limit))
     }
 }
@@ -473,10 +570,10 @@ fn dropping(waf_port: Option<u16>, decided: &Decision) -> String {
 /// of its limit on new connections. None where the opening in force is
 /// the one erpc.toml asks for, and where erpc.toml lists nobody.
 fn asked_said(synced: &Synced) -> Option<String> {
-    let o = synced
-        .wanted
+    let wanted = tcp_part(synced.wanted.as_ref());
+    let o = wanted
         .as_ref()
-        .filter(|_| synced.wanted != synced.opening)?;
+        .filter(|o| Some(*o) != tcp_part(synced.opening.as_ref()).as_ref())?;
     let (port, addresses) = (o.port, addresses(&o.allow));
     Some(match synced.held.as_ref().map(|held| held.why) {
         Some(Why::NoWaf) => {
@@ -523,15 +620,18 @@ pub(crate) fn open_as_asked(
 }
 
 /// Makes the server's firewall what `env`, `m`'s environment `env_name`,
-/// says: the SSH allow list, then the worker's port. An app's own port is
+/// says: the SSH allow list, then the worker's ports. An app's own port is
 /// opened as erpc.toml asks. A WAF's is opened as [`decide`] has it, from
-/// what the server says of its WAF and of the opening in force.
+/// what the server says of its WAF and of the opening in force. The UDP
+/// Forwarding line's port is opened as its record says ([`udp_opening`]),
+/// whatever is decided of the TCP port.
 pub(crate) fn sync(
     server: &dyn Server,
     m: &Manifest,
     env_name: &str,
     env: &Env,
     me: Option<IpAddr>,
+    ask: Ask<'_>,
     say: &Say,
 ) -> Result<Synced, CliError> {
     let ssh_allow = ssh_addresses(env, me, say)?;
@@ -551,6 +651,7 @@ pub(crate) fn sync(
         Some(config) => {
             let shown = server.shown()?;
             let in_force = in_force(&shown, &m.unit_id(env_name))?;
+            let in_force = tcp_part(in_force.as_ref());
             decide(wanted.clone(), &config, &shown["waf"], in_force.as_ref())
         }
         // An app with no WAF: its own port, as erpc.toml asks. (A `[waf]`
@@ -562,15 +663,21 @@ pub(crate) fn sync(
         },
     };
     say.line(&dropping(waf_port, &decided));
+    if udp_line(env).is_some() {
+        say.line(&say_udp(env, ask));
+    }
     let Decision {
         apply: opening,
         held,
     } = decided;
+    let udp = udp_opening(env, ask.udp_any_source);
+    let opening = Opening::with_udp(opening, udp.clone());
+    let wanted = Opening::with_udp(wanted, udp);
     server.apply(opening.clone())?;
     // What a person needs to know once it is in force: an open port reaches
     // an app that may still listen on loopback (a WAF listens beyond it),
     // and the SSH list outlives the address it was made from.
-    if let (Some(o), None) = (&opening, waf_port) {
+    if let (Some(o), None) = (tcp_part(opening.as_ref()), waf_port) {
         say.line(&t!("worker_firewall.app_loopback", port = o.port));
     }
     say.line(&t!("worker_firewall.lockout_note"));
@@ -580,6 +687,32 @@ pub(crate) fn sync(
         opening,
         held,
     })
+}
+
+/// Applies the worker's opening again with `udp` as its UDP port, once a
+/// deploy's lines have changed what that port should let in: a UDP
+/// Forwarding line pointed at the server just now, one whose addresses
+/// changed, or one that left the record. The TCP port stays as the sync
+/// that made `synced` left it, held or narrowed: this never opens it, nor
+/// changes its limit. `said` is what that does to the line's port
+/// ([`say_udp`]). The server is asked nothing when the opening in force has
+/// that UDP port already.
+pub(crate) fn reopen(
+    server: &dyn Server,
+    synced: &mut Synced,
+    udp: Option<UdpOpening>,
+    said: &str,
+    say: &Say,
+) -> Result<(), CliError> {
+    let opening = Opening::with_udp(tcp_part(synced.opening.as_ref()), udp.clone());
+    if opening == synced.opening {
+        return Ok(());
+    }
+    say.line(said);
+    server.apply(opening.clone())?;
+    synced.opening = opening;
+    synced.wanted = Opening::with_udp(tcp_part(synced.wanted.as_ref()), udp);
+    Ok(())
 }
 
 fn reach(app: &App) -> Result<(std::path::PathBuf, Manifest, Env, Target, UnitId), CliError> {
@@ -600,7 +733,7 @@ fn allowed(list: &[Cidr]) -> String {
 }
 
 /// The firewall's lines: SSH, then `port`, what is said of the worker's
-/// own port, then everything else.
+/// own port, then its UDP Forwarding line's port, then everything else.
 fn table(env: &Env, port: Vec<String>) -> Vec<String> {
     let ssh = t!(
         "worker_firewall.describe.ssh",
@@ -608,6 +741,16 @@ fn table(env: &Env, port: Vec<String>) -> Vec<String> {
     );
     let mut lines = vec![format!("  {ssh}")];
     lines.extend(port);
+    // As the record says it: a line that names no address has its port
+    // closed by anything that applies the record.
+    if let Some((line, port)) = udp_line(env) {
+        let from = if line.sources.is_empty() {
+            t!("worker_firewall.describe.udp_unnamed")
+        } else {
+            senders(&line.sources)
+        };
+        lines.push(format!("  udp {port:<5} {from}"));
+    }
     lines.push(format!("  {}", t!("worker_firewall.describe.all_else")));
     lines
 }
@@ -708,6 +851,11 @@ pub(crate) fn list(json: bool, app: &App) -> Outcome {
                 "erpc_toml": env.firewall,
                 "run_port": m.run.port,
                 "waf_port": m.waf.as_ref().map(|waf| waf.port),
+                // The UDP Forwarding line's port and who sends to it, as
+                // the record has them.
+                "udp": udp_line(&env).map(|(line, port)| {
+                    json!({ "port": port, "sources": line.sources })
+                }),
                 // Whether the WAF on the server runs erpc.toml's rules.
                 "waf_rules": crate::worker_waf::rules_named(&m, &app.env, &server["waf"]),
                 "server": server,
@@ -855,7 +1003,16 @@ pub(crate) fn change(
             target: &target,
             id: &id,
         };
-        let synced = sync(&server, &m, &app.env, &env, me, &say)?;
+        let scope = app.scope();
+        let synced = sync(
+            &server,
+            &m,
+            &app.env,
+            &env,
+            me,
+            Ask::from_record(&scope),
+            &say,
+        )?;
         // erpc.toml has the change whether or not all of it is in force
         // yet: what is held is what the next deploy applies.
         crate::worker::EnvRecord {
@@ -888,8 +1045,17 @@ pub(crate) fn sync_verb(json: bool, app: &App, yes: bool) -> Outcome {
             target: &target,
             id: &id,
         };
-        let synced = sync(&server, &m, &app.env, &env, me, &say)?;
-        report(json, &id, &m, &synced, &app.scope())
+        let scope = app.scope();
+        let synced = sync(
+            &server,
+            &m,
+            &app.env,
+            &env,
+            me,
+            Ask::from_record(&scope),
+            &say,
+        )?;
+        report(json, &id, &m, &synced, &scope)
     };
     run().unwrap_or_else(Into::into)
 }
@@ -900,7 +1066,7 @@ pub(crate) fn sync_verb(json: bool, app: &App, yes: bool) -> Outcome {
 /// is an error of its own ([`held_back`]).
 fn port_said(m: &Manifest, synced: &Synced) -> String {
     let waf_port = m.waf.as_ref().map(|waf| waf.port);
-    match (waf_port, &synced.opening) {
+    let tcp = match (waf_port, &tcp_part(synced.opening.as_ref())) {
         (None, None) => t!("worker_firewall.app_closed"),
         (None, Some(o)) => t!(
             "worker_firewall.app_open",
@@ -913,6 +1079,21 @@ fn port_said(m: &Manifest, synced: &Synced) -> String {
             addresses = addresses(&o.allow)
         ),
         (Some(port), None) => t!("worker_firewall.waf_closed", port),
+    };
+    match synced.opening.as_ref().and_then(|o| o.udp.as_ref()) {
+        Some(udp) if udp.any_source => {
+            let udp = t!("worker_firewall.udp_from_any", port = udp.port);
+            format!("{tcp}; {udp}")
+        }
+        Some(udp) => {
+            let udp = t!(
+                "worker_firewall.udp_from",
+                port = udp.port,
+                addresses = senders(&udp.allow)
+            );
+            format!("{tcp}; {udp}")
+        }
+        None => tcp,
     }
 }
 
@@ -944,7 +1125,7 @@ fn held_back(worker: &str, synced: &Synced, held: &Held, scope: &str) -> CliErro
                 port,
                 addresses,
                 rules = why.rules_said(),
-                now = kept(port, synced.opening.as_ref()),
+                now = kept(port, tcp_part(synced.opening.as_ref()).as_ref()),
                 worker,
                 ssh
             ));
@@ -989,7 +1170,8 @@ fn in_force_said(worker: &str, m: &Manifest, synced: &Synced, scope: &str) -> St
             .join(", "),
         app = port_said(m, synced)
     );
-    if let (Some((now, asked)), Some(o)) = (synced.limit_kept(), &synced.opening) {
+    if let (Some((now, asked)), Some(o)) = (synced.limit_kept(), tcp_part(synced.opening.as_ref()))
+    {
         let kept = t!(
             "worker_firewall.limit_kept",
             port = o.port,
@@ -1161,13 +1343,19 @@ pub(crate) mod recorded {
         fn apply(&self, opening: Option<Opening>) -> Result<(), CliError> {
             self.note(match opening {
                 Some(o) => format!(
-                    "open {} to {}{}",
+                    "open {} to {}{}{}",
                     o.port,
                     addresses(&o.allow),
                     o.limit.map_or_else(String::new, |limit| format!(
                         ", limit {}/{}",
                         limit.per_second, limit.burst
-                    ))
+                    )),
+                    o.udp.map_or_else(String::new, |udp| if udp.any_source {
+                        format!(", udp {} from any", udp.port)
+                    } else {
+                        let from: Vec<String> = udp.allow.iter().map(ToString::to_string).collect();
+                        format!(", udp {} from {}", udp.port, from.join(", "))
+                    })
                 ),
                 None => "close".to_owned(),
             })
@@ -1208,7 +1396,7 @@ mod tests {
     use erpc_core::i18n::Lang;
     use erpc_worker::manifest::{Env, Manifest};
     use erpc_worker::net::Cidr;
-    use erpc_worker::server::Opening;
+    use erpc_worker::server::{Opening, UdpOpening};
     use serde_json::{Value, json};
 
     use super::recorded::{Recorded, running};
@@ -1434,10 +1622,13 @@ mod tests {
                 .map(|a| Cidr::parse_any(a).expect("an address"))
                 .collect(),
             limit: Some(erpc_worker::server::NewConnections::DEFAULT),
+            udp: None,
         }
     }
 
     const QUIET: Say = Say { quiet: true };
+    /// What `allow`, `deny` and `sync` ask: the record alone.
+    const ASK: super::Ask<'static> = super::Ask::from_record(SCOPE);
     const ONE: &str = "\"198.51.100.7\"";
 
     #[test]
@@ -1655,7 +1846,7 @@ mod tests {
 
         // No WAF on the server yet: the port is closed, not opened.
         let none = server(&Value::Null, None);
-        let synced = super::sync(&none, &m, "prod", env, me, &QUIET).expect("synced");
+        let synced = super::sync(&none, &m, "prod", env, me, ASK, &QUIET).expect("synced");
         assert_eq!(
             none.asked(),
             ["allow-ssh 198.51.100.7", "firewall-show", "close"]
@@ -1674,7 +1865,7 @@ mod tests {
         let mut earlier = config.clone();
         earlier.deny_paths = vec!["/old/*".to_owned()];
         let other = server(&running(&earlier), Some(&one));
-        let synced = super::sync(&other, &m, "prod", env, me, &QUIET).expect("synced");
+        let synced = super::sync(&other, &m, "prod", env, me, ASK, &QUIET).expect("synced");
         assert_eq!(
             other.asked(),
             [
@@ -1693,8 +1884,16 @@ mod tests {
         );
         // Closing it is applied at once, under the same rules.
         let closing = app(WAF, "");
-        let synced = super::sync(&other, &closing, "prod", &closing.env["prod"], me, &QUIET)
-            .expect("synced");
+        let synced = super::sync(
+            &other,
+            &closing,
+            "prod",
+            &closing.env["prod"],
+            me,
+            ASK,
+            &QUIET,
+        )
+        .expect("synced");
         assert_eq!(
             other.asked(),
             ["allow-ssh 198.51.100.7", "firewall-show", "close"]
@@ -1703,7 +1902,7 @@ mod tests {
 
         // The WAF there runs erpc.toml's rules: opened as erpc.toml asks.
         let asked = server(&running(&config), Some(&one));
-        let synced = super::sync(&asked, &m, "prod", env, me, &QUIET).expect("synced");
+        let synced = super::sync(&asked, &m, "prod", env, me, ASK, &QUIET).expect("synced");
         assert_eq!(
             asked.asked(),
             [
@@ -1719,8 +1918,16 @@ mod tests {
         // server is not asked what runs there.
         let direct = app("", ONE);
         let plain = server(&Value::Null, None);
-        let synced =
-            super::sync(&plain, &direct, "prod", &direct.env["prod"], me, &QUIET).expect("synced");
+        let synced = super::sync(
+            &plain,
+            &direct,
+            "prod",
+            &direct.env["prod"],
+            me,
+            ASK,
+            &QUIET,
+        )
+        .expect("synced");
         assert_eq!(
             plain.asked(),
             ["allow-ssh 198.51.100.7", "open 3000 to 198.51.100.7/32"]
@@ -1730,7 +1937,7 @@ mod tests {
         // A server that does not say which openings are in force: nothing
         // is opened or closed.
         let silent = Recorded::showing(json!({ "ok": true, "waf": running(&config) }));
-        let refused = super::sync(&silent, &m, "prod", env, me, &QUIET)
+        let refused = super::sync(&silent, &m, "prod", env, me, ASK, &QUIET)
             .err()
             .expect("refused");
         assert_eq!(silent.asked(), ["allow-ssh 198.51.100.7", "firewall-show"]);
@@ -1743,7 +1950,7 @@ mod tests {
         );
         let mut garbled = server(&running(&config), None);
         garbled.shown["openings"]["bot-prod"] = json!({ "port": "8080" });
-        assert!(super::sync(&garbled, &m, "prod", env, me, &QUIET).is_err());
+        assert!(super::sync(&garbled, &m, "prod", env, me, ASK, &QUIET).is_err());
         assert_eq!(garbled.asked(), ["allow-ssh 198.51.100.7", "firewall-show"]);
     }
 
@@ -2010,7 +2217,8 @@ mod tests {
             ONE,
         );
         let server = self::server(&on_server, Some(&two));
-        let synced = super::sync(&server, &m, "prod", &m.env["prod"], me, &QUIET).expect("synced");
+        let synced =
+            super::sync(&server, &m, "prod", &m.env["prod"], me, ASK, &QUIET).expect("synced");
         assert_eq!(
             server.asked(),
             [
@@ -2060,7 +2268,7 @@ mod tests {
         // erpc.toml gives no limit, or the server has none: said as none.
         let off = app(&format!("{tighter}new_connections = false\n"), ONE);
         let synced =
-            super::sync(&server, &off, "prod", &off.env["prod"], me, &QUIET).expect("synced");
+            super::sync(&server, &off, "prod", &off.env["prod"], me, ASK, &QUIET).expect("synced");
         assert!(
             super::in_force_said("bot-prod", &off, &synced, SCOPE).contains(
                 "that is in force (50 a second from one address, burst 100), not erpc.toml's \
@@ -2076,7 +2284,8 @@ mod tests {
             ..two.clone()
         };
         let none = self::server(&on_server, Some(&unlimited));
-        let synced = super::sync(&none, &m, "prod", &m.env["prod"], me, &QUIET).expect("synced");
+        let synced =
+            super::sync(&none, &m, "prod", &m.env["prod"], me, ASK, &QUIET).expect("synced");
         assert_eq!(
             none.asked()[2],
             "open 8080 to 198.51.100.7/32",
@@ -2090,7 +2299,8 @@ mod tests {
         // What a deploy says of it at its last step, once the rules are
         // erpc.toml's: the port stays open to the same, with the limit
         // erpc.toml gives, or without one.
-        let synced = super::sync(&server, &m, "prod", &m.env["prod"], me, &QUIET).expect("synced");
+        let synced =
+            super::sync(&server, &m, "prod", &m.env["prod"], me, ASK, &QUIET).expect("synced");
         assert_eq!(
             super::asked_said(&synced).as_deref(),
             Some(
@@ -2099,7 +2309,7 @@ mod tests {
             )
         );
         let synced =
-            super::sync(&server, &off, "prod", &off.env["prod"], me, &QUIET).expect("synced");
+            super::sync(&server, &off, "prod", &off.env["prod"], me, ASK, &QUIET).expect("synced");
         assert_eq!(
             super::asked_said(&synced).as_deref(),
             Some(
@@ -2111,8 +2321,8 @@ mod tests {
 
         // The limit in force is erpc.toml's: one line, and nothing kept.
         let same = app(tighter, ONE);
-        let synced =
-            super::sync(&server, &same, "prod", &same.env["prod"], me, &QUIET).expect("synced");
+        let synced = super::sync(&server, &same, "prod", &same.env["prod"], me, ASK, &QUIET)
+            .expect("synced");
         let said = super::in_force_said("bot-prod", &same, &synced, SCOPE);
         assert!(!said.contains('\n'), "{said}");
         assert!(super::reported("bot-prod", &synced)["new_connections_kept"].is_null());
@@ -2123,12 +2333,21 @@ mod tests {
             &running(&m.waf_config("prod").expect("a config")),
             Some(&two),
         );
-        let synced = super::sync(&asked, &m, "prod", &m.env["prod"], me, &QUIET).expect("synced");
+        let synced =
+            super::sync(&asked, &m, "prod", &m.env["prod"], me, ASK, &QUIET).expect("synced");
         assert_eq!(asked.asked()[2], "open 8080 to 198.51.100.7/32, limit 5/10");
         assert_eq!(synced.limit_kept(), None);
         let closed = app(tighter, "");
-        let synced =
-            super::sync(&server, &closed, "prod", &closed.env["prod"], me, &QUIET).expect("synced");
+        let synced = super::sync(
+            &server,
+            &closed,
+            "prod",
+            &closed.env["prod"],
+            me,
+            ASK,
+            &QUIET,
+        )
+        .expect("synced");
         assert_eq!(synced.limit_kept(), None);
 
         // And for an opening that was held, which is said as that: the
@@ -2138,8 +2357,8 @@ mod tests {
             &format!("{tighter}new_connections = {{ per_second = 5, burst = 10 }}\n"),
             EVERYONE,
         );
-        let synced =
-            super::sync(&server, &wider, "prod", &wider.env["prod"], me, &QUIET).expect("synced");
+        let synced = super::sync(&server, &wider, "prod", &wider.env["prod"], me, ASK, &QUIET)
+            .expect("synced");
         assert_eq!(
             synced.held.as_ref().map(|held| held.why),
             Some(Why::OtherRules)
@@ -2154,7 +2373,8 @@ mod tests {
         assert_eq!(body["held_because"], "other_rules");
 
         // In every language, with the command as it is typed.
-        let synced = super::sync(&server, &m, "prod", &m.env["prod"], me, &QUIET).expect("synced");
+        let synced =
+            super::sync(&server, &m, "prod", &m.env["prod"], me, ASK, &QUIET).expect("synced");
         let english = super::in_force_said("bot-prod", &m, &synced, SCOPE);
         let english_asked = super::asked_said(&synced).expect("a line");
         for lang in [Lang::Ja, Lang::Zh, Lang::Ru] {
@@ -2432,5 +2652,302 @@ mod tests {
             assert_ne!(text, english);
             assert!(!text.contains('{'), "{text}");
         }
+    }
+
+    fn udp_line(endpoint: &str, sources: &[&str]) -> erpc_worker::manifest::Line {
+        erpc_worker::manifest::Line {
+            kind: erpc_worker::manifest::LineKind::Udp,
+            id: "7".to_owned(),
+            endpoint: endpoint.to_owned(),
+            hourly: true,
+            sources: sources.iter().map(|s| s.parse().expect("ip")).collect(),
+        }
+    }
+
+    fn port_only(port: Option<u16>) -> Manifest {
+        let run = port.map_or_else(String::new, |p| format!("port = {p}\n"));
+        Manifest::parse(&format!("name = \"bot\"\nchain = \"solana\"\n[run]\n{run}"))
+            .expect("a manifest")
+    }
+
+    /// The opening a sync asks for: the app's port, and the UDP port as
+    /// the line's record says.
+    fn wanted(m: &Manifest, env: &Env, any_source: bool) -> Option<Opening> {
+        Opening::with_udp(
+            Opening::for_app(m, env),
+            super::udp_opening(env, any_source),
+        )
+    }
+
+    fn senders(port: u16, allow: &[&str]) -> UdpOpening {
+        UdpOpening {
+            port,
+            allow: allow.iter().map(|a| a.parse().expect("ip")).collect(),
+            any_source: false,
+        }
+    }
+
+    #[test]
+    fn the_opening_has_the_app_port_the_udp_port_or_both() {
+        let allow = vec![Cidr::parse("203.0.113.0/24").expect("net")];
+        let with_app = Env {
+            firewall: erpc_worker::manifest::Firewall {
+                ssh_allow: Vec::new(),
+                app_allow: allow.clone(),
+            },
+            ..Env::default()
+        };
+        // Nothing: no port, or a port nobody may reach.
+        assert_eq!(wanted(&port_only(None), &with_app, false), None);
+        assert_eq!(wanted(&port_only(Some(3000)), &Env::default(), false), None);
+        // The app's port alone, as before.
+        assert_eq!(
+            wanted(&port_only(Some(3000)), &with_app, false),
+            Some(Opening {
+                port: 3000,
+                allow: allow.clone(),
+                limit: None,
+                udp: None,
+            })
+        );
+        // A UDP Forwarding line alone: no TCP port, its sources as they are.
+        let udp_only = Env {
+            lines: vec![udp_line(
+                "0.0.0.0:10001",
+                &["198.51.100.20", "198.51.100.21"],
+            )],
+            ..Env::default()
+        };
+        let from_sources = Some(Opening {
+            port: 0,
+            allow: Vec::new(),
+            limit: None,
+            udp: Some(senders(10001, &["198.51.100.20", "198.51.100.21"])),
+        });
+        assert_eq!(wanted(&port_only(None), &udp_only, false), from_sources);
+        // Asking for any address changes nothing while sources are named.
+        assert_eq!(wanted(&port_only(None), &udp_only, true), from_sources);
+        // No port of the app's is open then, and none is spoken of: this
+        // used to say "port 0 is open at the server's firewall".
+        assert_eq!(super::tcp_part(from_sources.as_ref()), None);
+        // A pending line has no port yet, and opens nothing, asked or not.
+        let pending = Env {
+            lines: vec![udp_line("", &[])],
+            ..Env::default()
+        };
+        assert_eq!(wanted(&port_only(None), &pending, false), None);
+        assert_eq!(wanted(&port_only(None), &pending, true), None);
+    }
+
+    #[test]
+    fn a_line_that_names_no_source_opens_nothing_unless_any_address_is_asked_for() {
+        let allow = vec![Cidr::parse("203.0.113.0/24").expect("net")];
+        let unnamed = Env {
+            firewall: erpc_worker::manifest::Firewall {
+                ssh_allow: Vec::new(),
+                app_allow: allow.clone(),
+            },
+            lines: vec![udp_line("0.0.0.0:20000", &[])],
+            ..Env::default()
+        };
+        // From the record alone, as `firewall sync` and a deploy without
+        // the flag read it: the app's port, and no UDP port.
+        assert_eq!(
+            wanted(&port_only(Some(3000)), &unnamed, false),
+            Some(Opening {
+                port: 3000,
+                allow: allow.clone(),
+                limit: None,
+                udp: None,
+            })
+        );
+        // With no app port either, there is nothing to open at all.
+        let udp_only = Env {
+            lines: unnamed.lines.clone(),
+            ..Env::default()
+        };
+        assert_eq!(wanted(&port_only(None), &udp_only, false), None);
+        // Asked for (`deploy --udp-any-source`): open, and said to be.
+        assert_eq!(
+            wanted(&port_only(Some(3000)), &unnamed, true),
+            Some(Opening {
+                port: 3000,
+                allow,
+                limit: None,
+                udp: Some(UdpOpening {
+                    port: 20000,
+                    allow: Vec::new(),
+                    any_source: true,
+                }),
+            })
+        );
+        // The step says which it is, and how to open a port left closed,
+        // for this app and environment.
+        let ask = |udp_any_source| super::Ask {
+            udp_any_source,
+            scope: " --env staging",
+        };
+        let closed = super::say_udp(&unnamed, ask(false));
+        assert!(
+            closed.starts_with("UDP port 20000 stays closed")
+                && closed.contains("`erpc worker deploy --env staging --udp --udp-any-source`"),
+            "{closed}"
+        );
+        let open = super::say_udp(&unnamed, ask(true));
+        assert!(
+            open.starts_with("UDP port 20000 open to any IPv4 address"),
+            "{open}"
+        );
+    }
+
+    #[test]
+    fn the_udp_port_is_described_and_reported_with_what_may_send_to_it() {
+        let env = Env {
+            lines: vec![udp_line("0.0.0.0:10001", &["198.51.100.20"])],
+            ..Env::default()
+        };
+        let described = super::describe(&env, None).join("\n");
+        assert!(described.contains("udp 10001 198.51.100.20"), "{described}");
+        assert!(
+            super::describe(&Env::default(), None)
+                .iter()
+                .all(|l| !l.contains("udp")),
+        );
+        // Behind a WAF too: the UDP port is no WAF's.
+        let mut behind = app(WAF, ONE);
+        behind
+            .env
+            .get_mut("prod")
+            .expect("prod")
+            .lines
+            .push(udp_line("0.0.0.0:10001", &["198.51.100.20"]));
+        let planned = super::plan(&behind.env["prod"], &behind).join("\n");
+        assert!(
+            planned.contains("waf 8080") && planned.contains("udp 10001 198.51.100.20"),
+            "{planned}"
+        );
+        // The record of a line that names no address says its port is
+        // closed: that is what applying the record does.
+        let unnamed = Env {
+            lines: vec![udp_line("0.0.0.0:10001", &[])],
+            ..Env::default()
+        };
+        let described = super::describe(&unnamed, None).join("\n");
+        assert!(described.contains("udp 10001 closed"), "{described}");
+
+        assert_eq!(
+            super::say_udp(&env, ASK),
+            "UDP port 10001 open to 198.51.100.20"
+        );
+        assert_eq!(super::say_udp(&Env::default(), ASK), "no UDP port open");
+        let synced = |opening| Synced {
+            ssh_allow: Vec::new(),
+            wanted: None,
+            opening,
+            held: None,
+        };
+        let m = port_only(None);
+        assert_eq!(
+            super::port_said(&m, &synced(wanted(&m, &env, false))),
+            "the app's port closed; UDP port 10001 from 198.51.100.20"
+        );
+        assert_eq!(
+            super::port_said(&m, &synced(wanted(&m, &unnamed, true))),
+            "the app's port closed; UDP port 10001 from any IPv4 address"
+        );
+        assert_eq!(super::port_said(&m, &synced(None)), "the app's port closed");
+    }
+
+    /// A WAF's port held by a sync, and a UDP Forwarding line on record:
+    /// the sync opens the UDP port all the same, and a deploy that points
+    /// the line again changes the UDP port alone. The TCP port stays as
+    /// the sync left it, until the deploy's last step opens it.
+    #[test]
+    fn the_udp_port_is_opened_and_changed_whatever_is_held_of_the_wafs() {
+        let me = Some("198.51.100.7".parse().expect("an address"));
+        let mut m = app(WAF, EVERYONE);
+        let env = m.env.get_mut("prod").expect("prod");
+        env.lines
+            .push(udp_line("0.0.0.0:10001", &["198.51.100.20"]));
+        let env = m.env["prod"].clone();
+        let one = opening(8080, &["198.51.100.7"]);
+        let config = m.waf_config("prod").expect("a config");
+        let mut earlier = config.clone();
+        earlier.deny_paths = vec!["/old/*".to_owned()];
+
+        // No WAF on the server: the WAF's port closed, the UDP port open.
+        let none = server(&Value::Null, None);
+        let synced = super::sync(&none, &m, "prod", &env, me, ASK, &QUIET).expect("synced");
+        assert_eq!(
+            none.asked(),
+            [
+                "allow-ssh 198.51.100.7",
+                "firewall-show",
+                "open 0 to , udp 10001 from 198.51.100.20"
+            ]
+        );
+        assert_eq!(
+            synced
+                .held
+                .as_ref()
+                .map(|held| (held.why, held.opening.udp.clone())),
+            Some((Why::NoWaf, None))
+        );
+
+        // Other rules on the server, with the port open to one address and
+        // the line's port to an old source: the TCP opening in force stays
+        // as it is, the UDP port follows the record.
+        let mut in_force = one.clone();
+        in_force.udp = Some(senders(10001, &["198.51.100.9"]));
+        let other = server(&running(&earlier), Some(&in_force));
+        let mut synced = super::sync(&other, &m, "prod", &env, me, ASK, &QUIET).expect("synced");
+        assert_eq!(
+            other.asked(),
+            [
+                "allow-ssh 198.51.100.7",
+                "firewall-show",
+                "open 8080 to 198.51.100.7/32, limit 50/100, udp 10001 from 198.51.100.20"
+            ]
+        );
+        assert_eq!(
+            synced.held.as_ref().map(|held| held.why),
+            Some(Why::OtherRules)
+        );
+
+        // The lines step moved the line: only its port changes, the WAF's
+        // stays open to the one address it was, never to everyone.
+        let moved = Some(senders(10001, &["198.51.100.30"]));
+        super::reopen(&other, &mut synced, moved.clone(), "moved", &QUIET).expect("reopened");
+        assert_eq!(
+            other.asked(),
+            ["open 8080 to 198.51.100.7/32, limit 50/100, udp 10001 from 198.51.100.30"]
+        );
+        // The same again asks the server nothing.
+        super::reopen(&other, &mut synced, moved, "moved", &QUIET).expect("reopened");
+        assert!(other.asked().is_empty());
+        // The deploy's last step, once the WAF runs erpc.toml's rules,
+        // opens the WAF's port as asked with the line's port as it is now.
+        let mut ended = super::sync(&other, &m, "prod", &env, me, ASK, &QUIET).expect("synced");
+        other.asked();
+        let moved = Some(senders(10001, &["198.51.100.30"]));
+        super::reopen(&other, &mut ended, moved, "moved", &QUIET).expect("reopened");
+        other.asked();
+        super::open_as_asked(&other, &ended, &QUIET).expect("opened");
+        assert_eq!(
+            other.asked(),
+            ["open 8080 to 0.0.0.0/0, ::/0, limit 50/100, udp 10001 from 198.51.100.30"]
+        );
+        // A line that left the record closes its port, and that alone; the
+        // last step then opens the WAF's port with no UDP port.
+        super::reopen(&other, &mut synced, None, "gone", &QUIET).expect("reopened");
+        assert_eq!(
+            other.asked(),
+            ["open 8080 to 198.51.100.7/32, limit 50/100"]
+        );
+        super::open_as_asked(&other, &synced, &QUIET).expect("opened");
+        assert_eq!(
+            other.asked(),
+            ["open 8080 to 0.0.0.0/0, ::/0, limit 50/100"]
+        );
     }
 }
