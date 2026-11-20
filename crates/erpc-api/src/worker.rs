@@ -760,7 +760,9 @@ pub struct RefStates {
     pub backup: Option<State>,
 }
 
-/// A deploy, as recorded.
+/// A deploy, as recorded: the release and when. Which machine deployed it
+/// is not recorded and never sent; a reply that still names one has that
+/// name ignored, so sending the last deploy again does not carry it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
@@ -769,20 +771,15 @@ pub struct Deployed {
     pub release: String,
     /// When.
     pub at: String,
-    /// The machine it was deployed from, by host name. Not in a list.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub from: Option<String>,
 }
 
 impl Deployed {
-    /// A deploy of `release` at `at` (RFC 3339), from the machine named
-    /// `from`.
+    /// A deploy of `release` at `at` (RFC 3339).
     #[must_use]
-    pub fn new(release: impl Into<String>, at: impl Into<String>, from: impl Into<String>) -> Self {
+    pub fn new(release: impl Into<String>, at: impl Into<String>) -> Self {
         Self {
             release: release.into(),
             at: at.into(),
-            from: Some(from.into()),
         }
     }
 }
@@ -1669,10 +1666,25 @@ mod tests {
             Some("grpc.example.net:443")
         );
         assert_eq!(env.ref_states.backup, None);
+        // A record written before the deploying machine stopped being kept
+        // still names it; the name is not read, so it is never sent back.
         assert_eq!(
-            env.deployed.as_ref().and_then(|d| d.from.as_deref()),
-            Some("deploy-laptop")
+            env.deployed,
+            Some(Deployed::new(
+                "20261029T154037Z-6914df5f",
+                "2026-10-29T15:40:37.000Z"
+            ))
         );
+        let resent = PutEnv::new(env.revision, Facts::default()).with_deploy(
+            env.deployed.clone().expect("deployed"),
+            DeployedApp::default(),
+        );
+        let resent = serde_json::to_value(&resent).expect("encodes");
+        assert_eq!(
+            resent["deployed"],
+            json!({ "release": "20261029T154037Z-6914df5f", "at": "2026-10-29T15:40:37.000Z" })
+        );
+        assert!(!resent.to_string().contains("deploy-laptop"));
         let app = env.deployed_app.expect("deployed app");
         assert_eq!(app.services, [Service::Redis]);
         assert_eq!(app.secrets[1].kind, SecretSource::Erpc);
@@ -1765,7 +1777,13 @@ mod tests {
         assert_eq!(env.host.as_deref(), Some("203.0.113.10"));
         assert!(env.lines[0].pending);
         assert_eq!(env.lines[0].endpoint, None);
-        assert_eq!(env.deployed.as_ref().and_then(|d| d.from.clone()), None);
+        assert_eq!(
+            env.deployed,
+            Some(Deployed::new(
+                "20261029T154037Z-6914df5f",
+                "2026-10-29T15:40:37.000Z"
+            ))
+        );
     }
 
     #[test]
@@ -1906,11 +1924,7 @@ mod tests {
         };
         facts.backup = Some(Backup::new(400_004, "a".repeat(64), "storage.example.net"));
         let body = PutEnv::new(6, facts).with_deploy(
-            Deployed::new(
-                "20261029T154037Z-6914df5f",
-                "2026-10-29T15:40:37Z",
-                "deploy-laptop",
-            ),
+            Deployed::new("20261029T154037Z-6914df5f", "2026-10-29T15:40:37Z"),
             DeployedApp {
                 chain: "solana".to_owned(),
                 template: Some("solana/pumpfun@1".to_owned()),
@@ -1941,8 +1955,7 @@ mod tests {
                 },
                 "deployed": {
                     "release": "20261029T154037Z-6914df5f",
-                    "at": "2026-10-29T15:40:37Z",
-                    "from": "deploy-laptop"
+                    "at": "2026-10-29T15:40:37Z"
                 },
                 "deployedApp": {
                     "chain": "solana", "template": "solana/pumpfun@1", "runPort": 3000, "waf": null,
