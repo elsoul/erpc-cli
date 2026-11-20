@@ -1883,21 +1883,25 @@ mod tests {
     fn a_secret_key_given_as_the_wallet_key_is_never_printed() {
         // A 64-byte key as a wallet exports it is 88 base58 characters.
         let alphabet = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-        let secret: String = (0..88)
+        let exported: String = (0..88)
             .map(|i| char::from(alphabet[(i * 37 + 11) % 58]))
             .collect();
         // A 32-byte key in hexadecimal, as other chains write one.
         let hex: String = (0..64)
             .map(|i| char::from(b"0123456789abcdef"[(i * 5 + 3) % 16]))
             .collect();
-        for given in [secret.as_str(), hex.as_str()] {
-            let e = PutWallet::new(given, WalletSource::Keystore).expect_err(given);
+        // Neither key is ever put in a failure message, here or below.
+        for given in [exported.as_str(), hex.as_str()] {
+            let Err(e) = PutWallet::new(given, WalletSource::Keystore) else {
+                panic!("a key of {} characters was taken", given.len());
+            };
             assert!(matches!(e, WorkerError::WalletKey { chars } if chars == given.len()));
             for shown in [e.to_string(), format!("{e:?}")] {
-                for part in given.as_bytes().windows(8) {
-                    let part = std::str::from_utf8(part).expect("ascii");
-                    assert!(!shown.contains(part), "{shown}");
-                }
+                let leaked = given
+                    .as_bytes()
+                    .windows(8)
+                    .any(|part| shown.as_bytes().windows(8).any(|seen| seen == part));
+                assert!(!leaked, "the refusal shows part of the key");
             }
         }
     }
