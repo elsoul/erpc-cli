@@ -95,8 +95,7 @@ chain's guide before choosing a deployment.
 
 ## Complete usage guide
 
-<details>
-<summary>Node operations, ERPC AI, workers, RPC, storage and command reference</summary>
+Node operations, ERPC AI, workers, RPC, storage and command reference.
 
 ## Where your keys are
 
@@ -598,8 +597,6 @@ clippy, the tests and a secret scan. The checks only help: review is what
 enforces these rules. If a secret ever lands in the repository, follow
 [`docs/secret-exposure-response.md`](docs/secret-exposure-response.md) and
 rotate it before rewriting any history.
-
-</details>
 
 ## License
 
