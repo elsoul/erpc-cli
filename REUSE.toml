@@ -35,11 +35,11 @@ precedence = "override"
 SPDX-FileCopyrightText = "0xa3k5 and the web3icons contributors"
 SPDX-License-Identifier = "MIT"
 
-# ERPC's header image (its name, logo and artwork, as on its X profile):
+# ERPC's header and CLI key visual (name, logo and artwork):
 # brand material of ELSOUL LABO B.V., not under the Apache License. The
 # chain logos it shows are trademarks of their own projects.
 [[annotations]]
-path = ["docs/assets/erpc-header.jpg"]
+path = ["docs/assets/erpc-header.jpg", "docs/assets/erpc-cli-hero.png"]
 precedence = "override"
 SPDX-FileCopyrightText = "2026 ELSOUL LABO B.V."
 SPDX-License-Identifier = "LicenseRef-ELSOUL-LABO-Brand"
@@ -52,3 +52,4 @@ path = ["crates/erpc-worker/templates/**"]
 precedence = "closest"
 SPDX-FileCopyrightText = "2025-2026 ELSOUL LABO B.V."
 SPDX-License-Identifier = "Apache-2.0"
+
