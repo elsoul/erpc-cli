@@ -1,6 +1,6 @@
 ---
 name: erpc-worker
-description: Running the user's app on a server with `erpc worker` (`erpc w`): making it from a template (HelloWorld, pump.fun bot), keys and secrets (1Password, keychain, keystore), deploying it to an ERPC VPS with gRPC, Shreds or Unlimited RPC lines, running, firewalling and removing it, what it costs per hour and how to stop paying, trade history in Redis, backups, its API from here, getting the SOL out.
+description: Running the user's app on a server with `erpc worker` (`erpc w`): making it from a template (HelloWorld, pump.fun bot), keys and secrets (1Password, keychain, keystore), deploying it to an ERPC VPS with gRPC, Shreds, UDP or Unlimited RPC lines, running, firewalling and removing it, hourly cost and how to stop paying, trade history in Redis, backups, its API, getting the SOL out.
 ---
 
 # Worker apps on the user's server
@@ -26,12 +26,15 @@ in the erpc repository.
 - **After a reboot** the worker is **locked** on purpose: `erpc worker start` sends the key
   again. Do not treat locked as broken. An agent that failed or was killed (out of memory,
   say) is started again by systemd and is locked the same way.
-- **Money:** `--new-vps`, `--grpc`, `--shreds` and `--unlimited` (on `deploy`, and `--grpc`,
-  `--shreds` on `run`) start hourly products. erpc shows each price and asks at a terminal;
+- **Money:** `--new-vps`, `--grpc`, `--shreds`, `--udp` and `--unlimited` (on `deploy`, and
+  `--grpc`, `--shreds` on `run`) start hourly products. erpc shows each price and asks at a terminal;
   on `deploy`, `--yes` answers it (the price is still printed), since an hourly product is
   paid from prepaid ERPC Credit and refused when the credit does not cover it. Start one only
   when the user asked for it, and say what it costs per hour and that `erpc worker delete
-  --release-server` ends it all. Ending is always the user's to say, at a terminal.
+  --release-server` ends it all. End it only when the user asked: `erpc worker delete <app>
+  --release-server --yes` then ends the lines and the server and prints each. It stops, and
+  removes nothing, when another app or environment on this machine is, or may be, on that
+  server: say so to the user. An app deployed there from another machine is not seen.
 - **1Password approvals:** reading a secret or using an SSH key in 1Password may show an
   approval prompt in the 1Password app. "authorization timeout" means nobody allowed it.
 
@@ -75,9 +78,9 @@ directory.
     newer agent was installed (the command says so). Then hand over one line, `erpc worker
     deploy <app>`, which hands the key over and starts the app: it builds and installs a
     release of its own, from the cached build, and starts that one.
-  - Anything that ends an hourly product (`delete --release-server`, `run`'s lines when it
-    ends): the user's yes at a terminal. `run --grpc`/`--shreds` has no `--yes`: its price
-    prompt needs the terminal too.
+  - `run`'s lines when it ends, and a line a deploy offers to end after a failed step: the
+    user's yes at a terminal. `run --grpc`/`--shreds` has no `--yes`: its price prompt needs
+    the terminal too.
   - `logs -f`, `backup now`: longer than five minutes.
 - **Build before you buy:** before a deploy that starts something, run `erpc worker build
   <app>` and wait until it has finished. A deploy buys the server first and builds after:
@@ -226,13 +229,16 @@ erpc worker deploy --new-vps --grpc    # a new hourly VPS and gRPC line, prices 
   just now` means it took none and gave no answer about one, or an answer that is not about
   the key (a rate limit, a failure of its own): nothing was kept either, so run the same
   command again.
-- A setting a line provides (`GRPC_ENDPOINT`, `SHREDS_ENDPOINT`, `SOLANA_SEND_RPC_ENDPOINT`)
-  is not a secret: `--grpc`/`--shreds`/`--unlimited` set it. The RPC for reads is one of
+- A setting a line provides (`GRPC_ENDPOINT`, `SHREDS_ENDPOINT`, `SHREDS_UDP_BIND`,
+  `SOLANA_SEND_RPC_ENDPOINT`) is not a secret: `--grpc`/`--shreds`/`--udp`/`--unlimited` set
+  it (`--udp` and `--unlimited` on `deploy` only). The RPC for reads is one of
   `ERPC_API_KEY` or `SOLANA_RPC_ENDPOINT`; `check` names the set when neither is there.
 - Before the first `deploy`: an SSH key, and from a Mac or Windows the cross-build (`rustup
   target add x86_64-unknown-linux-gnu`, `zig`, `cargo-zigbuild`). A Linux x86-64 machine needs
   only cargo: without those tools the app is built with its own toolchain. `check` and
-  `deploy` say what is missing.
+  `deploy` say what is missing, before anything is bought. The pumpfun template needs Rust
+  1.98.1 or newer (`rustup update`); `deploy` names an older one before it buys anything
+  (`check` does not run Rust, so it cannot).
 
 - The server: `[env.<name>]` in erpc.toml, else `--vps <ID>` (an ERPC VPS of the account),
   `--new-vps` (cheapest, nearest region; `--region`, `--plan`), or `--host <ADDRESS>` (a server
@@ -240,7 +246,22 @@ erpc worker deploy --new-vps --grpc    # a new hourly VPS and gRPC line, prices 
 - Lines: `--grpc` sets `GRPC_ENDPOINT`, `--shreds` sets `SHREDS_ENDPOINT`, `--unlimited` sets
   `SOLANA_SEND_RPC_ENDPOINT` (the app sends through the Unlimited RPC and reads elsewhere). They
   admit the server's address and take no token. An Unlimited RPC takes up to 45 minutes to be
-  ready.
+  ready. `--udp` sets `SHREDS_UDP_BIND`: an ERPC UDP Forwarding line sends the leader's raw
+  shreds over UDP to a port of the server's own (`--udp-port`, default 10001) from the server's
+  region or `--udp-region`, with no gRPC stream between. Standard is €0.69/h from one node;
+  Premium €1.39/h from a regional mesh, Dublin too, chosen with `--udp-plan` (in ERPC's
+  Frankfurt measurement of 2026-10-30 Premium was first for 98% of shreds, by a median 1.78
+  ms; read prices from `hourly_catalog`). erpc points the line at the server and opens the
+  port in its firewall to the IPv4 addresses ERPC sends from, whatever it holds of a WAF's
+  port. When user-api names none the port stays closed and deploy says so; `--udp-any-source`
+  opens it to any IPv4 address, which only the user can ask for. It is for a server with a
+  public IPv4, not `erpc worker run` on a laptop behind NAT, which takes no `--udp`. Under
+  `--yes`, a Standard line the account has pointed at no server stops the deploy before
+  anything is bought, named: it may be another app's, so ask the user (take it up at a
+  terminal, or end it) and do not retry. For a worker's server use `deploy --udp`, not
+  `start_hourly_product` and `point_udp_line`, which open no firewall. In the pump.fun template
+  the UDP source is the `udp` Cargo feature, on by default (solana-stream-sdk 5.0.0's shred
+  decoder, which needs Rust 1.98.1 or newer); a build without the default features leaves it out.
 - `--env <NAME>` deploys another environment (staging, prod) of the same app.
 - **On this machine first:** `erpc worker run --grpc --shreds --ip <IPV4>` gives a local run
   lines that admit this machine's public IPv4 (`curl -4 -s https://api.ipify.org` shows it; erpc
@@ -270,8 +291,11 @@ collapse. Its README has every setting; the trade settings are read and changed 
   for a server: `erpc worker run --shreds --grpc --ip <IPV4>`, then `GET /api/timing` (the
   numbers include this machine's distance). Tune one change at a time, as the README's
   steps go: measure with it off (`via: geyser` gives the `slots_late` to beat), turn it
-  on alone, then raise the priority fee in small steps, then try `--unlimited`; back off
-  when buys fail more than they land. Have the user read `/api/timing` before
+  on alone, then raise the priority fee in small steps, then try `--unlimited`, or a faster
+  stream (`deploy --udp`; in `/api/timing`, `udp.datagrams` says shreds arrive at all,
+  `udp.migrations` how many migrations they carried, `udp_before_shreds_ms` how much sooner
+  than the Shreds line, `udp_to_processed_ms` the lead over Geyser, and buys made from them are
+  `via: udp`); back off when buys fail more than they land. Have the user read `/api/timing` before
   turning it on, and say plainly: a buy sent that early can land before the pool exists and fail,
   paying its fee; nothing guarantees the same slot; `priority_fee_micro_lamports` (with
   `compute_unit_limit`, default 200000) and a send RPC close to the leader (`--unlimited`) are
@@ -315,12 +339,14 @@ or the settings their run has, say what the next one costs per hour, and move on
 | Step | Line | What changes | Suggest the next when |
 |---|---|---|---|
 | 1 | gRPC (`--grpc`) | Pools seen at processed, bought with a simulation; `graduated_only` for a user losing to pulled liquidity | `/api/timing` shows buys landing a slot or more after the pool, once the price has moved |
-| 2 | Shreds (`--shreds`) | Graduations seen before any node ran them; `buy_on_shreds` buys from there | `shred_to_processed_ms` is short but `slots_late` stays above 0: the bot is not slow, the send route is |
+| 2 | Shreds (`--shreds`) | Graduations seen before any node ran them; `buy_on_shreds` buys from there | `shred_to_processed_ms` is short (the shreds barely ahead of Geyser, `shred_offset_in_slot_ms` large) and `slots_late` stays above 0: the shared Shreds line is short of the slot (step 2b). `shred_to_processed_ms` is long and `slots_late` stays above 0: the stream is well ahead, the send route is what is slow (step 3) |
+| 2b | UDP Forwarding (`--udp`) | The leader's shreds on the server's own UDP port, with no gRPC stream between; the same migrations, sooner. Standard €0.69/h, Premium €1.39/h (`--udp-plan`) | Suggest it when the shared Shreds line is short of the slot (row 2); `udp_before_shreds_ms` in `/api/timing` then says what it gained. Still late with the shreds early: the send route, step 3 |
 | 3 | Unlimited RPC (`--unlimited`) | Sending through an RPC of their own in the server's region; `erpc worker bench` shows the gain | Still late at a priority fee they will pay: bandwidth at the leader, not distance, is the limit |
 | 4 | SWQoS | A stake-backed connection with the priority bandwidth leaders give stake | erpc does not start it. Say so, and that step 3 is the top of what erpc starts; promise nothing about it |
 
 - A user who finds zero-block buys hard (buys failing, `slots_late` not moving with the fee)
-  is at the 2 → 3 line: name the Unlimited RPC, and what `/api/timing` showed that says so.
+  is at the 2 → 2b or the 2 → 3 line: UDP Forwarding when `shred_to_processed_ms` is short, the
+  Unlimited RPC when it is long. Name the one, and what `/api/timing` showed that says so.
 - Suggest a step down when buys fail more than they land or the fee eats the profit; each
   step is charged by the hour, and `erpc worker delete --release-server` ends them all.
 - Numbers measured on this machine (`erpc worker run --ip`) include its distance to the lines:
@@ -377,9 +403,11 @@ postgres = true    # the app gets DATABASE_URL over the local socket, no passwor
 | The wallet's SOL | `erpc worker key balance`; `erpc worker key send --to <PUBKEY> --sol <N>` moves it out |
 | Forget a server that is gone | `erpc worker delete --forget`; a line ended elsewhere: `--forget-line <ID>` on deploy or delete |
 
-- The firewall drops every inbound connection but SSH from the allow list and the app's
-  `run.port` from `firewall.app_allow`. An API that should be reached needs both
-  `firewall.app_allow` and `API_BIND = "0.0.0.0"` in `[vars]`. Each firewall change rolls itself
+- The firewall drops every inbound connection but SSH from the allow list, the app's
+  `run.port` from `firewall.app_allow`, and a UDP Forwarding line's port (`--udp`) from the
+  addresses ERPC sends from (any IPv4 address only when ERPC names none and `--udp-any-source`
+  asks). An API that should be reached needs both `firewall.app_allow` and
+  `API_BIND = "0.0.0.0"` in `[vars]`. Each firewall change rolls itself
   back within 120 s unless a fresh connection gets in, so a mistaken change cannot lock the user
   out. The list outlives the address it was made from: a changed home address does lock them
   out, and the way back in is ERPC support for an ERPC server, or the provider's console for a
@@ -479,4 +507,29 @@ app, keys in the keychain or the keystore cannot be read elsewhere: suggest 1Pas
   every start comes up with trading off until `POST /api/trade/start`.
 - A line that did not become active is on record: deploying again waits for it,
   `erpc worker delete --release-server` ends it.
+- "user-api refused the request (403) … this deploy started nothing" on
+  `deploy --udp`: user-api does not let erpc's sign-in reach the UDP Forwarding routes.
+  Nothing to undo; signing in again does not help. Tell the user in user-api's words. The
+  same refusal ending "no UDP Forwarding line was started" came after the server or other
+  lines were bought: relay what the deploy says is still charged.
+- "could not point UDP Forwarding line … at …": user-api did not take the destination (the code
+  at the end says why, and the hint whether a retry can help). For a region (`REGION_DOWN`, or a
+  code ending in `REGION_UNAVAILABLE`), a conflict, or user-api busy or not answering, deploy
+  again (with `--udp-region` for another region): a line on record is taken up (Standard is
+  charged meanwhile, Premium only once it is pointed). Any other refusal (`INVALID_DESTINATION`,
+  for one) comes back the same: tell the user, do not retry, and offer to end the line alone
+  (`end_hourly_product` in `erpc ai`, or the dashboard; then `--forget-line <id>`), not
+  `delete --release-server`, which ends the server and the app too.
+- "UDP Forwarding line … on record is …, and --udp-plan … is …": the environment's line is the
+  other product. Keeping it is a deploy without `--udp-plan`; switching is the user's choice to
+  end it first; it comes before anything is bought. "UDP Forwarding line … is cancelled":
+  charged no more; `--forget-line` takes it off the record. It comes before anything is bought,
+  or, when the line ends meanwhile, while the deploy waits for it.
+- "UDP Forwarding line … is on record and charged by the hour, and no server it was pointed at
+  is": the server the line sent to left the record (a VPS that ended outside erpc, one never
+  reached, or a `delete --release-server` that ended the server but not the line), and the line is
+  still charged, pointed where it was. Nothing was bought, and every deploy stops the same way
+  until the user chooses: `deploy --udp` points it at the server the deploy reaches; ending it
+  alone is the dashboard or `end_hourly_product`, then a deploy with `--forget-line <id>`;
+  `delete --release-server` ends it with the other lines.
 - "changed in 1Password since this command read it": another machine deployed; run it again.

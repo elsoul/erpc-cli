@@ -26,13 +26,24 @@ env:
 
 # clippy and test (ubuntu-latest) run on the repository's self-hosted Linux
 # runners when the repository variable CI_SELF_HOSTED_LINUX names their label,
-# and only for code from this repository: a pull request from a fork and any
-# run Dependabot starts stay on ubuntu-latest. The runners refuse such jobs on
-# their own as well. Clearing the variable sends every job back to
-# ubuntu-latest; nothing else changes. A self-hosted job neither restores nor
-# saves the Rust cache, so nothing it builds reaches a GitHub-hosted job
-# through the cache. The template jobs stay on ubuntu-latest: with the Rust
-# cache they finish there sooner than a cold build does on the runners.
+# and only for code from this repository. A pull request from a fork stays on
+# ubuntu-latest, and so does any run of a dependency-update bot: Dependabot or
+# Renovate as the actor, the triggering actor, the sender or the pull
+# request's author, or a dependabot/ or renovate/ branch. The runners refuse
+# the same jobs themselves and end them before their first step.
+#
+# This routing is not a guard: a fork's pull request can rewrite runs-on. A
+# run from an outside contributor's fork waits for a maintainer's approval,
+# and the runners refuse a fork's jobs.
+# scripts/tests/self-hosted-routing.test.sh is a regression check on these
+# workflows: it expects each runs-on to be a GitHub-hosted label, a matrix of
+# them, release.yml's `dist plan` matrix, or this expression with exactly
+# these conditions, and a cache step in a job routed here to keep
+# `if: runner.environment == 'github-hosted'`.
+#
+# Clearing the variable sends every job back to ubuntu-latest; nothing else
+# changes. The template jobs stay on ubuntu-latest: with the Rust cache they
+# finish there sooner than a cold build does on the runners.
 jobs:
   fmt:
     name: rustfmt
@@ -49,7 +60,18 @@ jobs:
 
   clippy:
     name: clippy
-    runs-on: ${{ vars.CI_SELF_HOSTED_LINUX != '' && github.actor != 'dependabot[bot]' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_SELF_HOSTED_LINUX || 'ubuntu-latest' }}
+    runs-on: >-
+      ${{
+        vars.CI_SELF_HOSTED_LINUX != ''
+        && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        && !contains(fromJSON('["dependabot[bot]","dependabot-preview[bot]","renovate[bot]"]'), github.actor)
+        && !contains(fromJSON('["dependabot[bot]","dependabot-preview[bot]","renovate[bot]"]'), github.triggering_actor)
+        && !contains(fromJSON('["dependabot[bot]","dependabot-preview[bot]","renovate[bot]"]'), github.event.sender.login)
+        && !contains(fromJSON('["dependabot[bot]","dependabot-preview[bot]","renovate[bot]"]'), github.event.pull_request.user.login)
+        && !contains(github.head_ref, 'dependabot/') && !contains(github.head_ref, 'renovate/')
+        && !contains(github.ref, 'dependabot/') && !contains(github.ref, 'renovate/')
+        && vars.CI_SELF_HOSTED_LINUX || 'ubuntu-latest'
+      }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -68,7 +90,19 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os == 'ubuntu-latest' && vars.CI_SELF_HOSTED_LINUX != '' && github.actor != 'dependabot[bot]' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_SELF_HOSTED_LINUX || matrix.os }}
+    runs-on: >-
+      ${{
+        matrix.os == 'ubuntu-latest'
+        && vars.CI_SELF_HOSTED_LINUX != ''
+        && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        && !contains(fromJSON('["dependabot[bot]","dependabot-preview[bot]","renovate[bot]"]'), github.actor)
+        && !contains(fromJSON('["dependabot[bot]","dependabot-preview[bot]","renovate[bot]"]'), github.triggering_actor)
+        && !contains(fromJSON('["dependabot[bot]","dependabot-preview[bot]","renovate[bot]"]'), github.event.sender.login)
+        && !contains(fromJSON('["dependabot[bot]","dependabot-preview[bot]","renovate[bot]"]'), github.event.pull_request.user.login)
+        && !contains(github.head_ref, 'dependabot/') && !contains(github.head_ref, 'renovate/')
+        && !contains(github.ref, 'dependabot/') && !contains(github.ref, 'renovate/')
+        && vars.CI_SELF_HOSTED_LINUX || matrix.os
+      }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -78,8 +112,21 @@ jobs:
           toolchain: 1.98.0
       - if: runner.environment == 'github-hosted'
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-      # Keep going after a failing target, so one run reports every failure.
-      - run: cargo test --workspace --locked --no-fail-fast
+      # fallback: none, so that a version install-action does not list fails
+      # here instead of being fetched without the listed SHA-256 check.
+      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
+        with:
+          tool: cargo-nextest@0.9.148
+          fallback: none
+      # cargo-nextest runs the test binaries side by side, each test in a
+      # process of its own, where cargo test runs the binaries one after
+      # another. The same tests run either way.
+      # Keep going after a failing test, so one run reports every failure.
+      - run: cargo nextest run --workspace --locked --no-fail-fast
+      # cargo-nextest does not run doctests. They run after a failing test
+      # too, for the same reason.
+      - if: ${{ !cancelled() }}
+        run: cargo test --workspace --locked --doc
       - run: cargo run --locked -- version --json
 
   # The worker agents erpc embeds are cross-built with zig before every
@@ -160,6 +207,13 @@ jobs:
         with:
           toolchain: 1.98.0
           components: clippy
+      # The template needs Rust 1.98.1 (solana-stream-sdk 5.0.0 asks for
+      # it): its steps run on that, and erpc itself, which renders it, on
+      # the workspace's toolchain.
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: 1.98.1
+          components: clippy
       # The template's build output is kept beside the rendered directory,
       # not in it: a restored cache must not make that directory, which
       # `erpc worker init` refuses to write into when it exists. The
@@ -176,13 +230,43 @@ jobs:
         run: |
           mkdir -p template-ci
           cargo run --locked -- worker init --template pumpfun --name pumpfun-ci --into template-ci --no-git --yes
-      - name: clippy and tests
+      - name: clippy and tests, as shipped (with the UDP source)
         working-directory: template-ci/pumpfun-ci
         env:
+          RUSTUP_TOOLCHAIN: 1.98.1
           CARGO_TARGET_DIR: ${{ github.workspace }}/template-ci/pumpfun-target
         run: |
           cargo clippy --all-targets --locked -- -D warnings
           cargo test --locked
+      - name: clippy and tests, without the UDP source
+        working-directory: template-ci/pumpfun-ci
+        env:
+          RUSTUP_TOOLCHAIN: 1.98.1
+          CARGO_TARGET_DIR: ${{ github.workspace }}/template-ci/pumpfun-target
+        run: |
+          cargo clippy --all-targets --locked --no-default-features -- -D warnings
+          cargo test --locked --no-default-features
+      # The template's lock becomes the Cargo.lock of every app made from
+      # it, and the cargo-deny and cargo-audit jobs below do not see it: the
+      # template is no member of the workspace. Its exceptions, each with
+      # its date and reason, are in
+      # crates/erpc-worker/template-checks/solana/pumpfun/.
+      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
+        with:
+          tool: cargo-audit,cargo-deny
+      - name: cargo-audit on the template's lock
+        working-directory: template-ci/pumpfun-ci
+        env:
+          RUSTUP_TOOLCHAIN: 1.98.1
+        run: |
+          mkdir -p .cargo
+          cp "$GITHUB_WORKSPACE/crates/erpc-worker/template-checks/solana/pumpfun/audit.toml" .cargo/audit.toml
+          cargo audit --deny warnings
+      - name: cargo-deny on the template's lock
+        working-directory: template-ci/pumpfun-ci
+        env:
+          RUSTUP_TOOLCHAIN: 1.98.1
+        run: cargo deny --locked --config "$GITHUB_WORKSPACE/crates/erpc-worker/template-checks/solana/pumpfun/deny.toml" check
 
   # The same for the template `init` makes when nothing is picked: its lock
   # must build as written, and what it answers is pinned by its own tests.
@@ -301,6 +385,7 @@ jobs:
           scripts/tests/build-manifest.test.sh
           scripts/tests/release-wiring.test.sh
           scripts/tests/workflow-audit.test.sh
+          scripts/tests/self-hosted-routing.test.sh
       - name: hygiene gate (all tracked files)
         run: scripts/check-oss-hygiene.sh
       - name: endpoint allowlist (all tracked files)
@@ -329,6 +414,7 @@ jobs:
           /bin/bash scripts/tests/build-manifest.test.sh
           /bin/bash scripts/tests/release-wiring.test.sh
           /bin/bash scripts/tests/workflow-audit.test.sh
+          /bin/bash scripts/tests/self-hosted-routing.test.sh
 
   zizmor:
     name: zizmor (workflow audit)

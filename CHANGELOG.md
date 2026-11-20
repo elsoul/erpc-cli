@@ -12,8 +12,77 @@ whose version has no entry below.
 
 ## [Unreleased]
 
+## [0.1.0-rc.7] - 2026-11-18
+
+### Added
+
+- `erpc worker deploy --udp` starts an hourly ERPC UDP Forwarding line for
+  the server: the leader's raw shreds, sent over UDP to a port of the
+  server's own (`--udp-port`, default 10001) from a node in its region
+  (`--udp-region`). The plan is Standard unless `--udp-plan` names Premium
+  by product id, and `deploy` shows the hourly catalogue's price before it
+  starts either. erpc points the line at the server's public IPv4 address,
+  opens the port in the server's firewall to the addresses ERPC sends from
+  and to no one else (when ERPC names none, the port stays closed unless
+  `--udp-any-source` opens it to any IPv4 address), and gives the app
+  `SHREDS_UDP_BIND`. What the UDP step would be refused for is checked
+  before the server or any line is bought. `status` shows the line and its
+  price, and `delete --release-server` ends it, also when the server has
+  ended outside erpc. While a UDP Forwarding line is on record and no server
+  it reached is (such a VPS left the record), every deploy stops before it
+  buys anything unless it has `--udp` or `--forget-line`, since the line
+  would go on sending where it was pointed and being charged. `erpc ai`
+  lists the account's UDP Forwarding lines (`my_services`) and points one at
+  a server after the person's yes (`point_udp_line`). The `solana/pumpfun`
+  template reads the UDP shreds with solana-stream-sdk 5.0.0 (its `udp`
+  Cargo feature, on by default, which needs Rust 1.98.1 or newer), takes in
+  only shreds their slot's leader signed, buys a graduation from whichever
+  source shows it first, stamps each buy in `/api/timing` with the settings
+  it was made under, and says there how much sooner the UDP shreds came; its
+  Geyser and Shreds streams use the SDK's 16 MiB HTTP/2 receive windows.
+  `deploy` names a Rust older than the app's `rust-version` before it buys
+  anything, and `build`, `run`, `check` and `deploy` given `--dir erpc.toml`
+  take the app's directory as `.`. In the template's lock, solana-stream-sdk
+  5.0.0 and the 31 agave and solana 4.4.1 crates its `=` pins bring in are
+  younger than the 14 days CONTRIBUTING asks. The maintainers made an
+  exception for them on 2026-11-13. It lapses on 2026-11-27, when the SDK is
+  14 days old. Every other crate in that lock is at least 14 days old.
+- `install.erpc.global` counts the installers it serves: each `GET` of an
+  installer writes one data point to Workers Analytics Engine with the
+  request's country, continent and Cloudflare data centre, the first language
+  of `Accept-Language`, the installer flavour, the version asked for (when
+  that release was served) and the version served, and the status. The data
+  point holds no address, user agent or anything else that tells one person
+  from another, and recording cannot delay or fail an install. The columns
+  are in `docs/install-counts.md`.
+
 ### Changed
 
+- The pumpfun template's own dependencies move up a major version where
+  nothing else in its build holds them: redis 1.8.1 with its default
+  features off, rand 0.10 and utoipa 6. redis 1.x gives up after 500 ms
+  waiting for an answer and 1 s connecting, where 0.27 waited for ever; a
+  write that fails is logged and not retried, as before. At start the
+  template reads back its bans, its traced creators and whether trading was
+  on: a failed read is logged, and a bot that was trading but could not read
+  back its bans comes back sell-only, says so in its notifications, and buys
+  again after a restart once Redis answers; traced creators it could not
+  read back stop no buy, and later traces follow them again. With
+  Redis not reachable at all a start comes up with trading off, as without
+  Redis. reqwest stays at 0.12, which the Solana RPC clients use, and the
+  template's own Solana crates at 3.x, which ultima-swap-pumpfun pins. Its
+  cargo-deny list allows BSL-1.0 for xxhash-rust alone, which redis 1.x
+  needs.
+- `erpc worker delete --release-server --yes` ends the app's lines and its
+  hourly server without asking, and prints what each was and its price (on
+  standard error, with `--json` too), as `deploy --yes` does for what it
+  starts. Each end used to be asked at a terminal whatever the flags; with
+  `--yes` and no terminal the app was removed and its lines and server
+  stayed charged, with an error meant for `erpc ai`. No other end is
+  answered by `--yes`, and it does not end a server another app or
+  environment on this machine's list is on (an environment kept in
+  1Password is read from its item), or may be on (its server cannot be
+  read): it stops before anything is removed and names them.
 - The Intel macOS release (`x86_64-apple-darwin`) is cross-compiled on the
   Apple Silicon `macos-15` runner, beside the Apple Silicon release. The
   `macos-15-intel` runner took 15 to 43 minutes for that build, the longest
@@ -817,7 +886,8 @@ version.
 - `docs/verify-release.md`: verify signatures against a key saved once from
   `main`, not against `pubkey.txt` at the tag being checked.
 
-[Unreleased]: https://github.com/elsoul/erpc-cli/compare/v0.1.0-rc.6...HEAD
+[Unreleased]: https://github.com/elsoul/erpc-cli/compare/v0.1.0-rc.7...HEAD
+[0.1.0-rc.7]: https://github.com/elsoul/erpc-cli/releases/tag/v0.1.0-rc.7
 [0.1.0-rc.6]: https://github.com/elsoul/erpc-cli/releases/tag/v0.1.0-rc.6
 [0.1.0-rc.5]: https://github.com/elsoul/erpc-cli/releases/tag/v0.1.0-rc.5
 [0.1.0-rc.4]: https://github.com/elsoul/erpc-cli/releases/tag/v0.1.0-rc.4

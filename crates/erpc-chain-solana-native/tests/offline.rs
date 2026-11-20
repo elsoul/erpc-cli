@@ -21,56 +21,26 @@ fn controller_and_installed_publisher_select_the_same_complete_helper_revision()
     );
 }
 
+/// One test per Python fixture, named after its file: the fixtures run in
+/// parallel, and each one that fails is reported, not only the first. The
+/// modules that use it are `cfg(test)`, so their shared `fixture` helper may
+/// `expect` as a test does.
 #[cfg(unix)]
-#[test]
-fn compiler_archive_and_publication_failures_are_exercised() {
-    for name in [
-        "toolchain_files.py",
-        "build_inputs.py",
-        "state_failures.py",
-        "build_jobs.py",
-        "entrypoints.py",
-        "publication.py",
-        "processes.py",
-        "runtime_process.py",
-        "runtime_observer.py",
-        "runtime_control.py",
-        "custody.py",
-        "host.py",
-        "host_layout.py",
-        "tuning.py",
-        "helpers.py",
-        "deployment.py",
-        "source_floor.py",
-        "source_upgrade.py",
-        "migration_copy.py",
-        "migration_fence.py",
-        "migration_privileges.py",
-        "migration_retire.py",
-        "migration_transfer.py",
-        "migration_state.py",
-        "migration_promote.py",
-        "migration_settings.py",
-        "migration_key.py",
-        "migration_custody.py",
-        "migration_cutover.py",
-        "migration_guard.py",
-        "migration_status.py",
-        "migration_bls.py",
-        "migration_process.py",
-        "firewall.py",
-        "gateway_account.py",
-        "gateway.py",
-        "gateway_package.py",
-        "validator.py",
-        "proof.py",
-        "proof_recovery.py",
-        "activation.py",
-        "gateway_observer.py",
-        "gateway_cutover.py",
-        "mounts.py",
-        "accounts.py",
-    ] {
+macro_rules! fixtures {
+    ($($fixture:ident),* $(,)?) => {
+        $(
+            #[test]
+            fn $fixture() {
+                fixture(concat!(stringify!($fixture), ".py"));
+            }
+        )*
+    };
+}
+
+#[cfg(unix)]
+#[cfg(test)]
+mod compiler_archive_and_publication_failures_are_exercised {
+    fn fixture(name: &str) {
         let result = std::process::Command::new("python3")
             .arg(
                 std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -85,6 +55,54 @@ fn compiler_archive_and_publication_failures_are_exercised() {
             "{name}: {}",
             String::from_utf8_lossy(&result.stderr)
         );
+    }
+
+    fixtures! {
+        toolchain_files,
+        build_inputs,
+        state_failures,
+        build_jobs,
+        entrypoints,
+        publication,
+        processes,
+        runtime_process,
+        runtime_observer,
+        runtime_control,
+        custody,
+        host,
+        host_layout,
+        tuning,
+        helpers,
+        deployment,
+        source_floor,
+        source_upgrade,
+        migration_copy,
+        migration_fence,
+        migration_privileges,
+        migration_retire,
+        migration_transfer,
+        migration_state,
+        migration_promote,
+        migration_settings,
+        migration_key,
+        migration_custody,
+        migration_cutover,
+        migration_guard,
+        migration_status,
+        migration_bls,
+        migration_process,
+        firewall,
+        gateway_account,
+        gateway,
+        gateway_package,
+        validator,
+        proof,
+        proof_recovery,
+        activation,
+        gateway_observer,
+        gateway_cutover,
+        mounts,
+        accounts,
     }
 }
 

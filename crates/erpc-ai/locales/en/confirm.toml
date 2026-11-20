@@ -36,6 +36,9 @@ script = "Shell script"
 command = "Command"
 folder = "Folder"
 ends = "Until"
+sends_to = "Sends to"
+points_now = "Now"
+charged = "Charged"
 
 [start]
 title = "Start {product} hourly? It is charged until it is ended."
@@ -83,3 +86,11 @@ title = "Run a command on this computer"
 title = "Allow every command until erpc ai ends? Commands and shell scripts will run on this computer without asking."
 ends = "when erpc ai ends, or a new conversation is started (/new or /clear)"
 note = "what a command prints goes to ERPC AI, and nothing asks first: a command can print a key file or a password"
+
+[udp]
+title = "Point {name} line {id} at {destination}?"
+to = "{destination} from {region}"
+nowhere = "no server yet"
+charged_already = "by the hour already, pointed or not; this changes where it sends, not what it costs"
+charged_when_pointed = "by the hour from when it is pointed and active, until it is ended"
+firewall = "erpc changes no firewall: the server has to let in the addresses the line sends from on UDP port {port}"

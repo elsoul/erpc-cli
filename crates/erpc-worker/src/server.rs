@@ -576,13 +576,16 @@ impl NewConnections {
 }
 
 /// One worker's opening in its server's firewall: its port, to the
-/// addresses and networks its `firewall.app_allow` lists. Kept on the
-/// server per worker, as `FIREWALL_DIR/workers/<id>.json`, so the workers
-/// on one server share one table.
+/// addresses and networks its `firewall.app_allow` lists, and the UDP port
+/// its UDP Forwarding line sends to, when it has one. Kept on the server
+/// per worker, as `FIREWALL_DIR/workers/<id>.json`, so the workers on one
+/// server share one table.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Opening {
-    /// The port opened: the app's, or its WAF's when it has one.
+    /// The TCP port opened: the app's, or its WAF's when it has one. 0,
+    /// with an empty `allow`, means no TCP port is open: a worker that
+    /// opens its UDP port alone.
     pub port: u16,
     /// Who may reach it. `0.0.0.0/0` or `::/0` is everyone of that family.
     pub allow: Vec<crate::net::Cidr>,
@@ -591,13 +594,45 @@ pub struct Opening {
     /// it reads as it did before there was a limit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<NewConnections>,
+    /// The UDP port the worker receives on, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub udp: Option<UdpOpening>,
+}
+
+/// A UDP port the worker receives on (a UDP Forwarding line's), open to
+/// the IPv4 addresses the line sends from. It is open to any IPv4 address
+/// only when `any_source` says so, which erpc sets when the operator asked
+/// for it (`deploy --udp-any-source`): an empty `allow` alone opens
+/// nothing, so a list that came out empty by mistake cannot open the port
+/// to everyone. UDP Forwarding sends over IPv4, so no IPv6 address is ever
+/// let in.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UdpOpening {
+    /// The port the shreds are sent to.
+    pub port: u16,
+    /// Who may send to it.
+    pub allow: Vec<std::net::Ipv4Addr>,
+    /// Open to any IPv4 address, with `allow` empty.
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub any_source: bool,
+}
+
+impl UdpOpening {
+    /// Whether it says who may send: addresses, or any address, and not
+    /// both. One that says neither opens nothing and is not an opening.
+    #[must_use]
+    pub const fn names_senders(&self) -> bool {
+        self.any_source == self.allow.is_empty()
+    }
 }
 
 impl Opening {
     /// `m`'s opening in `env`: the WAF's port when the app has a WAF, with
     /// the limit `[waf]` gives new connections, else the app's own port.
     /// To the addresses `firewall.app_allow` lists; none when it lists
-    /// nobody, or the app has no port.
+    /// nobody, or the app has no port. It opens no UDP port: [`Self::with_udp`]
+    /// adds one.
     #[must_use]
     pub fn for_app(m: &crate::manifest::Manifest, env: &crate::manifest::Env) -> Option<Self> {
         if env.firewall.app_allow.is_empty() {
@@ -611,7 +646,25 @@ impl Opening {
             port,
             allow: env.firewall.app_allow.clone(),
             limit,
+            udp: None,
         })
+    }
+
+    /// `app` (an opening from [`Self::for_app`], if any) with `udp` too:
+    /// the app's opening and its UDP port, or the UDP port alone, with no
+    /// TCP port open (port 0, nobody let in). `None` when there is neither.
+    #[must_use]
+    pub fn with_udp(app: Option<Self>, udp: Option<UdpOpening>) -> Option<Self> {
+        match (app, udp) {
+            (Some(app), udp) => Some(Self { udp, ..app }),
+            (None, Some(udp)) => Some(Self {
+                port: 0,
+                allow: Vec::new(),
+                limit: None,
+                udp: Some(udp),
+            }),
+            (None, None) => None,
+        }
     }
 }
 
@@ -652,11 +705,14 @@ fn flood_sets(id: &str) -> (String, String) {
     (format!("flood4_{name}"), format!("flood6_{name}"))
 }
 
-/// The server's worker firewall: every inbound connection is dropped
-/// except loopback, replies to what the server started, ICMP (path MTU and
-/// neighbour discovery need it), DHCP replies, SSH, and each worker's port
-/// from the addresses it names. Loading it replaces the table loaded
-/// before. Built from checked numbers and addresses only.
+/// The server's worker firewall: every inbound packet is dropped except
+/// loopback, replies to what the server started, ICMP (path MTU and
+/// neighbour discovery need it), DHCP replies, SSH, each worker's port from
+/// the addresses it names, and each worker's UDP port from the IPv4
+/// addresses its line sends from, or from any IPv4 address when its opening
+/// says so; a UDP opening that names neither gets no rule. Loading it
+/// replaces the table loaded before. Built from checked numbers and
+/// addresses only.
 ///
 /// An opening with a [`NewConnections`] limit has two sets, one per
 /// address family, in which the firewall counts each address's new
@@ -717,6 +773,9 @@ pub fn firewall_table(ssh_port: u16, openings: &BTreeMap<String, Opening>) -> St
                 );
             }
         }
+        if let Some(rule) = opening.udp.as_ref().and_then(udp_rule) {
+            let _ = writeln!(rules, "    {rule}");
+        }
     }
     format!(
         "table inet erpc_worker\n\
@@ -737,6 +796,24 @@ pub fn firewall_table(ssh_port: u16, openings: &BTreeMap<String, Opening>) -> St
            }}\n\
          }}\n"
     )
+}
+
+/// The rule that lets `udp`'s senders in, IPv4 only either way: an `ip
+/// saddr` set matches no IPv6 packet, and the rule for any address says
+/// `meta nfproto ipv4`. None when the opening names no sender.
+fn udp_rule(udp: &UdpOpening) -> Option<String> {
+    if !udp.names_senders() {
+        return None;
+    }
+    if udp.any_source {
+        return Some(format!("meta nfproto ipv4 udp dport {} accept", udp.port));
+    }
+    let set: Vec<String> = udp.allow.iter().map(ToString::to_string).collect();
+    Some(format!(
+        "udp dport {} ip saddr {{ {} }} accept",
+        udp.port,
+        set.join(", ")
+    ))
 }
 
 /// `[run.health]`, as a release carries it.
@@ -1301,6 +1378,7 @@ mod tests {
                     Cidr::parse("2001:db8::1").expect("v6"),
                 ],
                 limit: None,
+                udp: None,
             },
         );
         let table = firewall_table(22, &openings);
@@ -1315,6 +1393,8 @@ mod tests {
                 "missing {line} in:\n{table}"
             );
         }
+        // DHCP's two rules are the only UDP ones.
+        assert_eq!(table.matches("udp dport").count(), 2, "{table}");
         assert!(!firewall_table(22, &std::collections::BTreeMap::new()).contains("3000"));
     }
 
@@ -1382,6 +1462,7 @@ table inet erpc_worker {
                 port: 8080,
                 allow: vec![Cidr::parse("2001:db8::/32").expect("v6")],
                 limit: None,
+                udp: None,
             },
         );
         openings.insert(
@@ -1394,6 +1475,7 @@ table inet erpc_worker {
                     Cidr::parse("2001:db8::1").expect("v6"),
                 ],
                 limit: None,
+                udp: None,
             },
         );
         openings
@@ -1551,6 +1633,7 @@ table inet erpc_worker {
                         .map(|a| Cidr::parse_any(a).expect("cidr"))
                         .collect(),
                     limit: Some(NewConnections::DEFAULT),
+                    udp: None,
                 },
             );
             // What follows the limit's two rules: the opening's accepts.
@@ -1582,6 +1665,132 @@ table inet erpc_worker {
             open_to(&["0.0.0.0/0"]),
             ["tcp dport 8080 meta nfproto ipv4 accept"]
         );
+    }
+
+    #[test]
+    fn a_udp_port_is_open_to_the_sources_named_or_to_any_ipv4_address_when_said() {
+        use super::{Opening, UdpOpening, firewall_table};
+        use crate::net::Cidr;
+        use std::net::Ipv4Addr;
+        let mut openings = std::collections::BTreeMap::new();
+        // An app on loopback, with a UDP Forwarding line from two sources.
+        openings.insert(
+            "bot-default".to_owned(),
+            Opening {
+                port: 0,
+                allow: Vec::new(),
+                limit: None,
+                udp: Some(UdpOpening {
+                    port: 10001,
+                    allow: vec![
+                        Ipv4Addr::new(198, 51, 100, 20),
+                        Ipv4Addr::new(198, 51, 100, 21),
+                    ],
+                    any_source: false,
+                }),
+            },
+        );
+        // An app with its own port, and a line whose port the operator
+        // opened to any address.
+        openings.insert(
+            "other-prod".to_owned(),
+            Opening {
+                port: 3000,
+                allow: vec![Cidr::parse("203.0.113.0/24").expect("net")],
+                limit: None,
+                udp: Some(UdpOpening {
+                    port: 10002,
+                    allow: Vec::new(),
+                    any_source: true,
+                }),
+            },
+        );
+        // A UDP opening that names no sender and does not say any: kept by
+        // mistake, it opens nothing.
+        openings.insert(
+            "third-prod".to_owned(),
+            Opening {
+                port: 3001,
+                allow: vec![Cidr::parse("203.0.113.9").expect("ip")],
+                limit: None,
+                udp: Some(UdpOpening {
+                    port: 10003,
+                    allow: Vec::new(),
+                    any_source: false,
+                }),
+            },
+        );
+        let table = firewall_table(22, &openings);
+        for line in [
+            "udp dport 10001 ip saddr { 198.51.100.20, 198.51.100.21 } accept",
+            "tcp dport 3000 ip saddr { 203.0.113.0/24 } accept",
+            "meta nfproto ipv4 udp dport 10002 accept",
+            "tcp dport 3001 ip saddr { 203.0.113.9/32 } accept",
+        ] {
+            assert!(
+                table.lines().any(|l| l.trim() == line),
+                "missing {line} in:\n{table}"
+            );
+        }
+        assert!(
+            !table.contains("tcp dport 0"),
+            "no TCP port is open:\n{table}"
+        );
+        // No UDP rule lets in IPv6, or any address without saying IPv4.
+        for line in table.lines().filter(|l| l.contains("udp dport 1000")) {
+            assert!(
+                line.contains("ip saddr {") || line.contains("meta nfproto ipv4"),
+                "{line}"
+            );
+            assert!(!line.contains("ip6"), "{line}");
+        }
+        assert!(!table.contains("10003"), "{table}");
+    }
+
+    #[test]
+    fn an_opening_kept_before_udp_lines_still_reads_and_writes_the_same() {
+        use super::{Opening, UdpOpening};
+        let kept = r#"{"port":3000,"allow":["198.51.100.7/32"]}"#;
+        let opening: Opening = serde_json::from_str(kept).expect("kept on a server");
+        assert_eq!(opening.udp, None);
+        assert_eq!(serde_json::to_string(&opening).expect("json"), kept);
+        let with_udp = Opening {
+            udp: Some(UdpOpening {
+                port: 10001,
+                allow: vec![std::net::Ipv4Addr::new(198, 51, 100, 20)],
+                any_source: false,
+            }),
+            ..opening
+        };
+        let text = serde_json::to_string(&with_udp).expect("json");
+        assert!(
+            text.contains(r#""udp":{"port":10001,"allow":["198.51.100.20"]}"#),
+            "{text}"
+        );
+        assert_eq!(
+            serde_json::from_str::<Opening>(&text).expect("reparse"),
+            with_udp
+        );
+        assert!(serde_json::from_str::<Opening>(&text.replace("\"udp\"", "\"quic\"")).is_err());
+        // A sender is one IPv4 address: no network, and no IPv6.
+        for not_ipv4 in ["198.51.100.0/24", "2001:db8::1", "sender.example"] {
+            let text = text.replace("198.51.100.20", not_ipv4);
+            assert!(
+                serde_json::from_str::<Opening>(&text).is_err(),
+                "{not_ipv4}"
+            );
+        }
+        // Any address is said, never implied by an empty list.
+        let any: UdpOpening =
+            serde_json::from_str(r#"{"port":10001,"allow":[],"any_source":true}"#).expect("any");
+        assert!(any.names_senders());
+        let nobody: UdpOpening =
+            serde_json::from_str(r#"{"port":10001,"allow":[]}"#).expect("none");
+        assert!(!nobody.any_source && !nobody.names_senders());
+        let both: UdpOpening =
+            serde_json::from_str(r#"{"port":10001,"allow":["198.51.100.20"],"any_source":true}"#)
+                .expect("both");
+        assert!(!both.names_senders());
     }
 
     #[test]

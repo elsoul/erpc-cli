@@ -3,20 +3,99 @@ SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
 SPDX-License-Identifier: Apache-2.0
 -->
 
-<div align="center">
+<a id="erpc"></a>
 
-<img src="docs/assets/erpc-header.jpg" alt="ERPC: Global Edge Blockchain Infrastructure" width="100%">
+# ERPC CLI
 
-# erpc
+[![ERPC CLI: Run your nodes. Deploy your apps. Orange crystal module with 18 chain logos.](docs/assets/erpc-cli-hero.png)][erpc-cli-home]
 
-**Run validators, RPC nodes and your own apps on 18 chains, with 1Password-backed access and key management.**
+**Your nodes, your apps, your ERPC account. One command line.**
 
-One command line for your nodes, your apps and your [ERPC](https://erpc.global) account,
-and an assistant that runs it for you when you ask.
+Run RPC nodes across 18 chains, validators on supported networks, and your own
+apps on ERPC VPSs or servers you manage. Use the commands directly, automate
+them in scripts, or work with ERPC AI in your terminal.
 
-[Install](#install) · [Nodes](#validators-and-rpc-nodes) · [erpc ai](#erpc-ai-just-ask) · [erpc worker](#erpc-worker-your-app-at-full-power-on-a-server-of-its-own) · [Free or with an account](#free-to-start)
+[Quick start](#quick-start) · [Choose your workflow](#choose-your-workflow) ·
+[Documentation][erpc-cli-home] · [Complete usage guide](#complete-usage-guide)
 
-</div>
+## Quick start
+
+### 1. Install
+
+For mainnet validators, follow the [verified installation guide](docs/verify-release.md)
+to check the signed release manifest before running a binary.
+
+**macOS and Linux**
+
+```bash
+curl -fsSL https://install.erpc.global | sh
+```
+
+**Windows (PowerShell)**
+
+```powershell
+irm https://install.erpc.global/ps1 | iex
+```
+
+These installers select the latest stable release, or the newest published
+prerelease when no stable release exists. See the [installation details](#install)
+for supported platforms, version pinning and source builds.
+
+### 2. Explore the CLI
+
+```bash
+erpc version
+erpc --help
+```
+
+Validator and RPC node lifecycle commands are free and need no ERPC account.
+The [node guides](docs/nodes.md) cover the server, key-management and network
+requirements for each chain.
+
+### 3. Connect your ERPC account
+
+Sign in to use account services, then make a Solana mainnet RPC read:
+
+```bash
+erpc login
+erpc whoami
+erpc rpc call getSlot
+```
+
+Need an account? Run `erpc signup`. Prefer a conversation? Run `erpc ai` and
+describe what you want to do. The assistant presents server changes and paid
+operations for your approval by default; see [ERPC AI](docs/ai.md).
+
+## Choose your workflow
+
+| What you want to do | Start here |
+| --- | --- |
+| Run a validator or RPC node | [Node lifecycle and supported chains](docs/nodes.md) · [Chain guides](docs/chains/README.md) |
+| Build and deploy an app | [Worker guide](docs/worker.md): create a Rust app, import an existing app, or deploy a Linux binary |
+| Connect an app to Solana data | [Worker data lines](docs/worker.md#data-lines-grpc-shreds-udp-forwarding-unlimited-rpc): Geyser gRPC, Shreds, UDP Forwarding and Unlimited RPC |
+| Call RPC or deliver events to an API | [RPC calls and webhooks](#rpc-calls-and-webhooks) |
+| Work with an AI assistant or scripts | [ERPC AI and agent skills](docs/ai.md) · [Command reference](#all-commands) · machine-readable `--json` output |
+| Store files and back up a machine | [Storage encryption](docs/storage-encryption.md) · [Backups](docs/backup.md) |
+
+## Keys and access
+
+1Password holds the node inventory and managed signing-key backups, so teams
+can manage shared nodes from their own machines. Operator credentials can also
+use the OS keychain. Worker apps receive their secrets through the worker's
+memory; node key storage and recovery requirements vary by chain.
+See [where keys are kept](#where-your-keys-are) and the
+[worker secrets guide](docs/worker.md).
+
+## Project status
+
+ERPC CLI is in pre-release. RPC node workflows cover 18 chains; validator
+workflows cover the supported subset. Live acceptance is still in progress
+for most chains. Check the [chain source map](docs/chains/README.md) and each
+chain's guide before choosing a deployment.
+
+## Complete usage guide
+
+Node operations, ERPC AI, workers, RPC, storage and command reference.
 
 ## Where your keys are
 
@@ -71,8 +150,8 @@ irm https://install.erpc.global/ps1 | iex
 
 These URLs select the latest stable release. While the project has only
 prereleases, they select the most recently published prerelease. To pin a
-version, use `https://install.erpc.global/v0.1.0-rc.6` or
-`https://install.erpc.global/v0.1.0-rc.6/ps1`. The release workflow updates the selected version after publication and approval
+version, use `https://install.erpc.global/v0.1.0-rc.7` or
+`https://install.erpc.global/v0.1.0-rc.7/ps1`. The release workflow updates the selected version after publication and approval
 of the protected installer deployment. Edge and client caches may delay what
 clients see.
 
@@ -270,11 +349,61 @@ build one by talking to `erpc ai`.
 |---|---|
 | 🚀 **Start from HelloWorld** | `erpc worker init` makes a small HTTP API in Rust that deploys with one command and needs no key. The pump.fun trading bot is the next template up. |
 | 📦 **Bring the app you already have** | `erpc worker import` reads your directory (a Cargo package, `.env.example`, a Dockerfile) and writes its `erpc.toml` without changing your code. A Linux binary built anywhere, in any language, deploys the same way: `erpc worker import --binary <PATH>`. |
-| ⚡ **ERPC's lines, one flag each** | `deploy --grpc` (Geyser gRPC), `--shreds` (the Shreds stream), `--unlimited` (an Unlimited RPC). Each starts by the hour from ERPC Credit, lets your server in, and reaches the app as a setting. Nothing to copy from a dashboard. |
+| ⚡ **ERPC's lines, one flag each** | `deploy --grpc` (Geyser gRPC), `--shreds` (the Shreds stream), `--udp` (the leader's raw shreds over UDP), `--unlimited` (an Unlimited RPC). Each starts by the hour from ERPC Credit, lets your server in (or, for UDP, opens its port to ERPC's senders only; when ERPC names none, the port stays closed unless `--udp-any-source` opens it to any IPv4 address), and reaches the app as a setting. Nothing to copy from a dashboard. |
 | 🛡️ **A WAF in front of your API** | Add `[waf]` to `erpc.toml` and `deploy` puts a filtering proxy in front of the app: only the methods and paths you allow, size limits, a request rate per address, bans for addresses that keep being blocked, scanner probes refused. Around it the firewall drops everything else. |
 | 🔑 **Keys that never touch the server's disk** | The trading key and the secrets go from 1Password, your keychain or erpc's encrypted keystore straight into the worker's memory. No `wallet.json`, no `.env`. |
 | 🤖 **Made for scripts and agents** | `--yes` accepts the price a start shows, `--prepare` does everything but hand over the key, `--json` is on every command. `erpc ai` runs the same commands when you ask it to. |
 | 💶 **Costs in plain sight** | Every start shows its price first. `status` shows what each server and line costs per hour, your credit and how long it lasts. `erpc worker delete --release-server` ends all of it. |
+
+### Zero-block trades: raw shreds over UDP
+
+A zero-block buy lands in the very block the pool it buys is created in.
+The pump.fun template goes for it by reading a token's migration as the
+leader sends it out, before any node has run it, and buying at once.
+Whether the buy makes that block comes down to two things: how early the
+bot sees the migration, and how fast its buy reaches the leader. Each line
+that changes either is one flag:
+
+| Step | Flag | What the bot gets |
+|---|---|---|
+| Geyser gRPC | `--grpc` | The pool, once a node has run the migration |
+| Shreds | `--shreds` | The migration in the leader's shreds, before anyone has run it |
+| **UDP Forwarding** | `--udp` | The same shreds as raw UDP on a port of your server's own, from an ERPC node in its region: no gRPC stream in between |
+| Unlimited RPC | `--unlimited` | A send route of its own, in the server's region |
+
+```bash
+erpc worker deploy --udp                                  # Standard: €0.69 an hour, from one ERPC node
+erpc worker deploy --udp --udp-plan <PREMIUM_PRODUCT_ID>  # Premium: €1.39 an hour, the first copy of each shred from a regional mesh
+erpc worker api /api/timing                               # how much sooner the UDP shreds came, how late each buy landed
+```
+
+`deploy --udp` checks what it would be refused for before it buys anything,
+then starts the line, points it at the server's IPv4 address and port
+10001 (or `--udp-port`, 1024 and up), opens that port in the server's
+firewall to the addresses ERPC sends from and to no one else (when ERPC
+names none the port stays closed, unless `--udp-any-source` opens it to any
+IPv4 address), and gives the app `SHREDS_UDP_BIND`. The bot reads
+migrations from the UDP shreds and the Shreds stream alike, and acts on
+whichever shows one first; `/api/timing` says by how much the UDP shreds
+led (`udp_before_shreds_ms`). Each datagram is checked against its slot's
+leader before the bot believes it. In ERPC's
+own measurement (Frankfurt, 2026-10-30), Premium was first for 98% of the
+shreds both plans carried, by a median of 1.78 ms
+([ERPC's announcement](https://erpc.global/en/news/2026/11/03/erpc-shreds-udp-forwarding-premium-20261103/)). Prices are the
+catalogue's on 2026-11-13; `deploy` shows the current one before it asks.
+
+**When it helps.** UDP Forwarding makes the bot see sooner; it does not make
+its buy arrive sooner. On ERPC's test bot (a Standard VPS in Frankfurt) the
+shared Shreds stream showed migrations a median of 2 ms before Geyser: a
+lead that short is what a faster stream improves. When `/api/timing` shows
+the stream well ahead and the buys still late, the send is what holds the
+bot back: raise the priority fee first, which costs nothing by the hour,
+then `--unlimited`. A buy sent that early can land before the pool exists
+and fail, paying its fee; every bot aiming at the same pool competes for
+the same block, and nothing guarantees a place in it. Measure before and
+after each step; `erpc worker delete --release-server` ends the line with
+the server ([the bot's guide](crates/erpc-worker/templates/solana/pumpfun/README.md#raw-shreds-over-udp),
+[the line in detail](docs/worker.md#data-lines-grpc-shreds-udp-forwarding-unlimited-rpc)).
 
 ### The WAF
 
@@ -310,8 +439,11 @@ no TLS, no HTTP/2 and no WebSocket, and it does not inspect request bodies
 ### Locked down from the first deploy
 
 - **The firewall** lets SSH in only from the address you deploy from and
-  drops every other inbound connection. If your address changes, add every
-  fixed address your admins use:
+  drops every other inbound connection, but for the app's port when
+  `firewall.app_allow` opens it and the port of a UDP Forwarding line
+  (`--udp`), open to ERPC's senders only (to any IPv4 address when ERPC
+  names none and `--udp-any-source` asks). If your address changes, add
+  every fixed address your admins use:
 
   ```bash
   erpc worker firewall allow --to ssh 203.0.113.10 198.51.100.7
@@ -449,7 +581,7 @@ The rules for these, and for writing a message, are in
 
 ## Status
 
-Pre-release (`v0.1.0-rc.6`). The commands above exist and pass their offline
+Pre-release (`v0.1.0-rc.7`). The commands above exist and pass their offline
 checks; acceptance on real hosts is still under way for most chains, and each
 chain's guide says where it stands. erpc is the Rust successor of
 [SLV](https://github.com/ValidatorsDAO/slv).
@@ -470,7 +602,9 @@ rotate it before rewriting any history.
 
 Apache-2.0. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE). Chain logos come
 from [web3icons](https://github.com/0xa3k5/web3icons) (MIT); each is a
-trademark of its own project. The ERPC header image
-([`docs/assets/erpc-header.jpg`](docs/assets/erpc-header.jpg)) is ELSOUL LABO
-B.V.'s brand material and is not under the Apache License: see
+trademark of its own project. The ERPC header and CLI key visual
+([header](docs/assets/erpc-header.jpg), [CLI key visual](docs/assets/erpc-cli-hero.png))
+are ELSOUL LABO B.V.'s brand material and are not under the Apache License: see
 [`LICENSES/LicenseRef-ELSOUL-LABO-Brand.txt`](LICENSES/LicenseRef-ELSOUL-LABO-Brand.txt).
+
+[erpc-cli-home]: https://erpc.global/en/doc/erpc-cli/overview/

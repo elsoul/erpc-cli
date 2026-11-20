@@ -6,9 +6,14 @@
 //! own services, and how each region has been answering.
 //!
 //! As everywhere in [`crate::tools`], each passes on only the fields it
-//! names. The service replies hold root passwords, IPs, IP whitelists,
+//! names. The service replies hold root passwords, IP whitelists,
 //! endpoints with keys in them and Stripe ids; none of those is named.
+//! The addresses that are named: a VPS's own (`ip`, where the person logs
+//! in), and a UDP Forwarding line's `destination` (the user's server and
+//! port it sends to) and `sourceIp`/`sourceIps` (ERPC's addresses it sends
+//! from, which that server's firewall has to let in).
 
+use erpc_api::ApiError;
 use erpc_api::account::{self, Server};
 use erpc_auth::AuthClient;
 use secrecy::SecretString;
@@ -386,7 +391,34 @@ const SERVICE_FIELDS: &[(&str, &[&str])] = &[
         "epic_shreds_direct",
         &["status", "billingCycle", "hourlyCents", "createdAt"],
     ),
+    ("udp_forwarding", UDP_FIELDS),
+    ("udp_forwarding_premium", UDP_FIELDS),
 ];
+
+/// What is passed on of a UDP Forwarding line: its id (which pointing it
+/// takes), where it sends to and the addresses it sends from, and its
+/// state. Its Stripe ids and the node's bookkeeping stay out.
+const UDP_FIELDS: &[&str] = &[
+    "id",
+    "productName",
+    "status",
+    "billingCycle",
+    "region",
+    "destination",
+    "sourceIp",
+    "sourceIps",
+    "lastError",
+    "activatedAt",
+    "createdAt",
+    "suspendedAt",
+    "cancelledAt",
+];
+
+/// The kind a UDP Forwarding product's lines are listed under:
+/// `udp_forwarding`, `udp_forwarding_premium`.
+fn udp_kind(family: &erpc_api::udp::Family) -> String {
+    family.family.replace('-', "_")
+}
 
 /// `endpoint`, when it is an ERPC host with nothing after the path that
 /// could be a key: no query, no fragment, no user. A dedicated service's
@@ -435,7 +467,10 @@ fn service_rows(kind: &str, reply: &Value) -> Vec<Value> {
         .collect()
 }
 
-/// Every service the account runs, by kind.
+/// Every service the account runs, by kind. The UDP Forwarding lines come
+/// from their products' own lists, whose refusal is user-api's word on the
+/// route (it may not open them to erpc's sign-in) and is passed on as such
+/// in `refused`, never as a session to sign in again.
 pub(crate) async fn my_services(
     client: &AuthClient,
     token: &SecretString,
@@ -443,9 +478,17 @@ pub(crate) async fn my_services(
     let reads = account::SERVICE_STATUS_URLS
         .iter()
         .map(|(kind, url)| async move { (*kind, read(client, token, url).await) });
-    let replies = futures_util::future::join_all(reads).await;
+    let udp_reads = erpc_api::udp::FAMILIES.iter().map(|family| async move {
+        let reply = account::read_udp_forwarding(client, token, family.my_url).await;
+        (family, reply)
+    });
+    let (replies, udp_replies) = futures_util::future::join(
+        futures_util::future::join_all(reads),
+        futures_util::future::join_all(udp_reads),
+    )
+    .await;
     let mut services = Map::new();
-    let mut unreadable = Vec::new();
+    let mut unreadable: Vec<String> = Vec::new();
     for (kind, reply) in replies {
         match reply {
             Ok(reply) => {
@@ -454,17 +497,46 @@ pub(crate) async fn my_services(
                     services.insert(kind.to_owned(), Value::Array(rows));
                 }
             }
-            Err(_) => unreadable.push(kind),
+            Err(_) => unreadable.push(kind.to_owned()),
         }
     }
     if services.is_empty() && unreadable.len() == account::SERVICE_STATUS_URLS.len() {
         return Err("user-api did not answer for any service".to_owned());
     }
+    let refused = udp_services(udp_replies, &mut services, &mut unreadable);
     Ok(json!({
         "services": services,
         "none": services.is_empty(),
         "unreadable": unreadable,
+        "refused": refused,
     }))
+}
+
+/// The UDP Forwarding lines in `replies`, one product's each, into
+/// `services`; a list user-api would not give into what is returned, in
+/// its words, and one that got no answer into `unreadable`.
+fn udp_services(
+    replies: Vec<(&erpc_api::udp::Family, Result<Value, ApiError>)>,
+    services: &mut Map<String, Value>,
+    unreadable: &mut Vec<String>,
+) -> Map<String, Value> {
+    let mut refused = Map::new();
+    for (family, reply) in replies {
+        let kind = udp_kind(family);
+        match reply {
+            Ok(reply) => {
+                let rows = service_rows(&kind, &reply);
+                if !rows.is_empty() {
+                    services.insert(kind, Value::Array(rows));
+                }
+            }
+            Err(e @ (ApiError::Refused { .. } | ApiError::Status(_))) => {
+                refused.insert(kind, json!(e.to_string()));
+            }
+            Err(_) => unreadable.push(kind),
+        }
+    }
+    refused
 }
 
 /// How each region has answered `service` over the last 30 days.
@@ -532,6 +604,62 @@ pub(crate) async fn service_health(
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+
+    /// What `my_services` makes of each UDP Forwarding list: a line with
+    /// what pointing it takes and nothing of Stripe's; a refusal in
+    /// user-api's words, never as a session to sign in again; silence as
+    /// a list it could not read.
+    #[test]
+    fn udp_forwarding_lines_are_listed_by_product_and_a_refusal_is_user_apis_word() {
+        use erpc_api::ApiError;
+        use erpc_api::udp::FAMILIES;
+        let standard = json!({ "success": true, "data": [{
+            "id": 42, "productKey": "one_hop_direct", "productName": "UDP Forwarding Standard",
+            "status": "active", "billingCycle": "hourly", "region": "tokyo",
+            "destination": "203.0.113.10:10001", "sourceIp": "198.51.100.20",
+            "priceId": "price_x", "subscriptionItemId": "si_x", "revision": 3,
+        }] });
+        let refusal = erpc_api::account::udp_forwarding_reply(
+            403,
+            r#"{"message":"this route is not open to erpc-cli","code":"ROUTE_NOT_ALLOWED"}"#,
+        )
+        .expect_err("refused");
+        let mut services = serde_json::Map::new();
+        let mut unreadable = vec!["grpc".to_owned()];
+        let refused = super::udp_services(
+            vec![(&FAMILIES[0], Ok(standard)), (&FAMILIES[1], Err(refusal))],
+            &mut services,
+            &mut unreadable,
+        );
+        let line = &services["udp_forwarding"][0];
+        assert_eq!(line["id"], json!(42));
+        assert_eq!(line["destination"], json!("203.0.113.10:10001"));
+        assert_eq!(line["sourceIp"], json!("198.51.100.20"));
+        for stripe in ["priceId", "subscriptionItemId", "revision", "productKey"] {
+            assert!(line.get(stripe).is_none(), "{stripe}");
+        }
+        let said = refused["udp_forwarding_premium"].as_str().expect("words");
+        assert!(
+            said.contains("not open to erpc-cli") && !said.contains("erpc login"),
+            "{said}"
+        );
+        assert_eq!(unreadable, ["grpc"]);
+        // An empty list is no service; no answer is a list not read.
+        let mut services = serde_json::Map::new();
+        let none = super::udp_services(
+            vec![
+                (&FAMILIES[0], Ok(json!({ "data": [] }))),
+                (
+                    &FAMILIES[1],
+                    Err(ApiError::Malformed("not JSON".to_owned())),
+                ),
+            ],
+            &mut services,
+            &mut unreadable,
+        );
+        assert!(services.is_empty() && none.is_empty());
+        assert_eq!(unreadable, ["grpc", "udp_forwarding_premium"]);
+    }
 
     #[test]
     fn only_an_erpc_host_with_nothing_after_the_path_is_passed_on() {

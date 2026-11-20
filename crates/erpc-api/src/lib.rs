@@ -20,6 +20,7 @@ pub mod ai;
 pub mod gasless;
 pub mod hourly;
 pub mod storage;
+pub mod udp;
 pub mod worker;
 
 /// The account endpoint. A constant for the same reason the identity

@@ -1,6 +1,6 @@
 use anyhow::Context;
 use std::env;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 
 use crate::utils::fallback::{DEFAULT_API_PORT, DEFAULT_CONFIG_PATH};
 
@@ -13,6 +13,10 @@ pub struct Settings {
     pub x_token: Option<String>,
     /// The Shreds stream (optional): `erpc worker deploy --shreds` sets it.
     pub shreds_endpoint: Option<String>,
+    /// Where ERPC's raw shreds arrive over UDP (optional): `erpc worker
+    /// deploy --udp` sets it to `0.0.0.0:<port>`, its UDP Forwarding line's
+    /// port on the server.
+    pub shreds_udp_bind: Option<SocketAddr>,
     pub rpc_endpoint: String,
     /// Separate RPC endpoint for sending transactions (optional).
     /// Falls back to `rpc_endpoint` when not set.
@@ -41,6 +45,7 @@ impl Settings {
         let grpc_endpoint = env::var("GRPC_ENDPOINT").context("GRPC_ENDPOINT is missing")?;
         let x_token = env::var("X_TOKEN").ok();
         let shreds_endpoint = env::var("SHREDS_ENDPOINT").ok().filter(|e| !e.is_empty());
+        let shreds_udp_bind = udp_bind(env::var("SHREDS_UDP_BIND").ok().as_deref())?;
 
         // Build RPC endpoint: prefer explicit SOLANA_RPC_ENDPOINT, then ERPC_API_KEY.
         // There is no public fallback: a rate-limited RPC loses trades.
@@ -94,6 +99,7 @@ impl Settings {
             grpc_endpoint,
             x_token,
             shreds_endpoint,
+            shreds_udp_bind,
             rpc_endpoint,
             send_rpc_endpoint,
             api_port,
@@ -103,6 +109,17 @@ impl Settings {
             auto_loop,
         })
     }
+}
+
+/// `SHREDS_UDP_BIND` as the address to bind: none when it is unset or empty.
+fn udp_bind(raw: Option<&str>) -> anyhow::Result<Option<SocketAddr>> {
+    raw.filter(|b| !b.is_empty())
+        .map(|raw| {
+            raw.parse::<SocketAddr>().with_context(|| {
+                format!("SHREDS_UDP_BIND={raw:?} is not an address and port, like 0.0.0.0:10001")
+            })
+        })
+        .transpose()
 }
 
 /// A URL as it may appear in a log: without its query (where an RPC API key
@@ -189,6 +206,16 @@ mod tests {
         );
         assert_eq!(for_log("redis://127.0.0.1:6379"), "redis://127.0.0.1:6379");
         assert!(!for_log("SECRET").contains("SECRET"));
+    }
+
+    #[test]
+    fn the_udp_bind_is_an_address_and_port_or_nothing() {
+        use super::udp_bind;
+        assert_eq!(udp_bind(None).unwrap(), None);
+        assert_eq!(udp_bind(Some("")).unwrap(), None);
+        assert_eq!(udp_bind(Some("0.0.0.0:10001")).unwrap(), "0.0.0.0:10001".parse().ok());
+        let err = udp_bind(Some("10001")).unwrap_err().to_string();
+        assert!(err.contains("SHREDS_UDP_BIND"), "{err}");
     }
 
     #[test]

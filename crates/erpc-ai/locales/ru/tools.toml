@@ -28,3 +28,4 @@ start_hourly_product = "Спрашиваю, запускать ли продук
 end_hourly_product = "Спрашиваю, завершать ли продукт"
 top_up_credit = "Спрашиваю о покупке кредитов"
 create_credit_wallet = "Спрашиваю о создании кошелька"
+point_udp_line = "Спрашиваю, куда направить линию UDP Forwarding"

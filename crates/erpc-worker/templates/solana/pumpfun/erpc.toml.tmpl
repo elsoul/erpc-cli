@@ -15,6 +15,7 @@ files    = ["config.jsonc"]
 #   erpc worker secret put API_TOKEN --generate
 # The RPC for reads is one of the two in the set: ERPC_API_KEY (the account's
 # RPC key, a secret) or SOLANA_RPC_ENDPOINT (a URL, in [vars]).
+# `deploy --shreds` sets SHREDS_ENDPOINT and `deploy --udp` SHREDS_UDP_BIND.
 requires = ["GRPC_ENDPOINT", "API_TOKEN", ["ERPC_API_KEY", "SOLANA_RPC_ENDPOINT"]]
 # Keep the port in step with API_PORT below.
 health   = { http = "http://127.0.0.1:3000/healthz", timeout_secs = 30 }
@@ -22,6 +23,11 @@ health   = { http = "http://127.0.0.1:3000/healthz", timeout_secs = 30 }
 # It stays closed until app_allow lists someone; the API also listens on
 # loopback only until API_BIND = "0.0.0.0" is set in [vars].
 port     = 3000
+
+# The app is built with `cargo build --release`. Without its UDP source
+# (raw shreds over UDP, SHREDS_UDP_BIND):
+# [build]
+# command = ["cargo", "build", "--release", "--no-default-features"]
 
 # Redis on the server, which deploy installs and starts: the bot keeps its
 # trade history and the creators it banned there, so they outlast a restart.

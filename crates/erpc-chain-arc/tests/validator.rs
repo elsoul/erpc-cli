@@ -2,24 +2,27 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Isolated validator host models; no native node, key generation or NSS mutation.
+
+/// One test per Python fixture, named after its file: the fixtures run in
+/// parallel, and each one that fails is reported, not only the first. The
+/// modules that use it are `cfg(test)`, so their shared `fixture` helper may
+/// `expect` as a test does.
 #[cfg(unix)]
-#[test]
-fn validator_original_authority_failure_cases() {
-    for script in [
-        "validator_accounts.py",
-        "validator_custody.py",
-        "validator_admission.py",
-        "validator_state.py",
-        "validator_units.py",
-        "validator_ipc.py",
-        "validator_remote.py",
-        "validator_process.py",
-        "validator_control.py",
-        "validator_namespace.py",
-        "validator_storage.py",
-        "validator_loaded.py",
-        "validator_revocation.py",
-    ] {
+macro_rules! fixtures {
+    ($($fixture:ident),* $(,)?) => {
+        $(
+            #[test]
+            fn $fixture() {
+                fixture(concat!(stringify!($fixture), ".py"));
+            }
+        )*
+    };
+}
+
+#[cfg(unix)]
+#[cfg(test)]
+mod validator_original_authority_failure_cases {
+    fn fixture(script: &str) {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests")
             .join(script);
@@ -33,5 +36,21 @@ fn validator_original_authority_failure_cases() {
             "{script}: {}",
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    fixtures! {
+        validator_accounts,
+        validator_custody,
+        validator_admission,
+        validator_state,
+        validator_units,
+        validator_ipc,
+        validator_remote,
+        validator_process,
+        validator_control,
+        validator_namespace,
+        validator_storage,
+        validator_loaded,
+        validator_revocation,
     }
 }

@@ -11,40 +11,31 @@ fn python(script: &str) -> Command {
     );
     command
 }
+
+/// One test per Python fixture, named after its file: the fixtures run in
+/// parallel, and each one that fails is reported, not only the first. The
+/// modules that use it are `cfg(test)`, so their shared `fixture` helper may
+/// `expect` as a test does.
+#[cfg(unix)]
+macro_rules! fixtures {
+    ($($fixture:ident),* $(,)?) => {
+        $(
+            #[test]
+            fn $fixture() {
+                fixture(concat!(stringify!($fixture), ".py"));
+            }
+        )*
+    };
+}
+
 // These fixtures load the scripts a managed host runs, which import POSIX-only
 // modules; the two configuration tests below stay on every platform.
 #[cfg(unix)]
-#[test]
-fn bounded_artifacts_and_parent_transport_failures() {
-    for script in [
-        "artifacts.py",
-        "admission.py",
-        "checkpoint.py",
-        "signer.py",
-        "signatures.py",
-        "parent.py",
-        "broker.py",
-        "broker_docker.py",
-        "broker_storage.py",
-        "broker_runtime.py",
-        "gateway.py",
-        "native_peer.py",
-        "native_authority.py",
-        "local_tls.py",
-        "launch.py",
-        "validator_runtime.py",
-        "validator_activation.py",
-        "karwar.py",
-        "volume.py",
-        "state.py",
-        "identity.py",
-        "observe.py",
-        "control.py",
-        "host.py",
-        "host_resources.py",
-        "installer.py",
-        "accounts_test.py",
-    ] {
+#[cfg(test)]
+mod bounded_artifacts_and_parent_transport_failures {
+    use super::python;
+
+    fn fixture(script: &str) {
         assert!(
             python(script)
                 .status()
@@ -52,7 +43,38 @@ fn bounded_artifacts_and_parent_transport_failures() {
                 .success()
         );
     }
+
+    fixtures! {
+        artifacts,
+        admission,
+        checkpoint,
+        signer,
+        signatures,
+        parent,
+        broker,
+        broker_docker,
+        broker_storage,
+        broker_runtime,
+        gateway,
+        native_peer,
+        native_authority,
+        local_tls,
+        launch,
+        validator_runtime,
+        validator_activation,
+        karwar,
+        volume,
+        state,
+        identity,
+        observe,
+        control,
+        host,
+        host_resources,
+        installer,
+        accounts_test,
+    }
 }
+
 #[test]
 fn generated_configuration_is_valid_toml_and_preserves_protocol_metadata() {
     let output = python("configure.py")

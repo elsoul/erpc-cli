@@ -12,13 +12,23 @@
 //! go through the same steps `erpc ai` uses. A start shows the price and
 //! the balance, which user-api gives, and is answered by the person at the
 //! terminal, or by `--yes` on a deploy, which says them and goes ahead.
-//! Ending one is always the person's to answer.
+//! Ending one is the person's to answer, but for what `erpc worker delete
+//! --release-server --yes` names: that command line is the yes, and each
+//! end is said.
 //!
-//! A data line (an hourly gRPC, Shreds or Unlimited RPC line) is started
-//! for the server the same way, at the cheapest plan unless one is asked
-//! for. It lets in the server's address only, and takes no token. A gRPC
-//! or Shreds line is told the address when it starts; an Unlimited RPC is
-//! started in the server's region, and its whitelist is set after.
+//! A data line (an hourly gRPC, Shreds, UDP Forwarding or Unlimited RPC
+//! line) is started for the server the same way, at the cheapest plan
+//! unless one is asked for. It lets in the server's address only, and
+//! takes no token. A gRPC or Shreds line is told the address when it
+//! starts; an Unlimited RPC is started in the server's region, and its
+//! whitelist is set after. A UDP Forwarding line is the other way about:
+//! ERPC sends the leader's raw shreds from a node in a region to a UDP port
+//! of the server's own, so the line is pointed at the server's address and
+//! port once it is started, and the addresses it sends from (`sources`) go
+//! on record for the server's firewall to let in. It comes as two
+//! products, Standard and Premium, each its own hourly family with its own
+//! list; which one a line is comes from the list it is in, never from the
+//! record.
 //!
 //! A start's request is kept on record from before it leaves until its
 //! outcome is known ([`StartRecord`]), so that one that got no answer is
@@ -29,11 +39,15 @@ use erpc_ai::actions::StartError;
 use erpc_ai::confirm::Confirm;
 use erpc_ai::servers::Servers as _;
 use erpc_ai::session::Access as _;
+use erpc_api::udp::{
+    FAMILIES as UDP_FAMILIES, FAMILY_NAMES as UDP_FAMILY_NAMES, Family as UdpFamily,
+    family_of as udp_family_of, is_row_of,
+};
 use erpc_api::{account, hourly};
 use erpc_auth::AuthClient;
 use erpc_ssh::Target;
-use std::net::Ipv4Addr;
-use std::time::Duration;
+use std::net::{Ipv4Addr, SocketAddrV4};
+use std::time::{Duration, Instant};
 
 use erpc_worker::manifest::{Env, Line, LineKind, Resource, ResourceKind, Start};
 use secrecy::SecretString;
@@ -53,15 +67,31 @@ pub(crate) const REGIONS: [&str; 7] = [
     "sydney",
 ];
 
+/// The UDP port a UDP Forwarding line sends to when neither `--udp-port`
+/// nor a line on record names one.
+pub(crate) const DEFAULT_UDP_PORT: u16 = 10001;
+
+/// The server a line is for: the address it lets in, the UDP port a UDP
+/// Forwarding line sends to, and the region (the server's, or
+/// `--udp-region`) an Unlimited RPC or a UDP Forwarding line is started in.
+pub(crate) struct LineTarget {
+    pub(crate) ip: Ipv4Addr,
+    pub(crate) udp_port: Option<u16>,
+    pub(crate) region: Option<String>,
+}
+
 fn failed(message: impl Into<String>) -> CliError {
     CliError::new(Code::Failed, message)
 }
 
-/// Says what a start would have asked, and goes ahead: the answer `--yes`
-/// gives. An hourly product is paid from ERPC Credit, which is bought
+/// Says what would have been asked, and goes ahead: the answer `--yes`
+/// gives to a start, and to the ends `erpc worker delete --release-server`
+/// names. An hourly product is paid from ERPC Credit, which is bought
 /// beforehand, and user-api refuses a start the credit does not cover; so
-/// a command line that names what to start, with `--yes`, is the yes. The
-/// product, its price, the credit and how long it lasts are still said, on
+/// a command line that names what to start, with `--yes`, is the yes. A
+/// delete that ends the server, with `--yes`, is the yes to ending the
+/// lines and the server on its record. The product and its price (on a
+/// start, the credit and how long it lasts too) are still said, on
 /// standard error, whether or not the output is JSON.
 #[derive(Default)]
 struct Accepted;
@@ -90,7 +120,17 @@ pub(crate) struct Api {
     /// Whether `--yes` answers what a start asks; `None` for a command that
     /// has no such flag, which a refusal then does not name.
     yes: Option<bool>,
+    /// In the session that ends what `erpc worker delete --release-server`
+    /// names ([`Api::releasing`]): whether its `--yes` answers those ends.
+    /// `None` elsewhere, where `--yes` answers no end.
+    release: Option<bool>,
     accepted: Accepted,
+    /// In a test, the loopback server that stands in for user-api
+    /// ([`stub`]): the reads, and the pointing of a UDP Forwarding line, go
+    /// to it by their path. The session's client reaches user-api alone and
+    /// is never pointed elsewhere.
+    #[cfg(test)]
+    stub: Option<std::net::SocketAddr>,
 }
 
 impl Api {
@@ -110,17 +150,31 @@ impl Api {
             token,
             confirm: crate::ai::TerminalConfirm::default(),
             yes: None,
+            release: None,
             accepted: Accepted,
+            #[cfg(test)]
+            stub: None,
         })
     }
 
     /// The same session, with `--yes` answering what a start asks (the
     /// price of an hourly product) and the first login to a server erpc
-    /// has not made key-only yet. Ending something is still the person's
-    /// to say.
+    /// has not made key-only yet. An end it makes is still the person's to
+    /// say.
     #[must_use]
     pub(crate) fn accepting(mut self, yes: bool) -> Self {
         self.yes = Some(yes);
+        self
+    }
+
+    /// The same session, for what `erpc worker delete --release-server`
+    /// ends (the environment's lines and its hourly server): `--yes`
+    /// (`yes`) answers each end, which is said on standard error; without
+    /// it each is the person's to say, at a terminal. It answers no start
+    /// and no first login.
+    #[must_use]
+    pub(crate) fn releasing(mut self, yes: bool) -> Self {
+        self.release = Some(yes);
         self
     }
 
@@ -132,7 +186,19 @@ impl Api {
             token: SecretString::from(String::new()),
             confirm: crate::ai::TerminalConfirm::default(),
             yes: None,
+            release: None,
             accepted: Accepted,
+            stub: None,
+        }
+    }
+
+    /// One whose reads, and whose pointing of a UDP Forwarding line, are
+    /// answered by the loopback server at `stub`.
+    #[cfg(test)]
+    pub(crate) fn stubbed(stub: std::net::SocketAddr) -> Self {
+        Self {
+            stub: Some(stub),
+            ..Self::offline()
         }
     }
 
@@ -144,10 +210,27 @@ impl Api {
         }
     }
 
-    /// Who answers an end: the person at the terminal, or nobody, whatever
-    /// `--yes` says.
+    /// Who answers an end: `--yes`, in a session [`Api::releasing`] made
+    /// with it; else the person at the terminal, or nobody.
     fn confirm(&self) -> Option<&dyn Confirm> {
-        answerer(Asked::End, self.yes, crate::session::has_terminal()).map(|who| self.by(who))
+        // A stubbed session has no one to ask, so no end gets as far as a
+        // request.
+        #[cfg(test)]
+        if self.stub.is_some() {
+            return None;
+        }
+        self.end_answerer(crate::session::has_terminal())
+            .map(|who| self.by(who))
+    }
+
+    /// Who answers an end, with a person at a terminal (`terminal`) or
+    /// not: `--yes`, in a session [`Api::releasing`] made with it; else the
+    /// person, or nobody.
+    fn end_answerer(&self, terminal: bool) -> Option<Answerer> {
+        match self.release {
+            Some(yes) => answerer(Asked::Release, Some(yes), terminal),
+            None => answerer(Asked::End, self.yes, terminal),
+        }
     }
 
     /// Who answers a start: `--yes`, else the person at the terminal.
@@ -157,9 +240,24 @@ impl Api {
     /// With neither, what to do about it: a start is never refused with
     /// words meant for a model.
     fn confirm_start(&self) -> Result<&dyn Confirm, CliError> {
+        // Nor any start.
+        #[cfg(test)]
+        if self.stub.is_some() {
+            return Err(nobody(Asked::Start, self.yes));
+        }
         answerer(Asked::Start, self.yes, crate::session::has_terminal())
             .map(|who| self.by(who))
             .ok_or_else(|| nobody(Asked::Start, self.yes))
+    }
+
+    /// Who answers a start now: `--yes`, the person at the terminal, or
+    /// nobody. A stubbed session has no terminal.
+    fn start_answerer(&self) -> Option<Answerer> {
+        #[cfg(test)]
+        if self.stub.is_some() {
+            return answerer(Asked::Start, self.yes, false);
+        }
+        answerer(Asked::Start, self.yes, crate::session::has_terminal())
     }
 
     /// Who answers the first login to a server: `--yes`, else the person
@@ -177,9 +275,44 @@ impl Api {
 
     /// What user-api answers at `url`, one of the account's own reads.
     pub(crate) async fn read(&self, url: &str) -> Result<Value, CliError> {
+        let silent = |e| CliError::new(Code::Network, t!("worker_vps.api_silent", error = e));
+        #[cfg(test)]
+        if let Some(stub) = self.stub {
+            let (status, body) = stub::send(stub, "GET", url, None).await;
+            return account::read_reply(status, &body).map_err(silent);
+        }
         account::read(&self.client, &self.token, url)
             .await
-            .map_err(|e| CliError::new(Code::Network, t!("worker_vps.api_silent", error = e)))
+            .map_err(silent)
+    }
+
+    /// Reads a UDP Forwarding `my` list, whose refusal is user-api's own
+    /// word rather than a refused session.
+    async fn read_udp(&self, url: &str) -> Result<Value, erpc_api::ApiError> {
+        #[cfg(test)]
+        if let Some(stub) = self.stub {
+            let (status, body) = stub::send(stub, "GET", url, None).await;
+            return account::udp_forwarding_reply(status, &body);
+        }
+        account::read_udp_forwarding(&self.client, &self.token, url).await
+    }
+
+    /// Points UDP Forwarding line `number` at `destination` from `region`.
+    async fn set_udp_destination(
+        &self,
+        url: &str,
+        number: i64,
+        region: &str,
+        destination: &str,
+    ) -> Result<Value, erpc_api::ApiError> {
+        #[cfg(test)]
+        if let Some(stub) = self.stub {
+            let body = account::udp_destination(number, region, destination);
+            let (status, text) = stub::send(stub, "PUT", url, Some(&body)).await;
+            return account::udp_forwarding_reply(status, &text);
+        }
+        account::set_udp_destination(&self.client, &self.token, url, number, region, destination)
+            .await
     }
 }
 
@@ -194,6 +327,9 @@ enum Asked {
     Login,
     /// The end of an hourly product.
     End,
+    /// The end of what `erpc worker delete --release-server` names: one of
+    /// the environment's lines, or its hourly server.
+    Release,
 }
 
 /// Who answers what is asked.
@@ -207,13 +343,14 @@ enum Answerer {
 
 /// Who answers `asked`, from whether `--yes` was given (`None`: the
 /// command has no such flag) and whether a person is at a terminal; `None`
-/// when nobody can. `--yes` answers a start and a first login, and comes
-/// first there, so that a script, an agent or a person who passed it is not
-/// asked again. It never answers an end: ending something is the person's
-/// to say, at a terminal.
+/// when nobody can. `--yes` answers a start, a first login and the ends a
+/// `delete --release-server` names, and comes first there, so that a
+/// script, an agent or a person who passed it is not asked again. It
+/// answers no other end (one a deploy offers after a step failed, `run`'s
+/// lines): those are the person's to say, at a terminal.
 fn answerer(asked: Asked, yes: Option<bool>, terminal: bool) -> Option<Answerer> {
     match (asked, yes) {
-        (Asked::Start | Asked::Login, Some(true)) => Some(Answerer::Yes),
+        (Asked::Start | Asked::Login | Asked::Release, Some(true)) => Some(Answerer::Yes),
         _ => terminal.then_some(Answerer::Person),
     }
 }
@@ -231,10 +368,10 @@ fn nobody(asked: Asked, yes: Option<bool>) -> CliError {
             t!("worker_vps.login.needs_yes"),
             t!("worker_vps.login.needs_terminal_hint"),
         ),
-        (Asked::Start | Asked::End, Some(_)) => {
+        (Asked::Start | Asked::End | Asked::Release, Some(_)) => {
             (t!("worker_vps.needs_yes"), t!("worker_vps.needs_yes_hint"))
         }
-        (Asked::Start | Asked::End, None) => (
+        (Asked::Start | Asked::End | Asked::Release, None) => (
             t!("worker_vps.needs_yes"),
             t!("worker_vps.needs_terminal_hint"),
         ),
@@ -457,10 +594,12 @@ impl Answer {
     }
 }
 
-/// The failure code of user-api's answer to a start. The VPS route gives
-/// it as `code`. The gRPC, Shreds and Unlimited routes give a key's
-/// conflict, and a duplicate insert's "in progress", as the whole
-/// `message`, with no `code`.
+/// The failure code of user-api's answer to a start. The VPS and UDP
+/// Forwarding routes give it as `code` (a UDP Forwarding start's own are
+/// `UDP_FORWARDING_CONFLICT` and `UDP_FORWARDING_UPSTREAM_UNAVAILABLE`,
+/// which erpc does not tell apart from any other 409 and 502). The gRPC,
+/// Shreds and Unlimited routes give a key's conflict, and a duplicate
+/// insert's "in progress", as the whole `message`, with no `code`.
 fn failure_code(started: &Value) -> Option<&str> {
     started["code"].as_str().or_else(|| {
         started["message"]
@@ -1018,14 +1157,8 @@ struct Plan {
 
 /// The name of product `id`, as user-api gives it.
 async fn product_name(api: &Api, id: &str) -> Option<String> {
-    let product = account::read_query(
-        &api.client,
-        &api.token,
-        account::PRODUCT_URL,
-        &[("productId", id)],
-    )
-    .await
-    .ok()?;
+    let url = account::product_url(id).ok()?;
+    let product = api.read(&url).await.ok()?;
     product
         .get("message")
         .unwrap_or(&product)
@@ -1235,8 +1368,10 @@ pub(crate) async fn secure(api: &Api, resource: &Resource) -> Result<Server, Cli
     Ok(server)
 }
 
-/// Ends the hourly VPS `env` runs on, after the person's yes.
-pub(crate) async fn end(env: &Env, say: &Say) -> Result<Value, CliError> {
+/// Ends the hourly VPS `env` runs on, as `erpc worker delete
+/// --release-server` asks: on its `--yes` (`yes`), else after the person's
+/// yes.
+pub(crate) async fn end(env: &Env, say: &Say, yes: bool) -> Result<Value, CliError> {
     let resource = env
         .resource
         .as_ref()
@@ -1250,7 +1385,7 @@ pub(crate) async fn end(env: &Env, say: &Say) -> Result<Value, CliError> {
         ResourceKind::BareMetal => "bare_metal",
         _ => "vps",
     };
-    let api = Api::open().await?;
+    let api = Api::open().await?.releasing(yes);
     say.line(&t!("worker_vps.end.ending", kind = product_type, id));
     let ended = erpc_ai::actions::end_hourly_product(
         &api.client,
@@ -1525,6 +1660,19 @@ const fn line_product(kind: LineKind) -> LineProduct {
             wait: Duration::from_mins(3),
             poll: Duration::from_secs(5),
         },
+        // Two products under one kind: the family and the product type here
+        // are Standard's, and `UDP_FAMILIES` has both where it matters
+        // (`udp_row`, `is_charged`, `end_line`). It is listed by its own
+        // `my` routes, not a status URL, so the status key is never looked
+        // up.
+        LineKind::Udp => LineProduct {
+            family: "udp-forwarding",
+            id_field: "subscriptionId",
+            product_type: "one_hop_direct",
+            status_key: "udp",
+            wait: Duration::from_mins(10),
+            poll: Duration::from_secs(5),
+        },
         // A dedicated server is set up for it: user-api allows 45 minutes.
         LineKind::Unlimited => LineProduct {
             family: "user-unlimited",
@@ -1573,7 +1721,8 @@ pub(crate) const fn is_gone(on_record: (bool, bool), listed: bool, charged: bool
     hourly && !pending && !listed && !charged
 }
 
-/// Whether `line` is among what [`charged`] lists.
+/// Whether `line` is among what [`charged`] lists. A UDP Forwarding line is
+/// charged as either of its products.
 pub(crate) fn is_charged(charged: &[(String, i64)], line: &Line) -> bool {
     line.id.parse::<i64>().is_ok_and(|id| {
         charged
@@ -1582,10 +1731,13 @@ pub(crate) fn is_charged(charged: &[(String, i64)], line: &Line) -> bool {
     })
 }
 
-/// Whether a credit snapshot's `product_type` is the one a line of `kind`
-/// is charged as.
+/// Whether a credit snapshot's `product_type` is one a line of `kind` is
+/// charged as.
 pub(crate) fn is_product_of(kind: LineKind, product_type: &str) -> bool {
-    line_product(kind).product_type == product_type
+    match kind {
+        LineKind::Udp => UDP_FAMILIES.iter().any(|f| f.product_type == product_type),
+        kind => line_product(kind).product_type == product_type,
+    }
 }
 
 /// The account's data line `id` of `kind`, as its status lists it, or
@@ -1595,10 +1747,117 @@ pub(crate) async fn line_row(
     kind: LineKind,
     id: &str,
 ) -> Result<Option<Value>, CliError> {
-    Ok(line_rows(api, kind).await?.into_iter().find(|row| {
-        row["id"].as_i64().map(|n| n.to_string()).as_deref() == Some(id)
-            || row["id"].as_str() == Some(id)
-    }))
+    if kind == LineKind::Udp {
+        return Ok(udp_row(api, id).await?.map(|(_, row)| row));
+    }
+    Ok(line_rows(api, kind)
+        .await?
+        .into_iter()
+        .find(|row| is_row_of(row, id)))
+}
+
+/// UDP Forwarding line `id` as its product's `my` list has it, with the
+/// product: the Standard list is read first, then the Premium one, and
+/// `None` means neither lists it. A `my` reply with no list in it is an
+/// error, as [`line_rows`] treats one.
+async fn udp_row(api: &Api, id: &str) -> Result<Option<(&'static UdpFamily, Value)>, CliError> {
+    for family in &UDP_FAMILIES {
+        if let Some(row) = udp_rows(api, family)
+            .await?
+            .into_iter()
+            .find(|row| is_row_of(row, id))
+        {
+            // The list it is in says what it is; its own word, when it
+            // has one, is the same.
+            return Ok(Some((udp_family_of(&row).unwrap_or(family), row)));
+        }
+    }
+    Ok(None)
+}
+
+/// The account's lines of UDP Forwarding `family`.
+async fn udp_rows(api: &Api, family: &UdpFamily) -> Result<Vec<Value>, CliError> {
+    let reply = api
+        .read_udp(family.my_url)
+        .await
+        .map_err(|e| udp_unread(family, &e))?;
+    reply["data"]
+        .as_array()
+        .cloned()
+        .ok_or_else(|| failed(t!("worker_vps.line.no_list", kind = LineKind::Udp.label())))
+}
+
+/// A UDP Forwarding list that could not be read, as the operator is told:
+/// a refusal in user-api's own words (it answers one for a route it does
+/// not open to erpc's sign-in), anything else as a call that got no
+/// answer.
+fn udp_unread(family: &UdpFamily, error: &erpc_api::ApiError) -> CliError {
+    match error {
+        erpc_api::ApiError::Refused { .. } | erpc_api::ApiError::Status(_) => {
+            failed(t!("worker_vps.line.udp_refused", name = family.name, error))
+        }
+        _ => CliError::new(Code::Network, t!("worker_vps.api_silent", error)),
+    }
+}
+
+/// The addresses a UDP Forwarding line sends from, as its row names them:
+/// Standard's one `sourceIp`, Premium's `sourceIps`. Nothing until a node
+/// is allocated (null, or an empty string). Sorted, each once, so that the
+/// record reads the same however user-api orders them, and the same list
+/// is never taken for a change.
+///
+/// A source that is not an IPv4 address is the error, as user-api gave it
+/// (cut to what can be printed): left out, the list would be shorter than
+/// what the line sends from, or empty, and an empty list is what "no
+/// address named" looks like.
+fn udp_sources(row: &Value) -> Result<Vec<Ipv4Addr>, String> {
+    let named = |value: &Value| match value {
+        Value::Null => None,
+        Value::String(s) if s.trim().is_empty() => None,
+        Value::String(s) => Some(s.trim().parse::<Ipv4Addr>().map_err(|_| {
+            s.chars()
+                .filter(|c| !c.is_control())
+                .take(64)
+                .collect::<String>()
+        })),
+        other => Some(Err(other.to_string().chars().take(64).collect())),
+    };
+    let many = row["sourceIps"].as_array().into_iter().flatten();
+    let mut sources = std::iter::once(&row["sourceIp"])
+        .chain(many)
+        .filter_map(named)
+        .collect::<Result<Vec<Ipv4Addr>, String>>()?;
+    sources.sort_unstable();
+    sources.dedup();
+    Ok(sources)
+}
+
+/// [`udp_sources`] of line `id`, its error as the operator is told.
+fn udp_sources_of(id: &str, row: &Value) -> Result<Vec<Ipv4Addr>, CliError> {
+    udp_sources(row).map_err(|source| failed(t!("worker_vps.line.udp_bad_source", id, source)))
+}
+
+/// The UDP port a UDP Forwarding line on record sends to, from its
+/// endpoint (`0.0.0.0:<port>`); `None` while it is pending.
+pub(crate) fn udp_port(line: &Line) -> Option<u16> {
+    line.endpoint
+        .parse::<SocketAddrV4>()
+        .ok()
+        .map(|address| address.port())
+}
+
+/// The addresses UDP Forwarding line `id` sends from now, or `None` when
+/// neither list has it: what a deploy reads again, since ERPC may move the
+/// line. One that is not an IPv4 address is an error, and the record stays
+/// as it was.
+pub(crate) async fn udp_sources_now(
+    api: &Api,
+    id: &str,
+) -> Result<Option<Vec<Ipv4Addr>>, CliError> {
+    udp_row(api, id)
+        .await?
+        .map(|(_, row)| udp_sources_of(id, &row))
+        .transpose()
 }
 
 /// The id of the account's active data line of `kind` that lets in `ip`,
@@ -1619,8 +1878,16 @@ pub(crate) async fn line_letting_in(
     }))
 }
 
-/// The account's data lines of `kind`, as their status lists them.
+/// The account's data lines of `kind`, as their status lists them; for UDP
+/// Forwarding, both products' lists together.
 async fn line_rows(api: &Api, kind: LineKind) -> Result<Vec<Value>, CliError> {
+    if kind == LineKind::Udp {
+        let mut rows = Vec::new();
+        for family in &UDP_FAMILIES {
+            rows.extend(udp_rows(api, family).await?);
+        }
+        return Ok(rows);
+    }
     let product = line_product(kind);
     let url = account::SERVICE_STATUS_URLS
         .iter()
@@ -1663,57 +1930,461 @@ fn line_endpoint(kind: LineKind, given: &str) -> Option<String> {
     erpc_worker::net::is_host(host).then(|| ["https", host].join("://"))
 }
 
-/// Starts an hourly data line of `kind` for the server at `ip` in
-/// `region`, once its price is answered (by the person, or by `--yes` on a
-/// deploy, which says it). It may not be active yet, nor let the server
-/// in: [`wait_line`] sees to both. Its request goes through `record`, as a
-/// VPS's does ([`buy`]), and so does the line user-api names.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "each is its own input to the one user-api call, and the hint names the scope"
-)]
+/// A UDP Forwarding plan the catalogue offers: its product, id and price.
+#[derive(Debug)]
+struct UdpPlan {
+    family: &'static UdpFamily,
+    id: String,
+    cents: f64,
+}
+
+/// The UDP Forwarding plans the hourly catalogue offers, both products.
+fn udp_plans(catalog: &Value) -> Vec<UdpPlan> {
+    UDP_FAMILIES
+        .iter()
+        .flat_map(|family| {
+            catalog["families"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|f| f["family"].as_str() == Some(family.family))
+                .flat_map(|f| f["plans"].as_array().cloned().unwrap_or_default())
+                .filter_map(move |p| {
+                    Some(UdpPlan {
+                        family,
+                        id: p["productId"].as_str()?.to_owned(),
+                        cents: p["hourlyCents"].as_f64()?,
+                    })
+                })
+        })
+        .collect()
+}
+
+/// The UDP Forwarding plan to start: the one `asked` names, in either
+/// product, else the cheapest of both. The product chosen decides the
+/// regions the line can send from.
+fn choose_udp_plan<'a>(
+    offered: &'a [UdpPlan],
+    asked: Option<&str>,
+) -> Result<&'a UdpPlan, CliError> {
+    match asked {
+        Some(id) => offered.iter().find(|p| p.id == id).ok_or_else(|| {
+            failed(t!(
+                "worker_vps.plan.not_offered",
+                id,
+                family = UDP_FAMILY_NAMES
+            ))
+        }),
+        None => offered
+            .iter()
+            .min_by(|a, b| a.cents.total_cmp(&b.cents))
+            .ok_or_else(|| failed(t!("worker_vps.plan.none", family = UDP_FAMILY_NAMES))),
+    }
+}
+
+/// Refuses `region` when the product of `chosen` does not send from it,
+/// saying which regions it does; when the other product in `offered`
+/// does, the hint names its plan.
+fn udp_region_ok(chosen: &UdpPlan, region: &str, offered: &[UdpPlan]) -> Result<(), CliError> {
+    if chosen.family.regions.contains(&region) {
+        return Ok(());
+    }
+    let error = udp_bad_region(chosen.family, region);
+    let elsewhere = offered
+        .iter()
+        .find(|p| p.family.family != chosen.family.family && p.family.regions.contains(&region));
+    Err(match elsewhere {
+        Some(other) => error.hint(t!(
+            "worker_vps.line.udp_region_elsewhere",
+            name = other.family.name,
+            region,
+            product = other.id
+        )),
+        None => error,
+    })
+}
+
+/// The refusal of `region` for UDP Forwarding product `family`, naming the
+/// regions it sends from.
+fn udp_bad_region(family: &UdpFamily, region: &str) -> CliError {
+    CliError::new(
+        Code::Usage,
+        t!(
+            "worker_vps.line.udp_bad_region",
+            region,
+            name = family.name,
+            regions = family.regions.join(", ")
+        ),
+    )
+}
+
+/// Refuses `region` for the plan a UDP Forwarding start would take
+/// (`plan`, else the cheapest): asked before a new VPS is bought there.
+pub(crate) async fn udp_region_ready(
+    api: &Api,
+    plan: Option<&str>,
+    region: &str,
+) -> Result<(), CliError> {
+    let offered = udp_plans(&api.read(hourly::CATALOG_URL).await?);
+    udp_region_ok(choose_udp_plan(&offered, plan)?, region, &offered)
+}
+
+/// The port and region a UDP Forwarding line is started for, which
+/// `target` must name.
+pub(crate) fn udp_target(target: &LineTarget) -> Result<(u16, &str), CliError> {
+    let port = target
+        .udp_port
+        .ok_or_else(|| failed(t!("worker_vps.line.udp_no_port")))?;
+    let region = target.region.as_deref().ok_or_else(udp_no_region)?;
+    Ok((port, region))
+}
+
+/// The refusal of a UDP Forwarding line for a server whose region erpc
+/// does not know (one of the user's own): it needs `--udp-region`.
+pub(crate) fn udp_no_region() -> CliError {
+    failed(t!("worker_vps.line.udp_no_region")).hint(t!("worker_vps.line.udp_no_region_hint"))
+}
+
+/// The account's line of `family` that is started and pointed nowhere, if
+/// it has one, other than `except` (the environment's own on record): what a deploy that stopped before pointing it leaves, or a
+/// start from the dashboard or `erpc ai` not pointed yet. Standard only,
+/// billed by the hour and
+/// neither cancelled nor suspended: such a line is charged from its start,
+/// so starting another beside it would pay for two. (A Premium line is
+/// charged only once it is pointed.)
+fn unpointed_udp_line(family: &UdpFamily, rows: &[Value], except: Option<&str>) -> Option<String> {
+    if !family.charged_from_start {
+        return None;
+    }
+    rows.iter()
+        .find(|row| {
+            row["billingCycle"].as_str() == Some("hourly")
+                && !matches!(row["status"].as_str(), Some("cancelled" | "suspended"))
+                && row["destination"].as_str().is_none_or(str::is_empty)
+                && except.is_none_or(|id| !is_row_of(row, id))
+        })
+        .and_then(|row| {
+            row["id"]
+                .as_i64()
+                .map(|n| n.to_string())
+                .or_else(|| row["id"].as_str().map(ToOwned::to_owned))
+        })
+}
+
+/// Offers the account's unpointed line `id` of `family`
+/// ([`unpointed_udp_line`]) to the person at the terminal (`confirm`) in
+/// place of a new one, and says whether they took it up. `to` is where the
+/// line would send, and the region it would send from.
+async fn take_up_unpointed(
+    confirm: &dyn Confirm,
+    family: &UdpFamily,
+    id: &str,
+    to: (&str, &str),
+) -> bool {
+    let (destination, region) = to;
+    let ask = erpc_ai::confirm::Confirmation {
+        title: t!("worker_vps.adopt.title", name = family.name, id),
+        lines: vec![
+            (
+                t!("worker_vps.adopt.charged"),
+                t!("worker_vps.adopt.charged_already"),
+            ),
+            (
+                t!("worker_vps.adopt.sends_to"),
+                t!("worker_vps.adopt.destination", destination, region),
+            ),
+            (
+                t!("worker_vps.adopt.otherwise"),
+                t!("worker_vps.adopt.a_second"),
+            ),
+        ],
+    };
+    confirm.confirm(&ask).await
+}
+
+/// What becomes of the account's unpointed line `id` of `family`, by who
+/// answers the start: the person is asked ([`take_up_unpointed`]), and
+/// `--yes` refuses, naming it: whose line it is (this app's, or another's
+/// whose deploy stopped before pointing it) is no price to accept, and
+/// taking up another's would leave two records naming one line. With
+/// nobody to answer, the start that follows refuses for that reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Unpointed {
+    Ask,
+    Refuse,
+    Pass,
+}
+
+impl Unpointed {
+    const fn by(who: Option<Answerer>) -> Self {
+        match who {
+            Some(Answerer::Person) => Self::Ask,
+            Some(Answerer::Yes) => Self::Refuse,
+            None => Self::Pass,
+        }
+    }
+}
+
+/// What a UDP Forwarding start is checked against before what it would
+/// follow is bought ([`udp_ready`]).
+#[derive(Debug, Default)]
+pub(crate) struct UdpCheck<'a> {
+    /// The plan asked for (`--udp-plan`); the cheapest when none is.
+    pub(crate) plan: Option<&'a str>,
+    /// The environment's own UDP Forwarding line on record: the deploy
+    /// takes it up, so it is never the line the start stops for.
+    pub(crate) on_record: Option<&'a str>,
+    /// Whether a UDP Forwarding start is on record, which is sent again.
+    pub(crate) pending: bool,
+    /// The region the line would send from, when it is known yet.
+    pub(crate) region: Option<&'a str>,
+    /// Whether nothing was bought by this deploy before the check: what a
+    /// refusal then says of what is charged.
+    pub(crate) nothing_bought: bool,
+    /// The app and environment, as a hint's command names them.
+    pub(crate) scope: &'a str,
+}
+
+/// What `deploy --udp` would be refused for at the UDP step, asked before
+/// the server and the other lines are bought (and again before any line is
+/// started, the server known): the plan asked for (or the cheapest), the
+/// region it would send from when it is known, its product's list of the
+/// account's lines, and, under `--yes`, no line of that product pointed
+/// nowhere that the start would stop for ([`Unpointed`]), other than the
+/// environment's own on record and unless a start is on record. Asked only
+/// at the UDP step, a refusal would leave what was bought before it
+/// charged. It only reads.
+///
+/// # Errors
+///
+/// What [`udp_start`] would refuse for.
+pub(crate) async fn udp_ready(api: &Api, check: &UdpCheck<'_>) -> Result<(), CliError> {
+    // The environment's own line, when the account lists it: the deploy
+    // takes it up and starts nothing, so no start is judged, only the
+    // region it would be pointed from, against its own product (a Premium
+    // line in dublin is not refused for Standard's regions).
+    let offered = udp_plans(&api.read(hourly::CATALOG_URL).await?);
+    if let Some(id) = check.on_record
+        && let Some((family, row)) = udp_row(api, id)
+            .await
+            .map_err(|e| list_refused(&e, check.nothing_bought))?
+    {
+        // A plan asked for is still one the catalogue offers, and of the
+        // line's own product: a line keeps its product, and the deploy
+        // takes it up whatever the plan says.
+        if let Some(plan) = check.plan {
+            let asked = choose_udp_plan(&offered, Some(plan))?;
+            if asked.family.family != family.family {
+                return Err(CliError::new(
+                    Code::Usage,
+                    t!(
+                        "worker_vps.line.udp_other_product",
+                        id,
+                        name = family.name,
+                        plan,
+                        asked = asked.family.name
+                    ),
+                )
+                .hint(t!(
+                    "worker_vps.line.udp_other_product_hint",
+                    id,
+                    plan,
+                    scope = check.scope
+                )));
+            }
+        }
+        // One that ended or was suspended sends nothing: the deploy would
+        // be refused at the UDP step, after the lines before it.
+        match row["status"].as_str() {
+            Some("cancelled") => {
+                return Err(failed(t!("worker_vps.line.udp_cancelled", id))
+                    .hint(t!("worker_vps.line.udp_cancelled_hint", id)));
+            }
+            Some("suspended") => {
+                let kind = LineKind::Udp.label();
+                return Err(failed(t!("worker_vps.line.suspended", kind, id))
+                    .hint(t!("worker_vps.line.suspended_hint")));
+            }
+            _ => {}
+        }
+        return match check.region {
+            Some(region) if !family.regions.contains(&region) => {
+                Err(udp_bad_region(family, region))
+            }
+            _ => Ok(()),
+        };
+    }
+    let chosen = choose_udp_plan(&offered, check.plan)?;
+    if let Some(region) = check.region {
+        udp_region_ok(chosen, region, &offered)?;
+    }
+    let listed = udp_rows(api, chosen.family)
+        .await
+        .map_err(|e| list_refused(&e, check.nothing_bought))?;
+    if !check.pending
+        && let Some(id) = unpointed_udp_line(chosen.family, &listed, check.on_record)
+        && Unpointed::by(api.start_answerer()) == Unpointed::Refuse
+    {
+        let name = chosen.family.name;
+        return Err(failed(t!("worker_vps.adopt.not_under_yes", name, id))
+            .hint(t!("worker_vps.adopt.not_under_yes_hint", id)));
+    }
+    Ok(())
+}
+
+/// A product's list user-api would not give, as the refusal of a UDP
+/// Forwarding start: nothing started and nothing charged when nothing was
+/// bought before it; else only that no UDP line was started, since what
+/// was bought before it is charged, and said so after.
+fn list_refused(e: &CliError, nothing_bought: bool) -> CliError {
+    let message = if nothing_bought {
+        t!("worker_vps.line.udp_not_startable", error = e.message)
+    } else {
+        t!("worker_vps.line.udp_not_started", error = e.message)
+    };
+    CliError::new(e.code, message).hint(t!("worker_vps.line.udp_not_startable_hint"))
+}
+
+/// What a UDP Forwarding start comes to before anything is started.
+enum UdpStart {
+    /// The account's unpointed line, taken up in place of a new one.
+    TakenUp(String),
+    /// A new line of this product, at this plan.
+    Buy(&'static UdpFamily, String),
+}
+
+/// The part of [`start_line`] that is UDP Forwarding's, before anything is
+/// started: the plan, the regions its product sends from, the product's
+/// list, and the account's unpointed line, which is offered in place of a
+/// new one ([`take_up_unpointed`]) and goes on `record` when taken up.
+async fn udp_start(
+    api: &Api,
+    target: &LineTarget,
+    asked_plan: Option<&str>,
+    record: &mut dyn LineRecord,
+    say: &Say,
+) -> Result<UdpStart, CliError> {
+    let ip = target.ip;
+    let (port, region) = udp_target(target)?;
+    let offered = udp_plans(&api.read(hourly::CATALOG_URL).await?);
+    let chosen = choose_udp_plan(&offered, asked_plan)?;
+    udp_region_ok(chosen, region, &offered)?;
+    // The product's list is read before anything is started: every step
+    // after the start reads it, so a start whose list is refused would be
+    // charged and then go no further.
+    // Reached after the server, and perhaps other lines, were bought: the
+    // refusal says no UDP line was started, and what is charged is said
+    // after it.
+    let listed = udp_rows(api, chosen.family)
+        .await
+        .map_err(|e| list_refused(&e, false))?;
+    // Not while a start is on record: the line that start may have made is
+    // listed unpointed too, and the start sent again with its key is what
+    // finds it.
+    let destination = format!("{ip}:{port}");
+    let unpointed = record
+        .pending()
+        .is_none()
+        .then(|| unpointed_udp_line(chosen.family, &listed, None))
+        .flatten();
+    if let Some(id) = unpointed {
+        let name = chosen.family.name;
+        match Unpointed::by(api.start_answerer()) {
+            Unpointed::Ask => {
+                let to = (destination.as_str(), region);
+                if take_up_unpointed(&api.confirm, chosen.family, &id, to).await {
+                    record.named(&id)?;
+                    say.line(&t!("worker_vps.line.udp_taken_up", id));
+                    return Ok(UdpStart::TakenUp(id));
+                }
+            }
+            Unpointed::Refuse => {
+                return Err(failed(t!("worker_vps.adopt.not_under_yes", name, id))
+                    .hint(t!("worker_vps.adopt.not_under_yes_hint", id)));
+            }
+            Unpointed::Pass => {}
+        }
+    }
+    let name = product_name(api, &chosen.id)
+        .await
+        .unwrap_or_else(|| chosen.id.clone());
+    say.line(&t!(
+        "worker_vps.line.buying_udp",
+        name,
+        product = chosen.id,
+        how = how_chosen(asked_plan),
+        price = format!("{:.4}", chosen.cents / 100.0),
+        ip,
+        port,
+        region,
+    ));
+    Ok(UdpStart::Buy(chosen.family, chosen.id.clone()))
+}
+
+/// Starts an hourly data line of `kind` for the server `target` names,
+/// once its price is answered (by the person, or by `--yes` on a deploy,
+/// which says it). It may not be active yet, nor let the server in (nor,
+/// for UDP Forwarding, send to it): [`wait_line`] sees to that. Its
+/// request goes through `record`, as a VPS's does ([`buy`]), and so does
+/// the line user-api names.
 pub(crate) async fn start_line(
     api: &Api,
     kind: LineKind,
-    ip: Ipv4Addr,
-    region: Option<&str>,
+    target: &LineTarget,
     asked_plan: Option<&str>,
     scope: &str,
     say: &Say,
     record: &mut dyn LineRecord,
 ) -> Result<String, CliError> {
     let product = line_product(kind);
-    // What makes it this purchase, besides its plan: an Unlimited RPC's
-    // region, or the address a gRPC or Shreds line lets in.
-    let (fields, region, let_in) = if kind == LineKind::Unlimited {
-        let region = region.ok_or_else(|| {
-            failed(t!("worker_vps.line.no_region")).hint(t!("worker_vps.line.no_region_hint"))
-        })?;
-        (json!({ "region": region }), Some(region.to_owned()), None)
-    } else {
-        (json!({ "ip": ip.to_string() }), None, Some(ip.to_string()))
+    let ip = target.ip;
+    // What makes it this purchase, besides its family and plan: an
+    // Unlimited RPC's region, or the address a gRPC or Shreds line lets
+    // in. A UDP Forwarding start names neither: where the line sends from
+    // and to is set once it is started, so a start sent again for another
+    // port or region is still the same purchase.
+    let (family, chosen_id, fields, region, let_in) = match kind {
+        LineKind::Udp => match udp_start(api, target, asked_plan, record, say).await? {
+            UdpStart::TakenUp(id) => return Ok(id),
+            // The start route takes no body: the product's one plan is
+            // what is started, so the plan chosen names the family.
+            UdpStart::Buy(family, product) => (family.family, product, json!({}), None, None),
+        },
+        LineKind::Unlimited => {
+            let region = target.region.as_deref().ok_or_else(|| {
+                failed(t!("worker_vps.line.no_region")).hint(t!("worker_vps.line.no_region_hint"))
+            })?;
+            let chosen = plan(api, product.family, asked_plan).await?;
+            say_buying(kind, &chosen, asked_plan, ip, say);
+            (
+                product.family,
+                chosen.id.clone(),
+                json!({ "region": region, "productId": chosen.id }),
+                Some(region.to_owned()),
+                None,
+            )
+        }
+        LineKind::Grpc | LineKind::Shreds => {
+            let chosen = plan(api, product.family, asked_plan).await?;
+            say_buying(kind, &chosen, asked_plan, ip, say);
+            (
+                product.family,
+                chosen.id.clone(),
+                json!({ "ip": ip.to_string(), "productId": chosen.id }),
+                None,
+                Some(ip.to_string()),
+            )
+        }
     };
-    let chosen = plan(api, product.family, asked_plan).await?;
-    say.line(&t!(
-        "worker_vps.line.buying",
-        kind = kind.label(),
-        name = chosen.name,
-        product = chosen.id,
-        how = how_chosen(asked_plan),
-        price = format!("{:.4}", chosen.cents / 100.0),
-        ip,
-    ));
-    let mut fields = fields;
-    fields["productId"] = json!(chosen.id);
     let confirm = api.confirm_start()?;
     let wanted = Start {
         key: String::new(),
-        family: product.family.to_owned(),
-        product: chosen.id.clone(),
+        family: family.to_owned(),
+        product: chosen_id,
         region,
         ip: let_in,
     };
-    let input = json!({ "family": product.family, "fields": fields });
+    let input = json!({ "family": family, "fields": fields });
     let sent = start_on_record(&wanted, product.id_field, record, say, async |key| {
         erpc_ai::actions::start_hourly_product_with_key(
             &api.client,
@@ -1757,9 +2428,24 @@ pub(crate) async fn start_line(
     Ok(id)
 }
 
+/// Says what line is about to be bought, for the kinds that let `ip` in.
+fn say_buying(kind: LineKind, chosen: &Plan, asked_plan: Option<&str>, ip: Ipv4Addr, say: &Say) {
+    say.line(&t!(
+        "worker_vps.line.buying",
+        kind = kind.label(),
+        name = chosen.name,
+        product = chosen.id,
+        how = how_chosen(asked_plan),
+        price = format!("{:.4}", chosen.cents / 100.0),
+        ip,
+    ));
+}
+
 /// Line `id` of `kind` as erpc.toml keeps it, once its status lists it
 /// with an endpoint: right after a start, before it is active, so that it
-/// is on record however the wait ends.
+/// is on record however the wait ends. A UDP Forwarding line has no
+/// endpoint of user-api's: it is pending once listed, and [`wait_line`]
+/// fills in the port it is pointed at and the addresses it sends from.
 pub(crate) async fn first_sight(
     api: &Api,
     kind: LineKind,
@@ -1767,8 +2453,32 @@ pub(crate) async fn first_sight(
     hourly: bool,
     scope: &str,
 ) -> Result<Line, CliError> {
-    for _ in 0..20 {
-        if let Some(endpoint) = line_row(api, kind, id).await?.and_then(|row| {
+    first_sight_within(api, kind, id, hourly, scope, (20, Duration::from_secs(3))).await
+}
+
+/// [`first_sight`], looking `tries` times with `pause` between
+/// (`patience`): a minute as deploy asks, less in a test.
+async fn first_sight_within(
+    api: &Api,
+    kind: LineKind,
+    id: &str,
+    hourly: bool,
+    scope: &str,
+    patience: (u32, Duration),
+) -> Result<Line, CliError> {
+    let (tries, pause) = patience;
+    for _ in 0..tries {
+        let row = line_row(api, kind, id).await?;
+        if kind == LineKind::Udp && row.is_some() {
+            return Ok(Line {
+                kind,
+                id: id.to_owned(),
+                endpoint: String::new(),
+                hourly,
+                sources: Vec::new(),
+            });
+        }
+        if let Some(endpoint) = row.and_then(|row| {
             row["endpoint"]
                 .as_str()
                 .and_then(|e| line_endpoint(kind, e))
@@ -1778,9 +2488,10 @@ pub(crate) async fn first_sight(
                 id: id.to_owned(),
                 endpoint,
                 hourly,
+                sources: Vec::new(),
             });
         }
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        tokio::time::sleep(pause).await;
     }
     Err(
         failed(t!("worker_vps.line.no_endpoint", kind = kind.label(), id))
@@ -1821,15 +2532,17 @@ fn whitelist(ip: Ipv4Addr, allowed: &[&str]) -> Vec<Ipv4Addr> {
     list
 }
 
-/// Waits for data line `id` of `kind` to be active and to let in `ip`, and
-/// returns it as erpc.toml keeps it. An Unlimited RPC's whitelist is set
-/// to `ip` while it is set up, and again once it is active, which is when
-/// user-api can apply it to the line's server for certain.
+/// Waits for data line `id` of `kind` to be active and to let in the
+/// server `target` names, and returns it as erpc.toml keeps it. An
+/// Unlimited RPC's whitelist is set to the server's address while it is
+/// set up, and again once it is active, which is when user-api can apply
+/// it to the line's server for certain. A UDP Forwarding line is pointed
+/// at the server's address and port ([`wait_udp_line`]).
 pub(crate) async fn wait_line(
     api: &Api,
     kind: LineKind,
     id: &str,
-    ip: Ipv4Addr,
+    target: &LineTarget,
     hourly: bool,
     say: &Say,
 ) -> Result<Line, CliError> {
@@ -1844,11 +2557,257 @@ pub(crate) async fn wait_line(
         Some(spinner) => spinner.set_message(&text),
         None => say.line(&text),
     };
-    let waited = wait_line_saying(api, kind, id, ip, hourly, &tell).await;
+    let waited = if kind == LineKind::Udp {
+        wait_udp_line(
+            api,
+            id,
+            target,
+            hourly,
+            Pace::of(&line_product(kind)),
+            &tell,
+        )
+        .await
+    } else {
+        wait_line_saying(api, kind, id, target.ip, hourly, &tell).await
+    };
     if let Some(spinner) = spinner {
         spinner.done();
     }
     waited
+}
+
+/// Whether a refusal to point a UDP Forwarding line is one to try again
+/// next round: user-api is still applying the last change (409
+/// `UDP_FORWARDING_PREMIUM_APPLY_IN_PROGRESS`), or a change came within a
+/// minute of the one before (429 `UDP_FORWARDING_PREMIUM_CHANGE_TOO_SOON`).
+fn point_again_later(error: &erpc_api::ApiError) -> bool {
+    match error {
+        erpc_api::ApiError::Refused { status: 429, .. } => true,
+        erpc_api::ApiError::Refused {
+            status: 409,
+            message,
+        } => message.contains("APPLY_IN_PROGRESS"),
+        _ => false,
+    }
+}
+
+/// How long an active UDP Forwarding line is given to name the addresses
+/// it sends from before it is taken as it is, naming none: its port then
+/// stays closed unless the operator opens it to any address.
+const UDP_SOURCES_GRACE: Duration = Duration::from_secs(60);
+
+/// How long a UDP Forwarding line is waited for: in all, between two
+/// looks, and for its addresses once it is active.
+#[derive(Debug, Clone, Copy)]
+struct Pace {
+    wait: Duration,
+    poll: Duration,
+    grace: Duration,
+}
+
+impl Pace {
+    const fn of(product: &LineProduct) -> Self {
+        Self {
+            wait: product.wait,
+            poll: product.poll,
+            grace: UDP_SOURCES_GRACE,
+        }
+    }
+}
+
+/// Points UDP Forwarding line `id` (`number` to user-api) at `destination`
+/// from `region`, and tells so: `Ok(false)` when user-api is still applying
+/// the last change, to try again next round ([`point_again_later`]); any
+/// other refusal is the error.
+async fn point_udp_line(
+    api: &Api,
+    family: &UdpFamily,
+    id: &str,
+    number: i64,
+    region: &str,
+    destination: &str,
+    tell: &dyn Fn(String),
+) -> Result<bool, CliError> {
+    match api
+        .set_udp_destination(family.destination_url, number, region, destination)
+        .await
+    {
+        Ok(_) => {
+            tell(t!("worker_vps.line.udp_pointed", id, destination, region));
+            Ok(true)
+        }
+        Err(e) if point_again_later(&e) => Ok(false),
+        Err(e) => {
+            let hint = if erpc_api::udp::pointing_may_pass_later(&e) {
+                t!("worker_vps.line.udp_point_hint")
+            } else {
+                t!("worker_vps.line.udp_point_hint_end")
+            };
+            Err(failed(t!(
+                "worker_vps.line.udp_point_failed",
+                id,
+                destination,
+                region,
+                error = e
+            ))
+            .hint(hint))
+        }
+    }
+}
+
+/// Whether `e` is a refused pointing that comes back the same however often
+/// it is tried ([`erpc_api::udp::pointing_may_pass_later`]): the line is
+/// then better ended than waited for again.
+pub(crate) fn is_refused_for_good(e: &CliError) -> bool {
+    e.hint.as_deref() == Some(t!("worker_vps.line.udp_point_hint_end").as_str())
+}
+
+/// Whether `e` is [`wait_line`]'s refusal of UDP Forwarding line `id` for
+/// being cancelled: it is charged no more, and waiting cannot bring it
+/// back, so nothing is said of waiting for it again.
+pub(crate) fn is_udp_cancelled(e: &CliError, id: &str) -> bool {
+    e.message == t!("worker_vps.line.udp_cancelled", id)
+}
+
+/// What is wrong with a UDP Forwarding line, as its row says it, to tell
+/// once per text while waiting.
+#[derive(Debug, PartialEq, Eq)]
+enum UdpTrouble {
+    /// A Standard line found no node with a free slot in its region: it
+    /// keeps its destination and waits for one, in `provisioning` or
+    /// `error`, with the reason in `lastError`.
+    Capacity(String),
+    /// Any other `lastError`, or `error` with no reason given.
+    Error(String),
+}
+
+/// The trouble `row` reports, if any. `lastError` is read whatever the
+/// status: user-api writes the reason a line waits into it without
+/// changing the status, and clears it once the line is placed.
+fn udp_trouble(row: &Value) -> Option<UdpTrouble> {
+    // user-api's free text, as a terminal may be given it: one line, with
+    // nothing it acts on, and no longer than a line should be.
+    let error = row["lastError"]
+        .as_str()
+        .map(str::trim)
+        .filter(|e| !e.is_empty())
+        .map(|e| {
+            crate::storage::clean(e)
+                .chars()
+                .take(300)
+                .collect::<String>()
+        });
+    let error = error.as_deref();
+    let capacity = row["lastAllocationOutcome"].as_str() == Some("region_unavailable");
+    match (error, row["status"].as_str()) {
+        (Some(e), _) if capacity => Some(UdpTrouble::Capacity(e.to_owned())),
+        (Some(e), _) => Some(UdpTrouble::Error(e.to_owned())),
+        (None, Some("error")) => Some(UdpTrouble::Error(t!("worker_vps.no_reason"))),
+        _ => None,
+    }
+}
+
+/// Waits for UDP Forwarding line `id` to be active and pointed at the
+/// server `target` names, pointing it there when it is not, and returns it
+/// with the port the app binds and the addresses the line sends from: none
+/// when user-api names none within `pace.grace` of the line being active.
+async fn wait_udp_line(
+    api: &Api,
+    id: &str,
+    target: &LineTarget,
+    hourly: bool,
+    pace: Pace,
+    tell: &dyn Fn(String),
+) -> Result<Line, CliError> {
+    let label = LineKind::Udp.label();
+    let (port, region) = udp_target(target)?;
+    let number: i64 = id
+        .parse()
+        .map_err(|_| failed(t!("worker_vps.line.bad_id", id)))?;
+    let destination = format!("{}:{port}", target.ip);
+    let line = |sources: Vec<Ipv4Addr>| Line {
+        kind: LineKind::Udp,
+        id: id.to_owned(),
+        endpoint: format!("0.0.0.0:{port}"),
+        hourly,
+        sources,
+    };
+    let mut last = t!("worker_vps.line.not_listed");
+    let started = Instant::now();
+    // Pointed once per wait: user-api's row shows the change a little
+    // later, and a second change within a minute is refused.
+    let mut pointed = false;
+    let mut active_since: Option<Instant> = None;
+    let mut errors_told: Vec<String> = Vec::new();
+    while started.elapsed() < pace.wait {
+        if let Some((family, row)) = udp_row(api, id).await? {
+            let status = row["status"].as_str().unwrap_or("unknown");
+            match status {
+                "cancelled" => {
+                    return Err(failed(t!("worker_vps.line.udp_cancelled", id))
+                        .hint(t!("worker_vps.line.udp_cancelled_hint", id)));
+                }
+                "suspended" => {
+                    return Err(failed(t!("worker_vps.line.suspended", kind = label, id))
+                        .hint(t!("worker_vps.line.suspended_hint")));
+                }
+                _ => {}
+            }
+            let as_wanted = row["destination"].as_str() == Some(destination.as_str())
+                && row["region"].as_str() == Some(region);
+            if !as_wanted && !pointed {
+                pointed =
+                    point_udp_line(api, family, id, number, region, &destination, tell).await?;
+            }
+            if status == "active" && as_wanted {
+                let sources = udp_sources_of(id, &row)?;
+                if !sources.is_empty() {
+                    return Ok(line(sources));
+                }
+                // Active and pointed right, with no address named: given a
+                // minute, then taken as it is. What its port is opened to
+                // is the caller's to decide, and to say.
+                let since = *active_since.get_or_insert_with(Instant::now);
+                if since.elapsed() >= pace.grace {
+                    return Ok(line(Vec::new()));
+                }
+            } else {
+                active_since = None;
+            }
+            if status != last {
+                tell(t!(
+                    "worker_vps.line.waiting",
+                    id,
+                    status,
+                    minutes = started.elapsed().as_secs() / 60
+                ));
+                status.clone_into(&mut last);
+            }
+            // Said once per text, whatever the status: a Standard line with
+            // no free node in its region stays `provisioning` with the
+            // reason in `lastError`, and would otherwise wait in silence.
+            if let Some(trouble) = udp_trouble(&row) {
+                let said = match trouble {
+                    UdpTrouble::Capacity(error) => {
+                        t!("worker_vps.line.udp_waiting_capacity", id, error)
+                    }
+                    UdpTrouble::Error(error) => t!("worker_vps.line.udp_error", id, error),
+                };
+                if !errors_told.contains(&said) {
+                    tell(said.clone());
+                    errors_told.push(said);
+                }
+            }
+        }
+        tokio::time::sleep(pace.poll).await;
+    }
+    Err(failed(tn!(
+        "worker_vps.line.not_active",
+        pace.wait.as_secs() / 60,
+        kind = label,
+        id,
+        last
+    )))
 }
 
 async fn wait_line_saying(
@@ -1861,7 +2820,7 @@ async fn wait_line_saying(
 ) -> Result<Line, CliError> {
     let product = line_product(kind);
     let mut last = t!("worker_vps.line.not_listed");
-    let started = std::time::Instant::now();
+    let started = Instant::now();
     let mut kept = false;
     let mut applied = false;
     while started.elapsed() < product.wait {
@@ -1906,6 +2865,7 @@ async fn wait_line_saying(
                         id: id.to_owned(),
                         endpoint,
                         hourly,
+                        sources: Vec::new(),
                     });
                 }
                 ("suspended", _) => {
@@ -1940,18 +2900,45 @@ async fn wait_line_saying(
     )))
 }
 
-/// Ends hourly data line `line`, after the person's yes.
+/// Which UDP Forwarding product line `id` is, for ending it: the one the
+/// credit snapshot charges the id as, else the one whose list has it, else
+/// Standard.
+async fn udp_product_type(api: &Api, id: i64) -> &'static str {
+    let charged_as = charged(api).await.ok().and_then(|charged| {
+        charged
+            .into_iter()
+            .filter(|(_, n)| *n == id)
+            .find_map(|(t, _)| UDP_FAMILIES.iter().find(|f| f.product_type == t))
+    });
+    match charged_as {
+        Some(family) => family.product_type,
+        None => udp_row(api, &id.to_string())
+            .await
+            .ok()
+            .flatten()
+            .map_or(UDP_FAMILIES[0].product_type, |(family, _)| {
+                family.product_type
+            }),
+    }
+}
+
+/// Ends hourly data line `line`, after the yes `api` gives for an end
+/// ([`Api::confirm`]): `--yes`, in a session [`Api::releasing`] made with
+/// it; else the person's.
 pub(crate) async fn end_line(api: &Api, line: &Line, say: &Say) -> Result<Value, CliError> {
-    let product = line_product(line.kind);
     let id: i64 = line
         .id
         .parse()
         .map_err(|_| failed(t!("worker_vps.line.bad_id", id = line.id)))?;
+    let product_type = match line.kind {
+        LineKind::Udp => udp_product_type(api, id).await,
+        kind => line_product(kind).product_type,
+    };
     say.line(&t!("worker_vps.line.ending", kind = line.kind.label(), id));
     let ended = erpc_ai::actions::end_hourly_product(
         &api.client,
         &api.token,
-        &json!({ "productType": product.product_type, "userProductId": id }),
+        &json!({ "productType": product_type, "userProductId": id }),
         api.confirm(),
     )
     .await
@@ -1966,6 +2953,17 @@ pub(crate) async fn end_line(api: &Api, line: &Line, say: &Say) -> Result<Value,
     }
     Ok(ended)
 }
+
+/// The loopback server that stands in for user-api in tests.
+#[cfg(test)]
+#[path = "user_api_stub.rs"]
+pub(crate) mod stub;
+
+/// The conversation with user-api about a UDP Forwarding line, against
+/// [`stub`].
+#[cfg(test)]
+#[path = "udp_line_tests.rs"]
+mod udp_line_tests;
 
 /// In a test: a [`KeySource`] that reaches neither user-api nor the RPC.
 #[cfg(test)]
@@ -2050,9 +3048,13 @@ pub(crate) mod fake {
 #[cfg(test)]
 mod tests {
     use erpc_worker::manifest::{LineKind, Start};
-    use serde_json::json;
+    use serde_json::{Value, json};
 
-    use super::{Say, is_add_on, line_endpoint, line_ips, region_for_zone};
+    use super::{
+        LineTarget, Say, UDP_FAMILIES, UdpPlan, UdpTrouble, choose_udp_plan, is_add_on,
+        line_endpoint, line_ips, region_for_zone, udp_family_of, udp_plans, udp_port,
+        udp_region_ok, udp_sources, udp_target, udp_trouble,
+    };
 
     #[tokio::test]
     async fn the_key_the_shared_rpc_takes_is_the_one_used() {
@@ -2596,12 +3598,55 @@ mod tests {
         // The session a deploy --yes makes hands out, for an end, what the
         // decision above says: the person's confirmation, or none.
         let api = super::Api::offline().accepting(true);
-        assert_eq!(
-            api.confirm().is_some(),
-            crate::session::has_terminal(),
-            "an end was answered by --yes, or not asked of the person"
-        );
+        for terminal in [true, false] {
+            assert_eq!(
+                api.end_answerer(terminal),
+                terminal.then_some(Answerer::Person),
+                "an end was answered by --yes, or not asked of the person"
+            );
+        }
         assert!(api.confirm_start().is_ok(), "--yes answers a start");
+    }
+
+    #[test]
+    fn yes_answers_the_ends_a_delete_release_server_names() {
+        use super::{Answerer, Asked, answerer};
+        // With --yes each end is said and done, a terminal or not.
+        for terminal in [true, false] {
+            assert_eq!(
+                answerer(Asked::Release, Some(true), terminal),
+                Some(Answerer::Yes),
+                "{terminal}"
+            );
+        }
+        // Without it, the person at the terminal, or nobody.
+        for yes in [Some(false), None] {
+            assert_eq!(
+                answerer(Asked::Release, yes, true),
+                Some(Answerer::Person),
+                "{yes:?}"
+            );
+            assert_eq!(answerer(Asked::Release, yes, false), None, "{yes:?}");
+        }
+        // The session delete --release-server --yes makes has --yes answer
+        // an end, a terminal or not; the one without --yes leaves it to the
+        // person.
+        for terminal in [true, false] {
+            assert_eq!(
+                super::Api::offline().releasing(true).end_answerer(terminal),
+                Some(Answerer::Yes),
+                "{terminal}"
+            );
+            assert_eq!(
+                super::Api::offline()
+                    .releasing(false)
+                    .end_answerer(terminal),
+                terminal.then_some(Answerer::Person),
+                "{terminal}"
+            );
+        }
+        // It is for those ends only: its --yes answers no start.
+        assert_eq!(super::Api::offline().releasing(true).yes, None);
     }
 
     #[test]
@@ -2743,6 +3788,47 @@ mod tests {
             super::purchase_name(&grpc("203.0.113.10")),
             "grpc prod_Grpc1 (203.0.113.10)"
         );
+    }
+
+    /// The UDP Forwarding start routes, as user-api answers them: a row
+    /// made under the key comes back as `subscription` with its id (the
+    /// same row again for a key sent before, `replayed`); a held hourly
+    /// lock is `PURCHASE_IN_PROGRESS`; a key whose row is in another state,
+    /// or a create that conflicts, is `UDP_FORWARDING_CONFLICT`; a failure
+    /// upstream is a 502 with `UDP_FORWARDING_UPSTREAM_UNAVAILABLE`. Only
+    /// the line itself, or a certain refusal of a first request, takes the
+    /// request off the record.
+    #[test]
+    fn a_udp_forwarding_starts_answers_are_judged_as_any_starts_are() {
+        use super::Answer::{self, InProgress, Made, NotKnown, Refused, Unanswered, Unrelated};
+        let answered = |status: u16, code: &str, again| {
+            let reply = json!({ "httpStatus": status, "code": code, "message": "" });
+            Answer::of(
+                Some(status),
+                super::failure_code(&reply),
+                false,
+                false,
+                again,
+            )
+        };
+        for again in [false, true] {
+            // The line, `subscriptionId` as erpc-ai surfaces it.
+            let made = json!({ "done": true, "subscriptionId": 42, "replayed": again });
+            let id = super::named_id(&made, "subscriptionId");
+            assert_eq!(id.as_deref(), Some("42"));
+            assert_eq!(Answer::of(Some(200), None, true, id.is_some(), again), Made);
+            assert_eq!(answered(409, "PURCHASE_IN_PROGRESS", again), InProgress);
+            assert_eq!(
+                answered(502, "UDP_FORWARDING_UPSTREAM_UNAVAILABLE", again),
+                Unanswered
+            );
+        }
+        // A conflict says nothing of what the key made: it stays on record.
+        assert_eq!(answered(409, "UDP_FORWARDING_CONFLICT", false), NotKnown);
+        assert_eq!(answered(409, "UDP_FORWARDING_CONFLICT", true), Unrelated);
+        // No credit for a first request: nothing was made under its key.
+        assert_eq!(answered(402, "INSUFFICIENT_HEADROOM", false), Refused);
+        assert_eq!(answered(402, "INSUFFICIENT_HEADROOM", true), Unrelated);
     }
 
     #[test]
@@ -3541,7 +4627,7 @@ mod tests {
     #[test]
     fn the_assistants_limit_for_a_deploy_outlasts_the_slowest_line() {
         use core::time::Duration;
-        let slowest = [LineKind::Grpc, LineKind::Shreds, LineKind::Unlimited]
+        let slowest = LineKind::ALL
             .map(|kind| super::line_product(kind).wait)
             .into_iter()
             .max()
@@ -3550,6 +4636,258 @@ mod tests {
             erpc_ai::commands::DEPLOY_LIMIT >= slowest + Duration::from_mins(30),
             "a line can take {slowest:?}"
         );
+    }
+
+    fn catalog() -> Value {
+        json!({ "families": [
+            { "family": "vps", "plans": [{ "productId": "prod_vps", "hourlyCents": 3.0 }] },
+            { "family": "udp-forwarding",
+              "plans": [{ "productId": "prod_standard", "hourlyCents": 69.0 }] },
+            { "family": "udp-forwarding-premium",
+              "plans": [{ "productId": "prod_premium", "hourlyCents": 139.0 }] },
+        ] })
+    }
+
+    #[test]
+    fn a_udp_plan_is_the_cheapest_of_both_products_or_the_one_asked_for() {
+        let offered = udp_plans(&catalog());
+        assert_eq!(offered.len(), 2);
+        let cheapest = choose_udp_plan(&offered, None).expect("offered");
+        assert_eq!(cheapest.id, "prod_standard");
+        assert_eq!(cheapest.family.family, "udp-forwarding");
+        let asked = choose_udp_plan(&offered, Some("prod_premium")).expect("asked");
+        assert_eq!(asked.family.name, "UDP Forwarding Premium");
+        assert!((asked.cents - 139.0).abs() < f64::EPSILON);
+        let unknown = choose_udp_plan(&offered, Some("prod_x")).expect_err("none");
+        assert!(
+            unknown
+                .message
+                .contains("udp-forwarding or udp-forwarding-premium"),
+            "{}",
+            unknown.message
+        );
+        // An account Premium is not on sale to sees Standard alone.
+        let standard_only = udp_plans(&json!({ "families": [
+            { "family": "udp-forwarding",
+              "plans": [{ "productId": "prod_standard", "hourlyCents": 69.0 }] },
+        ] }));
+        assert_eq!(standard_only.len(), 1);
+        assert!(choose_udp_plan(&standard_only, Some("prod_premium")).is_err());
+        assert!(choose_udp_plan(&udp_plans(&json!({})), None).is_err());
+    }
+
+    #[test]
+    fn a_udp_line_sends_from_a_region_its_product_serves() {
+        let offered = udp_plans(&catalog());
+        let standard = UdpPlan {
+            family: &UDP_FAMILIES[0],
+            id: "prod_standard".to_owned(),
+            cents: 69.0,
+        };
+        assert!(udp_region_ok(&standard, "tokyo", &offered).is_ok());
+        // Dublin is Premium's alone: the hint names its plan.
+        let dublin = udp_region_ok(&standard, "dublin", &offered).expect_err("refused");
+        assert!(
+            dublin.message.contains("UDP Forwarding Standard") && dublin.message.contains("dublin"),
+            "{}",
+            dublin.message
+        );
+        assert!(
+            dublin
+                .hint
+                .as_deref()
+                .is_some_and(|h| h.contains("--udp-plan prod_premium")),
+            "{:?}",
+            dublin.hint
+        );
+        // Not when Premium is not on sale to the account.
+        let standard_only: Vec<UdpPlan> = offered
+            .into_iter()
+            .filter(|p| p.family.family == "udp-forwarding")
+            .collect();
+        assert!(
+            udp_region_ok(&standard, "dublin", &standard_only)
+                .expect_err("refused")
+                .hint
+                .is_none()
+        );
+        // Sydney is nobody's.
+        let premium = UdpPlan {
+            family: &UDP_FAMILIES[1],
+            id: "prod_premium".to_owned(),
+            cents: 139.0,
+        };
+        assert!(udp_region_ok(&premium, "dublin", &[]).is_ok());
+        assert!(udp_region_ok(&premium, "sydney", &[]).is_err());
+    }
+
+    #[test]
+    fn a_udp_row_says_which_product_it_is_and_where_it_sends_from() {
+        let standard =
+            json!({ "id": 7, "productKey": "one_hop_direct", "sourceIp": "198.51.100.20" });
+        assert_eq!(
+            udp_family_of(&standard).map(|f| f.name),
+            Some("UDP Forwarding Standard")
+        );
+        assert_eq!(
+            udp_sources(&standard),
+            Ok(vec![
+                "198.51.100.20".parse::<std::net::Ipv4Addr>().expect("ip")
+            ])
+        );
+        let premium = json!({
+            "id": 8,
+            "productKey": "udp_forwarding_premium",
+            "sourceIps": ["198.51.100.21", "198.51.100.20", "198.51.100.21"],
+        });
+        assert_eq!(
+            udp_family_of(&premium).map(|f| f.product_type),
+            Some("udp_forwarding_premium")
+        );
+        // Sorted, each once.
+        assert_eq!(
+            udp_sources(&premium).map(|s| s.iter().map(ToString::to_string).collect::<Vec<_>>()),
+            Ok(vec!["198.51.100.20".to_owned(), "198.51.100.21".to_owned()])
+        );
+        // Nothing until a node is allocated.
+        assert_eq!(udp_sources(&json!({ "sourceIp": null })), Ok(Vec::new()));
+        assert_eq!(udp_sources(&json!({ "sourceIp": "" })), Ok(Vec::new()));
+        assert_eq!(udp_sources(&json!({})), Ok(Vec::new()));
+        assert!(udp_family_of(&json!({ "productKey": "grpc" })).is_none());
+    }
+
+    #[test]
+    fn a_source_that_is_not_an_ipv4_address_is_an_error_that_names_it() {
+        // Dropped, it would leave a shorter list, or the empty one that
+        // reads as "no address named".
+        for (row, named) in [
+            (json!({ "sourceIp": "not an address" }), "not an address"),
+            (json!({ "sourceIp": "2001:db8::1" }), "2001:db8::1"),
+            (json!({ "sourceIp": "198.51.100.0/24" }), "198.51.100.0/24"),
+            (
+                json!({ "sourceIps": ["198.51.100.20", "edge.example"] }),
+                "edge.example",
+            ),
+            (json!({ "sourceIps": ["198.51.100.20", 7] }), "7"),
+            // What is shown is one printable line.
+            (json!({ "sourceIp": "a\u{1b}[2Jb\nc" }), "a[2Jbc"),
+        ] {
+            assert_eq!(udp_sources(&row), Err(named.to_owned()), "{row}");
+        }
+        let told =
+            super::udp_sources_of("7", &json!({ "sourceIp": "2001:db8::1" })).expect_err("refused");
+        assert!(
+            told.message.contains("`2001:db8::1`") && told.message.contains("line 7"),
+            "{}",
+            told.message
+        );
+    }
+
+    #[test]
+    fn only_an_hourly_standard_line_pointed_nowhere_is_offered_in_place_of_a_new_one() {
+        use super::unpointed_udp_line;
+        let (standard, premium) = (&UDP_FAMILIES[0], &UDP_FAMILIES[1]);
+        let row = |id: i64, status: &str, destination: Value| json!({ "id": id, "billingCycle": "hourly", "status": status, "destination": destination });
+        let unpointed = row(42, "provisioning", Value::Null);
+        assert_eq!(
+            unpointed_udp_line(standard, std::slice::from_ref(&unpointed), None).as_deref(),
+            Some("42")
+        );
+        // The first such line, past the ones that send somewhere or ended.
+        let rows = [
+            row(40, "active", json!("203.0.113.9:10001")),
+            row(41, "cancelled", Value::Null),
+            row(43, "suspended", Value::Null),
+            row(44, "active", json!("")),
+            unpointed.clone(),
+        ];
+        assert_eq!(
+            unpointed_udp_line(standard, &rows, None).as_deref(),
+            Some("44")
+        );
+        // Not the environment's own line on record: the deploy takes it up.
+        assert_eq!(
+            unpointed_udp_line(standard, &rows, Some("44")).as_deref(),
+            Some("42")
+        );
+        // Not one billed otherwise, which erpc would then end by the hour.
+        let monthly =
+            json!({ "id": 45, "billingCycle": "monthly", "status": "active", "destination": null });
+        assert_eq!(unpointed_udp_line(standard, &[monthly], None), None);
+        // Not a Premium line: it is not charged until it is pointed.
+        assert_eq!(unpointed_udp_line(premium, &[unpointed], None), None);
+        assert_eq!(unpointed_udp_line(standard, &[], None), None);
+    }
+
+    #[test]
+    fn a_udp_line_on_record_names_the_port_it_sends_to() {
+        use erpc_worker::manifest::Line;
+        let line = |endpoint: &str| Line {
+            kind: LineKind::Udp,
+            id: "7".to_owned(),
+            endpoint: endpoint.to_owned(),
+            hourly: true,
+            sources: Vec::new(),
+        };
+        assert_eq!(udp_port(&line("0.0.0.0:10001")), Some(10001));
+        assert_eq!(udp_port(&line("")), None);
+        assert_eq!(udp_port(&line("https://edge.erpc.global")), None);
+    }
+
+    #[test]
+    fn a_udp_line_needs_a_port_and_a_region_to_be_started_for() {
+        let ip: std::net::Ipv4Addr = "203.0.113.10".parse().expect("ip");
+        let target = LineTarget {
+            ip,
+            udp_port: Some(10001),
+            region: Some("tokyo".to_owned()),
+        };
+        assert_eq!(udp_target(&target).expect("both"), (10001, "tokyo"));
+        let no_region = LineTarget {
+            ip,
+            udp_port: Some(10001),
+            region: None,
+        };
+        let e = udp_target(&no_region).expect_err("no region");
+        assert!(
+            e.hint
+                .as_deref()
+                .is_some_and(|h| h.contains("--udp-region")),
+            "{:?}",
+            e.hint
+        );
+        let no_port = LineTarget {
+            ip,
+            udp_port: None,
+            region: Some("tokyo".to_owned()),
+        };
+        assert!(udp_target(&no_port).is_err());
+    }
+
+    #[test]
+    fn a_refusal_to_point_a_udp_line_is_tried_again_only_while_user_api_applies() {
+        use erpc_api::ApiError;
+        let refused = |status, message: &str| ApiError::Refused {
+            status,
+            message: message.to_owned(),
+        };
+        assert!(super::point_again_later(&refused(
+            409,
+            "a change is being applied (UDP_FORWARDING_PREMIUM_APPLY_IN_PROGRESS)"
+        )));
+        assert!(super::point_again_later(&refused(
+            429,
+            "too soon (UDP_FORWARDING_PREMIUM_CHANGE_TOO_SOON)"
+        )));
+        assert!(!super::point_again_later(&refused(
+            409,
+            "the region is down (REGION_DOWN)"
+        )));
+        assert!(!super::point_again_later(&refused(
+            422,
+            "a public IPv4:port (INVALID_DESTINATION)"
+        )));
+        assert!(!super::point_again_later(&ApiError::Unauthorized));
     }
 
     #[test]
@@ -3581,10 +4919,13 @@ mod tests {
             id: id.to_owned(),
             endpoint: String::new(),
             hourly: true,
+            sources: Vec::new(),
         };
         let charged = vec![
             ("grpc".to_owned(), 100_002),
             ("unlimited".to_owned(), 100_003),
+            ("one_hop_direct".to_owned(), 7),
+            ("udp_forwarding_premium".to_owned(), 8),
         ];
         assert!(super::is_charged(&charged, &line(LineKind::Grpc, "100002")));
         assert!(super::is_charged(
@@ -3600,6 +4941,11 @@ mod tests {
             &charged,
             &line(LineKind::Grpc, "100009")
         ));
+        // A UDP Forwarding line is charged as either of its products.
+        assert!(super::is_charged(&charged, &line(LineKind::Udp, "7")));
+        assert!(super::is_charged(&charged, &line(LineKind::Udp, "8")));
+        assert!(!super::is_charged(&charged, &line(LineKind::Udp, "9")));
+        assert!(!super::is_charged(&charged, &line(LineKind::Grpc, "7")));
     }
 
     #[test]
@@ -3969,5 +5315,60 @@ mod tests {
         assert_eq!(account_name(Some(&user(None))), None, "nothing to show");
         assert_eq!(account_name(Some(&user(Some("  ")))), None);
         assert_eq!(account_name(None), None);
+    }
+
+    #[test]
+    fn a_udp_row_tells_its_trouble_whatever_its_status() {
+        // A Standard line with no free node in its region: still
+        // `provisioning`, the reason in `lastError`.
+        let waiting = json!({
+            "status": "provisioning",
+            "region": "tokyo",
+            "destination": "203.0.113.7:10001",
+            "lastAllocationOutcome": "region_unavailable",
+            "lastError": "no eligible node with a free slot in the selected region",
+        });
+        assert_eq!(
+            udp_trouble(&waiting),
+            Some(UdpTrouble::Capacity(
+                "no eligible node with a free slot in the selected region".to_owned()
+            ))
+        );
+        let moving =
+            json!({ "status": "provisioning", "lastError": " node left service; reassigning " });
+        assert_eq!(
+            udp_trouble(&moving),
+            Some(UdpTrouble::Error(
+                "node left service; reassigning".to_owned()
+            ))
+        );
+        let silent = json!({ "status": "error", "lastError": null });
+        assert_eq!(
+            udp_trouble(&silent),
+            Some(UdpTrouble::Error("no reason given".to_owned()))
+        );
+        let blank = json!({ "status": "error", "lastError": "  " });
+        assert_eq!(
+            udp_trouble(&blank),
+            Some(UdpTrouble::Error("no reason given".to_owned()))
+        );
+        for status in ["provisioning", "applying", "active"] {
+            let fine = json!({ "status": status, "lastError": null });
+            assert_eq!(udp_trouble(&fine), None, "{status}");
+        }
+        // user-api's text reaches the terminal as one line with nothing it
+        // acts on, and cut to a line's length.
+        let hostile = json!({
+            "status": "error",
+            "lastError": format!("bad\u{1b}[2J\r\nfake\u{9b}\u{202e}{}", "x".repeat(500)),
+        });
+        let Some(UdpTrouble::Error(said)) = udp_trouble(&hostile) else {
+            panic!("an error");
+        };
+        assert!(
+            !said.contains(['\u{1b}', '\r', '\n', '\u{9b}', '\u{202e}']),
+            "{said:?}"
+        );
+        assert_eq!(said.chars().count(), 300);
     }
 }
