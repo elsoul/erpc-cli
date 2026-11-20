@@ -3,20 +3,100 @@ SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
 SPDX-License-Identifier: Apache-2.0
 -->
 
-<div align="center">
+<a id="erpc"></a>
 
-<img src="docs/assets/erpc-header.jpg" alt="ERPC: Global Edge Blockchain Infrastructure" width="100%">
+# ERPC CLI
 
-# erpc
+[![ERPC CLI: Run your nodes. Deploy your apps. Orange crystal module with 18 chain logos.](docs/assets/erpc-cli-hero.png)][erpc-cli-home]
 
-**Run validators, RPC nodes and your own apps on 18 chains, with 1Password-backed access and key management.**
+**Your nodes, your apps, your ERPC account. One command line.**
 
-One command line for your nodes, your apps and your [ERPC](https://erpc.global) account,
-and an assistant that runs it for you when you ask.
+Run RPC nodes across 18 chains, validators on supported networks, and your own
+apps on ERPC VPSs or servers you manage. Use the commands directly, automate
+them in scripts, or work with ERPC AI in your terminal.
 
-[Install](#install) · [Nodes](#validators-and-rpc-nodes) · [erpc ai](#erpc-ai-just-ask) · [erpc worker](#erpc-worker-your-app-at-full-power-on-a-server-of-its-own) · [Free or with an account](#free-to-start)
+[Quick start](#quick-start) · [Choose your workflow](#choose-your-workflow) ·
+[Documentation][erpc-cli-home] · [Complete usage guide](#complete-usage-guide)
 
-</div>
+## Quick start
+
+### 1. Install
+
+For mainnet validators, follow the [verified installation guide](docs/verify-release.md)
+to check the signed release manifest before running a binary.
+
+**macOS and Linux**
+
+```bash
+curl -fsSL https://install.erpc.global | sh
+```
+
+**Windows (PowerShell)**
+
+```powershell
+irm https://install.erpc.global/ps1 | iex
+```
+
+These installers select the latest stable release, or the newest published
+prerelease when no stable release exists. See the [installation details](#install)
+for supported platforms, version pinning and source builds.
+
+### 2. Explore the CLI
+
+```bash
+erpc version
+erpc --help
+```
+
+Validator and RPC node lifecycle commands are free and need no ERPC account.
+The [node guides](docs/nodes.md) cover the server, key-management and network
+requirements for each chain.
+
+### 3. Connect your ERPC account
+
+Sign in to use account services, then make a Solana mainnet RPC read:
+
+```bash
+erpc login
+erpc whoami
+erpc rpc call getSlot
+```
+
+Need an account? Run `erpc signup`. Prefer a conversation? Run `erpc ai` and
+describe what you want to do. The assistant presents server changes and paid
+operations for your approval by default; see [ERPC AI](docs/ai.md).
+
+## Choose your workflow
+
+| What you want to do | Start here |
+| --- | --- |
+| Run a validator or RPC node | [Node lifecycle and supported chains](docs/nodes.md) · [Chain guides](docs/chains/README.md) |
+| Build and deploy an app | [Worker guide](docs/worker.md): create a Rust app, import an existing app, or deploy a Linux binary |
+| Connect an app to Solana data | [Worker data lines](docs/worker.md#data-lines-grpc-shreds-udp-forwarding-unlimited-rpc): Geyser gRPC, Shreds, UDP Forwarding and Unlimited RPC |
+| Call RPC or deliver events to an API | [RPC calls and webhooks](#rpc-calls-and-webhooks) |
+| Work with an AI assistant or scripts | [ERPC AI and agent skills](docs/ai.md) · [Command reference](#all-commands) · machine-readable `--json` output |
+| Store files and back up a machine | [Storage encryption](docs/storage-encryption.md) · [Backups](docs/backup.md) |
+
+## Keys and access
+
+1Password holds the node inventory and managed signing-key backups, so teams
+can manage shared nodes from their own machines. Operator credentials can also
+use the OS keychain. Worker apps receive their secrets through the worker's
+memory; node key storage and recovery requirements vary by chain.
+See [where keys are kept](#where-your-keys-are) and the
+[worker secrets guide](docs/worker.md).
+
+## Project status
+
+ERPC CLI is in pre-release. RPC node workflows cover 18 chains; validator
+workflows cover the supported subset. Live acceptance is still in progress
+for most chains. Check the [chain source map](docs/chains/README.md) and each
+chain's guide before choosing a deployment.
+
+## Complete usage guide
+
+<details>
+<summary>Node operations, ERPC AI, workers, RPC, storage and command reference</summary>
 
 ## Where your keys are
 
@@ -519,11 +599,15 @@ enforces these rules. If a secret ever lands in the repository, follow
 [`docs/secret-exposure-response.md`](docs/secret-exposure-response.md) and
 rotate it before rewriting any history.
 
+</details>
+
 ## License
 
 Apache-2.0. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE). Chain logos come
 from [web3icons](https://github.com/0xa3k5/web3icons) (MIT); each is a
-trademark of its own project. The ERPC header image
-([`docs/assets/erpc-header.jpg`](docs/assets/erpc-header.jpg)) is ELSOUL LABO
-B.V.'s brand material and is not under the Apache License: see
+trademark of its own project. The ERPC header and CLI key visual
+([header](docs/assets/erpc-header.jpg), [CLI key visual](docs/assets/erpc-cli-hero.png))
+are ELSOUL LABO B.V.'s brand material and are not under the Apache License: see
 [`LICENSES/LicenseRef-ELSOUL-LABO-Brand.txt`](LICENSES/LicenseRef-ELSOUL-LABO-Brand.txt).
+
+[erpc-cli-home]: https://erpc.global/en/doc/erpc-cli/overview/
