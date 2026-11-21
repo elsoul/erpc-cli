@@ -110,6 +110,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: 1.98.0
+          components: clippy
       - if: runner.environment == 'github-hosted'
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       # fallback: none, so that a version install-action does not list fails
@@ -128,6 +129,12 @@ jobs:
       - if: ${{ !cancelled() }}
         run: cargo test --workspace --locked --doc
       - run: cargo run --locked -- version --json
+      - name: Lint the opt-in Node Check
+        if: ${{ !cancelled() }}
+        run: cargo clippy --locked -p erpc -p erpc-api --all-targets --features erpc/node-check-pilot -- -D warnings
+      - name: Test the opt-in Node Check
+        if: ${{ !cancelled() }}
+        run: cargo nextest run --locked -p erpc -p erpc-api --features erpc/node-check-pilot --no-fail-fast -E 'test(node_check) | binary(node_check_entry)'
 
   # The worker agents erpc embeds are cross-built with zig before every
   # release build (.github/build-setup.yml) on cargo-dist's four runners; both

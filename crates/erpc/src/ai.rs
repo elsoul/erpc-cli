@@ -83,6 +83,13 @@ pub enum Start {
     Latest,
 }
 
+/// The local menu command is reserved in all builds so it never goes to chat.
+pub(crate) const NODE_CHECK_COMMAND: &str = "/node-check";
+
+pub(crate) fn is_node_check_command(text: &str) -> bool {
+    text.split_whitespace().next() == Some(NODE_CHECK_COMMAND)
+}
+
 /// Runs `erpc ai`, bare `erpc`, and `erpc resume`. `size` puts every turn
 /// on one model size; none, and each turn's words decide it.
 pub async fn run(
@@ -118,6 +125,15 @@ pub async fn run(
         }
         None => None,
     };
+    if one_shot.as_deref().is_some_and(is_node_check_command) {
+        let message = if cfg!(feature = "node-check-pilot") {
+            t!("node_check.console_only")
+        } else {
+            t!("tui.unknown_command", command = NODE_CHECK_COMMAND)
+        };
+        return Outcome::Usage(message);
+    }
+
     if let Some(text) = one_shot {
         let mut session = equipped(Session::new(access, client, system));
         session.set_size(size);

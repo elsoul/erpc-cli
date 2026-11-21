@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+about = "打开本地 Solana RPC 监听检查菜单"
+scope = "请在您管理的 Linux 节点上运行。此检查读取当前网络命名空间，只向 ERPC 发送检查名称和监听分类。"
+run = "检查 TCP 8899 的 Solana RPC 绑定"
+cancel = "取消"
+terminal_required = "节点检查菜单需要终端"
+console_only = "请在 erpc ai 交互控制台中打开本地节点检查"
+unsupported = "节点检查需要 Linux"
+menu_failed = "无法打开节点检查菜单"
+request_failed = "无法通过 ERPC 完成节点检查"
+sign_in = "请运行 erpc login 登录后再检查节点"
+wait = "请等待本地节点检查结束后再发送消息"
+arguments = "节点检查不接受参数。请使用 /node-check 打开菜单"
+review_binding = "请检查绑定设置。TCP 8899 有监听套接字绑定到通配地址或非回环地址。如果只需要本地访问，请检查服务的绑定地址和访问控制。"
+loopback_binding = "回环绑定。检测到的 TCP 8899 监听套接字均只绑定到回环地址。"
+no_listener = "没有发现监听 TCP 8899 的套接字。"
+inconclusive = "无法确定。未能完整读取 IPv4 和 IPv6 的两张监听表。"
+limits = "此检查仅反映当前 Linux 网络命名空间中 TCP 8899 的即时状态。进程身份、其他端口和命名空间以及网络可达性均不在检查范围内。"

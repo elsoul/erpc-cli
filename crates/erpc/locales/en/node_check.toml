@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+about = "Open the local Solana RPC listener check menu"
+scope = "Run on a Linux node you administer. This reads the current network namespace and sends only the check name and listener classification to ERPC."
+run = "Check Solana RPC binding on TCP 8899"
+cancel = "Cancel"
+terminal_required = "the node check menu requires a terminal"
+console_only = "open local node checks from the interactive erpc ai console"
+unsupported = "the node check requires Linux"
+menu_failed = "could not open the node check menu"
+request_failed = "could not complete the node check with ERPC"
+sign_in = "sign in with erpc login to run the node check"
+wait = "wait for the local node check to finish before sending a message"
+arguments = "the node check takes no arguments. Use /node-check to open the menu"
+review_binding = "Review binding. A TCP 8899 listener is bound to a wildcard or non-loopback address. If local-only access is intended, review the service's bind address and access controls."
+loopback_binding = "Loopback binding. The observed TCP 8899 listeners are bound only to loopback addresses."
+no_listener = "No listener observed on TCP 8899."
+inconclusive = "Inconclusive. The IPv4 and IPv6 listener tables could not both be read completely."
+limits = "This point-in-time check covers TCP 8899 in the current Linux network namespace. Process identity, other ports and namespaces, and network reachability are outside its scope."
