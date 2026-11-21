@@ -13,6 +13,9 @@ homepage.workspace = true
 authors.workspace = true
 publish = true
 
+[features]
+node-check-pilot = []
+
 [dependencies]
 erpc-core = { workspace = true }
 erpc-auth = { workspace = true }

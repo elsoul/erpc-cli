@@ -34,7 +34,10 @@ use unicode_width::UnicodeWidthChar as _;
 use super::markdown::Markdown;
 use super::picker::{Picker, Said};
 use super::{Look, mark};
+use crate::commands::Outcome;
 use crate::conversations::Record;
+#[cfg(feature = "node-check-pilot")]
+use crate::node_check;
 
 /// Who is signed in and where, for the top of the conversation.
 pub struct Intro {
@@ -52,7 +55,14 @@ const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "�
 /// The most rows the box grows to before it scrolls.
 const MAX_INPUT_ROWS: usize = 6;
 /// The commands.
-const COMMANDS: [&str; 4] = ["/new", "/model", "/help", "/exit"];
+const COMMANDS: &[&str] = &[
+    "/new",
+    "/model",
+    "/help",
+    "/exit",
+    #[cfg(feature = "node-check-pilot")]
+    crate::ai::NODE_CHECK_COMMAND,
+];
 
 /// What a command does, in the language of the run.
 fn command_about(name: &str) -> String {
@@ -60,6 +70,8 @@ fn command_about(name: &str) -> String {
         "/new" => t!("tui.commands.new"),
         "/model" => t!("tui.commands.model"),
         "/help" => t!("tui.commands.help"),
+        #[cfg(feature = "node-check-pilot")]
+        crate::ai::NODE_CHECK_COMMAND => t!("node_check.about"),
         _ => t!("tui.commands.exit"),
     }
 }
@@ -145,6 +157,16 @@ type Running<A> = Pin<Box<dyn Future<Output = (Session<A>, Turn)>>>;
 /// A guess at the next message being fetched, and the count of edits to the
 /// box when it was asked for.
 type Guessing = (u64, Pin<Box<dyn Future<Output = Option<String>>>>);
+/// The standalone check; it never borrows or writes to the chat session.
+type CheckResult = Option<Result<String, Outcome>>;
+type Checking = Pin<Box<dyn Future<Output = CheckResult>>>;
+
+async fn check_result(checking: &mut Option<Checking>) -> CheckResult {
+    match checking.as_mut() {
+        Some(check) => check.await,
+        None => core::future::pending().await,
+    }
+}
 
 /// A tool asking the person, and where the answer goes.
 enum Asking {
@@ -238,6 +260,8 @@ enum Action {
     Reset,
     /// `/model`: show the size, or put the conversation on one.
     Size(SizeAsked),
+    #[cfg(feature = "node-check-pilot")]
+    NodeCheck,
     Quit,
 }
 
@@ -298,6 +322,7 @@ async fn run_loop<A: Access + 'static>(
     let mut idle = Some(session);
     let mut running: Option<Running<A>> = None;
     let mut guessing: Option<Guessing> = None;
+    let mut checking: Option<Checking> = None;
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mut events = EventStream::new();
     let mut tick = tokio::time::interval(Duration::from_millis(80));
@@ -314,6 +339,7 @@ async fn run_loop<A: Access + 'static>(
             },
             Some(event) = rx.recv() => app.on_session(event),
             Some(asking) = asked.recv() => app.ask(asking),
+            report = check_result(&mut checking), if checking.is_some() => app.node_check_result(report, &mut checking),
             guess = async {
                 match guessing.as_mut() {
                     Some((_, guess)) => guess.await,
@@ -388,6 +414,9 @@ async fn run_loop<A: Access + 'static>(
                     }
                 }
                 Action::Size(asked) => app.on_size(idle.as_mut(), asked),
+                #[cfg(feature = "node-check-pilot")]
+                Action::NodeCheck => app.open_node_check(idle.is_some(), &mut checking),
+                Action::Send(text) if checking.is_some() => app.wait_for_node_check(text),
                 Action::Send(text) => match idle.take() {
                     Some(session) => running = Some(app.start(session, text, tx.clone())),
                     None => app.queue.push_back(text),
@@ -476,6 +505,45 @@ impl App {
     fn note(&mut self, tone: Tone, text: impl Into<String>) {
         self.entries.push(Entry::Note(tone, text.into()));
         self.top = None;
+    }
+
+    #[cfg(feature = "node-check-pilot")]
+    fn open_node_check(&mut self, idle: bool, checking: &mut Option<Checking>) {
+        if !node_check::SUPPORTED {
+            self.note(Tone::Warn, t!("node_check.unsupported"));
+        } else if idle && checking.is_none() {
+            let (reply, answer) = oneshot::channel();
+            self.note(Tone::Question, t!("node_check.scope"));
+            self.picker = Some(Picker::node_check(reply));
+            *checking = Some(Box::pin(async move {
+                if answer.await == Ok(true) {
+                    Some(node_check::check().await.map(node_check::report))
+                } else {
+                    None
+                }
+            }));
+        } else {
+            self.note(Tone::Warn, t!("tui.wait_first"));
+        }
+    }
+
+    fn node_check_result(&mut self, result: CheckResult, checking: &mut Option<Checking>) {
+        *checking = None;
+        match result {
+            Some(Ok(report)) => self.note(Tone::Info, report),
+            Some(Err(outcome)) => {
+                if let Some(error) = outcome.error() {
+                    self.note(Tone::Error, error.message);
+                }
+            }
+            None => {}
+        }
+    }
+
+    fn wait_for_node_check(&mut self, text: String) {
+        self.set_input(text);
+        self.recall.pop();
+        self.note(Tone::Warn, t!("node_check.wait"));
     }
 
     /// Shows what is asked and the options to pick from in place of the
@@ -915,6 +983,18 @@ impl App {
             return None;
         }
         self.set_input(String::new());
+        if crate::ai::is_node_check_command(&text) {
+            #[cfg(feature = "node-check-pilot")]
+            {
+                if text == crate::ai::NODE_CHECK_COMMAND {
+                    return Some(Action::NodeCheck);
+                }
+                self.note(Tone::Warn, t!("node_check.arguments"));
+            }
+            #[cfg(not(feature = "node-check-pilot"))]
+            self.note(Tone::Warn, t!("node_check.unavailable"));
+            return None;
+        }
         self.recall.push(text.clone());
         self.recall_at = None;
         match text.as_str() {
@@ -1664,6 +1744,68 @@ mod tests {
         rows.iter()
             .map(|row| row.iter().map(|s| s.content.as_ref()).collect())
             .collect()
+    }
+
+    #[test]
+    fn node_check_is_a_local_action_and_refuses_arguments() {
+        let mut app = app();
+        app.set_input("/node-check".to_owned());
+        #[cfg(feature = "node-check-pilot")]
+        assert_eq!(app.submit(), Some(Action::NodeCheck));
+        #[cfg(not(feature = "node-check-pilot"))]
+        assert_eq!(app.submit(), None);
+        assert!(app.recall.is_empty());
+        assert!(app.queue.is_empty());
+        assert_eq!(
+            super::help().contains("/node-check"),
+            cfg!(feature = "node-check-pilot")
+        );
+        app.set_input("/node-".to_owned());
+        assert_eq!(
+            !app.suggestions().is_empty(),
+            cfg!(feature = "node-check-pilot")
+        );
+        app.set_input("/node-check example".to_owned());
+        assert_eq!(app.submit(), None);
+        assert!(app.recall.is_empty());
+        assert!(app.queue.is_empty());
+        let warning = if cfg!(feature = "node-check-pilot") {
+            "takes no arguments"
+        } else {
+            "unavailable in this build"
+        };
+        assert!(matches!(
+            app.entries.last(),
+            Some(super::Entry::Note(super::Tone::Warn, message)) if message.contains(warning)
+        ));
+        app.set_input("What is a node check?".to_owned());
+        assert_eq!(
+            app.submit(),
+            Some(Action::Send("What is a node check?".to_owned()))
+        );
+        assert!(!crate::command_reference().contains("--node-check"));
+    }
+
+    #[cfg(feature = "node-check-pilot")]
+    #[test]
+    fn node_check_menu_runs_only_when_the_operator_selects_the_check() {
+        for (keys, expected) in [
+            (&[KeyCode::Enter][..], false),
+            (&[KeyCode::Esc][..], false),
+            (&[KeyCode::Up, KeyCode::Enter][..], true),
+        ] {
+            let mut app = app();
+            let (reply, mut answer) = tokio::sync::oneshot::channel();
+            app.picker = Some(super::Picker::node_check(reply));
+            app.picker.as_mut().expect("asked").settle();
+            for &code in keys {
+                assert_eq!(key(&mut app, code, KeyModifiers::NONE), None);
+            }
+            assert_eq!(answer.try_recv(), Ok(expected));
+            assert!(app.picker.is_none());
+            assert!(app.queue.is_empty());
+            assert!(app.recall.is_empty());
+        }
     }
 
     #[test]

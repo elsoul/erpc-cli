@@ -2387,7 +2387,7 @@ mod tests {
     fn a_system_without_a_kernel_keyring_keeps_no_unlock() {
         let (_home, store) = fresh();
         let master = store.create(PASSPHRASE).expect("made");
-        assert!(!unlock::SUPPORTED);
+        const { assert!(!unlock::SUPPORTED) };
         assert_eq!(unlock::keep(&master), Err(unlock::UnlockError::Unsupported));
         assert!(unlock::kept(&master.id()).is_none());
         assert_eq!(unlock::forget(&master.id()), Ok(false));

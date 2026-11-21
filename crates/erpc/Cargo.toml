@@ -20,6 +20,9 @@ publish = true
 name = "erpc"
 path = "src/main.rs"
 
+[features]
+node-check-pilot = ["erpc-api/node-check-pilot"]
+
 [dependencies]
 erpc-chain-hyperliquid.workspace = true
 getrandom.workspace = true
