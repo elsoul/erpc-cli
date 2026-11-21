@@ -177,7 +177,7 @@ fn read_row(line: &str, family: Family) -> Option<TableBinding> {
     let state = u8::try_from(hex(fields.next()?, 2)?).ok()?;
     // Require the rest of the columns common to the kernel's row types,
     // through inode. A partial row cannot decide whether a listener exists.
-    let _inode = fields.nth(4)?.parse::<u64>().ok()?;
+    let _inode = fields.nth(5)?.parse::<u64>().ok()?;
     if port != RPC_PORT || state != TCP_LISTEN {
         return Some(TableBinding::None);
     }
@@ -323,6 +323,26 @@ mod tests {
         assert_eq!(
             classify(Some(oversized), Some(TCP6.as_bytes())),
             Observation::Unknown
+        );
+    }
+
+    #[test]
+    fn socket_rows_require_an_inode_after_the_timeout() {
+        let address = ipv4(Ipv4Addr::LOCALHOST);
+        let without_inode = format!(
+            "{TCP4}  0: {address}:22C3 00000000:0000 0A 00000000:00000000 00:00000000 00000000 102 0"
+        );
+        assert_eq!(
+            both(&format!("{without_inode}\n"), TCP6),
+            Observation::Unknown
+        );
+        assert_eq!(
+            both(&format!("{without_inode} malformed\n"), TCP6),
+            Observation::Unknown
+        );
+        assert_eq!(
+            both(&format!("{without_inode} 23061\n"), TCP6),
+            Observation::LoopbackOnly
         );
     }
 

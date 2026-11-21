@@ -6,7 +6,6 @@ scope = "请在您管理的 Linux 节点上运行。此检查读取当前网络�
 run = "检查 TCP 8899 的 Solana RPC 绑定"
 cancel = "取消"
 terminal_required = "节点检查菜单需要终端"
-unavailable = "此版本不提供本地节点检查"
 console_only = "请在 erpc ai 交互控制台中打开本地节点检查"
 unsupported = "节点检查需要 Linux"
 menu_failed = "无法打开节点检查菜单"

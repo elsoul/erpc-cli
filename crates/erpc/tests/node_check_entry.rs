@@ -8,14 +8,38 @@
 use std::io::Write as _;
 use std::process::{Command, Stdio};
 
-fn erpc_command(args: &[&str]) -> Command {
+fn isolated_home() -> tempfile::TempDir {
+    let home = tempfile::tempdir().expect("isolated configuration");
+    // Even a regression that sends the slash command to the session cannot
+    // read from a developer's keychain or a 1Password vault.
+    std::fs::write(
+        home.path().join("config.toml"),
+        "credential_store = \"file\"\n",
+    )
+    .expect("choose an empty fixture credential store");
+    home
+}
+
+fn erpc_command(args: &[&str], home: &std::path::Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_erpc"));
-    command.args(args).env("ERPC_LANG", "en").env("LC_ALL", "C");
+    command
+        .args(args)
+        .env_clear()
+        .env("ERPC_HOME", home)
+        .env("HOME", home)
+        .env("USERPROFILE", home)
+        .env("PATH", home)
+        .env("ERPC_LANG", "en")
+        .env("LC_ALL", "C");
+    if let Some(root) = std::env::var_os("SYSTEMROOT") {
+        command.env("SYSTEMROOT", root);
+    }
     command
 }
 
 fn erpc(args: &[&str]) -> std::process::Output {
-    erpc_command(args)
+    let home = isolated_home();
+    erpc_command(args, home.path())
         .stdin(Stdio::null())
         .output()
         .expect("run erpc")
@@ -54,7 +78,8 @@ fn the_standard_build_rejects_the_node_check_flag() {
 #[test]
 fn node_check_slash_input_cannot_be_sent_as_a_chat_message() {
     let direct = erpc(&["--json", "ai", "--message", "/node-check dummy-host"]);
-    let mut child = erpc_command(&["--json", "ai"])
+    let home = isolated_home();
+    let mut child = erpc_command(&["--json", "ai"], home.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -74,7 +99,7 @@ fn node_check_slash_input_cannot_be_sent_as_a_chat_message() {
         let detail = if cfg!(feature = "node-check-pilot") {
             "open local node checks from the interactive erpc ai console"
         } else {
-            "local node checks are unavailable in this build"
+            "Unknown command: /node-check · /help"
         };
         assert_eq!(reply["error"]["message"], detail);
     }

@@ -64,25 +64,30 @@ More about conversations:
   After an upgrade `erpc doctor` warns while the copies on disk are older,
   and the next command says so once.
 
-## Check a local Solana RPC binding
+## Local Solana RPC binding check (pilot builds)
 
-The `node-check-pilot` Cargo feature is an opt-in for internal pilot builds.
-Standard releases omit the local check. The pilot menu requires an approved
-ERPC account.
+Standard releases omit this check. Anyone can compile the local menu and
+check by enabling the `node-check-pilot` Cargo feature. Completing a report
+requires signing in. The server controls which deployments enable reports
+and which accounts can receive them.
 
-Run `erpc ai --node-check` on a Linux node you administer, or enter
-`/node-check` in the interactive `erpc ai` console on that node.
-Select **Check Solana RPC binding on TCP 8899**. The menu starts on
-**Cancel** and takes no host, port, or other arguments. A signed-in
-ERPC account is required to complete the report.
+With the feature enabled, run `erpc ai --node-check` on a Linux node you
+administer, or enter `/node-check` in the interactive `erpc ai` console there.
+Select **Check Solana RPC binding on TCP 8899**. The menu starts on **Cancel**
+and takes no host, port, or other arguments. In all builds, input whose first word is
+`/node-check` stays local, including with `--message` or piped input.
 
 The check reads Linux's IPv4 and IPv6 socket tables in the current network
 namespace. It reports a wildcard or non-loopback binding for review,
-loopback-only listeners, no observed listener, or an inconclusive result
-if either table could not be read completely. The check sends the fixed
-check name and one classification to ERPC for a report. Listener addresses
-and raw socket data stay on the node. The console shows the report
-without adding it to the chat session or saved conversation.
+loopback-only listeners, no observed listener, or an inconclusive result.
+A missing table, such as on Linux with IPv6 disabled, an unreadable or
+truncated table, or either table exceeding 8 MiB makes the result
+inconclusive even when the other table shows a listener. The size limit
+counts every row, including established connections.
+
+Only the fixed check name and one classification go to ERPC for the report.
+Listener addresses and raw socket data stay on the node. The console shows
+the report without adding it to the chat session or saved conversation.
 
 This is a snapshot of listeners on the conventional Solana RPC port,
 TCP 8899. It does not identify the process, change the node, or probe

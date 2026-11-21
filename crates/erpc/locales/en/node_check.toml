@@ -6,7 +6,6 @@ scope = "Run on a Linux node you administer. This reads the current network name
 run = "Check Solana RPC binding on TCP 8899"
 cancel = "Cancel"
 terminal_required = "the node check menu requires a terminal"
-unavailable = "local node checks are unavailable in this build"
 console_only = "open local node checks from the interactive erpc ai console"
 unsupported = "the node check requires Linux"
 menu_failed = "could not open the node check menu"

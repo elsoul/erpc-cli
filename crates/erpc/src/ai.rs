@@ -98,6 +98,21 @@ pub async fn run(
     start: Start,
     size: Option<erpc_api::ai::Size>,
 ) -> Outcome {
+    let client = match AuthClient::new() {
+        Ok(client) => client,
+        Err(e) => return crate::error::classify(&e).into(),
+    };
+    let access = match StoreAccess::open(client.clone()) {
+        Ok(access) => access,
+        Err(outcome) => return outcome,
+    };
+    let mut system = erpc_ai::prompt::system(&crate::command_reference());
+    // What is remembered goes last, so the blocks before it stay cached
+    // when it changes.
+    if let Some(remembered) = crate::memory::store().ok().and_then(|m| m.prompt()) {
+        system.push(remembered);
+    }
+
     // A question on the command line, or piped in: one answer, then done.
     let one_shot = match message {
         Some(text) => Some(text),
@@ -114,24 +129,9 @@ pub async fn run(
         let message = if cfg!(feature = "node-check-pilot") {
             t!("node_check.console_only")
         } else {
-            t!("node_check.unavailable")
+            t!("tui.unknown_command", command = NODE_CHECK_COMMAND)
         };
         return Outcome::Usage(message);
-    }
-
-    let client = match AuthClient::new() {
-        Ok(client) => client,
-        Err(e) => return crate::error::classify(&e).into(),
-    };
-    let access = match StoreAccess::open(client.clone()) {
-        Ok(access) => access,
-        Err(outcome) => return outcome,
-    };
-    let mut system = erpc_ai::prompt::system(&crate::command_reference());
-    // What is remembered goes last, so the blocks before it stay cached
-    // when it changes.
-    if let Some(remembered) = crate::memory::store().ok().and_then(|m| m.prompt()) {
-        system.push(remembered);
     }
 
     if let Some(text) = one_shot {

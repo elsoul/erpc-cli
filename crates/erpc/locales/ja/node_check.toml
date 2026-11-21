@@ -6,7 +6,6 @@ scope = "自分が管理する Linux ノードで実行してください。現�
 run = "TCP 8899 の Solana RPC バインドを確認"
 cancel = "キャンセル"
 terminal_required = "ノードの確認メニューには端末が必要です"
-unavailable = "このビルドではローカルのノード確認を利用できません"
 console_only = "ローカルのノード確認は erpc ai の対話コンソールから開いてください"
 unsupported = "このノード確認には Linux が必要です"
 menu_failed = "ノードの確認メニューを開けませんでした"

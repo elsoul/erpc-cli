@@ -992,7 +992,13 @@ impl App {
                 self.note(Tone::Warn, t!("node_check.arguments"));
             }
             #[cfg(not(feature = "node-check-pilot"))]
-            self.note(Tone::Warn, t!("node_check.unavailable"));
+            self.note(
+                Tone::Warn,
+                t!(
+                    "tui.unknown_command",
+                    command = crate::ai::NODE_CHECK_COMMAND
+                ),
+            );
             return None;
         }
         self.recall.push(text.clone());
@@ -1772,7 +1778,7 @@ mod tests {
         let warning = if cfg!(feature = "node-check-pilot") {
             "takes no arguments"
         } else {
-            "unavailable in this build"
+            "Unknown command: /node-check"
         };
         assert!(matches!(
             app.entries.last(),
@@ -1784,6 +1790,43 @@ mod tests {
             Some(Action::Send("What is a node check?".to_owned()))
         );
         assert!(!crate::command_reference().contains("--node-check"));
+    }
+
+    #[cfg(feature = "node-check-pilot")]
+    #[test]
+    fn node_check_reports_and_errors_render_as_local_notes() {
+        let mut app = app();
+        let mut checking = Some(Box::pin(core::future::pending()) as super::Checking);
+        let report = crate::node_check::report(erpc_api::node_check::Finding::LoopbackBinding);
+        app.node_check_result(Some(Ok(report)), &mut checking);
+        assert!(checking.is_none());
+        app.node_check_result(
+            Some(Err(crate::commands::Outcome::Failed(t!(
+                "node_check.request_failed"
+            )))),
+            &mut checking,
+        );
+        let lines = app
+            .conversation(132)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content)
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(lines.contains("Loopback binding"));
+        assert!(lines.contains("current Linux network namespace"));
+        assert!(lines.contains("could not complete the node check with ERPC"));
+        assert!(
+            app.entries
+                .iter()
+                .all(|entry| matches!(entry, super::Entry::Note(..)))
+        );
+        assert!(app.queue.is_empty());
+        assert!(app.recall.is_empty());
     }
 
     #[cfg(feature = "node-check-pilot")]
