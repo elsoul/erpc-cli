@@ -83,6 +83,13 @@ pub enum Start {
     Latest,
 }
 
+/// The local menu command is reserved in all builds so it never goes to chat.
+pub(crate) const NODE_CHECK_COMMAND: &str = "/node-check";
+
+pub(crate) fn is_node_check_command(text: &str) -> bool {
+    text.split_whitespace().next() == Some(NODE_CHECK_COMMAND)
+}
+
 /// Runs `erpc ai`, bare `erpc`, and `erpc resume`. `size` puts every turn
 /// on one model size; none, and each turn's words decide it.
 pub async fn run(
@@ -91,6 +98,27 @@ pub async fn run(
     start: Start,
     size: Option<erpc_api::ai::Size>,
 ) -> Outcome {
+    // A question on the command line, or piped in: one answer, then done.
+    let one_shot = match message {
+        Some(text) => Some(text),
+        None if !std::io::stdin().is_terminal() => {
+            let mut text = String::new();
+            if let Err(e) = std::io::stdin().read_to_string(&mut text) {
+                return Outcome::Failed(t!("ai.question_unreadable", error = e));
+            }
+            Some(text)
+        }
+        None => None,
+    };
+    if one_shot.as_deref().is_some_and(is_node_check_command) {
+        let message = if cfg!(feature = "node-check-pilot") {
+            t!("node_check.console_only")
+        } else {
+            t!("node_check.unavailable")
+        };
+        return Outcome::Usage(message);
+    }
+
     let client = match AuthClient::new() {
         Ok(client) => client,
         Err(e) => return crate::error::classify(&e).into(),
@@ -106,18 +134,6 @@ pub async fn run(
         system.push(remembered);
     }
 
-    // A question on the command line, or piped in: one answer, then done.
-    let one_shot = match message {
-        Some(text) => Some(text),
-        None if !std::io::stdin().is_terminal() => {
-            let mut text = String::new();
-            if let Err(e) = std::io::stdin().read_to_string(&mut text) {
-                return Outcome::Failed(t!("ai.question_unreadable", error = e));
-            }
-            Some(text)
-        }
-        None => None,
-    };
     if let Some(text) = one_shot {
         let mut session = equipped(Session::new(access, client, system));
         session.set_size(size);

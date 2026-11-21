@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+about = "ローカルの Solana RPC リスナー確認メニューを開く"
+scope = "自分が管理する Linux ノードで実行してください。現在のネットワーク名前空間のリスナーを読み取り、チェック名と分類結果だけを ERPC に送信します。"
+run = "TCP 8899 の Solana RPC バインドを確認"
+cancel = "キャンセル"
+terminal_required = "ノードの確認メニューには端末が必要です"
+unavailable = "このビルドではローカルのノード確認を利用できません"
+console_only = "ローカルのノード確認は erpc ai の対話コンソールから開いてください"
+unsupported = "このノード確認には Linux が必要です"
+menu_failed = "ノードの確認メニューを開けませんでした"
+request_failed = "ERPC でノード確認を完了できませんでした"
+sign_in = "ノードを確認するには erpc login でサインインしてください"
+wait = "ローカルのノード確認が終了してからメッセージを送信してください"
+arguments = "ノード確認に引数はありません。/node-check でメニューを開いてください"
+review_binding = "バインド設定を確認してください。TCP 8899 のリスナーがワイルドカードまたはループバック以外のアドレスにバインドされています。ローカルアクセスのみを想定している場合は、サービスのバインドアドレスとアクセス制御を確認してください。"
+loopback_binding = "ループバックバインド。検出された TCP 8899 リスナーは、ループバックアドレスのみにバインドされています。"
+no_listener = "TCP 8899 のリスナーは検出されませんでした。"
+inconclusive = "判定不能。IPv4 と IPv6 のリスナーテーブルの両方を完全には読み取れませんでした。"
+limits = "現在の Linux ネットワーク名前空間にある TCP 8899 の状態をその時点で確認します。プロセスの識別、他のポートと名前空間、およびネットワークからの到達性は対象外です。"

@@ -19,6 +19,8 @@ pub mod account;
 pub mod ai;
 pub mod gasless;
 pub mod hourly;
+#[cfg(feature = "node-check-pilot")]
+pub mod node_check;
 pub mod storage;
 pub mod udp;
 pub mod worker;

@@ -79,6 +79,8 @@ mod keyless;
 mod memory;
 mod near_rpc;
 mod near_tree;
+#[cfg(feature = "node-check-pilot")]
+mod node_check;
 
 mod monad_ops;
 mod monad_tree;
@@ -310,6 +312,10 @@ enum Command {
         /// each turn's words decide.
         #[arg(long, value_name = "SIZE", value_parser = |text: &str| text.parse::<erpc_api::ai::Size>())]
         model: Option<erpc_api::ai::Size>,
+        /// Open the local Solana RPC listener check menu.
+        #[cfg(feature = "node-check-pilot")]
+        #[arg(long, conflicts_with_all = ["message", "continue_last", "model"])]
+        node_check: bool,
     },
     /// Continue a saved conversation. Without an id, pick one from a list.
     Resume {
@@ -396,7 +402,10 @@ pub fn command_reference() -> String {
             let mut usage = full.clone();
             for arg in sub.get_arguments() {
                 let id = arg.get_id().as_str();
-                if matches!(id, "json" | "help" | "version" | "args") {
+                // The node check is an operator-only action, outside the assistant's prompt.
+                if matches!(id, "json" | "help" | "version" | "args")
+                    || (name == "ai" && id == "node_check")
+                {
                     continue;
                 }
                 if let Some(long) = arg.get_long() {
@@ -673,7 +682,13 @@ async fn dispatch(cli: Cli) -> ExitCode {
             message,
             continue_last,
             model,
+            #[cfg(feature = "node-check-pilot")]
+            node_check,
         } => {
+            #[cfg(feature = "node-check-pilot")]
+            if node_check {
+                return finish(node_check::menu(cli.json).await);
+            }
             let start = if continue_last {
                 ai::Start::Latest
             } else {

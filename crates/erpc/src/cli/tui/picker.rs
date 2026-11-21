@@ -71,6 +71,15 @@ impl Picker {
         Self::stop_last(&[], Reply::YesNo(reply))
     }
 
+    /// The fixed local check menu, with cancellation selected by default.
+    #[cfg(feature = "node-check-pilot")]
+    pub(super) fn node_check(reply: oneshot::Sender<bool>) -> Self {
+        let mut picker = Self::yes_no(reply);
+        picker.rows[0].0 = t!("node_check.run");
+        picker.rows[1].0 = t!("node_check.cancel");
+        picker
+    }
+
     /// A command's yes or no, with middle rows that allow every command, or
     /// this one, until the console ends; the cursor on no. The row next to
     /// no is the narrower one.
