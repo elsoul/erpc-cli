@@ -265,6 +265,10 @@ pub(crate) fn restrict(path: &Path, mode: u32) -> std::io::Result<()> {
 }
 
 #[cfg(not(unix))]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the shared callers propagate failures from the Unix permission change"
+)]
 pub(crate) fn restrict(_: &Path, _: u32) -> std::io::Result<()> {
     Ok(())
 }
