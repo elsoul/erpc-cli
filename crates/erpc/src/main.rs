@@ -21,7 +21,7 @@ use erpc_auth::store::{StoreError, StoreKind};
 
 #[macro_use]
 mod cli;
-mod account_secret;
+mod account;
 mod ai;
 mod arbitrum_bundle;
 mod arbitrum_custody;
@@ -51,11 +51,7 @@ mod bsc_owned;
 mod bsc_rpc;
 mod bsc_signer;
 mod bsc_tree;
-mod commands;
-mod config;
 mod conversations;
-mod credit_wallet;
-mod doctor;
 mod elf;
 mod eth_authority;
 mod eth_authority_evidence;
@@ -75,7 +71,6 @@ mod kaia_owned;
 mod kaia_rpc;
 mod kaia_signer;
 mod kaia_tree;
-mod keyless;
 mod memory;
 mod near_rpc;
 mod near_tree;
@@ -105,7 +100,6 @@ mod rollup_credentials;
 mod rollup_ops;
 mod rollup_tree;
 mod rpc_call;
-mod session;
 #[cfg(test)]
 mod skill_check;
 mod skills;
@@ -158,6 +152,11 @@ mod worker_waf;
 // Temporary: the old paths of the modules that moved into `cli/`, so the
 // move changes no imports. Each goes when its users import from `cli::`.
 pub(crate) use cli::{browser, echo, error, i18n, interrupt, long_commands, prompt, tui, ui};
+
+// Temporary, as above, for the modules that moved into `account/`.
+pub(crate) use account::{
+    account_secret, commands, config, credit_wallet, doctor, keyless, session,
+};
 
 /// Exit statuses outside a failure's own ([`error::Code::exit`]).
 mod exit {
