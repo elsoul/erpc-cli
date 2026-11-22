@@ -314,5 +314,5 @@ async fn rpc_response(response: Response) -> Result<Value, Outcome> {
 }
 
 #[cfg(test)]
-#[path = "rpc_payment_tests.rs"]
+#[path = "payment_tests.rs"]
 mod payment_tests;

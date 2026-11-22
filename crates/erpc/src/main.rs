@@ -99,7 +99,7 @@ mod rollup_bundle;
 mod rollup_credentials;
 mod rollup_ops;
 mod rollup_tree;
-mod rpc_call;
+mod rpc;
 #[cfg(test)]
 mod skill_check;
 mod skills;
@@ -130,8 +130,6 @@ mod validator_init;
 mod validator_keys;
 mod validator_vote;
 mod vps_access;
-mod webhook;
-mod webhook_delivery;
 mod worker;
 mod worker_backup;
 mod worker_bench;
@@ -157,6 +155,10 @@ pub(crate) use cli::{browser, echo, error, i18n, interrupt, long_commands, promp
 pub(crate) use account::{
     account_secret, commands, config, credit_wallet, doctor, keyless, session,
 };
+
+// Temporary, as above, for the modules that moved into `rpc/`.
+pub(crate) use rpc::call as rpc_call;
+pub(crate) use rpc::{webhook, webhook_delivery};
 
 /// Exit statuses outside a failure's own ([`error::Code::exit`]).
 mod exit {
