@@ -6,6 +6,13 @@
 //! This file only renders events and reads lines. What a turn does lives in
 //! the session, so the gateway and a browser UI behave the same way.
 
+pub(crate) mod conversations;
+pub(crate) mod memory;
+#[cfg(test)]
+pub(crate) mod skill_check;
+pub(crate) mod skills;
+pub(crate) mod vps_access;
+
 use std::fmt::Write as _;
 use std::io::{IsTerminal as _, Read as _, Write as _};
 
