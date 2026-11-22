@@ -25,7 +25,9 @@ version = 2
 yanked = "deny"
 # Format for ignores (keep the reason and date):
 # ignore = [{ id = "RUSTSEC-0000-0000", reason = "2026-10-22: not reachable because ..." }]
-ignore = []
+ignore = [
+  { id = "RUSTSEC-2026-0592", reason = "2026-11-22: url 2.5.8, from reqwest and tower-http. The fix, 2.5.9, was published on 2026-11-20 and is 14 days old late on 2026-12-04 (23:03 UTC), so it may enter the lock from 2026-12-05; bump url and remove this entry then. The overflow is in Url::origin() and url::quirks::origin(), and no crate in the lock calls either." },
+]
 
 [licenses]
 version = 2
