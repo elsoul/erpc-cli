@@ -5,6 +5,10 @@
 //! nodes, reaching a node, the variables and bundle of a run, running a play
 //! to its end, the firewall confirmation, and the node's state.
 
+pub(crate) mod deploy;
+pub(crate) mod init;
+pub(crate) mod ops;
+
 use std::fmt::Write as _;
 use std::net::IpAddr;
 

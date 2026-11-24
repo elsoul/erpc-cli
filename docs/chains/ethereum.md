@@ -172,6 +172,6 @@ Real-host acceptance on Hoodi and mainnet is deferred. [R8]
 [S27]: https://github.com/OffchainLabs/prysm/blob/96d418cd964b083e37519a9df274030a1beac7db/prysm.sh "Pinned Prysm signing fingerprint and verification procedure"
 
 [R5]: ../../crates/erpc-core/src/chain.rs "Current Ethereum RPC and validator role registry"
-[R6]: ../../crates/erpc/src/tree.rs "Current role-specific dispatch"
+[R6]: ../../crates/erpc/src/node/tree.rs "Current role-specific dispatch"
 
 [R8]: ../ethereum-validator.md "Dedicated Ethereum validator lifecycle and deferred live acceptance"

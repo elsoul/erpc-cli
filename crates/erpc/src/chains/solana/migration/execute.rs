@@ -592,13 +592,13 @@ mod tests {
 }
 
 #[cfg(all(test, unix))]
-#[path = "solana_migration_bundle_tests.rs"]
+#[path = "bundle_tests.rs"]
 mod bundle_tests;
 
-#[path = "solana_migration_complete.rs"]
+#[path = "complete.rs"]
 mod completion;
 
 #[cfg(test)]
 #[cfg(unix)]
-#[path = "solana_migration_resume_tests.rs"]
+#[path = "resume_tests.rs"]
 mod resume_tests;

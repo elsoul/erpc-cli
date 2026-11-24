@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! `erpc rpc --chain eth <verb>`: the flags of each verb, and where each is
-//! sent. Kept beside `tree.rs` so the Ethereum commands do not grow the tree
-//! the other chains share.
+//! sent. Kept apart from `node/tree.rs` so the Ethereum commands do not grow
+//! the tree the other chains share.
 
 use clap::{Arg, ArgAction, ArgMatches, Command, value_parser};
 use erpc_core::chain::Verb;

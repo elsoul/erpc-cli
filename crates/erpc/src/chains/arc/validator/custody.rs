@@ -85,5 +85,5 @@ pub(crate) fn provision<R: OpRunner>(
 }
 
 #[cfg(test)]
-#[path = "arc_validator_custody_tests.rs"]
+#[path = "custody_tests.rs"]
 mod tests;

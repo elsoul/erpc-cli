@@ -78,4 +78,4 @@ production node, Fuji activation or Mainnet acceptance. [R20], [R21], [R23], [R2
 
 
 [R23]: ../../crates/erpc-core/src/chain.rs "Avalanche exposes a Node role only"
-[R24]: ../../crates/erpc/src/tree.rs "Unimplemented node command fallback"
+[R24]: ../../crates/erpc/src/node/tree.rs "Unimplemented node command fallback"
