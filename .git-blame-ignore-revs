@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Commits that only move or rename code, for `git blame` to look through.
+# GitHub's blame view reads this file by itself; locally, run once:
+#
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# Each entry is the commit as merged into main, with its title.
+
+# refactor(erpc): move the terminal modules into cli/ (#49)
+1796f25ec9126e65ce8015e7c1c7730cc7a2e14c
+# refactor(erpc): move the account modules into account/ (#69)
+0652ab12c6ac73e4a44f5d6de6cab4d10da45487
+# refactor(erpc): move the RPC and webhook modules into rpc/ (#70)
+ea5e436625ca8fa644ec1e18534d222e40dce454
+# refactor(erpc): move the assistant modules into ai/ (#71)
+005feb9b26c6cc0d8d2a48ba18f56c6798adc6ba
+# refactor(erpc): move the storage and backup modules into storage/ (#75)
+da52886138fee69c70d07aee8e20fc7bc03258d4
+# refactor(erpc): move the worker modules into worker/ (#76)
+e68ec066718ef40680bd06f084a298a5d2aae712
+# refactor(erpc): import the moved modules by their new paths (#77)
+84ac0dfd2bf8f2672ddab5bb6fdaa82eaf904a7a
