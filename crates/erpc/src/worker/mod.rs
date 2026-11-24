@@ -2654,6 +2654,17 @@ mod tests {
                 );
             }
         }
+        // The worker's sources lived here before worker/; one added here
+        // again would not be scanned.
+        for entry in std::fs::read_dir(&src).expect("src") {
+            let entry = entry.expect("entry");
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let rust = entry.path().extension().is_some_and(|e| e == "rs");
+            assert!(
+                !(name.starts_with("worker") && rust),
+                "{name} is a worker source outside worker/, and is not scanned for hints"
+            );
+        }
         let lib = src.join("../../erpc-worker/src");
         for entry in std::fs::read_dir(&lib).expect("erpc-worker/src") {
             let name = entry.expect("entry").file_name();
