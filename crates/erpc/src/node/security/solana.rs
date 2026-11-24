@@ -57,7 +57,6 @@ pub(super) fn node(
         private_rpc,
         rpc_tx_history,
         identity_on_disk: identity_path.as_deref().map_or(Tristate::Unknown, identity),
-        withdrawer_on_disk: Tristate::Unknown,
     }
 }
 

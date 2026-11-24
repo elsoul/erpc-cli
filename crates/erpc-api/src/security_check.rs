@@ -4,8 +4,9 @@
 //! The server security check's wire protocol.
 //!
 //! A request carries only enums, integers, booleans and validated version
-//! tokens: nothing a person types and nothing read verbatim from the server,
-//! such as a path, a command line or a file's contents. A reply names
+//! tokens: nothing a person types, and from the server nothing but those
+//! version tokens, never a path, a command line or a file's contents. A
+//! reply names
 //! findings from a fixed catalog and points back into the inventory by
 //! index, so the terminal adds the local details itself.
 
@@ -172,7 +173,6 @@ wire_enum! {
         Prometheus => "prometheus",
         NodeExporter => "node_exporter",
         ErpcWorker => "erpc_worker",
-        ErpcGateway => "erpc_gateway",
         Other => "other",
         Unknown => "unknown",
     }
@@ -276,8 +276,6 @@ wire_enum! {
     /// What a found key is for, decided on the server it was found on.
     pub enum KeyRole {
         ValidatorIdentity => "validator_identity",
-        VoteAuthority => "vote_authority",
-        WithdrawAuthority => "withdraw_authority",
         Unknown => "unknown",
     }
 }
@@ -458,8 +456,6 @@ pub struct SolanaNode {
     pub rpc_tx_history: bool,
     /// Whether the identity keypair is a file on this server.
     pub identity_on_disk: Tristate,
-    /// Whether the vote account's withdraw authority is on this server.
-    pub withdrawer_on_disk: Tristate,
 }
 
 /// The SSH server's effective settings.
@@ -650,7 +646,16 @@ impl TryFrom<String> for Label {
         // Control characters, including the terminal's escape sequences and
         // the bidirectional overrides, never reach the screen.
         let printable = !text.chars().any(|c| {
-            c.is_control() || matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+            c.is_control()
+                || matches!(
+                    c,
+                    '\u{061c}'
+                        | '\u{200b}'..='\u{200f}'
+                        | '\u{2028}'..='\u{202e}'
+                        | '\u{2060}'..='\u{2069}'
+                        | '\u{feff}'
+                        | '\u{fff9}'..='\u{fffb}'
+                )
         });
         if printable && text.chars().count() <= 64 {
             Ok(Self(text))
@@ -919,7 +924,6 @@ wire_enum! {
         OsEndOfLife => "os_end_of_life",
         PlaintextWalletKey => "plaintext_wallet_key",
         KeyWorldReadable => "key_world_readable",
-        WithdrawAuthorityOnServer => "withdraw_authority_on_server",
         ValidatorIdentityPermissions => "validator_identity_permissions",
         MnemonicOnDisk => "mnemonic_on_disk",
         UnencryptedKeystore => "unencrypted_keystore",
@@ -1241,7 +1245,6 @@ mod tests {
                     private_rpc: false,
                     rpc_tx_history: false,
                     identity_on_disk: Tristate::Yes,
-                    withdrawer_on_disk: Tristate::Unknown,
                 }],
             ),
             ssh: Ssh {
@@ -1329,7 +1332,7 @@ mod tests {
                     ]},
                     "solana": {"coverage": "complete", "items": [
                         {"app": "agave_validator", "rpc_port": 8899, "rpc_bind": "wildcard", "full_rpc_api": true,
-                         "private_rpc": false, "rpc_tx_history": false, "identity_on_disk": "yes", "withdrawer_on_disk": "unknown"}
+                         "private_rpc": false, "rpc_tx_history": false, "identity_on_disk": "yes"}
                     ]},
                     "ssh": {"coverage": "complete", "password_auth": "no", "root_login": "prohibit_password", "kbd_interactive": "no", "ports": [22]},
                     "firewall": {"coverage": "complete", "tool": "ufw", "enabled": "yes", "input_policy": "drop"},
@@ -1439,6 +1442,7 @@ mod tests {
             json!({"servers": [server_json("vps:../1", "vps", "x")]}).to_string(),
             json!({"servers": [server_json("vps:1", "vps", "\u{1b}]0;title\u{7}")]}).to_string(),
             json!({"servers": [server_json("vps:1", "vps", "a\u{202e}b")]}).to_string(),
+            json!({"servers": [server_json("vps:1", "vps", "line\u{2028}break")]}).to_string(),
             json!({"servers": [server_json("vps:1", "vps", &"x".repeat(65))]}).to_string(),
             json!({"servers": [], "extra": 1}).to_string(),
             r#"{"servers":[],"servers":[]}"#.to_owned(),

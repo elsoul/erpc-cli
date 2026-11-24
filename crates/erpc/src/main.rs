@@ -189,6 +189,7 @@ enum Command {
         /// Open the server security check menu.
         #[cfg(feature = "security-check-pilot")]
         #[arg(long, conflicts_with_all = ["message", "continue_last", "model"])]
+        #[cfg_attr(feature = "node-check-pilot", arg(conflicts_with = "node_check"))]
         security_check: bool,
     },
     /// Continue a saved conversation. Without an id, pick one from a list.

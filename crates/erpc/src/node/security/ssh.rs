@@ -18,7 +18,19 @@ struct Settings {
     root_login: Option<RootLogin>,
     kbd_interactive: Option<Tristate>,
     ports: Vec<NonZeroU16>,
+    listen_ports: Vec<NonZeroU16>,
     partial: bool,
+}
+
+/// The port of a `ListenAddress host:port` or `[v6]:port`, when it names one.
+fn listen_port(value: &str) -> Option<NonZeroU16> {
+    let address = value.split_ascii_whitespace().next()?;
+    let port = match address.strip_prefix('[') {
+        Some(v6) => v6.split_once("]:")?.1,
+        None if address.matches(':').count() == 1 => address.split_once(':')?.1,
+        None => return None,
+    };
+    port.parse().ok()
 }
 
 /// The settings of the server whose configuration is under `root`.
@@ -47,9 +59,11 @@ pub(super) fn read(root: &Path) -> Ssh {
         }
     }
     let mut ports = settings.ports;
+    ports.extend(settings.listen_ports);
     if ports.is_empty() {
         ports.push(NonZeroU16::new(22).unwrap_or(NonZeroU16::MIN));
     }
+    ports.sort_unstable();
     ports.dedup();
     let (ports, dropped) = Bounded::new(ports);
     Ssh {
@@ -92,6 +106,7 @@ fn apply(root: &Path, text: &str, settings: &mut Settings, depth: usize) {
                 )
             });
         let keyword = keyword.to_ascii_lowercase();
+        let value = value.trim_matches('"');
         if keyword == "match" {
             // What a Match block sets applies only to some connections; the
             // report says it could not settle those.
@@ -108,6 +123,11 @@ fn apply(root: &Path, text: &str, settings: &mut Settings, depth: usize) {
                 Ok(port) => settings.ports.push(port),
                 Err(_) => settings.partial = true,
             },
+            "listenaddress" => {
+                if let Some(port) = listen_port(value) {
+                    settings.listen_ports.push(port);
+                }
+            }
             "passwordauthentication" => first(&mut settings.password_auth, yes_no(value)),
             "kbdinteractiveauthentication" | "challengeresponseauthentication" => {
                 first(&mut settings.kbd_interactive, yes_no(value));
@@ -222,7 +242,7 @@ mod tests {
             .unwrap_or_else(|e| panic!("{e}"));
         std::fs::write(
             root.join("etc/ssh/sshd_config"),
-            "Include /etc/ssh/sshd_config.d/*.conf\nPasswordAuthentication no\nPort 22\nPort=2222\nPermitRootLogin yes\n",
+            "Include /etc/ssh/sshd_config.d/*.conf\nPasswordAuthentication no\nPort 2222\nPort=22\nListenAddress 0.0.0.0:2200\nListenAddress [::]:22\nPermitRootLogin \"yes\"\n",
         )
         .unwrap_or_else(|e| panic!("{e}"));
         std::fs::write(
@@ -240,7 +260,7 @@ mod tests {
         assert_eq!(ssh.password_auth, Tristate::Yes);
         assert_eq!(ssh.kbd_interactive, Tristate::No);
         assert_eq!(ssh.root_login, RootLogin::Yes);
-        assert_eq!(ports(&ssh), [22, 2222]);
+        assert_eq!(ports(&ssh), [22, 2200, 2222]);
         let _ = std::fs::remove_dir_all(&root);
     }
 

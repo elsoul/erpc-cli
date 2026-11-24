@@ -58,8 +58,13 @@ pub(super) fn scan(proc: &Path, budget: Budget) -> Scan {
         else {
             continue;
         };
+        if started.elapsed() > budget.time {
+            scan.complete = false;
+            return scan;
+        }
         let dir = entry.path();
-        scan.apps.insert(pid, app_of(&dir));
+        let app = app_of(&dir);
+        scan.apps.insert(pid, app);
         let fds = match std::fs::read_dir(dir.join("fd")) {
             Ok(fds) => fds,
             // The process ended between the two reads.
@@ -81,7 +86,14 @@ pub(super) fn scan(proc: &Path, budget: Budget) -> Scan {
                 .and_then(Path::to_str)
                 .and_then(socket_inode)
             {
-                scan.holders.entry(inode).or_insert(pid);
+                // A socket systemd or a supervisor also holds belongs to the
+                // program that serves it, when that one is known.
+                let holder = scan.holders.entry(inode).or_insert(pid);
+                let named =
+                    |app: Option<&App>| !matches!(app, None | Some(App::Other | App::Unknown));
+                if !named(scan.apps.get(holder)) && named(Some(&app)) {
+                    *holder = pid;
+                }
             }
         }
     }
@@ -141,6 +153,7 @@ const PROGRAMS: &[(&str, App)] = &[
     ("neard", App::Neard),
     ("hl-node", App::HlNode),
     ("hl-visor", App::HlNode),
+    ("erpc-worker-agent", App::ErpcWorker),
     ("sshd", App::Sshd),
     ("docker-proxy", App::DockerProxy),
     ("dockerd", App::Dockerd),
@@ -227,6 +240,8 @@ mod tests {
         );
         process(&proc, 20, None, "docker-proxy", &[200]);
         process(&proc, 30, None, "python3.12", &[]);
+        process(&proc, 1, None, "systemd", &[300]);
+        process(&proc, 40, None, "sshd", &[300]);
         std::fs::create_dir_all(proc.join("self")).unwrap_or_else(|e| panic!("{e}"));
         let found = scan(&proc, Budget::DEFAULT);
         assert!(found.listed && found.complete);
@@ -236,11 +251,12 @@ mod tests {
         assert_eq!(found.apps.get(&10), Some(&App::AgaveValidator));
         assert_eq!(found.apps.get(&20), Some(&App::DockerProxy));
         assert_eq!(found.apps.get(&30), Some(&App::Python));
+        assert_eq!(found.holders.get(&300), Some(&40));
 
         let cut = scan(
             &proc,
             Budget {
-                entries: 2,
+                entries: 3,
                 time: Duration::from_secs(20),
             },
         );

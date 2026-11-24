@@ -37,27 +37,38 @@ fn enabled_unit(root: &Path, unit: &str) -> Tristate {
     }
 }
 
-/// The firewall configured under `root`.
+/// The firewall configured under `root`. An enabled ufw wins; a disabled
+/// one gives way to a firewalld or nftables service that starts at boot.
 pub(super) fn read(root: &Path) -> Firewall {
-    if root.join("etc/ufw").is_dir() {
-        return ufw(root);
+    let ufw = root.join("etc/ufw").is_dir().then(|| ufw(root));
+    if let Some(ufw) = ufw.as_ref().filter(|f| f.enabled == Tristate::Yes) {
+        return ufw.clone();
     }
-    if root.join("etc/firewalld/firewalld.conf").is_file() {
-        return Firewall {
+    let firewalld = root
+        .join("etc/firewalld/firewalld.conf")
+        .is_file()
+        .then(|| Firewall {
             coverage: Coverage::Partial,
             tool: FirewallTool::Firewalld,
             enabled: enabled_unit(root, "firewalld.service"),
             input_policy: Policy::Unknown,
-        };
+        });
+    let nftables = read_file(&root.join("etc/nftables.conf")).map(|config| Firewall {
+        coverage: Coverage::Partial,
+        tool: FirewallTool::Nftables,
+        enabled: enabled_unit(root, "nftables.service"),
+        input_policy: nft_input_policy(&config),
+    });
+    let starts = |f: &Option<Firewall>| f.as_ref().is_some_and(|f| f.enabled == Tristate::Yes);
+    if ufw.is_some() && !starts(&firewalld) && !starts(&nftables) {
+        return ufw.unwrap_or_else(|| unconfigured(root));
     }
-    if let Some(config) = read_file(&root.join("etc/nftables.conf")) {
-        return Firewall {
-            coverage: Coverage::Partial,
-            tool: FirewallTool::Nftables,
-            enabled: enabled_unit(root, "nftables.service"),
-            input_policy: nft_input_policy(&config),
-        };
-    }
+    firewalld.or(nftables).unwrap_or_else(|| unconfigured(root))
+}
+
+/// What is left to say when no firewall's configuration names one: legacy
+/// iptables tables in use, or nothing known.
+fn unconfigured(root: &Path) -> Firewall {
     let iptables = read_file(&root.join("proc/net/ip_tables_names"))
         .is_some_and(|tables| !tables.trim().is_empty());
     Firewall {
@@ -185,6 +196,22 @@ mod tests {
         assert_eq!(
             (firewall.coverage, firewall.input_policy),
             (Coverage::Partial, Policy::Unknown)
+        );
+
+        std::fs::write(root.join("etc/ufw/ufw.conf"), "ENABLED=no\n")
+            .unwrap_or_else(|e| panic!("{e}"));
+        std::fs::write(
+            root.join("etc/nftables.conf"),
+            "table inet filter {\n chain input { type filter hook input priority 0; policy drop; }\n}\n",
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+        let wants = root.join("etc/systemd/system/sysinit.target.wants");
+        std::fs::create_dir_all(&wants).unwrap_or_else(|e| panic!("{e}"));
+        std::fs::write(wants.join("nftables.service"), "").unwrap_or_else(|e| panic!("{e}"));
+        let firewall = read(&root);
+        assert_eq!(
+            (firewall.tool, firewall.enabled, firewall.input_policy),
+            (FirewallTool::Nftables, Tristate::Yes, Policy::Drop)
         );
         let _ = std::fs::remove_dir_all(&root);
 

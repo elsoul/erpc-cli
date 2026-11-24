@@ -208,9 +208,6 @@ fn describe(id: FindingId) -> String {
         FindingId::OsEndOfLife => t!("security_check.finding.os_end_of_life"),
         FindingId::PlaintextWalletKey => t!("security_check.finding.plaintext_wallet_key"),
         FindingId::KeyWorldReadable => t!("security_check.finding.key_world_readable"),
-        FindingId::WithdrawAuthorityOnServer => {
-            t!("security_check.finding.withdraw_authority_on_server")
-        }
         FindingId::ValidatorIdentityPermissions => {
             t!("security_check.finding.validator_identity_permissions")
         }
@@ -246,9 +243,6 @@ fn fix(id: FindingId) -> String {
         FindingId::OsEndOfLife => t!("security_check.fix.os_end_of_life"),
         FindingId::PlaintextWalletKey => t!("security_check.fix.plaintext_wallet_key"),
         FindingId::KeyWorldReadable => t!("security_check.fix.key_world_readable"),
-        FindingId::WithdrawAuthorityOnServer => {
-            t!("security_check.fix.withdraw_authority_on_server")
-        }
         FindingId::ValidatorIdentityPermissions => {
             t!("security_check.fix.validator_identity_permissions")
         }
@@ -355,7 +349,7 @@ mod tests {
             "   Advisories: CVE-2024-6387",
             "   Fix: Install the security updates",
             "  running code on the server: 1",
-            "It does not try exploits or passwords",
+            "Reading this server changes nothing on it.",
         ] {
             assert!(text.contains(expected), "{expected:?} not in:\n{text}");
         }

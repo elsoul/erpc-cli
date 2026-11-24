@@ -76,7 +76,7 @@ async fn run(json: bool) -> Result<Outcome, Outcome> {
     }
 
     let spinner = Spinner::start(&t!("security_check.reading"));
-    let inventory = read_this_server().await.ok_or_else(|| failed())?;
+    let inventory = read_this_server().await.ok_or_else(failed)?;
     spinner.stop(&t!(
         "security_check.read",
         listeners = inventory.listeners.items().len(),

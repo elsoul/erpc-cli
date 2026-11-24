@@ -128,8 +128,9 @@ pub(super) fn packages(root: &Path) -> Packages {
                 .lines()
                 .find_map(|line| line.strip_prefix(key)?.strip_prefix(':').map(str::trim))
         };
+        // `want flag status`: a held package is installed too.
         let installed =
-            field("Status").is_some_and(|s| s.ends_with("installed") && s.starts_with("install"));
+            field("Status").is_some_and(|s| s.split_ascii_whitespace().nth(2) == Some("installed"));
         let Some(name) = field("Package").and_then(package_name) else {
             continue;
         };
@@ -214,7 +215,10 @@ mod tests {
              Package: postgresql-16\nStatus: install ok installed\nVersion: 16.4-0ubuntu0.24.04.2\n\n\
              Package: nginx\nStatus: deinstall ok config-files\nVersion: 1.24.0-2ubuntu7\n\n\
              Package: my-own-tool\nStatus: install ok installed\nVersion: 1.0\n\n\
-             Package: sudo\nStatus: install ok installed\nVersion: 1.9.15p5 ignore this\n",
+             Package: sudo\nStatus: install ok installed\nVersion: 1.9.15p5 ignore this\n\n\
+             Package: docker-ce\nStatus: hold ok installed\nVersion: 5:24.0.7-1~ubuntu.22.04~jammy\n\n\
+             Package: containerd.io\nStatus: install ok not-installed\nVersion: 1.6.0\n\n\
+             Package: runc\nStatus: install reinstreq half-installed\nVersion: 1.1.0\n",
         )
         .unwrap_or_else(|e| panic!("{e}"));
         let found = packages(&root);
@@ -229,6 +233,10 @@ mod tests {
             [
                 (PackageName::OpensshServer, "1:9.6p1-3ubuntu13.5".to_owned()),
                 (PackageName::Postgresql, "16.4-0ubuntu0.24.04.2".to_owned()),
+                (
+                    PackageName::DockerCe,
+                    "5:24.0.7-1~ubuntu.22.04~jammy".to_owned()
+                ),
             ]
         );
         let _ = std::fs::remove_dir_all(&root);

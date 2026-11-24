@@ -132,8 +132,7 @@ the server could not be read.
 The report names each finding from a catalog built into `erpc`, with what
 to do about it, and adds the details from this server on your screen. It
 covers the ports ERPC's scanners can reach and what could be read at that
-moment. It does not try exploits or passwords, and it does not change the
-server.
+moment.
 
 ## Wallet: `erpc wallet`
 

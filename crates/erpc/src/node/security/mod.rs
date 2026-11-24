@@ -49,7 +49,8 @@ impl Host {
     }
 }
 
-/// Everything but the key search, which `keys` carries in.
+/// The inventory of the machine under `host`, with `keys` as the key
+/// search found them.
 pub(crate) fn collect(host: &Host, keys: Keys) -> Inventory {
     let scan = procs::scan(&host.proc(), host.budget);
     Inventory {
@@ -256,9 +257,9 @@ mod tests {
         std::fs::write(path, text).unwrap_or_else(|e| panic!("{e}"));
     }
 
-    #[test]
-    fn a_validator_host_is_described_without_its_paths() {
-        let root = super::fixture("collect");
+    /// A validator host: RPC on 18899 with the full API, gossip on UDP 8001,
+    /// a Docker-published 2375 and a loopback database, traced as root.
+    fn validator_host(root: &std::path::Path) {
         let proc = root.join("proc");
         write(
             &proc.join("net/tcp"),
@@ -302,7 +303,12 @@ mod tests {
         symlink("socket:[502]", proxy.join("fd/3")).unwrap_or_else(|e| panic!("{e}"));
         write(&proc.join("self/status"), "Uid:\t0\t0\t0\t0\n");
         write(&root.join("home/sol/keys/validator-keypair.json"), "[]");
+    }
 
+    #[test]
+    fn a_validator_host_is_described_without_its_paths() {
+        let root = super::fixture("collect");
+        validator_host(&root);
         let host = Host {
             root: root.clone(),
             budget: procs::Budget::DEFAULT,
