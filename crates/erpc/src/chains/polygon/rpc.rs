@@ -1241,10 +1241,12 @@ mod tests {
                     }
                     original.profile = serde_json::from_str(if network == "mainnet" {
                         include_str!(
-                            "../../erpc-chain-polygon/tests/fixtures/pre-karwar-mainnet.json"
+                            "../../../../erpc-chain-polygon/tests/fixtures/pre-karwar-mainnet.json"
                         )
                     } else {
-                        include_str!("../../erpc-chain-polygon/tests/fixtures/pre-karwar-amoy.json")
+                        include_str!(
+                            "../../../../erpc-chain-polygon/tests/fixtures/pre-karwar-amoy.json"
+                        )
                     })
                     .unwrap();
                     assert!(runtime_action(&original, "start").is_err());

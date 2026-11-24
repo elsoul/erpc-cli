@@ -105,4 +105,4 @@ The inventory's CLI-support classification uses the following repository sources
 
 [R1]: ../../crates/erpc-core/src/chain.rs "Existing chain variants and allowed node roles"
 [R2]: ../../crates/erpc/src/main.rs "CLI declarations and chain role dispatch"
-[R3]: ../../crates/erpc/src/tree.rs "Implemented command dispatch and unimplemented fallback"
+[R3]: ../../crates/erpc/src/node/tree.rs "Implemented command dispatch and unimplemented fallback"

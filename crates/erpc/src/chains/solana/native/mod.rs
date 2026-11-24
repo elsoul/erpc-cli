@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Dedicated native hosts: public inventory, sealed preparation and typed control.
+
+pub(crate) mod deploy;
+pub(crate) mod plan;
+
 use crate::{
     account::commands::Outcome,
     cli::error::{CliError, Code},
@@ -1119,15 +1123,11 @@ mod tests {
         // `confirm`'s refusal has no text, so `to_string()` cannot turn it
         // into a plain failure; `go_ahead`'s error, asked for directly, could.
         for (file, source, asked) in [
-            ("solana_native.rs", include_str!("solana_native.rs"), 1),
+            ("native/mod.rs", include_str!("mod.rs"), 1),
+            ("native/deploy.rs", include_str!("deploy.rs"), 0),
             (
-                "solana_native_deploy.rs",
-                include_str!("solana_native_deploy.rs"),
-                0,
-            ),
-            (
-                "solana_migration_execute.rs",
-                include_str!("solana_migration_execute.rs"),
+                "migration/execute.rs",
+                include_str!("../migration/execute.rs"),
                 0,
             ),
         ] {

@@ -28,7 +28,7 @@ use std::{
     clippy::duplicate_mod,
     reason = "Compile the production route against inert transport without reimplementing its decisions"
 )]
-#[path = "solana_migration_complete.rs"]
+#[path = "complete.rs"]
 mod actual_completion;
 
 struct Provider {

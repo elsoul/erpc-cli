@@ -2433,7 +2433,7 @@ mod tests {
             ("worker/secrets.rs", include_str!("secrets.rs")),
             ("worker/vps.rs", include_str!("vps.rs")),
             ("worker/waf.rs", include_str!("waf.rs")),
-            ("node_common.rs", include_str!("../node_common.rs")),
+            ("node/common.rs", include_str!("../node/common.rs")),
             (
                 "erpc-worker/manifest.rs",
                 include_str!("../../../erpc-worker/src/manifest.rs"),

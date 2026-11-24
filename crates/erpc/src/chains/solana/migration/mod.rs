@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Explicit legacy inspection and migration commands; no automatic backend replacement.
+
+pub(crate) mod execute;
+pub(crate) mod settings;
+
 use crate::{account::commands::Outcome, node_common, solana_native::one};
 use clap::{Arg, ArgMatches, Command};
 use erpc_chain::inventory::solana_migration::LegacySource;
