@@ -4,7 +4,9 @@
 [advisories]
 # Every entry needs a dated reason, e.g.
 # ignore = ["RUSTSEC-0000-0000"]  # 2026-10-22: reason
-ignore = []
+ignore = [
+    "RUSTSEC-2026-0592", # 2026-11-22: url 2.5.8; fix 2.5.9 too new for the lock until 2026-12-05, then bump and remove. Url::origin() is never called. Reason in full in deny.toml.
+]
 informational_warnings = ["unmaintained", "unsound", "notice"]
 
 [output]
