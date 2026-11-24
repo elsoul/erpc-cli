@@ -67,6 +67,7 @@ ssh = "настройки SSH-сервера"
 firewall = "файрвол хоста ({tool})"
 package = "{name} {version}"
 key = "{kind} ({role}), место {location}, доступ {access}: {count}"
+key_more = "и ещё мест: {count}"
 
 [finding]
 solana_rpc_public = "Solana JSON-RPC доступен из интернета."

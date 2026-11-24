@@ -67,6 +67,7 @@ ssh = "SSH サーバーの設定"
 firewall = "ホストのファイアウォール（{tool}）"
 package = "{name} {version}"
 key = "{kind}（{role}）、場所 {location}、読める範囲 {access}：{count} 件"
+key_more = "ほか {count} か所"
 
 [finding]
 solana_rpc_public = "Solana の JSON-RPC にインターネットから届きます。"

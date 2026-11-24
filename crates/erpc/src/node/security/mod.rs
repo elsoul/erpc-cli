@@ -13,9 +13,11 @@
 #![cfg_attr(not(target_os = "linux"), allow(dead_code))]
 
 mod firewall;
+mod keys;
 pub(crate) mod menu;
 mod procs;
 mod report;
+mod secrets;
 mod sockets;
 mod solana;
 mod ssh;
@@ -24,14 +26,16 @@ mod system;
 use std::path::{Path, PathBuf};
 
 use erpc_api::security_check::{
-    App, Coverage, Inventory, Keys, Listener, Listeners, Owner, Proto, SolanaApp, SolanaNodes,
-    Tristate,
+    App, Coverage, Inventory, Listener, Listeners, Owner, Proto, SolanaApp, SolanaNodes, Tristate,
 };
+
+pub(crate) use keys::Places;
 
 /// The filesystem the check reads: `/` on a server.
 pub(crate) struct Host {
     root: PathBuf,
     budget: procs::Budget,
+    key_budget: procs::Budget,
 }
 
 impl Host {
@@ -41,6 +45,7 @@ impl Host {
         Self {
             root: PathBuf::from("/"),
             budget: procs::Budget::DEFAULT,
+            key_budget: keys::BUDGET,
         }
     }
 
@@ -49,20 +54,23 @@ impl Host {
     }
 }
 
-/// The inventory of the machine under `host`, with `keys` as the key
-/// search found them.
-pub(crate) fn collect(host: &Host, keys: Keys) -> Inventory {
+/// The inventory of the machine under `host`, and where the keys it counts
+/// were found, which stays on this machine.
+pub(crate) fn collect(host: &Host) -> (Inventory, Places) {
     let scan = procs::scan(&host.proc(), host.budget);
-    Inventory {
+    let (solana, identities) = solana_nodes(host, &scan);
+    let (keys, places) = keys::search(&host.root, host.key_budget, &scan, &identities);
+    let inventory = Inventory {
         privileged: system::privileged(&host.proc()),
         os: system::os(&host.root),
         listeners: listeners(host, &scan),
-        solana: solana_nodes(host, &scan),
+        solana,
         ssh: ssh::read(&host.root),
         firewall: firewall::read(&host.root),
         packages: system::packages(&host.root),
         keys,
-    }
+    };
+    (inventory, places)
 }
 
 fn listeners(host: &Host, scan: &procs::Scan) -> Listeners {
@@ -141,7 +149,9 @@ fn owner(uid: u32) -> Owner {
 
 const CMDLINE_LIMIT: u64 = 256 * 1024;
 
-fn solana_nodes(host: &Host, scan: &procs::Scan) -> SolanaNodes {
+/// The validators running, and the identity files they were given, as
+/// paths under the root.
+fn solana_nodes(host: &Host, scan: &procs::Scan) -> (SolanaNodes, Vec<PathBuf>) {
     let mut pids: Vec<(u32, SolanaApp)> = scan
         .apps
         .iter()
@@ -158,7 +168,7 @@ fn solana_nodes(host: &Host, scan: &procs::Scan) -> SolanaNodes {
         })
         .collect();
     if pids.is_empty() {
-        return SolanaNodes::new(
+        let nodes = SolanaNodes::new(
             if scan.listed {
                 Coverage::Absent
             } else {
@@ -166,10 +176,12 @@ fn solana_nodes(host: &Host, scan: &procs::Scan) -> SolanaNodes {
             },
             Vec::new(),
         );
+        return (nodes, Vec::new());
     }
     pids.sort_unstable();
     let mut partial = !scan.listed;
     let mut nodes = Vec::new();
+    let mut identities = Vec::new();
     for (pid, app) in pids {
         // Firedancer reads its settings from a file this check does not
         // parse; the listeners still show what it opened.
@@ -185,17 +197,20 @@ fn solana_nodes(host: &Host, scan: &procs::Scan) -> SolanaNodes {
         let args = solana::arguments(&cmdline);
         let cwd = std::fs::read_link(dir.join("cwd")).ok();
         nodes.push(solana::node(app, &args, |path| {
-            identity_file(&host.root, cwd.as_deref(), path)
+            let (on_disk, file) = identity_file(&host.root, cwd.as_deref(), path);
+            identities.extend(file);
+            on_disk
         }));
     }
-    SolanaNodes::new(
+    let nodes = SolanaNodes::new(
         if partial {
             Coverage::Partial
         } else {
             Coverage::Complete
         },
         nodes,
-    )
+    );
+    (nodes, identities)
 }
 
 fn read_bytes(path: &Path, limit: u64) -> Option<Vec<u8>> {
@@ -210,23 +225,25 @@ fn read_bytes(path: &Path, limit: u64) -> Option<Vec<u8>> {
 }
 
 /// Whether the identity keypair at `path`, as the validator was given it,
-/// is a file. A relative path is the validator's working directory's.
-fn identity_file(root: &Path, cwd: Option<&Path>, path: &str) -> Tristate {
+/// is a file, and that file under the root when it is. A relative path is
+/// the validator's working directory's.
+fn identity_file(root: &Path, cwd: Option<&Path>, path: &str) -> (Tristate, Option<PathBuf>) {
     let path = Path::new(path);
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
         match cwd {
             Some(cwd) => cwd.join(path),
-            None => return Tristate::Unknown,
+            None => return (Tristate::Unknown, None),
         }
     };
     let inside = absolute.strip_prefix("/").unwrap_or(&absolute);
-    match std::fs::metadata(root.join(inside)) {
-        Ok(meta) if meta.is_file() => Tristate::Yes,
-        Ok(_) => Tristate::No,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Tristate::No,
-        Err(_) => Tristate::Unknown,
+    let file = root.join(inside);
+    match std::fs::metadata(&file) {
+        Ok(meta) if meta.is_file() => (Tristate::Yes, Some(file)),
+        Ok(_) => (Tristate::No, None),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Tristate::No, None),
+        Err(_) => (Tristate::Unknown, None),
     }
 }
 
@@ -245,10 +262,29 @@ mod tests {
     use std::net::Ipv4Addr;
     use std::os::unix::fs::symlink;
 
-    use erpc_api::security_check::{App, Bind, Coverage, Keys, Owner, Proto, Tristate};
+    use erpc_api::security_check::{
+        App, Bind, Coverage, Inventory, KeyKind, KeyRole, Owner, Proto, Tristate,
+    };
 
     use super::sockets::tests::{TCP4, TCP6, UDP4, row, v4};
     use super::{Host, collect, procs};
+
+    fn host(root: &std::path::Path) -> Host {
+        Host {
+            root: root.to_path_buf(),
+            budget: procs::Budget::DEFAULT,
+            key_budget: super::keys::BUDGET,
+        }
+    }
+
+    /// The request that would start a check of this inventory, as text.
+    fn request(inventory: &Inventory) -> String {
+        let server =
+            serde_json::from_value(serde_json::json!("vps:1")).unwrap_or_else(|e| panic!("{e}"));
+        let body = erpc_api::security_check::request_body(&server, inventory)
+            .unwrap_or_else(|e| panic!("{e}"));
+        String::from_utf8(body).unwrap_or_default()
+    }
 
     fn write(path: &std::path::Path, text: &str) {
         if let Some(parent) = path.parent() {
@@ -309,11 +345,7 @@ mod tests {
     fn a_validator_host_is_described_without_its_paths() {
         let root = super::fixture("collect");
         validator_host(&root);
-        let host = Host {
-            root: root.clone(),
-            budget: procs::Budget::DEFAULT,
-        };
-        let inventory = collect(&host, Keys::unreadable());
+        let (inventory, _) = collect(&host(&root));
         assert!(inventory.privileged);
         assert_eq!(inventory.listeners.coverage(), Coverage::Complete);
         let listeners: Vec<_> = inventory
@@ -365,14 +397,8 @@ mod tests {
         assert_eq!(node.rpc_bind, Some(Bind::Wildcard));
         assert!(node.full_rpc_api);
         assert_eq!(node.identity_on_disk, Tristate::Yes);
-        assert_eq!(inventory.keys.coverage(), Coverage::Unreadable);
 
-        let body = erpc_api::security_check::request_body(
-            &serde_json::from_value(serde_json::json!("vps:1")).unwrap_or_else(|e| panic!("{e}")),
-            &inventory,
-        )
-        .unwrap_or_else(|e| panic!("{e}"));
-        let text = String::from_utf8(body).unwrap_or_default();
+        let text = request(&inventory);
         for local in ["/home/sol", "validator-keypair", "/opt/agave", "keys/"] {
             assert!(!text.contains(local), "{local} reached the request");
         }
@@ -383,7 +409,7 @@ mod tests {
     #[test]
     #[ignore = "reads this machine's own tables; run by hand on a Linux host"]
     fn this_machine_can_be_read() {
-        let inventory = collect(&Host::this_machine(), Keys::unreadable());
+        let (inventory, _) = collect(&Host::this_machine());
         assert_ne!(inventory.listeners.coverage(), Coverage::Unreadable);
         assert_ne!(inventory.os.coverage, Coverage::Unreadable);
         let body = erpc_api::security_check::request_body(
@@ -396,12 +422,10 @@ mod tests {
     #[test]
     fn missing_tables_and_hidden_processes_make_the_view_partial() {
         let root = super::fixture("partial");
-        let host = Host {
-            root: root.clone(),
-            budget: procs::Budget::DEFAULT,
-        };
-        let empty = collect(&host, Keys::unreadable());
+        let host = host(&root);
+        let (empty, _) = collect(&host);
         assert_eq!(empty.listeners.coverage(), Coverage::Unreadable);
+        assert_eq!(empty.keys.coverage(), Coverage::Unreadable);
         assert!(!empty.privileged);
 
         write(&root.join("proc/net/tcp"), TCP4);
@@ -409,8 +433,54 @@ mod tests {
         let hidden = root.join("proc/90");
         write(&hidden.join("comm"), "sshd\n");
         write(&hidden.join("fd"), "not a directory");
-        let partial = collect(&host, Keys::unreadable());
+        let (partial, _) = collect(&host);
         assert_eq!(partial.listeners.coverage(), Coverage::Partial);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_host_full_of_keys_sends_none_of_their_bytes_or_paths() {
+        let keys = super::keys::tests::key_host("no-key-leaves");
+        let (inventory, places) = collect(&host(&keys.root));
+        let groups = inventory.keys.items();
+        assert_eq!(groups.len(), 11);
+        // The validator in the fixture's /proc was given this identity.
+        assert_eq!(
+            (groups[0].kind, groups[0].role),
+            (KeyKind::SolanaKeypair, KeyRole::ValidatorIdentity)
+        );
+        assert!(places.of(0).is_some_and(|shown| !shown.paths.is_empty()));
+
+        let text = request(&inventory);
+        for secret in &keys.secrets {
+            assert!(
+                !text.contains(secret.as_str()),
+                "a secret reached the request"
+            );
+        }
+        let root = keys.root.to_string_lossy();
+        for local in [
+            root.as_ref(),
+            "/home/",
+            "/root/",
+            "/proc/",
+            "/srv/",
+            "/etc/",
+            "/opt/",
+            "/tmp/",
+            "/var/",
+            "validator-keypair",
+            "deployer",
+            "seed.txt",
+            "keystore.json",
+            ".env",
+            ".bash_history",
+            "fish_history",
+            "_data",
+        ] {
+            assert!(!text.contains(local), "{local} reached the request");
+        }
+        assert!(!format!("{inventory:?}").contains(root.as_ref()));
+        let _ = std::fs::remove_dir_all(&keys.root);
     }
 }

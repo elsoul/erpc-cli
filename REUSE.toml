@@ -26,6 +26,16 @@ path = ["crates/erpc-chain-nitro/tests/fixtures/bold-public-transaction.json"]
 precedence = "closest"
 SPDX-FileCopyrightText = "2014-2025 Ethereum Foundation"
 SPDX-License-Identifier = "MIT"
+
+# The BIP-39 English word list, unchanged from bip-0039/english.txt in
+# github.com/bitcoin/bips (MIT, as BIP 39 states). The security check uses it
+# to recognise a seed phrase left in a file.
+[[annotations]]
+path = ["crates/erpc/src/node/security/bip39-english.txt"]
+precedence = "override"
+SPDX-FileCopyrightText = "2013 Marek Palatinus, Pavol Rusnak, Aaron Voisine, Sean Bowe"
+SPDX-License-Identifier = "MIT"
+
 # Chain logos from @web3icons/core 4.0.58 (github.com/0xa3k5/web3icons), with
 # rounded tile corners and Base redrawn as its solid square. Each mark is a
 # trademark of its own project.
