@@ -51,7 +51,6 @@ mod bsc_owned;
 mod bsc_rpc;
 mod bsc_signer;
 mod bsc_tree;
-mod conversations;
 mod elf;
 mod eth_authority;
 mod eth_authority_evidence;
@@ -71,7 +70,6 @@ mod kaia_owned;
 mod kaia_rpc;
 mod kaia_signer;
 mod kaia_tree;
-mod memory;
 mod near_rpc;
 mod near_tree;
 #[cfg(feature = "node-check-pilot")]
@@ -100,9 +98,6 @@ mod rollup_credentials;
 mod rollup_ops;
 mod rollup_tree;
 mod rpc;
-#[cfg(test)]
-mod skill_check;
-mod skills;
 mod solana_backend;
 mod solana_migration;
 mod solana_migration_execute;
@@ -129,7 +124,6 @@ mod validator_deploy;
 mod validator_init;
 mod validator_keys;
 mod validator_vote;
-mod vps_access;
 mod worker;
 mod worker_backup;
 mod worker_bench;
@@ -159,6 +153,11 @@ pub(crate) use account::{
 // Temporary, as above, for the modules that moved into `rpc/`.
 pub(crate) use rpc::call as rpc_call;
 pub(crate) use rpc::{webhook, webhook_delivery};
+
+// Temporary, as above, for the modules that moved into `ai/`.
+#[cfg(test)]
+pub(crate) use ai::skill_check;
+pub(crate) use ai::{conversations, memory, skills, vps_access};
 
 /// Exit statuses outside a failure's own ([`error::Code::exit`]).
 mod exit {
