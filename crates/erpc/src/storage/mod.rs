@@ -208,7 +208,7 @@ const MAX_UNITS: u64 = 1000;
 #[allow(clippy::too_many_lines)] // one arm per command
 pub async fn run(json: bool, action: Action) -> Outcome {
     if let Action::Key { action } = action {
-        return key(json, &action);
+        return key_command(json, &action);
     }
     let client = match AuthClient::new() {
         Ok(client) => client,
@@ -1212,7 +1212,7 @@ async fn get(
 }
 
 /// `erpc storage key`: no session needed, only the store.
-fn key(json: bool, action: &KeyAction) -> Outcome {
+fn key_command(json: bool, action: &KeyAction) -> Outcome {
     match action {
         KeyAction::Show => match crate::storage::key::load() {
             Ok((Some(key), kind)) => {
