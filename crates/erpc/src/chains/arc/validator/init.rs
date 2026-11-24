@@ -9,8 +9,8 @@ use erpc_chain_arc::{key, validator};
 use erpc_ssh::{Identity, Session, Target};
 use serde_json::{Value, json};
 
-use crate::node_common::{Say, agent_socket, check_ubuntu, go_ahead, host_key, save_vault};
-use crate::{arc_rpc, arc_validator_host as host, arc_validator_ops as ops};
+use crate::node::common::{Say, agent_socket, check_ubuntu, go_ahead, host_key, save_vault};
+use crate::{chains::arc::rpc, chains::arc::validator::host, chains::arc::validator::ops};
 
 fn public_profile(
     sub: &ArgMatches,
@@ -77,7 +77,7 @@ fn inputs(
 struct Reached {
     session: Session,
     target: Target,
-    facts: arc_rpc::Facts,
+    facts: rpc::Facts,
 }
 fn reach(
     sub: &ArgMatches,
@@ -143,7 +143,7 @@ fn reach(
     let session =
         Session::open(&target).map_err(|_| "could not open the original pinned Arc host")?;
     check_ubuntu(&session)?;
-    let facts = arc_rpc::facts(&session)?;
+    let facts = rpc::facts(&session)?;
     if !facts.refusals().is_empty() {
         return Err(format!(
             "Arc preparation preflight refused: {}",
@@ -188,7 +188,7 @@ pub(crate) fn run(sub: &ArgMatches, network: &str, say: &Say) -> Result<Value, S
     )
     .map_err(|error| error.to_string())?;
     preflight(&session, &target, existing, network, name, say)?;
-    let mut node = crate::arc_validator_custody::provision(
+    let mut node = crate::chains::arc::validator::custody::provision(
         &opened.store,
         &opened.runner,
         &opened.vault,
@@ -253,7 +253,7 @@ mod tests {
         std::fs::write(&profile, value.to_string()).unwrap();
         let owner = format!("0x{}", "a".repeat(40));
         let recipient = format!("0x{}", "b".repeat(40));
-        let matches = crate::tree::command(Role::Validator, Chain::Arc)
+        let matches = crate::node::tree::command(Role::Validator, Chain::Arc)
             .try_get_matches_from([
                 "v",
                 "--chain",

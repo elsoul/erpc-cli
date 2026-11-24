@@ -4,9 +4,9 @@
 //! Sui orchestration using the existing pinned SSH, remote runs and 1Password store.
 use crate::{
     account::commands::Outcome,
+    chains::eth::rpc::{Facts, Login},
     cli::error::CliError,
-    eth_rpc::{Facts, Login},
-    node_common::{self, Say},
+    node::common::{self, Say},
 };
 use erpc_chain::inventory::sui::SuiNode;
 use erpc_chain_sui::validator::{self, Metadata};
@@ -56,7 +56,7 @@ fn target(node: &SuiNode, login: &Login) -> Result<Target, String> {
         user: node.ssh_user.clone(),
         host_key: HostKey::parse(&node.host_key).map_err(|e| e.to_string())?,
         identity: Identity::Agent {
-            socket: node_common::agent_socket(login.ssh_agent.as_deref())?,
+            socket: common::agent_socket(login.ssh_agent.as_deref())?,
             public_key: login
                 .ssh_key
                 .clone()
@@ -99,7 +99,7 @@ fn allow_lists(node: &mut SuiNode, args: &Args) -> Result<(), String> {
         ),
     ] {
         if let Some(values) = flag {
-            *field = crate::arc_rpc::allow_list(name, values, false)?;
+            *field = crate::chains::arc::rpc::allow_list(name, values, false)?;
         }
     }
     Ok(())
@@ -128,7 +128,7 @@ fn vars(node: &SuiNode, net: Network, facts: &Facts, phase: &str) -> Result<Valu
         ("stored management ranges", &node.management_allow),
         ("stored monitoring ranges", &node.monitoring_allow),
     ] {
-        crate::arc_rpc::allow_list(name, list, false)?;
+        crate::chains::arc::rpc::allow_list(name, list, false)?;
     }
 
     if node.role == "validator" {
@@ -238,7 +238,7 @@ fn run_play<'a>(
     )
     .map_err(|e| e.to_string())?;
     say.line(&format!("run        {}", run.as_str()));
-    let result = node_common::follow(
+    let result = common::follow(
         target,
         &run,
         "Inspect this run before retrying the operation",
@@ -370,7 +370,7 @@ fn import_validator(
         // Redeployment never needs to re-read healthy private material.
         return Ok(());
     }
-    let runner = node_common::op_runner()?;
+    let runner = common::op_runner()?;
     let mut payload = Zeroizing::new(String::from("{"));
     for (index, (name, reference)) in ["protocol", "network", "worker"]
         .iter()
@@ -466,12 +466,12 @@ fn execute(verb: &str, args: &Args, say: &Say) -> Result<Value, CliError> {
     let source_history = args
         .source_history
         .as_deref()
-        .map(crate::sui_source::read)
+        .map(crate::chains::sui::source::read)
         .transpose()?;
     if source_history.is_some() && verb != "update" {
         return Err("source history migration is an explicit update-only preparation".into());
     }
-    let vault = node_common::vault_for(
+    let vault = common::vault_for(
         &args.network,
         args.vault.as_deref(),
         if args.validator {
@@ -480,7 +480,7 @@ fn execute(verb: &str, args: &Args, say: &Say) -> Result<Value, CliError> {
             "erpc r --chain sui init --vault <vault ID>"
         },
     )?;
-    let store = node_common::store(&node_common::op_runner()?, &vault, "sui", &args.network)?;
+    let store = common::store(&common::op_runner()?, &vault, "sui", &args.network)?;
     let role = if args.validator {
         "validator"
     } else {
@@ -515,7 +515,7 @@ fn execute(verb: &str, args: &Args, say: &Say) -> Result<Value, CliError> {
             initialize_validator(&mut node, existing.is_some(), args)?;
         }
         allow_lists(&mut node, args)?;
-        let key = node_common::host_key(
+        let key = common::host_key(
             &node.address,
             node.ssh_port,
             existing.map(|n| n.host_key.as_str()),
@@ -535,14 +535,14 @@ fn execute(verb: &str, args: &Args, say: &Say) -> Result<Value, CliError> {
             pin(&mut node, net)?;
         }
         say.line("plan       reserve the host and prepare Sui directories; preserve disks and existing identities");
-        node_common::go_ahead(args.yes, "Sui init was not started")?;
+        common::go_ahead(args.yes, "Sui init was not started")?;
         node = if existing.is_none() {
             store.add_sui_node(&node)
         } else {
             store.update_sui_node(&node)
         }
         .map_err(|e| e.to_string())?;
-        node_common::save_vault(&args.network, &vault)?;
+        common::save_vault(&args.network, &vault)?;
         node.last_run = run_play(
             &session,
             &target,
@@ -616,7 +616,7 @@ fn execute(verb: &str, args: &Args, say: &Say) -> Result<Value, CliError> {
         return Ok(json!({"status":"journal complete"}));
     }
     if ["stop", "destroy"].contains(&verb) {
-        node_common::go_ahead(args.yes, "Sui operation was not started")?;
+        common::go_ahead(args.yes, "Sui operation was not started")?;
         node.last_run = run_play(&session, &target, &node, net, &Facts::default(), verb, say)?;
         node.last_result = format!("{verb} ok");
         let stored = store.update_sui_node(&node).map_err(|e| e.to_string())?;
@@ -628,7 +628,7 @@ fn execute(verb: &str, args: &Args, say: &Say) -> Result<Value, CliError> {
     if args.recover_bootstrap {
         say.line("recovery   stop incomplete bootstrap, retain its database in quarantine, then restore a fresh verified snapshot (3.5 TB additional free space required)");
     }
-    node_common::go_ahead(args.yes, "Sui operation was not started")?;
+    common::go_ahead(args.yes, "Sui operation was not started")?;
     if ["start", "stop", "restart"].contains(&verb) {
         let action = match verb {
             "start" => erpc_ssh::arc::Action::Start,
@@ -775,7 +775,7 @@ mod tests {
                 documents.push(
                     json!({"operation":"migrate-source-history","network":network,"role":role,"history":history,"bundle":bundle.bytes}),
                 );
-                let command = crate::tree::command(
+                let command = crate::node::tree::command(
                     if role == "validator" {
                         erpc_core::chain::Role::Validator
                     } else {

@@ -118,7 +118,7 @@ mod tests {
     #[test]
     fn native_lifecycle_and_external_registration_have_explicit_boundaries() {
         for role in [Role::Rpc, Role::Validator] {
-            let tree = crate::tree::command(role, Chain::Monad);
+            let tree = crate::node::tree::command(role, Chain::Monad);
             tree.clone().debug_assert();
             for verb in [
                 "init",

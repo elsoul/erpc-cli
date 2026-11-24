@@ -5,9 +5,9 @@
 
 use crate::{
     account::commands::Outcome,
-    eth_rpc::Facts,
-    kaia_owned::{self, Node},
-    node_common::{self, Say},
+    chains::eth::rpc::Facts,
+    chains::kaia::owned::{self, Node},
+    node::common::{self, Say},
 };
 use clap::ArgMatches;
 use erpc_auth::store::one_password::OpCli;
@@ -127,7 +127,7 @@ fn target(node: &Node, args: &ArgMatches) -> Result<Target, String> {
         user: node.ssh_user.clone(),
         host_key: HostKey::parse(&node.host_key).map_err(|e| e.to_string())?,
         identity: Identity::Agent {
-            socket: node_common::agent_socket(
+            socket: common::agent_socket(
                 args.try_get_one::<std::path::PathBuf>("ssh-agent")
                     .ok()
                     .flatten()
@@ -156,19 +156,19 @@ fn host_check(facts: &Facts) -> Result<&'static str, String> {
     }
 }
 fn open(network: Network, args: &ArgMatches) -> Result<(Store<OpCli>, String), String> {
-    let vault = node_common::vault_for(
+    let vault = common::vault_for(
         network.name(),
         one(args, "vault"),
         "erpc r --chain kaia init --network <network> --vault <vault>",
     )?;
     Ok((
-        node_common::store(&node_common::op_runner()?, &vault, "kaia", network.name())?,
+        common::store(&common::op_runner()?, &vault, "kaia", network.name())?,
         vault,
     ))
 }
 fn find(store: &Store<OpCli>, args: &ArgMatches, validator: bool) -> Result<Node, String> {
     let name = one(args, "name").ok_or("Kaia operation requires --name")?;
-    kaia_owned::list(store, validator)
+    owned::list(store, validator)
         .map_err(|e| e.to_string())?
         .into_iter()
         .find(|n| n.name == name)
@@ -180,7 +180,7 @@ fn management(args: &ArgMatches, old: &[String]) -> Result<Vec<String>, String> 
         .ok()
         .flatten()
         .map_or_else(|| old.to_vec(), |v| v.cloned().collect());
-    crate::arc_rpc::allow_list("management", &values, false)
+    crate::chains::arc::rpc::allow_list("management", &values, false)
 }
 fn helper_sha() -> Result<String, String> {
     let mut hash = Sha256::new();
@@ -226,7 +226,7 @@ fn variables(node: &Node, network: Network, facts: &Facts) -> Result<Value, Stri
     if facts.ssh_port == 0 {
         return Err("cannot establish the host SSH listener port".into());
     }
-    let mut v4 = crate::arc_rpc::allow_list("management", &node.management_allow, false)?;
+    let mut v4 = crate::chains::arc::rpc::allow_list("management", &node.management_allow, false)?;
     let mut v6 = Vec::new();
     match facts.controller_ip()? {
         std::net::IpAddr::V4(ip) => {
@@ -283,7 +283,7 @@ fn play(
 ) -> Result<String, String> {
     let built = bundle(inventory)?;
     let run = erpc_ops::run::start(session, &built, play).map_err(|e| e.to_string())?;
-    let result = node_common::follow(
+    let result = common::follow(
         target,
         &run,
         "Resume Kaia deployment using its stored owner and release",
@@ -310,7 +310,7 @@ fn deploy(
     let preparation = bundle(inventory)?;
     let prepared = erpc_ops::run::start(session, &preparation, "node/firewall.yml")
         .map_err(|e| e.to_string())?;
-    let result = node_common::follow(target, &prepared, "Retry Kaia firewall preparation", say)?;
+    let result = common::follow(target, &prepared, "Retry Kaia firewall preparation", say)?;
     if !result.ok() {
         return Err("Kaia firewall preparation failed; deployment did not start".into());
     }
@@ -337,7 +337,7 @@ fn init(network: Network, args: &ArgMatches, say: &Say, validator: bool) -> Resu
     let (store, vault) = open(network, args)?;
     let name = one(args, "name").ok_or("init requires --name")?;
     erpc_chain::inventory::check_name(name).map_err(|e| e.to_string())?;
-    let existing = kaia_owned::list(&store, validator)
+    let existing = owned::list(&store, validator)
         .map_err(|e| e.to_string())?
         .into_iter()
         .find(|n| n.name == name);
@@ -350,7 +350,7 @@ fn init(network: Network, args: &ArgMatches, say: &Say, validator: bool) -> Resu
                 "init cannot retarget an owned node; host and retention are immutable".into(),
             );
         }
-        crate::kaia_signer::check_init(&node, args)?;
+        crate::chains::kaia::signer::check_init(&node, args)?;
         node
     } else {
         let version = one(args, "version").unwrap_or(network.recommended());
@@ -370,7 +370,7 @@ fn init(network: Network, args: &ArgMatches, say: &Say, validator: bool) -> Resu
         };
         let host = one(args, "host").ok_or("new node requires --host")?;
         let port = args.get_one::<u16>("port").copied().unwrap_or(22);
-        let host_key = node_common::host_key(host, port, None, one(args, "fingerprint"), say)?;
+        let host_key = common::host_key(host, port, None, one(args, "fingerprint"), say)?;
         let base = KaiaRpc {
             name: name.into(),
             network: network.name().into(),
@@ -391,7 +391,7 @@ fn init(network: Network, args: &ArgMatches, say: &Say, validator: bool) -> Resu
             ..KaiaRpc::default()
         };
         if validator {
-            Node::validator(crate::kaia_signer::fresh(base, args)?)
+            Node::validator(crate::chains::kaia::signer::fresh(base, args)?)
         } else {
             Node::rpc(base)
         }
@@ -399,28 +399,28 @@ fn init(network: Network, args: &ArgMatches, say: &Say, validator: bool) -> Resu
     network.qualify(&node.version)?;
     let target = target(&node, args)?;
     let session = Session::open(&target).map_err(|e| e.to_string())?;
-    let facts = crate::eth_rpc::facts(&session)?;
+    let facts = crate::chains::eth::rpc::facts(&session)?;
     let platform = host_check(&facts)?;
     if node.id.is_some() && node.platform != platform {
         return Err("stored Kaia platform differs from host".into());
     }
     node.platform = platform.into();
-    node_common::go_ahead(yes(args), "no Kaia host changed").map_err(|e| e.to_string())?;
+    common::go_ahead(yes(args), "no Kaia host changed").map_err(|e| e.to_string())?;
     if node.id.is_none() {
-        node = kaia_owned::add(&store, &node).map_err(|e| e.to_string())?;
+        node = owned::add(&store, &node).map_err(|e| e.to_string())?;
     }
     let vars = variables(&node, network, &facts)?;
     let inventory = json!({"all":{"hosts":{node.name.clone():vars}}}).to_string();
     node.last_run = play(&session, &target, &inventory, "node/prepare.yml", say)?;
     if node.is_validator() {
-        crate::kaia_signer::finish(&session, &mut node, network, &store, &vault)?;
+        crate::chains::kaia::signer::finish(&session, &mut node, network, &store, &vault)?;
     }
     let status = control(&session, &node, network, "status")?;
     node.last_result = "prepared; deploy required".into();
-    kaia_owned::save(&store, &mut node).map_err(|e| e.to_string())?;
-    node_common::save_vault(network.name(), &vault)?;
+    owned::save(&store, &mut node).map_err(|e| e.to_string())?;
+    common::save_vault(network.name(), &vault)?;
     Ok(
-        json!({"name":node.name,"family":"kaia","network":network.name(),"state":status["phase"],"registration":crate::kaia_signer::registration(&node)}),
+        json!({"name":node.name,"family":"kaia","network":network.name(),"state":status["phase"],"registration":crate::chains::kaia::signer::registration(&node)}),
     )
 }
 fn authorize_deploy(session: &Session, node: &Node, network: Network) -> Result<String, String> {
@@ -512,10 +512,10 @@ impl DeploymentOperations for HostDeployment<'_> {
         self.node.is_validator()
     }
     fn restore(&mut self) -> Result<(), String> {
-        crate::kaia_signer::restore(self.session, self.node, self.network).map(|_| ())
+        crate::chains::kaia::signer::restore(self.session, self.node, self.network).map(|_| ())
     }
     fn configure(&mut self, verb: &str, args: &ArgMatches) -> Result<(), String> {
-        let facts = crate::eth_rpc::facts(self.session)?;
+        let facts = crate::chains::eth::rpc::facts(self.session)?;
         host_check(&facts)?;
         if verb == "update" {
             let wanted = one(args, "version").ok_or("update requires --version")?;
@@ -539,9 +539,9 @@ impl DeploymentOperations for HostDeployment<'_> {
             self.node.image = erpc_chain_kaia::release::IMAGE.into();
         }
         reviewed(self.node, self.network)?;
-        crate::kaia_signer::configure(self.node, args)?;
+        crate::chains::kaia::signer::configure(self.node, args)?;
         self.node.management_allow = management(args, &self.node.management_allow)?;
-        kaia_owned::save(self.store, self.node).map_err(|e| e.to_string())?;
+        owned::save(self.store, self.node).map_err(|e| e.to_string())?;
         self.variables = Some(variables(self.node, self.network, &facts)?);
         Ok(())
     }
@@ -582,7 +582,7 @@ impl DeploymentOperations for HostDeployment<'_> {
     }
     fn finish(&mut self, verb: &str) -> Result<Value, String> {
         self.node.last_result = format!("{verb} complete; synchronization observed separately");
-        kaia_owned::save(self.store, self.node).map_err(|e| e.to_string())?;
+        owned::save(self.store, self.node).map_err(|e| e.to_string())?;
         control(self.session, self.node, self.network, "status")
     }
 }
@@ -601,7 +601,7 @@ fn operation(
     let (store, _) = open(network, args)?;
     if verb == "list" {
         return Ok(
-            json!({"nodes":kaia_owned::list(&store,validator).map_err(|e|e.to_string())?.iter().map(Node::public).collect::<Result<Vec<_>,_>>()?}),
+            json!({"nodes":owned::list(&store,validator).map_err(|e|e.to_string())?.iter().map(Node::public).collect::<Result<Vec<_>,_>>()?}),
         );
     }
     let mut node = find(&store, args, validator)?;
@@ -610,7 +610,7 @@ fn operation(
         network.qualify(wanted)?;
         let initial_free = network.initial_capacity(&node.storage, &node.snapshot)?;
         return Ok(
-            json!({"name":node.name,"family":"kaia","network":network.name(),"change":one(args,"change").unwrap_or("deploy"),"current_version":node.version,"version":wanted,"storage":node.storage,"snapshot":node.snapshot,"initial_free_bytes_before_allocated_data":initial_free,"rpc":"loopback HTTP/WS","validator":validator,"destroy_preserves_data":true,"financial_transactions":"external tools only","registration":crate::kaia_signer::registration(&node)}),
+            json!({"name":node.name,"family":"kaia","network":network.name(),"change":one(args,"change").unwrap_or("deploy"),"current_version":node.version,"version":wanted,"storage":node.storage,"snapshot":node.snapshot,"initial_free_bytes_before_allocated_data":initial_free,"rpc":"loopback HTTP/WS","validator":validator,"destroy_preserves_data":true,"financial_transactions":"external tools only","registration":crate::chains::kaia::signer::registration(&node)}),
         );
     }
     let target = target(&node, args)?;
@@ -625,7 +625,7 @@ fn operation(
     if before["phase"] == "installing" && !["deploy", "stop", "destroy"].contains(&verb) {
         return Err("resume deploy at the stored target before another operation".into());
     }
-    node_common::go_ahead(yes(args), "no Kaia host changed").map_err(|e| e.to_string())?;
+    common::go_ahead(yes(args), "no Kaia host changed").map_err(|e| e.to_string())?;
     match verb {
         "deploy" | "update" | "update-config" => run_deployment(
             verb,
@@ -644,7 +644,7 @@ fn operation(
         "start" | "stop" | "restart" | "destroy" => {
             let result = control(&session, &node, network, verb)?;
             node.last_result = format!("{verb} complete; data retained");
-            kaia_owned::save(&store, &mut node).map_err(|e| e.to_string())?;
+            owned::save(&store, &mut node).map_err(|e| e.to_string())?;
             Ok(result)
         }
         _ => Err("unsupported Kaia operation".into()),
@@ -655,7 +655,7 @@ pub(crate) fn report_status(
     json_out: bool,
     output: &mut dyn FnMut(&str),
 ) -> Outcome {
-    crate::node_report::status(result, "/ready", json_out, output)
+    crate::node::report::status(result, "/ready", json_out, output)
 }
 
 pub(crate) fn run(
@@ -741,7 +741,7 @@ mod tests {
             about: "fixture",
             read_only: false,
         };
-        let command = crate::kaia_tree::args(clap::Command::new("deploy"), &spec, true);
+        let command = crate::chains::kaia::tree::args(clap::Command::new("deploy"), &spec, true);
         let restored = command
             .clone()
             .try_get_matches_from(["deploy", "--restore-custody", "--yes"])
@@ -784,7 +784,7 @@ mod tests {
             operations.events,
             ["configure", "authorize-and-prepare", "deploy", "finish"]
         );
-        let rpc = crate::kaia_tree::args(clap::Command::new("deploy"), &spec, false);
+        let rpc = crate::chains::kaia::tree::args(clap::Command::new("deploy"), &spec, false);
         assert!(
             rpc.try_get_matches_from(["deploy", "--restore-custody"])
                 .is_err()
@@ -796,7 +796,7 @@ mod tests {
                 read_only: false,
             };
             assert!(
-                crate::kaia_tree::args(clap::Command::new(verb), &spec, true)
+                crate::chains::kaia::tree::args(clap::Command::new(verb), &spec, true)
                     .try_get_matches_from([verb, "--restore-custody"])
                     .is_err()
             );

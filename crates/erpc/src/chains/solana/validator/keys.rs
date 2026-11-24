@@ -28,8 +28,8 @@ use serde_json::json;
 use zeroize::Zeroizing;
 
 use crate::account::commands::Outcome;
-use crate::node_common::{Say, agent_socket, confirm};
-use crate::validator_init::open_vault;
+use crate::chains::solana::validator::init::open_vault;
+use crate::node::common::{Say, agent_socket, confirm};
 
 /// Where a key comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]

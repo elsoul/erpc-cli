@@ -16,10 +16,10 @@ use erpc_ssh::{RemoteCommand, Session, Stream};
 use serde_json::{Value, json};
 
 use crate::account::commands::Outcome;
-use crate::arc_rpc::gb;
+use crate::chains::arc::rpc::gb;
+use crate::chains::eth::rpc::{Login, find, open, target};
 use crate::cli::error::CliError;
-use crate::eth_rpc::{Login, find, open, target};
-use crate::node_common::{Say, go_ahead};
+use crate::node::common::{Say, go_ahead};
 
 /// The networks erpc runs Ethereum RPC nodes on, in the order they are listed.
 const NETWORKS: [&str; 1] = ["mainnet"];
@@ -329,7 +329,7 @@ pub(crate) fn read_status(
     network: &str,
 ) -> Result<Status, String> {
     let authority =
-        crate::eth_authority::invoke(session, node, network, "public-status", json!({}))?;
+        crate::chains::eth::authority::invoke(session, node, network, "public-status", json!({}))?;
     let out = session
         .run(&RemoteCommand::EthStatus, None)
         .map_err(|e| e.to_string())?;
@@ -543,7 +543,13 @@ pub fn logs(args: &Args, layer: &str, lines: u32, follow: bool, json_out: bool) 
         let opened = open(&args.network, None, &say)?;
         let node = find(&opened.nodes, &args.name, &args.network)?.clone();
         let session = Session::open(&target(&node, &args.login)?).map_err(|e| e.to_string())?;
-        crate::eth_authority::invoke(&session, &node, &args.network, "public-status", json!({}))?;
+        crate::chains::eth::authority::invoke(
+            &session,
+            &node,
+            &args.network,
+            "public-status",
+            json!({}),
+        )?;
         session
             .stream(
                 &RemoteCommand::EthLogs {
@@ -610,7 +616,7 @@ pub fn service(args: &Args, action: Action, layer: &str, yes: bool, json_out: bo
             go_ahead(yes, "nothing was changed")?;
         }
         say.line(&format!("service    {verb}…"));
-        crate::eth_authority::invoke(
+        crate::chains::eth::authority::invoke(
             &session,
             &node,
             &args.network,

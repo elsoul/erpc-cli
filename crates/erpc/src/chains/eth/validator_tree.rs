@@ -120,7 +120,7 @@ pub(crate) async fn run(verb: &str, sub: &ArgMatches, source: Source, json: bool
     if !readonly && network == "mainnet" && source != Source::Flag {
         return Outcome::Usage("mainnet validator changes require explicit --chain eth".into());
     }
-    crate::eth_validator::run(verb, sub, network, json).await
+    crate::chains::eth::validator::run(verb, sub, network, json).await
 }
 
 pub(crate) fn common(sub: Command, verb: &Verb) -> Command {
@@ -146,7 +146,7 @@ mod tests {
     }
     #[test]
     fn recovery_custody_and_migration_flags_require_their_actual_input_boundary() {
-        let tree = crate::tree::command(
+        let tree = crate::node::tree::command(
             erpc_core::chain::Role::Validator,
             erpc_core::chain::Chain::Eth,
         );
@@ -217,7 +217,7 @@ mod tests {
         ] {
             let mut args = vec!["validator", verb, "-n", "mainnet", "--name", "fixture"];
             args.extend(extra);
-            let parsed = crate::tree::command(
+            let parsed = crate::node::tree::command(
                 erpc_core::chain::Role::Validator,
                 erpc_core::chain::Chain::Eth,
             )
@@ -236,7 +236,7 @@ mod tests {
     #[tokio::test]
     async fn unsupported_validator_network_and_implicit_mainnet_fail_before_inventory() {
         for (network, source) in [("sepolia", Source::Flag), ("mainnet", Source::Env)] {
-            let matches = crate::tree::command(
+            let matches = crate::node::tree::command(
                 erpc_core::chain::Role::Validator,
                 erpc_core::chain::Chain::Eth,
             )
@@ -256,7 +256,7 @@ mod tests {
             ));
         }
         let mainnet_rpc =
-            crate::tree::command(erpc_core::chain::Role::Rpc, erpc_core::chain::Chain::Eth);
+            crate::node::tree::command(erpc_core::chain::Role::Rpc, erpc_core::chain::Chain::Eth);
         assert!(
             mainnet_rpc
                 .try_get_matches_from(["rpc", "status", "--network", "mainnet"])

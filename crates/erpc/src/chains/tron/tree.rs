@@ -166,7 +166,7 @@ pub(crate) fn run(
             .flatten()
             .map(|v| v.cloned().collect())
     };
-    let args = crate::tron_node::Args {
+    let args = crate::chains::tron::node::Args {
         validator,
         network: network.into(),
         name: name.unwrap_or_default().into(),
@@ -180,7 +180,7 @@ pub(crate) fn run(
             .unwrap_or(22),
         fingerprint: one("fingerprint"),
         vault: one("vault"),
-        login: crate::eth_rpc::Login {
+        login: crate::chains::eth::rpc::Login {
             ssh_key: sub
                 .try_get_one::<std::path::PathBuf>("ssh-key")
                 .ok()
@@ -211,7 +211,7 @@ pub(crate) fn run(
             .unwrap_or(100),
         follow: flag("follow"),
     };
-    crate::tron_node::run(verb.name, &args, json)
+    crate::chains::tron::node::run(verb.name, &args, json)
 }
 
 #[cfg(test)]
@@ -220,7 +220,7 @@ mod tests {
     #[test]
     fn roles_expose_lifecycle_without_owner_signing_or_closed_shasta() {
         for role in [Role::Rpc, Role::Validator] {
-            let tree = crate::tree::command(role, Chain::Tron);
+            let tree = crate::node::tree::command(role, Chain::Tron);
             for verb in [
                 "init",
                 "deploy",

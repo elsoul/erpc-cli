@@ -37,7 +37,7 @@ use super::{Look, mark};
 use crate::account::commands::Outcome;
 use crate::ai::conversations::Record;
 #[cfg(feature = "node-check-pilot")]
-use crate::node_check;
+use crate::node::check;
 
 /// Who is signed in and where, for the top of the conversation.
 pub struct Intro {
@@ -509,7 +509,7 @@ impl App {
 
     #[cfg(feature = "node-check-pilot")]
     fn open_node_check(&mut self, idle: bool, checking: &mut Option<Checking>) {
-        if !node_check::SUPPORTED {
+        if !check::SUPPORTED {
             self.note(Tone::Warn, t!("node_check.unsupported"));
         } else if idle && checking.is_none() {
             let (reply, answer) = oneshot::channel();
@@ -517,7 +517,7 @@ impl App {
             self.picker = Some(Picker::node_check(reply));
             *checking = Some(Box::pin(async move {
                 if answer.await == Ok(true) {
-                    Some(node_check::check().await.map(node_check::report))
+                    Some(check::check().await.map(check::report))
                 } else {
                     None
                 }
@@ -1797,7 +1797,7 @@ mod tests {
     fn node_check_reports_and_errors_render_as_local_notes() {
         let mut app = app();
         let mut checking = Some(Box::pin(core::future::pending()) as super::Checking);
-        let report = crate::node_check::report(erpc_api::node_check::Finding::LoopbackBinding);
+        let report = crate::node::check::report(erpc_api::node_check::Finding::LoopbackBinding);
         app.node_check_result(Some(Ok(report)), &mut checking);
         assert!(checking.is_none());
         app.node_check_result(

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Compare approved, pending and requested native configuration without mutation.
-use crate::solana_native::{access_values, flag, one};
+use crate::chains::solana::native::{access_values, flag, one};
 use clap::ArgMatches;
 use erpc_chain::inventory::solana_native::{NativeConfig, NativeHost};
 use erpc_chain_solana_native as native;
@@ -23,7 +23,7 @@ pub(crate) fn render(
             );
         }
         change = "activate-validator";
-        Some(crate::solana_native_deploy::registration(
+        Some(crate::chains::solana::native::deploy::registration(
             node, stored, args,
         )?)
     } else {
@@ -72,7 +72,7 @@ fn compare(
         .networks
         .get(&node.contract.network)
         .ok_or("native network is not qualified")?;
-    let (mode, identity) = crate::solana_native_deploy::runtime_selection(
+    let (mode, identity) = crate::chains::solana::native::deploy::runtime_selection(
         node,
         desired,
         observed,
@@ -92,7 +92,7 @@ fn compare(
         .any(|key| approved["access"][key] != access[key]);
     let mut blockers = Vec::new();
     if let Err(reason) =
-        crate::solana_source_upgrade::check_target(source, &observed["opening_authority"])
+        crate::chains::solana::source_upgrade::check_target(source, &observed["opening_authority"])
     {
         blockers.push(reason);
     }
@@ -250,7 +250,7 @@ mod tests {
         let mut observed = fresh_observation();
         let sync = compare(&node, &config, "deploy", &observed).unwrap();
         observed["approved"] = json!({"target":sync["desired"]["target"],"access":sync["desired"]["access"],"authorized":true});
-        let parsed = crate::tree::command(Role::Validator, Chain::Solana)
+        let parsed = crate::node::tree::command(Role::Validator, Chain::Solana)
             .try_get_matches_from([
                 "validator",
                 "plan",

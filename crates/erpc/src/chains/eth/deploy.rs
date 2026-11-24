@@ -23,13 +23,13 @@ use erpc_ssh::Session;
 use serde_json::{Map, Value, json};
 
 use crate::account::commands::Outcome;
-use crate::arc_rpc::allow_list;
-use crate::cli::error::CliError;
-use crate::eth_ops::{Status, head_line, read_status};
-use crate::eth_rpc::{
+use crate::chains::arc::rpc::allow_list;
+use crate::chains::eth::ops::{Status, head_line, read_status};
+use crate::chains::eth::rpc::{
     Facts, Login, Opened, RunVars, facts, find, lockout_warning, open, run_play, target,
 };
-use crate::node_common::{Say, go_ahead};
+use crate::cli::error::CliError;
+use crate::node::common::{Say, go_ahead};
 
 /// What a change to a node was asked to do.
 #[derive(Debug, Clone, Default)]
@@ -187,7 +187,7 @@ fn recover(args: &Args, json_out: bool) -> Outcome {
         let mut extra = Map::new();
         extra.insert(
             "eth_authority_request".into(),
-            crate::eth_authority::request(
+            crate::chains::eth::authority::request(
                 &node,
                 &args.network,
                 "recover",
@@ -297,7 +297,7 @@ fn upgrade_volume(args: &Args, json_out: bool) -> Outcome {
         let mut extra = Map::new();
         extra.insert(
             "eth_authority_request".into(),
-            crate::eth_authority::request(
+            crate::chains::eth::authority::request(
                 &node,
                 &args.network,
                 "upgrade-volume",
@@ -495,8 +495,9 @@ pub fn update_config(args: &Args, json_out: bool) -> Outcome {
 async fn next_pair(node: &EthRpc, facts: &Facts, args: &Args) -> Result<EthRpc, String> {
     let say = Say { quiet: true };
     let (reth_version, reth_commit, reth_sha256) =
-        crate::eth_init::pin(Client::Reth, args.reth_version.as_deref(), facts, &say).await?;
-    let (lighthouse_version, lighthouse_commit, lighthouse_sha256) = crate::eth_init::pin(
+        crate::chains::eth::init::pin(Client::Reth, args.reth_version.as_deref(), facts, &say)
+            .await?;
+    let (lighthouse_version, lighthouse_commit, lighthouse_sha256) = crate::chains::eth::init::pin(
         Client::Lighthouse,
         args.lighthouse_version.as_deref(),
         facts,
@@ -611,7 +612,7 @@ fn original_operation_lines(authority: &serde_json::Value) -> Result<Vec<String>
 }
 
 fn original_operation_plan(reached: &Reached, network: &str) -> Result<Vec<String>, String> {
-    let authority = crate::eth_authority::invoke(
+    let authority = crate::chains::eth::authority::invoke(
         &reached.session,
         &reached.node,
         network,

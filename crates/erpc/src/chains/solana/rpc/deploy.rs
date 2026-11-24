@@ -25,14 +25,14 @@ use erpc_ssh::{Session, Target};
 use serde_json::{Map, Value, json};
 
 use crate::account::commands::Outcome;
-use crate::arc_rpc::{Facts, Login, allow_list, facts};
-use crate::cli::error::CliError;
-use crate::node_common::{Say, check_ubuntu, free_disks, go_ahead, public_key_line};
-use crate::solana_rpc::{
+use crate::chains::arc::rpc::{Facts, Login, allow_list, facts};
+use crate::chains::solana::rpc::init::{Pins, Wanted, pin};
+use crate::chains::solana::rpc::{
     Opened, RunVars, Status, find_ready, list_or_nobody, lockout_warning, memory_warning, open,
     pins, read_status, record, refusals, run_play, target,
 };
-use crate::solana_rpc_init::{Pins, Wanted, pin};
+use crate::cli::error::CliError;
+use crate::node::common::{Say, check_ubuntu, free_disks, go_ahead, public_key_line};
 
 /// What a change to a node was asked to do.
 #[derive(Debug, Clone, Default)]
@@ -130,11 +130,11 @@ fn done(text: String, json_out: bool, body: &Value) -> Outcome {
 /// deploy play reads.
 fn disks(r: &Reached) -> Result<(Vec<String>, Value), String> {
     let found = free_disks(&r.session)?;
-    let lines = crate::validator_deploy::disk_plan(&found);
+    let lines = crate::chains::solana::validator::deploy::disk_plan(&found);
     let chosen = Value::Array(
         found
             .iter()
-            .take(crate::validator_deploy::MOUNT_TARGETS.len())
+            .take(crate::chains::solana::validator::deploy::MOUNT_TARGETS.len())
             .map(|d| json!({ "name": d.name, "wipe": d.wipe }))
             .collect(),
     );

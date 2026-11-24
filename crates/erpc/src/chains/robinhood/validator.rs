@@ -4,8 +4,9 @@
 //! Original Robinhood Defensive assertion-validator CLI orchestration.
 use crate::{
     account::commands::Outcome,
-    node_common::{self, Say},
-    robinhood_bundle as bundle, robinhood_custody as custody,
+    chains::robinhood::bundle,
+    chains::robinhood::custody,
+    node::common::{self, Say},
 };
 use clap::ArgMatches;
 use erpc_auth::store::one_password::OpCli;
@@ -41,18 +42,13 @@ fn network(args: &ArgMatches) -> Result<Network, String> {
 }
 fn open(args: &ArgMatches) -> Result<(Store<OpCli>, String), String> {
     let selected = network(args)?;
-    let vault = node_common::vault_for(
+    let vault = common::vault_for(
         selected.name(),
         one(args, "vault"),
         "erpc v --chain robinhood init --network mainnet --vault <vault>",
     )?;
     Ok((
-        node_common::store(
-            &node_common::op_runner()?,
-            &vault,
-            "robinhood",
-            selected.name(),
-        )?,
+        common::store(&common::op_runner()?, &vault, "robinhood", selected.name())?,
         vault,
     ))
 }
@@ -69,7 +65,7 @@ fn target(
         port,
         host_key: HostKey::parse(key).map_err(|e| e.to_string())?,
         identity: Identity::Agent {
-            socket: node_common::agent_socket(
+            socket: common::agent_socket(
                 args.try_get_one::<std::path::PathBuf>("ssh-agent")
                     .ok()
                     .flatten()
@@ -150,7 +146,7 @@ fn play(
 ) -> Result<(erpc_ssh::RunId, String), String> {
     let built = bundle::build(network, inventory)?;
     let run = erpc_ops::run::start(session, &built, path).map_err(|e| e.to_string())?;
-    let result = node_common::follow(
+    let result = common::follow(
         target,
         &run,
         "Retry using the original Robinhood validator inventory; never replace its wallet",
@@ -348,8 +344,8 @@ fn stage_upstreams(
         return Err("original parent recovery authorization differs".into());
     }
     // Read provider material only after the original host has durably stopped.
-    let upstream = crate::rollup_credentials::read(
-        &node_common::op_runner()?,
+    let upstream = crate::chains::rollup::credentials::read(
+        &common::op_runner()?,
         &OpRef::parse(&node.upstreams_ref).map_err(|_| "invalid original parent reference")?,
     )?;
     let mut private = public.clone();
@@ -392,17 +388,13 @@ fn original(
     vault: &str,
     fresh: Option<&SecretString>,
 ) -> Result<custody::Original, String> {
-    let value = custody::original(
-        &node_common::op_runner()?,
-        &account_binding(node, vault)?,
-        fresh,
-    )?;
+    let value = custody::original(&common::op_runner()?, &account_binding(node, vault)?, fresh)?;
     if !node.signer_ref.is_empty() && node.signer_ref != value.reference {
         return Err("original concealed signer reference changed".into());
     }
     Ok(value)
 }
-fn host_check(facts: &crate::eth_rpc::Facts) -> Result<(), String> {
+fn host_check(facts: &crate::chains::eth::rpc::Facts) -> Result<(), String> {
     if facts.os != "ubuntu 24.04"
         || facts.machine != "x86_64"
         || !facts.sudo
@@ -445,11 +437,11 @@ fn initialize(args: &ArgMatches, say: &Say) -> Result<Value, String> {
     let key = if let Some(node) = &existing {
         node.host_key.clone()
     } else {
-        node_common::host_key(address, port, None, one(args, "fingerprint"), say)?.to_openssh()
+        common::host_key(address, port, None, one(args, "fingerprint"), say)?.to_openssh()
     };
     let target = target(address, user, port, &key, args)?;
     let session = Session::open(&target).map_err(|e| e.to_string())?;
-    host_check(&crate::eth_rpc::facts(&session)?)?;
+    host_check(&crate::chains::eth::rpc::facts(&session)?)?;
     // A retry can have durable public custody before remote init exists. It
     // keeps that original contract and lets init verify/recover partial host
     // authority; only a new reservation uses the fresh empty-host preflight.
@@ -465,7 +457,7 @@ fn initialize(args: &ArgMatches, say: &Say) -> Result<Value, String> {
     } else {
         Value::Null
     };
-    node_common::go_ahead(
+    common::go_ahead(
         flag(args, "yes"),
         "no validator inventory, key or host changed",
     )
@@ -492,7 +484,7 @@ fn initialize(args: &ArgMatches, say: &Say) -> Result<Value, String> {
     store
         .update_robinhood_validator(&node)
         .map_err(|e| e.to_string())?;
-    node_common::save_vault(node.network.name(), &vault)?;
+    common::save_vault(node.network.name(), &vault)?;
     Ok(result)
 }
 fn custody_stage(
@@ -566,7 +558,7 @@ fn management(args: &ArgMatches, old: &[String]) -> Result<Vec<String>, String> 
         .ok()
         .flatten()
         .map_or_else(|| old.to_vec(), |v| v.cloned().collect());
-    crate::arc_rpc::allow_list("management", &values, false)
+    crate::chains::arc::rpc::allow_list("management", &values, false)
 }
 fn deployment_order(
     desired: Phase,
@@ -603,7 +595,7 @@ fn deploy(
     vault: &str,
     say: &Say,
 ) -> Result<String, String> {
-    let facts = crate::eth_rpc::facts(session)?;
+    let facts = crate::chains::eth::rpc::facts(session)?;
     host_check(&facts)?;
     let token = intent()?;
     let inventory = bundle::deploy_inventory(node, &facts, &token)?;
@@ -726,7 +718,7 @@ fn operation(verb: &str, args: &ArgMatches, say: &Say) -> Result<Value, String> 
             say,
         );
     }
-    node_common::go_ahead(flag(args, "yes"), "no original validator changed")
+    common::go_ahead(flag(args, "yes"), "no original validator changed")
         .map_err(|e| e.to_string())?;
     if ["stop", "destroy", "start", "restart"].contains(&verb) {
         let query = request(&node, verb)?;
@@ -764,7 +756,7 @@ pub(crate) fn report_status(
     json_out: bool,
     output: &mut dyn FnMut(&str),
 ) -> Outcome {
-    crate::node_report::status(result, "/validator_ready", json_out, output)
+    crate::node::report::status(result, "/validator_ready", json_out, output)
 }
 
 pub(crate) fn run(verb: &str, args: &ArgMatches, network: Option<&str>, json_out: bool) -> Outcome {
@@ -819,7 +811,7 @@ pub(crate) mod tests {
         use erpc_core::chain::{Chain, Role};
         use std::cell::RefCell;
         for network in [Network::Mainnet, Network::Testnet] {
-            let tree = crate::tree::command(Role::Validator, Chain::Robinhood);
+            let tree = crate::node::tree::command(Role::Validator, Chain::Robinhood);
             tree.clone().debug_assert();
             for (flags, old, wanted) in [
                 (vec![], Phase::Observing, Phase::Observing),
@@ -872,7 +864,7 @@ pub(crate) mod tests {
                 network.name()
             );
         }
-        let tree = crate::tree::command(Role::Validator, Chain::Robinhood);
+        let tree = crate::node::tree::command(Role::Validator, Chain::Robinhood);
         for args in [
             ["deploy", "--strategy", "MakeNodes"],
             ["init", "--import-used-key", "fixture"],

@@ -59,7 +59,7 @@ mod tests {
     use erpc_core::chain::{Chain, Role};
     #[test]
     fn explicit_network_and_retention_contracts_are_parsed() {
-        let tree = crate::tree::command(Role::Rpc, Chain::Bitcoin);
+        let tree = crate::node::tree::command(Role::Rpc, Chain::Bitcoin);
         tree.clone().debug_assert();
         assert!(
             tree.clone()

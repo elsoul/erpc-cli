@@ -14,10 +14,10 @@ use erpc_ssh::{RemoteCommand, Session, Stream};
 use serde_json::{Value, json};
 
 use crate::account::commands::Outcome;
-use crate::arc_rpc::Login;
+use crate::chains::arc::rpc::Login;
+use crate::chains::solana::rpc::{Status, find_ready, list_or_nobody, open, read_status, target};
 use crate::cli::error::CliError;
-use crate::node_common::{Say, go_ahead};
-use crate::solana_rpc::{Status, find_ready, list_or_nobody, open, read_status, target};
+use crate::node::common::{Say, go_ahead};
 
 /// What one of these verbs is asked about.
 #[derive(Debug, Clone, Default)]
@@ -132,7 +132,7 @@ pub(crate) fn render_status(node: &SolanaRpc, s: &Status, problems: &[String]) -
         } else {
             format!(" since {} ({} restarts)", s.since, s.restarts)
         },
-        crate::solana_rpc::pins(node),
+        crate::chains::solana::rpc::pins(node),
         if s.identity.is_empty() {
             "-"
         } else {

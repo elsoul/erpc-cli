@@ -12,9 +12,9 @@ use erpc_ssh::{RemoteCommand, Session, Stream};
 use serde_json::{Value, json};
 
 use crate::account::commands::Outcome;
-use crate::arc_rpc::{Login, find, open, target};
+use crate::chains::arc::rpc::{Login, find, open, target};
 use crate::cli::error::CliError;
-use crate::node_common::{Say, go_ahead};
+use crate::node::common::{Say, go_ahead};
 
 /// The networks Arc has, in the order they are listed.
 const NETWORKS: [&str; 2] = ["mainnet", "testnet"];
@@ -267,7 +267,7 @@ impl Status {
         node: &RpcNode,
         network: &erpc_chain_arc::network::Network,
     ) -> bool {
-        crate::arc_authority::directory(node, &self.source_platform).as_deref()
+        crate::chains::arc::authority::directory(node, &self.source_platform).as_deref()
             == Some(self.current.as_str())
             && self.source_archive == node.archive_sha256
             && self.running
@@ -336,7 +336,7 @@ impl Status {
                 ));
             }
         }
-        if crate::arc_authority::directory(node, &self.source_platform).as_deref()
+        if crate::chains::arc::authority::directory(node, &self.source_platform).as_deref()
             != Some(self.current.as_str())
             || self.source_archive != node.archive_sha256
         {
@@ -391,7 +391,7 @@ impl Status {
         {
             out.push(format!(
                 "only {} free for the chain data",
-                crate::arc_rpc::gb(free)
+                crate::chains::arc::rpc::gb(free)
             ));
         }
         if self.firewall_revoked {
@@ -413,7 +413,7 @@ pub(crate) fn read_status(
     node: &RpcNode,
     network: &erpc_chain_arc::network::Network,
 ) -> Result<Status, String> {
-    let reply = crate::arc_authority::invoke(session, node, network, "status", json!({}))?;
+    let reply = crate::chains::arc::authority::invoke(session, node, network, "status", json!({}))?;
     let observation = reply
         .get("observation")
         .and_then(Value::as_str)
@@ -476,8 +476,8 @@ fn render_status(node: &RpcNode, network: &str, s: &Status, problems: &[String])
     let _ = writeln!(
         out,
         "  data       {} used, {} free",
-        crate::arc_rpc::gb(s.data_used_kb.unwrap_or(0)),
-        crate::arc_rpc::gb(s.data_free_kb.unwrap_or(0))
+        crate::chains::arc::rpc::gb(s.data_used_kb.unwrap_or(0)),
+        crate::chains::arc::rpc::gb(s.data_free_kb.unwrap_or(0))
     );
     let _ = writeln!(
         out,
@@ -712,7 +712,7 @@ pub fn service(args: &Args, action: Action, layer: &str, yes: bool, json_out: bo
             Layer::Consensus => "consensus",
             Layer::Both => "both",
         };
-        crate::arc_authority::invoke(
+        crate::chains::arc::authority::invoke(
             &session,
             &node,
             &opened.network,

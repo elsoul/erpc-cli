@@ -18,7 +18,7 @@ use zeroize::Zeroizing;
 
 use crate::account::commands::Outcome;
 use crate::cli::error::{CliError, Code};
-use crate::node_common::{Say, go_ahead};
+use crate::node::common::{Say, go_ahead};
 use crate::worker::secrets;
 use crate::worker::vps::OnAccount;
 use crate::worker::{App, load_env};
@@ -906,7 +906,7 @@ pub(crate) async fn delete(json: bool, app: &App, ask: &DeleteAsk) -> Outcome {
     let agreed_missing = match agreed(
         missing.zip(env.resource.as_ref()),
         asking,
-        |question| crate::node_common::confirm(question).map_err(failed),
+        |question| crate::node::common::confirm(question).map_err(failed),
         || go_ahead(ask.yes, &t!("worker_remote.delete.refused")),
     ) {
         Ok(account) => account,

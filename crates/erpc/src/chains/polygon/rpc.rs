@@ -4,8 +4,8 @@
 //! Owned Bor/Heimdall RPC lifecycle; parent credentials are carried only on stdin.
 use crate::{
     account::commands::Outcome,
-    eth_rpc::Facts,
-    node_common::{self, Say},
+    chains::eth::rpc::Facts,
+    node::common::{self, Say},
 };
 use clap::ArgMatches;
 use erpc_auth::store::one_password::{OpCli, OpRunner};
@@ -112,7 +112,7 @@ fn control(session: &Session, body: &Value) -> Result<Value, String> {
 fn credential<R: OpRunner>(runner: &R, reference: &str) -> Result<ExecutionCredential, String> {
     let reference = OpRef::parse(reference)
         .map_err(|_| "Polygon parent requires an identifier-only op reference")?;
-    ExecutionCredential::parse(crate::rollup_credentials::read_concealed(
+    ExecutionCredential::parse(crate::chains::rollup::credentials::read_concealed(
         runner, &reference,
     )?)
     .map_err(|_| "invalid concealed Polygon execution-parent configuration".to_string())
@@ -208,7 +208,7 @@ fn target(node: &PolygonNode, args: &ArgMatches) -> Result<Target, String> {
         user: node.ssh_user.clone(),
         host_key: HostKey::parse(&node.host_key).map_err(|e| e.to_string())?,
         identity: Identity::Agent {
-            socket: node_common::agent_socket(
+            socket: common::agent_socket(
                 args.try_get_one::<std::path::PathBuf>("ssh-agent")
                     .ok()
                     .flatten()
@@ -236,13 +236,13 @@ fn host_check(facts: &Facts, network: &str) -> Result<(), String> {
     Network::get(network)?.platform(&facts.machine)
 }
 fn open(network: &str, args: &ArgMatches) -> Result<(Store<OpCli>, String), String> {
-    let vault = node_common::vault_for(
+    let vault = common::vault_for(
         network,
         one(args, "vault"),
         "erpc r --chain polygon init --network <mainnet|amoy> --vault <vault>",
     )?;
     Ok((
-        node_common::store(&node_common::op_runner()?, &vault, "polygon", network)?,
+        common::store(&common::op_runner()?, &vault, "polygon", network)?,
         vault,
     ))
 }
@@ -351,7 +351,7 @@ fn play(
     say: &Say,
 ) -> Result<erpc_ssh::RunId, String> {
     let run = erpc_ops::run::start(session, built, play).map_err(|e| e.to_string())?;
-    let result = node_common::follow(
+    let result = common::follow(
         target,
         &run,
         "Retry the stored Polygon target; original identities and consensus history are retained",
@@ -422,19 +422,19 @@ fn original_signer<R: OpRunner>(
     node: &PolygonNode,
     vault: &str,
     fresh: Option<&SecretString>,
-) -> Result<crate::polygon_custody::Original, String> {
+) -> Result<crate::chains::polygon::custody::Original, String> {
     let authority = node
         .validator
         .as_ref()
         .ok_or("Polygon validator authority is absent")?;
-    let binding = crate::polygon_custody::Binding {
+    let binding = crate::chains::polygon::custody::Binding {
         vault,
         network: &node.network,
         owner: owner(node)?,
         creation: &authority.creation,
         address: &authority.signer,
     };
-    let original = crate::polygon_custody::original(op, &binding, fresh)?;
+    let original = crate::chains::polygon::custody::original(op, &binding, fresh)?;
     if authority.original_ready && authority.original_ref != original.reference {
         return Err("the original Polygon signer item cannot be reassigned".into());
     }
@@ -508,7 +508,7 @@ fn initial_node(
     } else {
         let host = one(args, "host").ok_or("new Polygon node requires --host")?;
         let port = args.get_one::<u16>("port").copied().unwrap_or(22);
-        let key = node_common::host_key(host, port, None, one(args, "fingerprint"), say)?;
+        let key = common::host_key(host, port, None, one(args, "fingerprint"), say)?;
         PolygonNode {
             name: name.into(),
             address: host.into(),
@@ -558,7 +558,7 @@ fn init(role: &str, network: &str, args: &ArgMatches, say: &Say) -> Result<Value
         None
     };
     // Validate concealed schema before reserving the host; init never imports or rotates it.
-    let _secret = credential(&node_common::op_runner()?, &node.upstream_ref)?;
+    let _secret = credential(&common::op_runner()?, &node.upstream_ref)?;
     let target = target(&node, args)?;
     let session = Session::open(&target).map_err(|e| e.to_string())?;
     let facts = facts(&session)?;
@@ -568,8 +568,7 @@ fn init(role: &str, network: &str, args: &ArgMatches, say: &Say) -> Result<Value
     }
     node.architecture.clone_from(&facts.machine);
     reviewed(&node)?;
-    node_common::go_ahead(flag(args, "yes"), "no Polygon host changed")
-        .map_err(|e| e.to_string())?;
+    common::go_ahead(flag(args, "yes"), "no Polygon host changed").map_err(|e| e.to_string())?;
     let mut fresh_key = None;
     if node.id.is_none() {
         if let Some((stake_owner, sentries)) = public_validator {
@@ -599,7 +598,7 @@ fn init(role: &str, network: &str, args: &ArgMatches, say: &Say) -> Result<Value
         // ready transition follows exact concealed-key read-back.
         node = reserve_validator(
             &store,
-            &node_common::op_runner()?,
+            &common::op_runner()?,
             &vault,
             node,
             fresh_key.as_ref(),
@@ -622,7 +621,7 @@ fn init(role: &str, network: &str, args: &ArgMatches, say: &Say) -> Result<Value
     store
         .update_polygon_node(&node)
         .map_err(|e| e.to_string())?;
-    node_common::save_vault(network, &vault)?;
+    common::save_vault(network, &vault)?;
     Ok(
         json!({"name":node.name,"network":network,"initialized":true,"deployment":"explicit deploy required"}),
     )
@@ -677,7 +676,7 @@ fn deploy(
     say: &Say,
 ) -> Result<String, String> {
     reviewed(node)?;
-    let op = node_common::op_runner()?;
+    let op = common::op_runner()?;
     let secret = credential(&op, &node.upstream_ref)?;
     let original = if node.role == "validator" {
         Some(original_signer(&op, node, vault, None)?)
@@ -956,8 +955,7 @@ fn operation(
             json!(one(args, "action").ok_or("registration requires --action")?);
         return control(&session, &body);
     }
-    node_common::go_ahead(flag(args, "yes"), "no Polygon host changed")
-        .map_err(|e| e.to_string())?;
+    common::go_ahead(flag(args, "yes"), "no Polygon host changed").map_err(|e| e.to_string())?;
     match verb {
         "deploy" | "update" | "update-config" => {
             change_target(&mut node, verb, network, args)?;
@@ -1029,7 +1027,7 @@ pub(crate) fn report_status(
     json_out: bool,
     output: &mut dyn FnMut(&str),
 ) -> Outcome {
-    crate::node_report::status(result, "/ready", json_out, output)
+    crate::node::report::status(result, "/ready", json_out, output)
 }
 
 pub(crate) fn run_role(
@@ -1252,7 +1250,7 @@ mod tests {
                     assert!(runtime_action(&original, "start").is_err());
                     assert!(runtime_action(&original, "restart").is_err());
                     assert_eq!(runtime_action(&original, "stop").unwrap(), "stop-v2");
-                    let tree = crate::tree::command(role, Chain::Polygon);
+                    let tree = crate::node::tree::command(role, Chain::Polygon);
                     let parsed = tree
                         .clone()
                         .try_get_matches_from([

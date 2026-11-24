@@ -29,102 +29,6 @@ mod rpc;
 mod storage;
 mod worker;
 
-// Temporary: the old paths of the modules that moved into `chains/` and
-// `node/`, so the move changes no imports. They go when their users
-// import from the new paths.
-pub(crate) use chains::arbitrum::bundle as arbitrum_bundle;
-pub(crate) use chains::arbitrum::custody as arbitrum_custody;
-pub(crate) use chains::arbitrum::tree as arbitrum_tree;
-pub(crate) use chains::arbitrum::validator as arbitrum_validator;
-pub(crate) use chains::arbitrum::volume as arbitrum_volume;
-pub(crate) use chains::arc::authority as arc_authority;
-pub(crate) use chains::arc::custody as arc_custody;
-pub(crate) use chains::arc::deploy as arc_deploy;
-pub(crate) use chains::arc::init as arc_init;
-pub(crate) use chains::arc::migration as arc_migration;
-pub(crate) use chains::arc::ops as arc_ops;
-pub(crate) use chains::arc::rpc as arc_rpc;
-pub(crate) use chains::arc::validator::custody as arc_validator_custody;
-pub(crate) use chains::arc::validator::host as arc_validator_host;
-pub(crate) use chains::arc::validator::init as arc_validator_init;
-pub(crate) use chains::arc::validator::ops as arc_validator_ops;
-pub(crate) use chains::arc::validator::tree as arc_validator_tree;
-pub(crate) use chains::avax::ops as avax_ops;
-pub(crate) use chains::avax::tree as avax_tree;
-pub(crate) use chains::bitcoin::rpc as bitcoin_rpc;
-pub(crate) use chains::bitcoin::tree as bitcoin_tree;
-pub(crate) use chains::bsc::backup as bsc_backup;
-pub(crate) use chains::bsc::owned as bsc_owned;
-pub(crate) use chains::bsc::rpc as bsc_rpc;
-pub(crate) use chains::bsc::signer as bsc_signer;
-pub(crate) use chains::bsc::tree as bsc_tree;
-pub(crate) use chains::eth::authority as eth_authority;
-pub(crate) use chains::eth::authority_evidence as eth_authority_evidence;
-pub(crate) use chains::eth::deploy as eth_deploy;
-pub(crate) use chains::eth::init as eth_init;
-pub(crate) use chains::eth::ops as eth_ops;
-pub(crate) use chains::eth::rpc as eth_rpc;
-pub(crate) use chains::eth::tree as eth_tree;
-pub(crate) use chains::eth::validator as eth_validator;
-pub(crate) use chains::eth::validator_tree as eth_validator_tree;
-pub(crate) use chains::hyperliquid::aqa as hyperliquid_aqa;
-pub(crate) use chains::hyperliquid::ops as hyperliquid_ops;
-pub(crate) use chains::hyperliquid::tree as hyperliquid_tree;
-pub(crate) use chains::hyperliquid::validator as hyperliquid_validator;
-pub(crate) use chains::kaia::backup as kaia_backup;
-pub(crate) use chains::kaia::owned as kaia_owned;
-pub(crate) use chains::kaia::rpc as kaia_rpc;
-pub(crate) use chains::kaia::signer as kaia_signer;
-pub(crate) use chains::kaia::tree as kaia_tree;
-pub(crate) use chains::monad::ops as monad_ops;
-pub(crate) use chains::monad::tree as monad_tree;
-pub(crate) use chains::near::rpc as near_rpc;
-pub(crate) use chains::near::tree as near_tree;
-pub(crate) use chains::nitro::rpc as nitro_rpc;
-pub(crate) use chains::nitro::tree as nitro_tree;
-pub(crate) use chains::polygon::custody as polygon_custody;
-pub(crate) use chains::polygon::rpc as polygon_rpc;
-pub(crate) use chains::polygon::tree as polygon_tree;
-pub(crate) use chains::robinhood::admission as robinhood_admission;
-pub(crate) use chains::robinhood::admission_input as robinhood_admission_input;
-pub(crate) use chains::robinhood::bundle as robinhood_bundle;
-pub(crate) use chains::robinhood::custody as robinhood_custody;
-pub(crate) use chains::robinhood::tree as robinhood_tree;
-pub(crate) use chains::robinhood::validator as robinhood_validator;
-pub(crate) use chains::rollup::bundle as rollup_bundle;
-pub(crate) use chains::rollup::credentials as rollup_credentials;
-pub(crate) use chains::rollup::ops as rollup_ops;
-pub(crate) use chains::rollup::tree as rollup_tree;
-pub(crate) use chains::solana::backend as solana_backend;
-pub(crate) use chains::solana::migration as solana_migration;
-pub(crate) use chains::solana::migration::execute as solana_migration_execute;
-pub(crate) use chains::solana::migration::settings as solana_migration_settings;
-pub(crate) use chains::solana::native as solana_native;
-pub(crate) use chains::solana::native::deploy as solana_native_deploy;
-pub(crate) use chains::solana::native::plan as solana_native_plan;
-pub(crate) use chains::solana::registration as solana_registration;
-pub(crate) use chains::solana::rpc as solana_rpc;
-pub(crate) use chains::solana::rpc::deploy as solana_rpc_deploy;
-pub(crate) use chains::solana::rpc::init as solana_rpc_init;
-pub(crate) use chains::solana::rpc::ops as solana_rpc_ops;
-pub(crate) use chains::solana::source_upgrade as solana_source_upgrade;
-pub(crate) use chains::solana::validator::deploy as validator_deploy;
-pub(crate) use chains::solana::validator::init as validator_init;
-pub(crate) use chains::solana::validator::keys as validator_keys;
-pub(crate) use chains::solana::validator::vote as validator_vote;
-pub(crate) use chains::sui::node as sui_node;
-pub(crate) use chains::sui::source as sui_source;
-pub(crate) use chains::sui::tree as sui_tree;
-pub(crate) use chains::tron::node as tron_node;
-pub(crate) use chains::tron::tree as tron_tree;
-#[cfg(feature = "node-check-pilot")]
-pub(crate) use node::check as node_check;
-pub(crate) use node::common as node_common;
-pub(crate) use node::help as node_help;
-pub(crate) use node::nodes;
-pub(crate) use node::report as node_report;
-pub(crate) use node::tree;
-
 /// Exit statuses outside a failure's own ([`cli::error::Code::exit`]).
 mod exit {
     /// The command did what was asked.
@@ -657,7 +561,7 @@ async fn dispatch(cli: Cli) -> ExitCode {
         } => {
             #[cfg(feature = "node-check-pilot")]
             if node_check {
-                return finish(node_check::menu(cli.json).await);
+                return finish(node::check::menu(cli.json).await);
             }
             let start = if continue_last {
                 ai::Start::Latest
@@ -668,7 +572,7 @@ async fn dispatch(cli: Cli) -> ExitCode {
         }
         Command::Resume { id } => ai::run(cli.json, None, ai::Start::Resume(id), None).await,
         Command::Validator { args } => {
-            tree::run(erpc_core::chain::Role::Validator, &args, cli.json).await
+            node::tree::run(erpc_core::chain::Role::Validator, &args, cli.json).await
         }
         Command::Rpc {
             action: Some(RpcAction::Call(call)),
@@ -682,7 +586,7 @@ async fn dispatch(cli: Cli) -> ExitCode {
             cli.json,
         ),
         Command::Rpc { action: None, args } => {
-            tree::run(erpc_core::chain::Role::Rpc, &args, cli.json).await
+            node::tree::run(erpc_core::chain::Role::Rpc, &args, cli.json).await
         }
         Command::Webhook { action } => rpc::webhook::run(action, cli.json).await,
         Command::Completions { shell } => {
@@ -695,7 +599,9 @@ async fn dispatch(cli: Cli) -> ExitCode {
             );
             account::commands::Outcome::Done(String::from_utf8_lossy(&buffer).into_owned())
         }
-        Command::Node { args } => tree::run(erpc_core::chain::Role::Node, &args, cli.json).await,
+        Command::Node { args } => {
+            node::tree::run(erpc_core::chain::Role::Node, &args, cli.json).await
+        }
         Command::Worker { action } => worker::run(cli.json, *action).await,
         Command::Config { action } => account::commands::config(cli.json, action.into()),
         Command::Storage { action } => storage::run(cli.json, action).await,

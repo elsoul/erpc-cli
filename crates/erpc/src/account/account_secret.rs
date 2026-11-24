@@ -64,7 +64,7 @@ impl Slot {
                 let vault = vault.ok_or(
                     "erpc login keeps the session in 1Password but names no vault (credential_vault)",
                 )?;
-                op_read(self, &crate::node_common::op_runner()?, &vault)?
+                op_read(self, &crate::node::common::op_runner()?, &vault)?
             }
             StoreKind::OsKeychain => self.keychain_read()?,
             StoreKind::File => self.file_read()?,
@@ -97,7 +97,7 @@ impl Slot {
                 let vault = vault.ok_or(
                     "erpc login keeps the session in 1Password but names no vault (credential_vault)",
                 )?;
-                op_create(self, &crate::node_common::op_runner()?, &vault, value)?;
+                op_create(self, &crate::node::common::op_runner()?, &vault, value)?;
             }
             StoreKind::OsKeychain => self.keychain_write(value)?,
             StoreKind::File => self.file_write(value)?,

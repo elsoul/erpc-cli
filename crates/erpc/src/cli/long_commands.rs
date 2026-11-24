@@ -43,9 +43,13 @@ pub(crate) fn builds_or_deploys(command: &[String]) -> bool {
             crate::worker::Action::Run { check, .. } => check,
             _ => false,
         },
-        Some(crate::Command::Validator { args }) => crate::tree::deploys(Role::Validator, &args),
-        Some(crate::Command::Rpc { action: None, args }) => crate::tree::deploys(Role::Rpc, &args),
-        Some(crate::Command::Node { args }) => crate::tree::deploys(Role::Node, &args),
+        Some(crate::Command::Validator { args }) => {
+            crate::node::tree::deploys(Role::Validator, &args)
+        }
+        Some(crate::Command::Rpc { action: None, args }) => {
+            crate::node::tree::deploys(Role::Rpc, &args)
+        }
+        Some(crate::Command::Node { args }) => crate::node::tree::deploys(Role::Node, &args),
         _ => false,
     }
 }
@@ -208,7 +212,7 @@ mod tests {
             for chain in Chain::ALL {
                 for verb in ["deploy", "status"] {
                     let rest = line(&["--chain", chain.as_str(), "--name", "h1", verb]);
-                    let wanted = crate::tree::deploys(role, &rest);
+                    let wanted = crate::node::tree::deploys(role, &rest);
                     for name in names {
                         let mut full = line(&["erpc", name]);
                         full.extend(rest.iter().cloned());
@@ -223,7 +227,8 @@ mod tests {
         assert!(long >= 18, "{long} deploys");
         let only_validator = Chain::ALL.into_iter().any(|chain| {
             let rest = line(&["--chain", chain.as_str(), "--name", "h1", "deploy"]);
-            crate::tree::deploys(Role::Validator, &rest) != crate::tree::deploys(Role::Rpc, &rest)
+            crate::node::tree::deploys(Role::Validator, &rest)
+                != crate::node::tree::deploys(Role::Rpc, &rest)
         });
         assert!(only_validator, "some chain has a deploy for one role only");
     }

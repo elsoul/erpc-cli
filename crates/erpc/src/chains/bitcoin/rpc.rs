@@ -5,8 +5,8 @@
 
 use crate::{
     account::commands::Outcome,
-    eth_rpc::Facts,
-    node_common::{self, Say},
+    chains::eth::rpc::Facts,
+    node::common::{self, Say},
 };
 use clap::ArgMatches;
 use erpc_auth::store::one_password::OpCli;
@@ -63,7 +63,7 @@ fn target(node: &BitcoinRpc, args: &ArgMatches) -> Result<Target, String> {
         user: node.ssh_user.clone(),
         host_key: HostKey::parse(&node.host_key).map_err(|e| e.to_string())?,
         identity: Identity::Agent {
-            socket: node_common::agent_socket(
+            socket: common::agent_socket(
                 args.try_get_one::<std::path::PathBuf>("ssh-agent")
                     .ok()
                     .flatten()
@@ -203,7 +203,7 @@ fn migration_action(
         return Ok(None);
     };
     let request = migration_request(node, network, path)?;
-    node_common::go_ahead(yes(args), "no legacy Bitcoin authority migrated")
+    common::go_ahead(yes(args), "no legacy Bitcoin authority migrated")
         .map_err(|e| e.to_string())?;
     send(&request).map(Some)
 }
@@ -244,18 +244,13 @@ fn deployment_request(
     Ok(value)
 }
 fn open(network: Network, args: &ArgMatches) -> Result<(Store<OpCli>, String), String> {
-    let vault = node_common::vault_for(
+    let vault = common::vault_for(
         network.name(),
         one(args, "vault"),
         "erpc r --chain bitcoin init --network <network> --vault <vault>",
     )?;
     Ok((
-        node_common::store(
-            &node_common::op_runner()?,
-            &vault,
-            "bitcoin",
-            network.name(),
-        )?,
+        common::store(&common::op_runner()?, &vault, "bitcoin", network.name())?,
         vault,
     ))
 }
@@ -338,7 +333,7 @@ fn play(
     let built = bundle.finish().map_err(|e| e.to_string())?;
     let run =
         erpc_ops::run::start(session, &built, "node/deploy.yml").map_err(|e| e.to_string())?;
-    let result = node_common::follow(
+    let result = common::follow(
         target,
         &run,
         "Repeat init or deploy using the stored desired release",
@@ -396,7 +391,7 @@ async fn init(network: Network, args: &ArgMatches, say: &Say) -> Result<Value, S
     } else {
         let address = one(args, "host").ok_or("new node requires --host")?;
         let port = args.get_one::<u16>("port").copied().unwrap_or(22);
-        let key = node_common::host_key(address, port, None, one(args, "fingerprint"), say)?;
+        let key = common::host_key(address, port, None, one(args, "fingerprint"), say)?;
         let kind = one(args, "type").unwrap_or("full");
         let prune = args.try_get_one::<u64>("prune-mib").ok().flatten().copied();
         if kind == "full" && prune.is_some() {
@@ -421,7 +416,7 @@ async fn init(network: Network, args: &ArgMatches, say: &Say) -> Result<Value, S
     storage(&node)?;
     let target = target(&node, args)?;
     let session = Session::open(&target).map_err(|e| e.to_string())?;
-    let facts = crate::eth_rpc::facts(&session)?;
+    let facts = crate::chains::eth::rpc::facts(&session)?;
     let platform = host_check(&facts)?;
     let verified = if node.id.is_none() {
         download::fetch(
@@ -436,11 +431,11 @@ async fn init(network: Network, args: &ArgMatches, say: &Say) -> Result<Value, S
         return Err("host architecture differs from its stored release platform".into());
     }
     pin_node(&mut node, &verified);
-    node_common::go_ahead(yes(args), "no Bitcoin host changed").map_err(|e| e.to_string())?;
+    common::go_ahead(yes(args), "no Bitcoin host changed").map_err(|e| e.to_string())?;
     if node.id.is_none() {
         node = store.add_bitcoin_rpc(&node).map_err(|e| e.to_string())?;
     }
-    node_common::save_vault(network.name(), &vault)?;
+    common::save_vault(network.name(), &vault)?;
     node.last_run = play(&node, network, "init", &verified, &session, &target, say)?;
     node.last_result = "init ok".into();
     store.update_bitcoin_rpc(&node).map_err(|e| e.to_string())?;
@@ -477,14 +472,13 @@ async fn change(
     // controller. It must not depend on RPC health, deployment capacity or a
     // successful status/facts call before attempting owned shutdown.
     if matches!(verb, "stop" | "destroy") {
-        node_common::go_ahead(yes(args), "no Bitcoin service changed")
-            .map_err(|e| e.to_string())?;
+        common::go_ahead(yes(args), "no Bitcoin service changed").map_err(|e| e.to_string())?;
         let response = control(&session, node, network, verb)?;
         node.last_result = format!("{verb} ok; data retained");
         *node = store.update_bitcoin_rpc(node).map_err(|e| e.to_string())?;
         return Ok(response);
     }
-    let platform = host_check(&crate::eth_rpc::facts(&session)?)?;
+    let platform = host_check(&crate::chains::eth::rpc::facts(&session)?)?;
     if Platform::parse(&node.platform) != Some(platform) {
         return Err("host architecture differs from the stored release".into());
     }
@@ -520,7 +514,7 @@ async fn change(
                     "requested release is older than the host's installed database owner".into(),
                 );
             }
-            node_common::go_ahead(yes(args), "no Bitcoin configuration changed")
+            common::go_ahead(yes(args), "no Bitcoin configuration changed")
                 .map_err(|e| e.to_string())?;
             let mut wanted = node.clone();
             pin_node(&mut wanted, &verified);
@@ -533,8 +527,7 @@ async fn change(
             readiness(network, node, control(&session, node, network, "status")?)
         }
         "start" | "restart" => {
-            node_common::go_ahead(yes(args), "no Bitcoin service changed")
-                .map_err(|e| e.to_string())?;
+            common::go_ahead(yes(args), "no Bitcoin service changed").map_err(|e| e.to_string())?;
             let mut desired = request(node, network, verb)?;
             if matches!(verb, "start" | "restart") {
                 desired["generation"] = before["generation"].clone();
@@ -621,7 +614,7 @@ pub(crate) fn report_status(
     json_out: bool,
     output: &mut dyn FnMut(&str),
 ) -> Outcome {
-    crate::node_report::status(result, "/readiness/ready", json_out, output)
+    crate::node::report::status(result, "/readiness/ready", json_out, output)
 }
 
 pub(crate) async fn run(
@@ -717,7 +710,7 @@ mod tests {
         let record = json!({"schema":"erpc-bitcoin-original-v1","contract":{},"machine_sha256":"public",
             "layout":{},"account":{},"highest_source":{},"daemon_sha256":"public","client_sha256":"public"});
         std::fs::write(&path, record.to_string()).unwrap();
-        let matches = crate::tree::command(Role::Rpc, Chain::Bitcoin)
+        let matches = crate::node::tree::command(Role::Rpc, Chain::Bitcoin)
             .try_get_matches_from([
                 "rpc",
                 "deploy",
@@ -756,7 +749,7 @@ mod tests {
             ))
             .is_err()
         );
-        let ordinary = crate::tree::command(Role::Rpc, Chain::Bitcoin)
+        let ordinary = crate::node::tree::command(Role::Rpc, Chain::Bitcoin)
             .try_get_matches_from(["rpc", "deploy", "--network", "signet"])
             .unwrap();
         assert!(

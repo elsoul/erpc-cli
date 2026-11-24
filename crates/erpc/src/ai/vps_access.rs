@@ -95,7 +95,7 @@ pub(crate) fn login_key() -> Result<(PathBuf, Identity), String> {
             "no SSH key to log in with: make one (ssh-keygen -t ed25519) or point erpc at yours \
              with `erpc config set ssh_key /path/to/key.pub`",
         )?;
-    let line = crate::node_common::public_key_line(&public)?;
+    let line = crate::node::common::public_key_line(&public)?;
     // An agent counts only when it holds this key: 1Password's runs for
     // many people whose key is a plain file.
     let agents = home
@@ -234,7 +234,7 @@ fn secure(prepared: &Prepared, password: Result<&str, &str>) -> Result<Secured, 
     let (by_key, controller) = if let Some(found) = earlier {
         found
     } else {
-        let key_line = crate::node_common::public_key_line(&public)?;
+        let key_line = crate::node::common::public_key_line(&public)?;
         // Taken up, the key was the way in: that it fails is the news, not
         // a password that is no longer needed.
         let password = password.map_err(|why| {
@@ -372,7 +372,7 @@ impl Servers for SshServers {
         let (ip, user) = (ip.to_owned(), user.to_owned());
         Box::pin(blocking(move || {
             let (public, _) = login_key()?;
-            let line = crate::node_common::public_key_line(&public)?;
+            let line = crate::node::common::public_key_line(&public)?;
             let kind = line
                 .split_whitespace()
                 .next()

@@ -42,7 +42,7 @@ use zeroize::Zeroizing;
 use crate::account::commands::Outcome;
 use crate::cli::error::{CliError, Code};
 use crate::cli::interrupt::Hold;
-use crate::node_common::Say;
+use crate::node::common::Say;
 use crate::worker::deploy::said_in;
 use crate::worker::secrets;
 use crate::worker::vps::{self, Api, LineTarget};
@@ -790,7 +790,7 @@ mod tests {
     /// carries on with it. The next run makes a key of its own.
     #[tokio::test]
     async fn a_start_of_a_run_that_is_not_settled_says_nothing_of_a_record() {
-        use crate::node_common::Say;
+        use crate::node::common::Say;
         use crate::worker::vps::{Sent, start_on_record};
         use erpc_ai::actions::StartError;
         use erpc_worker::manifest::Start;

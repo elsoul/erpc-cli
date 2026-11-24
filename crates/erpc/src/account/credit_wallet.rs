@@ -102,7 +102,7 @@ impl CreditWallet for ConfigWallet {
     fn find(
         &self,
     ) -> core::pin::Pin<Box<dyn Future<Output = Result<Option<FoundWallet>, String>> + '_>> {
-        Box::pin(off_thread(|| find(&crate::node_common::op_runner()?)))
+        Box::pin(off_thread(|| find(&crate::node::common::op_runner()?)))
     }
 
     fn adopt<'a>(
@@ -130,7 +130,7 @@ pub(crate) fn read_wallet_key(ai_tool: bool) -> Result<EvmKey, String> {
     let reference = setting("credit_wallet").ok_or(NO_WALLET)?;
     let allow_ai = setting("credit_wallet_ai").as_deref() == Some("on");
     gate(allow_ai, std::io::stdin().is_terminal(), ai_tool)?;
-    let runner = crate::node_common::op_runner()?;
+    let runner = crate::node::common::op_runner()?;
     let mut out = runner
         .run(&["read", "--no-newline", &reference], None)
         .map_err(|e| format!("1Password did not give the wallet key: {e}"))?;
@@ -285,7 +285,7 @@ pub(crate) fn create(vault: &str, allow_ai: bool) -> Result<Address, String> {
     {
         return Err("the vault is its 1Password id or its name".to_owned());
     }
-    let runner = crate::node_common::op_runner()?;
+    let runner = crate::node::common::op_runner()?;
     // One wallet per person: a second would split their EURC.
     if let Some(found) = find(&runner)? {
         return Err(format!(
@@ -450,7 +450,7 @@ pub(crate) fn create_command(json_out: bool, vault: Option<&str>, allow_ai: bool
     if let Some(why) = existing() {
         return Outcome::Failed(why);
     }
-    let found = match crate::node_common::op_runner().and_then(|runner| find(&runner)) {
+    let found = match crate::node::common::op_runner().and_then(|runner| find(&runner)) {
         Ok(found) => found,
         Err(e) => return Outcome::Failed(e),
     };

@@ -26,12 +26,12 @@ use erpc_ssh::{Identity, RemoteCommand, Session, Target};
 use serde_json::json;
 
 use crate::account::commands::Outcome;
-use crate::arc_rpc::{Login, allow_list, facts, gb};
+use crate::chains::arc::rpc::{Login, allow_list, facts, gb};
+use crate::chains::solana::rpc::{RunVars, memory_warning, open, refusals, run_play};
 use crate::cli::error::CliError;
-use crate::node_common::{
+use crate::node::common::{
     Say, agent_socket, check_ubuntu, go_ahead, host_key, public_key_line, save_vault,
 };
-use crate::solana_rpc::{RunVars, memory_warning, open, refusals, run_play};
 
 /// What `erpc r --chain solana init` was asked to do.
 #[derive(Debug, Clone, Default)]
@@ -109,17 +109,17 @@ impl Done {
             "Solana RPC node {} ({} {}) is ready for deploy.",
             n.name, n.client, n.rpc_type
         );
-        let _ = writeln!(out, "  pins      {}", crate::solana_rpc::pins(n));
+        let _ = writeln!(out, "  pins      {}", crate::chains::solana::rpc::pins(n));
         let _ = writeln!(out, "  region    {}", n.region);
         let _ = writeln!(
             out,
             "  rpc       {}",
-            crate::solana_rpc::list_or_nobody(&n.rpc_allow)
+            crate::chains::solana::rpc::list_or_nobody(&n.rpc_allow)
         );
         let _ = writeln!(
             out,
             "  metrics   {}",
-            crate::solana_rpc::list_or_nobody(&n.monitoring_allow)
+            crate::chains::solana::rpc::list_or_nobody(&n.monitoring_allow)
         );
         let _ = write!(
             out,
@@ -505,7 +505,7 @@ async fn init(args: &Args, say: &Say) -> Result<Done, CliError> {
         management_allow: management.clone(),
         ..SolanaRpc::default()
     };
-    if let Some(warning) = crate::solana_rpc::lockout_warning(&probe, &facts) {
+    if let Some(warning) = crate::chains::solana::rpc::lockout_warning(&probe, &facts) {
         say.line(&warning);
     }
     go_ahead(args.yes, "nothing was written")?;

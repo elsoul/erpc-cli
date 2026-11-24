@@ -171,7 +171,7 @@ pub(crate) async fn run(
     name: Option<&str>,
     json: bool,
 ) -> Outcome {
-    match crate::avax_ops::run(role, verb.name, sub, network, name, json).await {
+    match crate::chains::avax::ops::run(role, verb.name, sub, network, name, json).await {
         Ok(body) => {
             if json {
                 crate::print_json(&body);
@@ -190,7 +190,7 @@ mod tests {
     #[test]
     fn rpc_node_aliases_and_validator_have_working_argument_contracts() {
         for role in [Role::Rpc, Role::Node, Role::Validator] {
-            let command = crate::tree::command(role, Chain::Avax);
+            let command = crate::node::tree::command(role, Chain::Avax);
             for verb in erpc_core::chain::COMMON_VERBS {
                 let mut args = vec![
                     role.as_str(),

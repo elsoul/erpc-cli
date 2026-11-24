@@ -71,7 +71,7 @@ use serde_json::{Value, json};
 
 use crate::account::commands::{Outcome, Said};
 use crate::cli::error::{CliError, Code};
-use crate::node_common::{Say, go_ahead};
+use crate::node::common::{Say, go_ahead};
 use crate::worker::remote::{ctl, ctl_ok, failed, open, target};
 use crate::worker::waf::{Rules, addresses};
 use crate::worker::{App, Port, load_env};
@@ -1402,7 +1402,7 @@ mod tests {
     use super::recorded::{Recorded, running};
     use super::{Decision, Held, Port, Synced, Why};
     use crate::cli::error::Code;
-    use crate::node_common::Say;
+    use crate::node::common::Say;
 
     const SCOPE: &str = " --env prod";
 

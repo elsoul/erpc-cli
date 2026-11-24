@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Complete immutable source profile and public-only Robinhood Defensive run inventories.
-use crate::eth_rpc::Facts;
+use crate::chains::eth::rpc::Facts;
 use erpc_chain::inventory::robinhood_validator::Validator;
 use erpc_chain_nitro::robinhood_validator::{
     Deployment, Network, helper_files, helpers_digest, request_digest,
@@ -86,7 +86,8 @@ pub(crate) fn deploy_inventory(
     facts: &Facts,
     intent: &str,
 ) -> Result<String, String> {
-    let mut management = crate::arc_rpc::allow_list("management", &node.management_allow, false)?;
+    let mut management =
+        crate::chains::arc::rpc::allow_list("management", &node.management_allow, false)?;
     let mut ipv6 = Vec::new();
     match facts.controller_ip()? {
         std::net::IpAddr::V4(ip) => {
@@ -125,7 +126,7 @@ mod tests {
             ..Default::default()
         };
         for network in [Network::Mainnet, Network::Testnet] {
-            let node = crate::robinhood_validator::tests::fixture(network);
+            let node = crate::chains::robinhood::validator::tests::fixture(network);
             let inventory = deploy_inventory(&node, &facts, &"a".repeat(32)).unwrap();
             let built = build(network, &inventory).unwrap();
             let python =

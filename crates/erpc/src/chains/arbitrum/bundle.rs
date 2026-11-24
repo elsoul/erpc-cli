@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Complete immutable source profile and public-only Arbitrum run inventories.
-use crate::eth_rpc::Facts;
+use crate::chains::eth::rpc::Facts;
 use erpc_chain::inventory::arbitrum_validator::Validator;
 use erpc_chain_nitro::validator::{Deployment, helper_files, helpers_digest, request_digest};
 use erpc_ops::bundle::{Built, Bundle};
@@ -64,7 +64,8 @@ pub(crate) fn deploy_inventory(
     facts: &Facts,
     intent: &str,
 ) -> Result<String, String> {
-    let mut management = crate::arc_rpc::allow_list("management", &node.management_allow, false)?;
+    let mut management =
+        crate::chains::arc::rpc::allow_list("management", &node.management_allow, false)?;
     let mut ipv6 = Vec::new();
     match facts.controller_ip()? {
         std::net::IpAddr::V4(ip) => {
@@ -93,7 +94,7 @@ mod tests {
     #[test]
     fn actual_bundle_uses_complete_source_profile_and_observed_ssh_port() {
         use std::io::Write;
-        let node = crate::arbitrum_validator::tests::fixture();
+        let node = crate::chains::arbitrum::validator::tests::fixture();
         let mut facts = Facts {
             controller: "192.0.2.10".into(),
             ssh_port: 22,

@@ -19,10 +19,10 @@ use erpc_ssh::{HostKey, Identity, RemoteCommand, Session, Target};
 use serde_json::json;
 
 use crate::account::commands::Outcome;
-use crate::node_common::{
+use crate::chains::solana::validator::init::{bundle, inventory_json, open_vault};
+use crate::node::common::{
     FreeDisk, Say, agent_socket, check_ubuntu, confirm, free_disks, public_key_line,
 };
-use crate::validator_init::{bundle, inventory_json, open_vault};
 
 /// The RPC port the startup script binds to 127.0.0.1.
 const RPC_PORT: u16 = 7211;
@@ -592,7 +592,7 @@ fn run(args: &Args, say: &Say) -> Result<(Host, String, Status), String> {
     say.line(&format!("           run {}", run.as_str()));
     drop(session);
     let result =
-        crate::node_common::follow(&target, &run, "Run deploy again to see how it ended", say)?;
+        crate::node::common::follow(&target, &run, "Run deploy again to see how it ended", say)?;
 
     // The run is recorded in the host item last, and a failure to record it
     // does not undo what ran: 1Password may ask again after a long build.
@@ -651,7 +651,7 @@ mod tests {
     use erpc_chain::inventory::{Host, Inventory, Validator};
 
     use super::{Status, disk_plan, pick, problems, rpc_result, voting_decision};
-    use crate::node_common::parse_free_disks;
+    use crate::node::common::parse_free_disks;
 
     fn inventory(hosts: &[(&str, &str)]) -> Inventory {
         Inventory {

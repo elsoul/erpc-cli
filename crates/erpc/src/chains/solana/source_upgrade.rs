@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Explicit public source history for a previously managed native data owner.
-use crate::{node_common, solana_native};
+use crate::{chains::solana::native as solana_native, node::common};
 use erpc_chain::inventory::solana_native::NativeHost;
 use erpc_chain_solana_native as native;
 use erpc_ssh::{Session, Target};
@@ -174,7 +174,7 @@ pub(crate) fn apply(
     session: &Session,
     target: &Target,
     document: &str,
-    say: &node_common::Say,
+    say: &common::Say,
 ) -> Result<Value, String> {
     let request = json!({"action":"upgrade-source-authority","contract":node.contract,"original_client_record":document});
     let bundle = solana_native::request_bundle(node, &request)?;
@@ -184,7 +184,7 @@ pub(crate) fn apply(
         "ansible/solana-native/upgrade-source-authority.yml",
     )
     .map_err(|e| e.to_string())?;
-    let result = node_common::follow(
+    let result = common::follow(
         target,
         &run,
         "Resume the explicit upgrade with the same original source-history record",
@@ -247,7 +247,7 @@ mod tests {
     #[test]
     fn actual_native_flags_require_both_history_and_explicit_upgrade_and_refuse_legacy_workflow() {
         for role in [Role::Rpc, Role::Validator] {
-            let command = crate::tree::command(role, Chain::Solana);
+            let command = crate::node::tree::command(role, Chain::Solana);
             command.clone().debug_assert();
             for tail in [
                 vec!["--upgrade-source-authority"],
@@ -268,7 +268,7 @@ mod tests {
                 .unwrap();
             let args = parsed.subcommand().unwrap().1;
             assert!(solana_native::flag(args, "upgrade-source-authority"));
-            assert!(crate::solana_backend::legacy_options(args).is_err());
+            assert!(crate::chains::solana::backend::legacy_options(args).is_err());
         }
     }
     #[test]

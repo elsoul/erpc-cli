@@ -60,7 +60,7 @@ fn node_trees(role: Role, tokens: &[&str]) -> Vec<Command> {
     };
     chains
         .into_iter()
-        .map(|chain| built(crate::tree::command(role, chain)))
+        .map(|chain| built(crate::node::tree::command(role, chain)))
         .collect()
 }
 
@@ -159,7 +159,7 @@ fn every_flag() -> Vec<String> {
     collect(&root(), &mut out);
     for chain in Chain::ALL {
         for role in chain.roles() {
-            collect(&crate::tree::command(*role, chain), &mut out);
+            collect(&crate::node::tree::command(*role, chain), &mut out);
         }
     }
     out

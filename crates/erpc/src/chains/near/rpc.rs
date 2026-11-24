@@ -3,8 +3,8 @@
 //! Dedicated NEAR follower lifecycle with persistent original identity.
 use crate::{
     account::commands::Outcome,
-    eth_rpc::Facts,
-    node_common::{self, Say},
+    chains::eth::rpc::Facts,
+    node::common::{self, Say},
 };
 use clap::ArgMatches;
 use erpc_auth::store::one_password::OpCli;
@@ -95,13 +95,13 @@ fn host_check(facts: &Facts, network: Network, validator: bool) -> Result<(), St
     network.platform(&facts.machine)
 }
 fn open(network: Network, args: &ArgMatches) -> Result<(Store<OpCli>, String), String> {
-    let vault = node_common::vault_for(
+    let vault = common::vault_for(
         network.name,
         one(args, "vault"),
         "erpc r --chain near init --network <network> --vault <vault>",
     )?;
     Ok((
-        node_common::store(&node_common::op_runner()?, &vault, "near", network.name)?,
+        common::store(&common::op_runner()?, &vault, "near", network.name)?,
         vault,
     ))
 }
@@ -137,7 +137,7 @@ fn ranges(args: &ArgMatches, name: &str, old: &[String]) -> Result<Vec<String>, 
         .ok()
         .flatten()
         .map_or_else(|| old.to_vec(), |v| v.cloned().collect());
-    crate::arc_rpc::allow_list(name, &values, false)
+    crate::chains::arc::rpc::allow_list(name, &values, false)
 }
 fn policy(node: &NearRpc) -> Result<String, String> {
     let bytes = serde_json::to_vec(&(
@@ -160,7 +160,7 @@ fn variables(node: &NearRpc, network: Network, facts: &Facts) -> Result<Value, S
     if node.platform != facts.machine {
         return Err("NEAR host architecture changed".into());
     }
-    let mut v4 = crate::arc_rpc::allow_list("management", &node.management_allow, false)?;
+    let mut v4 = crate::chains::arc::rpc::allow_list("management", &node.management_allow, false)?;
     let mut v6 = Vec::new();
     match facts.controller_ip()? {
         std::net::IpAddr::V4(ip) => {
@@ -170,8 +170,8 @@ fn variables(node: &NearRpc, network: Network, facts: &Facts) -> Result<Value, S
         }
         std::net::IpAddr::V6(ip) => v6.push(ip.to_string()),
     }
-    let rpc = crate::arc_rpc::allow_list("RPC", &node.rpc_allow, false)?;
-    let metrics = crate::arc_rpc::allow_list("metrics", &node.metrics_allow, false)?;
+    let rpc = crate::chains::arc::rpc::allow_list("RPC", &node.rpc_allow, false)?;
+    let metrics = crate::chains::arc::rpc::allow_list("metrics", &node.metrics_allow, false)?;
     let (config, genesis) = erpc_core::endpoints::near_artifacts(network.name, network.commit)
         .ok_or("unsupported NEAR artifact network")?;
     Ok(
@@ -225,7 +225,7 @@ fn deploy(
     let prepared = bundle(inventory)?;
     let run =
         erpc_ops::run::start(session, &prepared, "node/firewall.yml").map_err(|e| e.to_string())?;
-    let result = node_common::follow(target, &run, "Retry NEAR firewall preparation", say)?;
+    let result = common::follow(target, &run, "Retry NEAR firewall preparation", say)?;
     if !result.ok() {
         return Err("NEAR firewall preparation failed; node remains fenced".into());
     }
@@ -265,7 +265,8 @@ fn import_validator(
         .ok_or("validator metadata is missing")?;
     let reference = erpc_secret::OpRef::parse(&validator.key_ref)
         .map_err(|_| "invalid consensus key reference")?;
-    let secret = crate::rollup_credentials::read_concealed(&node_common::op_runner()?, &reference)?;
+    let secret =
+        crate::chains::rollup::credentials::read_concealed(&common::op_runner()?, &reference)?;
     erpc_chain_near::validator::validate_key(
         &secret,
         &reservation.validator_account,
@@ -308,7 +309,7 @@ fn registration_action(
     let reservation = registration(node, network)?;
     match one(args, "action") {
         Some("restore-key") => {
-            node_common::go_ahead(yes(args), "validator key was not restored")
+            common::go_ahead(yes(args), "validator key was not restored")
                 .map_err(|e| e.to_string())?;
             import_validator(session, node, network, args, "", true)
         }
@@ -340,7 +341,7 @@ fn init(network: Network, args: &ArgMatches, say: &Say, validator: bool) -> Resu
     } else {
         let host = one(args, "host").ok_or("new node requires --host")?;
         let port = args.get_one::<u16>("port").copied().unwrap_or(22);
-        let key = node_common::host_key(host, port, None, one(args, "fingerprint"), say)?;
+        let key = common::host_key(host, port, None, one(args, "fingerprint"), say)?;
         NearRpc {
             name: name.into(),
             address: host.into(),
@@ -387,9 +388,9 @@ fn init(network: Network, args: &ArgMatches, say: &Say, validator: bool) -> Resu
     }
     let target = target(&node, args)?;
     let session = Session::open(&target).map_err(|e| e.to_string())?;
-    let facts = crate::eth_rpc::facts(&session)?;
+    let facts = crate::chains::eth::rpc::facts(&session)?;
     host_check(&facts, network, validator)?;
-    node_common::go_ahead(yes(args), "no NEAR host changed").map_err(|e| e.to_string())?;
+    common::go_ahead(yes(args), "no NEAR host changed").map_err(|e| e.to_string())?;
     if node.id.is_none() {
         node = store.add_near_rpc(&node).map_err(|e| e.to_string())?;
     }
@@ -398,7 +399,7 @@ fn init(network: Network, args: &ArgMatches, say: &Say, validator: bool) -> Resu
     node.last_run = play(&session, &target, &inventory, "node/init.yml", say)?;
     node.last_result = "prepared; deploy required".into();
     store.update_near_rpc(&node).map_err(|e| e.to_string())?;
-    node_common::save_vault(network.name, &vault)?;
+    common::save_vault(network.name, &vault)?;
     Ok(json!({"name":node.name,"network":network.name,"phase":"prepared"}))
 }
 fn runtime_qualified(network: Network, observed: &Value) -> bool {
@@ -474,7 +475,7 @@ fn operation(
     if matches!(verb, "start" | "restart") && !runtime_qualified(network, &before) {
         return Err("the installed NEAR source/image is outside this CLI's network qualification; use a CLI qualified for it or explicitly upgrade the original node, never downgrade its database".into());
     }
-    node_common::go_ahead(yes(args), "no NEAR host changed").map_err(|e| e.to_string())?;
+    common::go_ahead(yes(args), "no NEAR host changed").map_err(|e| e.to_string())?;
     match verb {
         "deploy" | "update" | "update-config" => {
             if verb == "update" {
@@ -493,7 +494,7 @@ fn operation(
             node.management_allow = ranges(args, "management-allow", &node.management_allow)?;
             node.rpc_allow = ranges(args, "rpc-allow", &node.rpc_allow)?;
             node.metrics_allow = ranges(args, "metrics-allow", &node.metrics_allow)?;
-            let facts = crate::eth_rpc::facts(&session)?;
+            let facts = crate::chains::eth::rpc::facts(&session)?;
             let vars = preparation_variables(&node, network, &facts, verb)?;
             node = store.update_near_rpc(&node).map_err(|e| e.to_string())?;
             let inventory = json!({"all":{"hosts":{node.name.clone():vars}}}).to_string();
@@ -522,7 +523,7 @@ pub(crate) fn report_status(
     json_out: bool,
     output: &mut dyn FnMut(&str),
 ) -> Outcome {
-    crate::node_report::status(result, "/ready", json_out, output)
+    crate::node::report::status(result, "/ready", json_out, output)
 }
 
 pub(crate) fn run(
@@ -533,7 +534,7 @@ pub(crate) fn run(
     validator: bool,
 ) -> Outcome {
     if verb == "registration"
-        && let Err(error) = crate::near_tree::validate_registration_inputs(args)
+        && let Err(error) = crate::chains::near::tree::validate_registration_inputs(args)
     {
         return Outcome::Usage(error);
     }
@@ -596,7 +597,7 @@ fn target(node: &NearRpc, args: &ArgMatches) -> Result<Target, String> {
         user: node.ssh_user.clone(),
         host_key: HostKey::parse(&node.host_key).map_err(|e| e.to_string())?,
         identity: Identity::Agent {
-            socket: node_common::agent_socket(
+            socket: common::agent_socket(
                 args.try_get_one::<std::path::PathBuf>("ssh-agent")
                     .ok()
                     .flatten()
@@ -629,7 +630,7 @@ fn play(
 ) -> Result<String, String> {
     let built = bundle(inventory)?;
     let run = erpc_ops::run::start(session, &built, play).map_err(|e| e.to_string())?;
-    let result = node_common::follow(
+    let result = common::follow(
         target,
         &run,
         "Resume NEAR deployment using its stored owner and release",
@@ -699,7 +700,7 @@ mod journal_tests {
             ssh_port: 22,
             ..Default::default()
         };
-        let facts = crate::eth_rpc::Facts::parse(
+        let facts = crate::chains::eth::rpc::Facts::parse(
             "os=ubuntu 24.04\nmachine=x86_64\nmem_kb=131072000\ncpus=16\nsudo=yes\ncontroller=192.0.2.1\nssh_port=22\n",
         );
         for verb in ["deploy", "update", "update-config"] {
@@ -707,10 +708,12 @@ mod journal_tests {
             if verb == "update" {
                 arguments.extend(["--version", network.version]);
             }
-            let parsed =
-                crate::tree::command(erpc_core::chain::Role::Rpc, erpc_core::chain::Chain::Near)
-                    .try_get_matches_from(arguments)
-                    .unwrap();
+            let parsed = crate::node::tree::command(
+                erpc_core::chain::Role::Rpc,
+                erpc_core::chain::Chain::Near,
+            )
+            .try_get_matches_from(arguments)
+            .unwrap();
             let (selected, _) = parsed.subcommand().unwrap();
             let vars = super::preparation_variables(&node, network, &facts, selected).unwrap();
             assert_eq!(
@@ -764,20 +767,29 @@ mod journal_tests {
         };
         let observed = "os=ubuntu 24.04\nmachine=x86_64\nmem_kb=32000000\ncpus=16\nsudo=yes\ncontroller=192.0.2.1\n";
         for port in [22, 2222] {
-            let facts = crate::eth_rpc::Facts::parse(&format!("{observed}ssh_port={port}\n"));
+            let facts =
+                crate::chains::eth::rpc::Facts::parse(&format!("{observed}ssh_port={port}\n"));
             let vars = super::variables(&node, network, &facts).unwrap();
             assert_eq!(vars["near_ssh_port"], port);
             assert_eq!(node.ssh_port, 2222);
         }
         for value in ["", "0", "invalid", "65536"] {
-            let facts = crate::eth_rpc::Facts::parse(&format!("{observed}ssh_port={value}\n"));
+            let facts =
+                crate::chains::eth::rpc::Facts::parse(&format!("{observed}ssh_port={value}\n"));
             assert!(
                 super::variables(&node, network, &facts)
                     .unwrap_err()
                     .contains("SSH listener")
             );
         }
-        assert!(super::variables(&node, network, &crate::eth_rpc::Facts::parse(observed)).is_err());
+        assert!(
+            super::variables(
+                &node,
+                network,
+                &crate::chains::eth::rpc::Facts::parse(observed)
+            )
+            .is_err()
+        );
     }
 
     #[cfg(unix)]

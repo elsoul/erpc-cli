@@ -30,7 +30,7 @@ use erpc_worker::waf::WafConfig;
 use serde_json::{Value, json};
 
 use crate::cli::error::CliError;
-use crate::node_common::Say;
+use crate::node::common::Say;
 use crate::worker::deploy::said_in;
 use crate::worker::firewall::{Server, Synced};
 use crate::worker::remote::failed;
@@ -1346,7 +1346,7 @@ mod tests {
         Vec<String>,
         Result<super::Settled, crate::cli::error::CliError>,
     ) {
-        let say = crate::node_common::Say { quiet: true };
+        let say = crate::node::common::Say { quiet: true };
         let me = Some("198.51.100.7".parse().expect("an address"));
         let synced = crate::worker::firewall::sync(
             server,
@@ -1509,7 +1509,7 @@ mod tests {
         );
         // The same of its firewall step, before the release: one that
         // fails ends the deploy there, and nothing is asked after it.
-        let say = crate::node_common::Say { quiet: true };
+        let say = crate::node::common::Say { quiet: true };
         for (fails, asked) in [
             ("allow-ssh 198.51.100.7", 1),
             ("firewall-show", 2),
@@ -1537,7 +1537,7 @@ mod tests {
 
     #[test]
     fn a_deploy_says_each_thing_it_does_about_the_waf_and_its_port() {
-        use crate::node_common::heard;
+        use crate::node::common::heard;
         use crate::worker::firewall::recorded::{Recorded, running};
         use erpc_worker::server::Opening;
         let m = deployed(WAF, EVERYONE);

@@ -17,7 +17,7 @@ use erpc_ops::bundle::{Built, Bundle};
 use erpc_ssh::{HostKey, Identity, RemoteCommand, Session, Target};
 use serde_json::{Map, Value, json};
 
-use crate::node_common::{Say, agent_socket, op_runner, store, vault_for};
+use crate::node::common::{Say, agent_socket, op_runner, store, vault_for};
 
 /// The chain, as the inventory names it.
 pub(crate) const CHAIN: &str = "arc";
@@ -448,7 +448,7 @@ impl RunVars<'_> {
         );
         set(
             "arc_authority_contract",
-            crate::arc_authority::contract(self.node, self.network)?,
+            crate::chains::arc::authority::contract(self.node, self.network)?,
         );
         set(
             "arc_authority_helpers",
@@ -456,7 +456,7 @@ impl RunVars<'_> {
         );
         set(
             "arc_authority_request",
-            crate::arc_authority::prepare(self.node, self.network)?,
+            crate::chains::arc::authority::prepare(self.node, self.network)?,
         );
         vars.extend(self.extra.clone());
         Ok(vars)
@@ -517,14 +517,14 @@ pub(crate) fn run_play(
                 let _ = write!(value, "{byte:02x}");
                 value
             });
-        crate::arc_authority::invoke(
+        crate::chains::arc::authority::invoke(
             session,
             vars.node,
             vars.network,
             "reserve",
             json!({
-                "intent":intent,"target":crate::arc_authority::source(vars.node,vars.facts)?,
-                "policy":crate::arc_authority::policy(vars.node,vars.facts)?
+                "intent":intent,"target":crate::chains::arc::authority::source(vars.node,vars.facts)?,
+                "policy":crate::chains::arc::authority::policy(vars.node,vars.facts)?
             }),
         )?;
         let mut document: Value =
@@ -535,7 +535,7 @@ pub(crate) fn run_play(
         host.insert("arc_authority_intent".into(), json!(intent));
         host.insert(
             "arc_authority_contract".into(),
-            crate::arc_authority::contract(vars.node, vars.network)?,
+            crate::chains::arc::authority::contract(vars.node, vars.network)?,
         );
         host.insert(
             "arc_authority_helpers".into(),
@@ -545,7 +545,7 @@ pub(crate) fn run_play(
         let preparation = bundle(&inventory)?;
         let prepared = erpc_ops::run::start(session, &preparation, erpc_chain_arc::plays::FIREWALL)
             .map_err(|e| e.to_string())?;
-        let result = crate::node_common::follow(
+        let result = crate::node::common::follow(
             target,
             &prepared,
             "Retry deployment to prepare the firewall again",
@@ -555,7 +555,7 @@ pub(crate) fn run_play(
             return Err("firewall preparation failed; deployment was not started".into());
         }
         let fresh = Session::open(target).map_err(|e| e.to_string())?;
-        crate::arc_authority::invoke(
+        crate::chains::arc::authority::invoke(
             &fresh,
             vars.node,
             vars.network,
@@ -574,7 +574,7 @@ pub(crate) fn run_play(
         run.as_str(),
         vars.node.name
     ));
-    let result = crate::node_common::follow(target, &run, again, say)?;
+    let result = crate::node::common::follow(target, &run, again, say)?;
     if result.ok() {
         Ok(run.as_str().to_owned())
     } else {

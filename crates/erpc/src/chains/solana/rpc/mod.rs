@@ -18,8 +18,8 @@ use erpc_chain_solana::rpc;
 use erpc_ssh::{HostKey, Identity, RemoteCommand, Session, Target};
 use serde_json::{Map, Value, json};
 
-use crate::arc_rpc::{Facts, Login};
-use crate::node_common::{Say, agent_socket, op_runner, store, vault_for};
+use crate::chains::arc::rpc::{Facts, Login};
+use crate::node::common::{Say, agent_socket, op_runner, store, vault_for};
 
 /// The chain, as the inventory names it.
 pub(crate) const CHAIN: &str = "solana";
@@ -144,7 +144,7 @@ pub(crate) fn memory_warning(facts: &Facts, rpc_type: &str) -> Option<String> {
 
 /// A warning when SSH would be admitted from erpc's present address alone.
 pub(crate) fn lockout_warning(node: &SolanaRpc, facts: &Facts) -> Option<String> {
-    crate::arc_rpc::lockout_warning(&node.management_allow, facts)
+    crate::chains::arc::rpc::lockout_warning(&node.management_allow, facts)
 }
 
 /// What a run on the node is told about it.
@@ -232,14 +232,14 @@ pub(crate) fn run_play(
     ]
     .contains(&play)
     {
-        let preparation = crate::validator_init::bundle(&inventory, &files)?;
+        let preparation = crate::chains::solana::validator::init::bundle(&inventory, &files)?;
         let prepared = erpc_ops::run::start(
             session,
             &preparation,
             erpc_chain_solana::plays::MAINNET_RPC_FIREWALL,
         )
         .map_err(|e| e.to_string())?;
-        let result = crate::node_common::follow(
+        let result = crate::node::common::follow(
             target,
             &prepared,
             "Retry deployment to prepare the firewall again",
@@ -255,14 +255,14 @@ pub(crate) fn run_play(
         )?;
         inventory = erpc_ops::firewall_inventory(&inventory, &prepared, &preparation.sha256)?;
     }
-    let built = crate::validator_init::bundle(&inventory, &files)?;
+    let built = crate::chains::solana::validator::init::bundle(&inventory, &files)?;
     let run = erpc_ops::run::start(session, &built, play).map_err(|e| e.to_string())?;
     say.line(&format!(
         "run        {} on {}",
         run.as_str(),
         vars.node.name
     ));
-    let result = crate::node_common::follow(target, &run, again, say)?;
+    let result = crate::node::common::follow(target, &run, again, say)?;
     if result.ok() {
         Ok(run.as_str().to_owned())
     } else {
@@ -537,7 +537,7 @@ mod tests {
     use serde_json::Value;
 
     use super::{RunVars, Status, memory_warning, pins, refusals};
-    use crate::arc_rpc::Facts;
+    use crate::chains::arc::rpc::Facts;
 
     fn facts() -> Facts {
         Facts::parse(
@@ -589,7 +589,8 @@ mod tests {
         assert_eq!(host["rpc_type"], "Index RPC");
         let pinned = erpc_chain_solana::rpc::versions_yml("mainnet", &n).expect("pins");
         let built =
-            crate::validator_init::bundle(&text, &[("vars/versions.yml", pinned)]).expect("bundle");
+            crate::chains::solana::validator::init::bundle(&text, &[("vars/versions.yml", pinned)])
+                .expect("bundle");
         assert_eq!(built.sha256.len(), 64);
     }
 

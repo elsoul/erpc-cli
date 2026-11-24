@@ -6,7 +6,7 @@
 pub(crate) mod execute;
 pub(crate) mod settings;
 
-use crate::{account::commands::Outcome, node_common, solana_native::one};
+use crate::{account::commands::Outcome, chains::solana::native::one, node::common};
 use clap::{Arg, ArgMatches, Command};
 use erpc_chain::inventory::solana_migration::LegacySource;
 use erpc_chain_solana_native::{
@@ -209,7 +209,8 @@ fn render(
     let mut differences = Vec::new();
     if let Some(history) = history {
         let observed = json!({"opening_protocol":1,"prepared":true,"highest":history["highest"]});
-        if let Err(reason) = crate::solana_source_upgrade::check_target(profile, &observed) {
+        if let Err(reason) = crate::chains::solana::source_upgrade::check_target(profile, &observed)
+        {
             blockers.push(reason);
         }
     } else {
@@ -262,7 +263,7 @@ fn render(
 }
 
 fn read_history(path: &Path, network: &str) -> Result<Value, String> {
-    let raw = crate::solana_source_upgrade::read(path, network)?;
+    let raw = crate::chains::solana::source_upgrade::read(path, network)?;
     let record: Value =
         serde_json::from_str(&raw).map_err(|_| "invalid original client history")?;
     Ok(
@@ -289,13 +290,13 @@ pub(crate) fn inputs(
         .get_one::<PathBuf>("original-client-record")
         .map(|path| read_history(path, network))
         .transpose()?;
-    let vault = node_common::vault_for(
+    let vault = common::vault_for(
         network,
         one(args, "vault"),
         "pass the original network inventory vault",
     )?;
-    let runner = node_common::op_runner()?;
-    let store = node_common::store(&runner, &vault, "solana", network)?;
+    let runner = common::op_runner()?;
+    let store = common::store(&runner, &vault, "solana", network)?;
     let source = store.solana_migration_source(name, rpc, host).map_err(
         |_| "legacy migration source is absent, ambiguous, changed or not a public projection",
     )?;
@@ -371,7 +372,7 @@ pub(crate) fn inspection_request(
         .networks
         .get(&source.network)
         .ok_or("unqualified migration network")?;
-    crate::solana_source_upgrade::check_target(
+    crate::chains::solana::source_upgrade::check_target(
         profile,
         &json!({"opening_protocol":1,"prepared":true,"highest":history["highest"]}),
     )?;
@@ -423,7 +424,7 @@ fn inspection_target(
         host_key: HostKey::parse(&host.fields["host_key"])
             .map_err(|_| "invalid original host key")?,
         identity: Identity::Agent {
-            socket: node_common::agent_socket(
+            socket: common::agent_socket(
                 args.get_one::<PathBuf>("ssh-agent").map(PathBuf::as_path),
             )?,
             public_key: args
@@ -598,7 +599,7 @@ pub(crate) fn run(
         }
     }
     if matches!(action, "execute" | "resume" | "status") {
-        return crate::solana_migration_execute::run(action, args, rpc, json_out);
+        return crate::chains::solana::migration::execute::run(action, args, rpc, json_out);
     }
     let result = match action {
         "plan" => plan(args, rpc),
@@ -768,7 +769,7 @@ mod tests {
     #[test]
     fn actual_command_tree_requires_historical_inputs_and_an_explicit_validator_host() {
         for role in [Role::Validator, Role::Rpc] {
-            let command = crate::tree::command(role, Chain::Solana);
+            let command = crate::node::tree::command(role, Chain::Solana);
             command.clone().debug_assert();
             assert!(
                 command
@@ -942,7 +943,7 @@ mod tests {
         );
         assert!(!request.to_string().contains("op://"));
         for role in [Role::Rpc, Role::Validator] {
-            let command = crate::tree::command(role, Chain::Solana);
+            let command = crate::node::tree::command(role, Chain::Solana);
             assert!(
                 command
                     .clone()

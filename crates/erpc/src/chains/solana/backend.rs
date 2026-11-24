@@ -4,9 +4,9 @@
 //! Select the recorded Solana backend without reading concealed inventory fields.
 use crate::{
     account::commands::Outcome,
+    chains::solana::native::one,
     cli::error::{CliError, Code},
-    node_common,
-    solana_native::one,
+    node::common,
 };
 use clap::ArgMatches;
 use erpc_chain::inventory::solana_listing::Backend;
@@ -39,7 +39,7 @@ pub(crate) fn native_selected(
     let name = one(args, "name")
         .ok_or_else(|| CliError::new(Code::Usage, "Solana node operations require --name"))?;
     let vault = vault(network, one(args, "vault"), &pass_vault(rpc))?;
-    let store = node_common::store(&node_common::op_runner()?, &vault, "solana", network)?;
+    let store = common::store(&common::op_runner()?, &vault, "solana", network)?;
     let recorded = store.solana_backend(name, rpc).map_err(|e| e.to_string())?;
     let native = choose(recorded, one(args, "backend"), init)?;
     if !native && !init && one(args, "vault").is_some() {
@@ -59,7 +59,7 @@ pub(crate) fn native_selected(
 /// node's init saved on this machine. With neither, the failure says so, and
 /// its hint is `next`.
 fn vault(network: &str, flag: Option<&str>, next: &str) -> Result<String, CliError> {
-    node_common::vault_given(network, flag)?.ok_or_else(|| {
+    common::vault_given(network, flag)?.ok_or_else(|| {
         CliError::new(Code::Failed, format!("no vault is set for {network}")).hint(next)
     })
 }
@@ -85,7 +85,7 @@ pub(crate) fn legacy_key_preflight(
     transaction: bool,
 ) -> Result<Backend, CliError> {
     let vault = vault(network, None, SAVED_VAULT)?;
-    let store = node_common::store(&node_common::op_runner()?, &vault, "solana", network)?;
+    let store = common::store(&common::op_runner()?, &vault, "solana", network)?;
     let recorded = store
         .solana_backend(name, false)
         .map_err(|e| e.to_string())?;
@@ -122,8 +122,8 @@ pub(crate) fn keys(args: &ArgMatches, json_out: bool) -> Outcome {
             Ok(value) => Outcome::Done(serde_json::to_string_pretty(&value).unwrap_or_default()),
             Err(error) => Outcome::from(error),
         },
-        Ok(_) => crate::validator_keys::run(
-            &crate::validator_keys::Args {
+        Ok(_) => crate::chains::solana::validator::keys::run(
+            &crate::chains::solana::validator::keys::Args {
                 network: network.into(),
                 name: name.into(),
                 vote: one(args, "vote-account").map(str::to_owned),
@@ -148,7 +148,7 @@ fn native_keys(args: &ArgMatches, network: &str, name: &str) -> Result<Value, Cl
         return Err("native key view accepts public original accounts only; legacy import options cannot replace them".into());
     }
     let vault = vault(network, None, SAVED_VAULT)?;
-    let store = node_common::store(&node_common::op_runner()?, &vault, "solana", network)?;
+    let store = common::store(&common::op_runner()?, &vault, "solana", network)?;
     let keys = store
         .public_native_solana_keys(name)
         .map_err(|e| e.to_string())?;
@@ -181,7 +181,7 @@ fn list(args: &ArgMatches, network: Option<&str>, rpc: bool) -> Result<Value, St
     };
     let mut rows = Vec::new();
     for (network, vault) in networks {
-        let store = node_common::store(&node_common::op_runner()?, &vault, "solana", &network)?;
+        let store = common::store(&common::op_runner()?, &vault, "solana", &network)?;
         let values = store
             .solana_node_summaries(rpc)
             .map_err(|e| format!("{network}: {e}"))?;

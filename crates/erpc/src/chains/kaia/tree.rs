@@ -96,7 +96,7 @@ mod tests {
     #[test]
     fn core_cell_cli_has_all_lifecycle_verbs_without_financial_or_private_key_arguments() {
         use erpc_core::chain::COMMON_VERBS;
-        let tree = crate::tree::command(Role::Validator, Chain::Kaia);
+        let tree = crate::node::tree::command(Role::Validator, Chain::Kaia);
         tree.clone().debug_assert();
         for verb in COMMON_VERBS {
             let mut args = vec!["validator", verb.name, "--network", "kairos"];
@@ -141,7 +141,7 @@ mod tests {
                 .is_err()
         );
         assert!(
-            crate::tree::command(Role::Rpc, Chain::Kaia)
+            crate::node::tree::command(Role::Rpc, Chain::Kaia)
                 .try_get_matches_from(["rpc", "init", "--node-kind", "cn"])
                 .is_err()
         );
@@ -149,7 +149,7 @@ mod tests {
 
     #[test]
     fn kaia_arguments_refuse_wrong_network_retention_and_arbitrary_release_inputs() {
-        let tree = crate::tree::command(Role::Rpc, Chain::Kaia);
+        let tree = crate::node::tree::command(Role::Rpc, Chain::Kaia);
         tree.clone().debug_assert();
         assert!(
             tree.clone()

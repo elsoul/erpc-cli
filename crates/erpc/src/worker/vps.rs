@@ -54,7 +54,7 @@ use secrecy::SecretString;
 use serde_json::{Value, json};
 
 use crate::cli::error::{CliError, Code};
-use crate::node_common::Say;
+use crate::node::common::Say;
 
 /// The regions a VPS can be started in.
 pub(crate) const REGIONS: [&str; 7] = [

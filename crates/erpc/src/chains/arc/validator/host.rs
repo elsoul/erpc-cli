@@ -9,8 +9,8 @@ use erpc_ssh::{Session, Target};
 use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
 
-use crate::arc_rpc::Facts;
-use crate::node_common::Say;
+use crate::chains::arc::rpc::Facts;
+use crate::node::common::Say;
 
 pub(crate) fn contract(node: &ArcValidatorNode, network: &str) -> Result<Contract, String> {
     let native = erpc_chain_arc::network::get(network).ok_or("unsupported Arc network")?;
@@ -222,7 +222,7 @@ pub(crate) fn run_play(
     }
     let built = bundle(inventory)?;
     let run = erpc_ops::run::start(session, &built, play).map_err(|e| e.to_string())?;
-    let result = crate::node_common::follow(
+    let result = crate::node::common::follow(
         target,
         &run,
         "Resume the original Arc validator operation",
@@ -433,7 +433,7 @@ mod tests {
         .map(|step| validator::prepare_governance(&original, step, &node.controller).unwrap())
         .collect::<Vec<_>>();
         let document = json!({"governance":governance,"bundle":built.bytes,"ssh":command().unwrap().line(),
-            "source":crate::arc_authority::source(&node.host,&facts).unwrap(),"policy":policy(&node,&facts).unwrap()}).to_string();
+            "source":crate::chains::arc::authority::source(&node.host,&facts).unwrap(),"policy":policy(&node,&facts).unwrap()}).to_string();
         if let Some(path) = std::env::var_os("ERPC_TEST_ARC_CAPTURE") {
             std::fs::write(path, &document).unwrap();
         }

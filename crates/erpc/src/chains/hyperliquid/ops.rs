@@ -3,7 +3,7 @@
 //! RPC ownership and shared public supervisor orchestration.
 use crate::{
     account::commands::Outcome,
-    node_common::{self, Say},
+    node::common::{self, Say},
 };
 use clap::ArgMatches;
 use erpc_auth::store::one_password::OpCli;
@@ -42,18 +42,13 @@ pub(crate) fn nonce() -> Result<String, String> {
     Ok(result)
 }
 pub(crate) fn open(network: Network, args: &ArgMatches) -> Result<(Store<OpCli>, String), String> {
-    let vault = node_common::vault_for(
+    let vault = common::vault_for(
         network.name(),
         one(args, "vault"),
         "pass --vault <network inventory vault>",
     )?;
     Ok((
-        node_common::store(
-            &node_common::op_runner()?,
-            &vault,
-            "hyperliquid",
-            network.name(),
-        )?,
+        common::store(&common::op_runner()?, &vault, "hyperliquid", network.name())?,
         vault,
     ))
 }
@@ -100,7 +95,7 @@ pub(crate) fn target(node: &HyperliquidNode, args: &ArgMatches) -> Result<Target
         user: node.ssh_user.clone(),
         host_key: HostKey::parse(&node.host_key).map_err(|e| e.to_string())?,
         identity: Identity::Agent {
-            socket: node_common::agent_socket(
+            socket: common::agent_socket(
                 args.try_get_one::<PathBuf>("ssh-agent")
                     .ok()
                     .flatten()
@@ -140,8 +135,8 @@ pub(crate) fn control(session: &Session, value: &Value) -> Result<Value, String>
         .map_err(|_| "Hyperliquid control refused; original data and ownership remain retained")?;
     serde_json::from_slice(&output.stdout).map_err(|_| "invalid public Hyperliquid response".into())
 }
-pub(crate) fn facts(session: &Session) -> Result<crate::eth_rpc::Facts, String> {
-    let facts = crate::eth_rpc::facts(session)?;
+pub(crate) fn facts(session: &Session) -> Result<crate::chains::eth::rpc::Facts, String> {
+    let facts = crate::chains::eth::rpc::facts(session)?;
     if facts.os != "ubuntu 24.04"
         || facts.machine != "x86_64"
         || !facts.sudo
@@ -155,7 +150,7 @@ pub(crate) fn facts(session: &Session) -> Result<crate::eth_rpc::Facts, String> 
 }
 pub(crate) fn inventory(
     node: &HyperliquidNode,
-    facts: &crate::eth_rpc::Facts,
+    facts: &crate::chains::eth::rpc::Facts,
     intent: &str,
 ) -> Result<String, String> {
     let mut v4 = Vec::new();
@@ -216,7 +211,7 @@ pub(crate) fn play(
     let built = bundle.finish().map_err(|e| e.to_string())?;
     let run = erpc_ops::run::start(session, &built, &format!("ansible/hyperliquid/{phase}.yml"))
         .map_err(|e| e.to_string())?;
-    let result = node_common::follow(
+    let result = common::follow(
         target,
         &run,
         "Retry the same qualified target after repairing the reported host condition; retained native data is preserved",
@@ -299,7 +294,7 @@ fn init(network: Network, args: &ArgMatches, say: &Say) -> Result<Value, String>
     node.contract.validate()?;
     settings(&mut node, args)?;
     erpc_ssh::config::check_host(&node.address).map_err(|e| e.to_string())?;
-    node.host_key = node_common::host_key(
+    node.host_key = common::host_key(
         &node.address,
         node.ssh_port,
         previous.as_ref().map(|n| n.host_key.as_str()),
@@ -311,8 +306,7 @@ fn init(network: Network, args: &ArgMatches, say: &Say) -> Result<Value, String>
     let session = Session::open(&target).map_err(|e| e.to_string())?;
     let facts = facts(&session)?;
     say.line("Reserve a dedicated non-validator host and persistent numeric service identities. Native wallet funding and validator signing are not part of this RPC operation.");
-    node_common::go_ahead(flag(args, "yes"), "Hyperliquid host unchanged")
-        .map_err(|e| e.to_string())?;
+    common::go_ahead(flag(args, "yes"), "Hyperliquid host unchanged").map_err(|e| e.to_string())?;
     let vars = inventory(&node, &facts, &nonce()?)?;
     play(&session, &target, &vars, "preflight", say)?;
     node = if previous.is_some() {
@@ -327,7 +321,7 @@ fn init(network: Network, args: &ArgMatches, say: &Say) -> Result<Value, String>
     store
         .update_hyperliquid_node(&node)
         .map_err(|e| e.to_string())?;
-    node_common::save_vault(network.name(), &vault)?;
+    common::save_vault(network.name(), &vault)?;
     Ok(
         json!({"name":name,"network":network.name(),"role":"rpc","phase":"initialized","started":false}),
     )
@@ -380,8 +374,7 @@ fn operation(
             &json!({"action":"status","contract":node.contract}),
         );
     }
-    node_common::go_ahead(flag(args, "yes"), "Hyperliquid host unchanged")
-        .map_err(|e| e.to_string())?;
+    common::go_ahead(flag(args, "yes"), "Hyperliquid host unchanged").map_err(|e| e.to_string())?;
     if ["start", "stop", "restart", "destroy"].contains(&verb) {
         let action = if verb == "destroy" { "retire" } else { verb };
         return control(&session, &json!({"action":action,"contract":node.contract}));
@@ -494,7 +487,7 @@ mod tests {
     #[test]
     fn firewall_uses_observed_server_port_and_refuses_unknown_listener() {
         let node = node();
-        let mut facts = crate::eth_rpc::Facts {
+        let mut facts = crate::chains::eth::rpc::Facts {
             controller: "192.0.2.20".into(),
             ssh_port: 22,
             ..Default::default()
@@ -514,7 +507,7 @@ mod tests {
     fn all_twelve_verbs_parse_and_recovery_is_explicitly_scoped() {
         use erpc_core::chain::{COMMON_VERBS, Chain, Role};
         for verb in COMMON_VERBS {
-            let parsed = crate::tree::command(Role::Rpc, Chain::Hyperliquid)
+            let parsed = crate::node::tree::command(Role::Rpc, Chain::Hyperliquid)
                 .try_get_matches_from(["rpc", "--network", "testnet", verb.name])
                 .unwrap();
             assert_eq!(parsed.subcommand_name(), Some(verb.name));
@@ -525,7 +518,7 @@ mod tests {
                     Outcome::Usage(_)
                 ));
             }
-            let recovery = crate::tree::command(Role::Rpc, Chain::Hyperliquid)
+            let recovery = crate::node::tree::command(Role::Rpc, Chain::Hyperliquid)
                 .try_get_matches_from(["rpc", verb.name, "--recover-preparation"]);
             assert_eq!(
                 recovery.is_ok(),

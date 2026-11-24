@@ -9,7 +9,7 @@ pub(crate) mod plan;
 use crate::{
     account::commands::Outcome,
     cli::error::{CliError, Code},
-    node_common::{self, Say},
+    node::common::{self, Say},
 };
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use erpc_auth::store::one_password::OpCli;
@@ -77,7 +77,7 @@ impl From<Refusal> for CliError {
 /// Asks before a native verb changes a node, unless --yes was given. Every
 /// native confirmation is asked here.
 pub(crate) fn confirm(args: &ArgMatches, refused: &str) -> Result<(), Refusal> {
-    node_common::go_ahead(flag(args, "yes"), refused).map_err(Refusal)
+    common::go_ahead(flag(args, "yes"), refused).map_err(Refusal)
 }
 fn explicit(args: &ArgMatches, key: &str) -> bool {
     args.try_contains_id(key).unwrap_or(false)
@@ -300,12 +300,12 @@ fn open(network: &str, args: &ArgMatches) -> Result<(Store<OpCli>, String), Stri
     if !matches!(network, "mainnet" | "testnet") {
         return Err("native Solana requires mainnet or testnet".into());
     }
-    let vault = node_common::vault_for(
+    let vault = common::vault_for(
         network,
         one(args, "vault"),
         "initialize with --vault <vault identifier>",
     )?;
-    let store = node_common::store(&node_common::op_runner()?, &vault, "solana", network)?;
+    let store = common::store(&common::op_runner()?, &vault, "solana", network)?;
     Ok((store, vault))
 }
 pub(crate) fn target(node: &NativeHost, args: &ArgMatches) -> Result<Target, String> {
@@ -315,7 +315,7 @@ pub(crate) fn target(node: &NativeHost, args: &ArgMatches) -> Result<Target, Str
         user: node.ssh_user.clone(),
         host_key: HostKey::parse(&node.host_key).map_err(|e| e.to_string())?,
         identity: Identity::Agent {
-            socket: node_common::agent_socket(
+            socket: common::agent_socket(
                 args.try_get_one::<std::path::PathBuf>("ssh-agent")
                     .ok()
                     .flatten()
@@ -401,7 +401,7 @@ pub(crate) fn play(
         "ansible/solana-native/initialize.yml"
     };
     let run = erpc_ops::run::start(session, &built, play).map_err(|e| e.to_string())?;
-    let result = node_common::follow(
+    let result = common::follow(
         target,
         &run,
         "Resume native init with the original inventory name",
@@ -512,8 +512,8 @@ fn fresh(
     };
     contract.validate()?;
     let config = settings(args, &contract, registers)?;
-    let host_key = node_common::host_key(&address, ssh_port, None, one(args, "fingerprint"), say)?
-        .to_openssh();
+    let host_key =
+        common::host_key(&address, ssh_port, None, one(args, "fingerprint"), say)?.to_openssh();
     contract.host_binding = host_binding(&address, &ssh_user, ssh_port, &host_key);
     let mut node = NativeHost {
         contract,
@@ -646,7 +646,7 @@ fn init(
         let path = args
             .get_one::<std::path::PathBuf>("original-client-record")
             .ok_or("original client record is required")?;
-        Some(crate::solana_source_upgrade::read(path, network)?)
+        Some(crate::chains::solana::source_upgrade::read(path, network)?)
     } else {
         None
     };
@@ -679,7 +679,7 @@ fn init(
     probe(&session, &node)?;
     confirm(args, "native host preparation was not confirmed")?;
     if let Some(document) = source_history {
-        return Ok(crate::solana_source_upgrade::apply(
+        return Ok(crate::chains::solana::source_upgrade::apply(
             &node, &session, &target, &document, say,
         )?);
     }
@@ -692,7 +692,7 @@ fn init(
             .add_configured_solana_native_host(&node, &config)
             .map_err(|e| e.to_string())?;
     }
-    node_common::save_vault(network, vault)?;
+    common::save_vault(network, vault)?;
     play(&node, &session, &target, false, say)?;
     let after = probe(&session, &node)?;
     Revision::new(
@@ -745,12 +745,12 @@ fn operation(
         let target = target(&node, args)?;
         let session = Session::open(&target).map_err(|e| e.to_string())?;
         let observed = control(&session, &node, "deployment")?;
-        return Ok(crate::solana_native_plan::render(
+        return Ok(crate::chains::solana::native::plan::render(
             &node, &config, args, &observed,
         )?);
     }
     if matches!(verb, "deploy" | "update" | "update-config") {
-        return crate::solana_native_deploy::run(verb, args, &node, &store, say);
+        return crate::chains::solana::native::deploy::run(verb, args, &node, &store, say);
     }
     if !matches!(
         verb,
@@ -834,7 +834,7 @@ pub(crate) fn report_status(
     json_out: bool,
     output: &mut dyn FnMut(&str),
 ) -> Outcome {
-    crate::node_report::status(
+    crate::node::report::status(
         result,
         if rpc {
             "/rpc_ready"
@@ -888,7 +888,7 @@ mod tests {
     use erpc_core::chain::{COMMON_VERBS, Chain, Role};
     #[test]
     fn first_voting_activation_requires_explicit_public_key_and_exclusive_identity() {
-        let tree = crate::tree::command(Role::Validator, Chain::Solana);
+        let tree = crate::node::tree::command(Role::Validator, Chain::Solana);
         for verb in ["deploy", "plan"] {
             for options in [
                 vec!["--activate-validator"],
@@ -913,7 +913,7 @@ mod tests {
                 .unwrap();
             let args = parsed.subcommand().unwrap().1;
             assert!(flag(args, "activate-validator"));
-            assert!(crate::solana_backend::legacy_options(args).is_err());
+            assert!(crate::chains::solana::backend::legacy_options(args).is_err());
         }
         for mode in ["--abandon-build", "--recover-cutover"] {
             let mut args = vec![
@@ -935,7 +935,7 @@ mod tests {
     fn recovery_names_one_original_intent_and_cannot_run_with_other_recovery_actions() {
         for role in [Role::Rpc, Role::Validator] {
             for verb in ["deploy", "update", "update-config"] {
-                let command = crate::tree::command(role, Chain::Solana);
+                let command = crate::node::tree::command(role, Chain::Solana);
                 assert!(
                     command
                         .clone()
@@ -975,7 +975,7 @@ mod tests {
                 for key in ["rpc-allow", "management-allow"] {
                     let clear = format!("--clear-{key}");
                     let plain = format!("--{key}");
-                    let parsed = crate::tree::command(role, Chain::Solana)
+                    let parsed = crate::node::tree::command(role, Chain::Solana)
                         .try_get_matches_from([role.as_str(), verb, &clear])
                         .unwrap();
                     assert_eq!(
@@ -983,7 +983,7 @@ mod tests {
                         Some(Vec::new())
                     );
                     assert!(
-                        crate::tree::command(role, Chain::Solana)
+                        crate::node::tree::command(role, Chain::Solana)
                             .try_get_matches_from([
                                 role.as_str(),
                                 verb,
@@ -993,13 +993,15 @@ mod tests {
                             ])
                             .is_err()
                     );
-                    let omitted = crate::tree::command(role, Chain::Solana)
+                    let omitted = crate::node::tree::command(role, Chain::Solana)
                         .try_get_matches_from([role.as_str(), verb])
                         .unwrap();
                     assert_eq!(access_values(omitted.subcommand().unwrap().1, key), None);
                     assert!(
-                        crate::solana_backend::legacy_options(parsed.subcommand().unwrap().1)
-                            .is_err()
+                        crate::chains::solana::backend::legacy_options(
+                            parsed.subcommand().unwrap().1
+                        )
+                        .is_err()
                     );
                 }
             }
@@ -1007,7 +1009,7 @@ mod tests {
     }
     #[test]
     fn native_access_lists_normalize_single_addresses_without_broadening_networks() {
-        let parsed = crate::tree::command(Role::Rpc, Chain::Solana)
+        let parsed = crate::node::tree::command(Role::Rpc, Chain::Solana)
             .try_get_matches_from([
                 "rpc",
                 "init",
@@ -1027,7 +1029,7 @@ mod tests {
     #[test]
     fn native_flags_compose_with_all_existing_solana_verbs() {
         for role in [Role::Rpc, Role::Validator] {
-            let command = crate::tree::command(role, Chain::Solana);
+            let command = crate::node::tree::command(role, Chain::Solana);
             command.clone().debug_assert();
             for verb in COMMON_VERBS {
                 let args = command
@@ -1073,7 +1075,7 @@ mod tests {
         let start = |extra: &[&'static str]| {
             let mut line = vec!["validator", "start"];
             line.extend(extra);
-            crate::tree::command(Role::Validator, Chain::Solana)
+            crate::node::tree::command(Role::Validator, Chain::Solana)
                 .try_get_matches_from(line)
                 .unwrap()
         };
@@ -1201,7 +1203,7 @@ mod tests {
                 line.extend([flag, value]);
             }
         }
-        let parsed = crate::tree::command(role, Chain::Solana)
+        let parsed = crate::node::tree::command(role, Chain::Solana)
             .try_get_matches_from(line)
             .unwrap();
         settings(parsed.subcommand().unwrap().1, &new_host(rpc), registers)
@@ -1407,7 +1409,7 @@ mod tests {
             (Role::Validator, "init", "--identity", "new"),
             (Role::Validator, "init", "--vote-account", "new"),
         ] {
-            let parsed = crate::tree::command(role, Chain::Solana)
+            let parsed = crate::node::tree::command(role, Chain::Solana)
                 .try_get_matches_from([role.as_str(), verb, "--backend", "native", key, value])
                 .unwrap();
             assert!(
@@ -1416,7 +1418,7 @@ mod tests {
             );
         }
         for role in [Role::Rpc, Role::Validator] {
-            let parsed = crate::tree::command(role, Chain::Solana)
+            let parsed = crate::node::tree::command(role, Chain::Solana)
                 .try_get_matches_from([role.as_str(), "init", "--backend", "native"])
                 .unwrap();
             supported_options(parsed.subcommand().unwrap().1).unwrap();

@@ -24,7 +24,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::account::commands::Outcome;
 use crate::cli::error::{CliError, Code};
-use crate::node_common::Say;
+use crate::node::common::Say;
 use crate::worker::{Dir, load};
 
 /// The oldest glibc a `-gnu` build may need: Ubuntu 20.04's. Every Ubuntu
@@ -1272,7 +1272,7 @@ mod tests {
         std::fs::write(&manifest, text).expect("erpc.toml");
         let m = Manifest::parse(text).expect("a manifest");
         assert!(super::missing_tools(&m, dir.path(), super::Probe::Look).is_empty());
-        let say = crate::node_common::Say { quiet: true };
+        let say = crate::node::common::Say { quiet: true };
         let built = super::for_servers(&m, &manifest, &say).expect("built");
         assert_eq!(built.binary, binary);
         // What was checked, what the record names and what a deploy

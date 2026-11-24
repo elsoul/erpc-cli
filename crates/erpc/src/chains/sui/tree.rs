@@ -163,7 +163,7 @@ pub(crate) fn run(
             .flatten()
             .map(|xs| xs.cloned().collect())
     };
-    let args = crate::sui_node::Args {
+    let args = crate::chains::sui::node::Args {
         validator,
         source_history: sub
             .try_get_one::<std::path::PathBuf>("migrate-source-history")
@@ -207,7 +207,7 @@ pub(crate) fn run(
             .unwrap_or(22),
         fingerprint: one("fingerprint"),
         vault: one("vault"),
-        login: crate::eth_rpc::Login {
+        login: crate::chains::eth::rpc::Login {
             ssh_key: sub
                 .try_get_one::<std::path::PathBuf>("ssh-key")
                 .ok()
@@ -247,7 +247,7 @@ pub(crate) fn run(
             .copied()
             .unwrap_or(false),
     };
-    crate::sui_node::run(verb.name, &args, json)
+    crate::chains::sui::node::run(verb.name, &args, json)
 }
 
 #[cfg(test)]
@@ -256,7 +256,7 @@ mod tests {
     #[test]
     fn node_alias_and_rpc_have_identical_lifecycle_flags() {
         for role in [Role::Rpc, Role::Node] {
-            let tree = crate::tree::command(role, Chain::Sui);
+            let tree = crate::node::tree::command(role, Chain::Sui);
             for verb in [
                 "init",
                 "deploy",
@@ -291,7 +291,7 @@ mod tests {
     }
     #[test]
     fn validator_registration_and_restore_keep_owner_signing_external() {
-        let tree = crate::tree::command(Role::Validator, Chain::Sui);
+        let tree = crate::node::tree::command(Role::Validator, Chain::Sui);
         for action in ["prepare", "validate", "status"] {
             assert!(
                 tree.clone()
@@ -329,7 +329,7 @@ mod tests {
             tree.try_get_matches_from(["erpc", "init", "-n", "testnet", "--account-key", "owner"])
                 .is_err()
         );
-        let fullnode = crate::tree::command(Role::Rpc, Chain::Sui);
+        let fullnode = crate::node::tree::command(Role::Rpc, Chain::Sui);
         assert!(
             fullnode
                 .try_get_matches_from(["erpc", "deploy", "-n", "testnet", "--restore-keys"])

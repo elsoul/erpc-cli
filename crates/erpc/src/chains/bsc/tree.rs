@@ -76,7 +76,7 @@ mod tests {
     use erpc_core::chain::{Chain, Role};
     #[test]
     fn bsc_arguments_refuse_wrong_network_retention_and_arbitrary_release_inputs() {
-        let tree = crate::tree::command(Role::Rpc, Chain::Bsc);
+        let tree = crate::node::tree::command(Role::Rpc, Chain::Bsc);
         tree.clone().debug_assert();
         assert!(
             tree.clone()
@@ -95,7 +95,7 @@ mod tests {
     }
     #[test]
     fn validator_arguments_keep_registration_external_and_recovery_explicit() {
-        let tree = crate::tree::command(Role::Validator, Chain::Bsc);
+        let tree = crate::node::tree::command(Role::Validator, Chain::Bsc);
         tree.clone().debug_assert();
         assert!(
             tree.clone()

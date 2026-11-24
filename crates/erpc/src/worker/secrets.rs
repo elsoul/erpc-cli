@@ -266,8 +266,8 @@ pub(crate) fn kept_for(m: &erpc_worker::manifest::Manifest) -> Result<bool, Stri
 /// Runs `op`, and returns its standard output when it succeeds. A spinner
 /// turns while it waits on the 1Password app.
 fn op(args: &[&str], stdin: Option<&str>, doing: &str) -> Result<Zeroizing<String>, String> {
-    let runner = crate::node_common::op_runner()?;
-    let spinner = crate::node_common::op_waiting(doing);
+    let runner = crate::node::common::op_runner()?;
+    let spinner = crate::node::common::op_waiting(doing);
     let out = runner.run(args, stdin).map_err(|e| e.to_string());
     if let Some(spinner) = spinner {
         spinner.done();
@@ -280,7 +280,7 @@ fn op(args: &[&str], stdin: Option<&str>, doing: &str) -> Result<Zeroizing<Strin
         Err(t!(
             "worker_secrets.op_failed",
             doing,
-            why = crate::node_common::op_why(&out.stderr, &no_reason)
+            why = crate::node::common::op_why(&out.stderr, &no_reason)
         ))
     }
 }

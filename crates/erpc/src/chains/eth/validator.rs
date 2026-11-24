@@ -5,8 +5,8 @@
 
 use crate::{
     account::commands::Outcome,
-    eth_rpc::{Facts, Login},
-    node_common::{self, Say},
+    chains::eth::rpc::{Facts, Login},
+    node::common::{self, Say},
 };
 use clap::ArgMatches;
 use erpc_auth::store::one_password::OpCli;
@@ -62,13 +62,13 @@ fn find(nodes: &[EthValidator], name: &str) -> Result<EthValidator, String> {
         .ok_or_else(|| "validator is not initialized in this network".into())
 }
 fn open(network: &str, sub: &ArgMatches) -> Result<(Store<OpCli>, String), String> {
-    let vault = node_common::vault_for(
+    let vault = common::vault_for(
         network,
         one(sub, "vault"),
         "erpc v --chain eth init --network <network> --vault <vault>",
     )?;
-    let runner = node_common::op_runner()?;
-    Ok((node_common::store(&runner, &vault, "eth", network)?, vault))
+    let runner = common::op_runner()?;
+    Ok((common::store(&runner, &vault, "eth", network)?, vault))
 }
 fn contract(
     node: &EthValidator,
@@ -132,7 +132,7 @@ fn send_secret(session: &Session, encoded: &SecretString) -> Result<Value, Strin
         .map_err(|_| "validator returned an invalid public response".into())
 }
 fn connect(node: &EthValidator, sub: &ArgMatches) -> Result<(erpc_ssh::Target, Session), String> {
-    let target = crate::eth_rpc::target(&node.node, &login(sub))?;
+    let target = crate::chains::eth::rpc::target(&node.node, &login(sub))?;
     let session = Session::open(&target).map_err(|e| e.to_string())?;
     Ok((target, session))
 }
@@ -239,7 +239,7 @@ async fn pin(
 }
 
 fn checked_facts(session: &Session) -> Result<Facts, String> {
-    let facts = crate::eth_rpc::facts(session)?;
+    let facts = crate::chains::eth::rpc::facts(session)?;
     let failures = facts.refusals();
     if !failures.is_empty() {
         return Err(failures.join("; "));
@@ -274,7 +274,7 @@ fn play(
             network.name,
             &json!({"owner":owner(node)?,"action":"deployment"}),
         )?;
-        let intent = crate::eth_authority::deployment_intent(&observed, &source, phase)?;
+        let intent = crate::chains::eth::authority::deployment_intent(&observed, &source, phase)?;
         let request = json!({"owner":owner(node)?,"action":"reserve-deploy","intent":intent,
             "target":source,"operation":phase});
         let authorized = send(session, node, network.name, &request)?;
@@ -283,7 +283,7 @@ fn play(
         }
         deployment_variables(&mut vars, &request)?;
     }
-    crate::eth_rpc::run_play(
+    crate::chains::eth::rpc::run_play(
         session,
         target,
         &vars,
@@ -294,7 +294,7 @@ fn play(
 }
 
 fn deployment_variables(
-    vars: &mut crate::eth_rpc::RunVars<'_>,
+    vars: &mut crate::chains::eth::rpc::RunVars<'_>,
     request: &Value,
 ) -> Result<(), String> {
     let intent = request["intent"]
@@ -330,12 +330,12 @@ fn play_vars<'a>(
     network: &'a erpc_chain_eth::network::Network,
     facts: &'a Facts,
     phase: &str,
-) -> Result<crate::eth_rpc::RunVars<'a>, String> {
+) -> Result<crate::chains::eth::rpc::RunVars<'a>, String> {
     let extra=json!({"ev_network":network.name,"ev_owner":owner(node)?,"ev_fee_recipient":node.fee_recipient,
         "ev_phase":phase,"ev_loader":erpc_chain_eth::authority::carried_loader(),
         "ev_request":{"contract":contract(node,network.name)?,"request":{"owner":owner(node)?,"action":"prepare"}}})
         .as_object().ok_or("invalid validator variables")?.clone();
-    Ok(crate::eth_rpc::RunVars {
+    Ok(crate::chains::eth::rpc::RunVars {
         role: erpc_core::chain::Role::Validator,
         node: &node.node,
         network,
@@ -385,7 +385,7 @@ async fn init(
             one(sub, "fee-recipient").ok_or("new validator requires --fee-recipient")?,
         )?;
         let port = sub.get_one::<u16>("port").copied().unwrap_or(22);
-        let host_key = node_common::host_key(host, port, None, one(sub, "fingerprint"), say)?;
+        let host_key = common::host_key(host, port, None, one(sub, "fingerprint"), say)?;
         EthValidator {
             node: EthRpc {
                 name: name.to_owned(),
@@ -432,12 +432,11 @@ async fn init(
         node.node.lighthouse_commit = commit;
         node.node.lighthouse_sha256 = digest;
     }
-    node_common::go_ahead(flag(sub, "yes"), "no validator changes made")
-        .map_err(|e| e.to_string())?;
+    common::go_ahead(flag(sub, "yes"), "no validator changes made").map_err(|e| e.to_string())?;
     if node.node.id.is_none() {
         node = store.add_eth_validator(&node).map_err(|e| e.to_string())?;
     }
-    node_common::save_vault(network.name, vault)?;
+    common::save_vault(network.name, vault)?;
     let run = play(&node, network, "init", &session, &target, say, false)?;
     node.node.last_run = run;
     node.node.last_result = "init ok".into();
@@ -459,7 +458,7 @@ async fn migrate_authority(
     say: &Say,
 ) -> Result<Value, String> {
     let original = contract(node, network.name)?;
-    let proof = crate::eth_authority_evidence::validator(
+    let proof = crate::chains::eth::authority_evidence::validator(
         &original,
         &node.pubkey,
         path(sub, "original-passwd")?,
@@ -494,7 +493,7 @@ async fn migrate_authority(
             );
         }
     }
-    node_common::go_ahead(flag(sub, "yes"), "no legacy authority converted")
+    common::go_ahead(flag(sub, "yes"), "no legacy authority converted")
         .map_err(|e| e.to_string())?;
     let net = erpc_chain_eth::network::Network {
         name: network.name,
@@ -503,7 +502,7 @@ async fn migrate_authority(
     };
     let mut vars = play_vars(node, &net, facts, "migration")?;
     vars.extra.insert("ev_request".into(),json!({"contract":original,"request":{"owner":owner(node)?,"action":"migrate-authority","proof":proof}}));
-    let run = crate::eth_rpc::run_play(
+    let run = crate::chains::eth::rpc::run_play(
         connection.0,
         connection.1,
         &vars,
@@ -573,7 +572,7 @@ fn import(
             "original validator host did not authorize this exact public key import".into(),
         );
     }
-    node_common::go_ahead(flag(sub, "yes"), "no key imported").map_err(|e| e.to_string())?;
+    common::go_ahead(flag(sub, "yes"), "no key imported").map_err(|e| e.to_string())?;
     // JSON encoding only; password is never placed in argv, env, inventory or a run bundle.
     let pass = SecretString::from(
         serde_json::to_string(password.expose_secret().trim_end_matches(['\r', '\n']))
@@ -669,7 +668,7 @@ fn migrate(
             "original destination did not authorize this exact managed signer transfer".into(),
         );
     }
-    node_common::go_ahead(flag(sub, "yes"), "no signer moved").map_err(|e| e.to_string())?;
+    common::go_ahead(flag(sub, "yes"), "no signer moved").map_err(|e| e.to_string())?;
     let request = SecretString::from(
         json!({"owner":owner(node)?,"action":"fence-export","destination":owner(&to)?}).to_string(),
     );
@@ -743,8 +742,7 @@ fn backup(
     sub: &ArgMatches,
     session: &Session,
 ) -> Result<Value, String> {
-    node_common::go_ahead(flag(sub, "yes"), "no encrypted backup written")
-        .map_err(|e| e.to_string())?;
+    common::go_ahead(flag(sub, "yes"), "no encrypted backup written").map_err(|e| e.to_string())?;
     let request = envelope(
         node,
         network,
@@ -792,7 +790,7 @@ fn restore_backup(
     if raw.expose_secret().len() > 1024 * 1024 {
         return Err("encrypted backup exceeds its bound".into());
     }
-    node_common::go_ahead(flag(sub, "yes"), "no original custody restored")
+    common::go_ahead(flag(sub, "yes"), "no original custody restored")
         .map_err(|e| e.to_string())?;
     let request = SecretString::from(format!(
         "{{\"owner\":\"{}\",\"action\":\"custody-restore\",\"backup\":{}}}",
@@ -883,7 +881,7 @@ fn service(
             return Err("signing requires one completed, unique managed owner; recover the import or migration first".into());
         }
     }
-    node_common::go_ahead(flag(sub, "yes"), "no validator service changed")
+    common::go_ahead(flag(sub, "yes"), "no validator service changed")
         .map_err(|e| e.to_string())?;
     let result = send(
         session,
@@ -933,7 +931,7 @@ fn recover(
                 .into(),
         );
     }
-    node_common::go_ahead(flag(sub, "yes"), "no original deployment recovered")
+    common::go_ahead(flag(sub, "yes"), "no original deployment recovered")
         .map_err(|e| e.to_string())?;
     send(
         session,
@@ -1040,12 +1038,12 @@ async fn operation(
             )?;
             let retry = deployment_retry(&node, sub, verb, &state)?;
             if verb == "update" && !retry {
-                update_pins(&mut node, sub, &crate::eth_rpc::facts(&session)?).await?;
+                update_pins(&mut node, sub, &crate::chains::eth::rpc::facts(&session)?).await?;
             }
             if let Some(fee) = one(sub, "fee-recipient") {
                 node.fee_recipient = validator::address(fee)?;
             }
-            node_common::go_ahead(flag(sub, "yes"), "no configuration changed")
+            common::go_ahead(flag(sub, "yes"), "no configuration changed")
                 .map_err(|e| e.to_string())?;
             node = store
                 .update_eth_validator(&node)
@@ -1207,7 +1205,7 @@ mod tests {
             fee_recipient: format!("0x{}", "1".repeat(40)),
             ..Default::default()
         };
-        let command = crate::tree::command(
+        let command = crate::node::tree::command(
             erpc_core::chain::Role::Validator,
             erpc_core::chain::Chain::Eth,
         );

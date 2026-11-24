@@ -4,8 +4,9 @@
 //! BSC public identity binding and concealed backup/recovery orchestration.
 
 use crate::{
-    bsc_owned::{self, Node},
-    bsc_rpc, node_common,
+    chains::bsc::owned::{self, Node},
+    chains::bsc::rpc,
+    node::common,
 };
 use erpc_auth::store::one_password::OpCli;
 use erpc_chain::inventory::Store;
@@ -58,7 +59,7 @@ fn bind(node: &mut Node, network: Network, status: &Value) -> Result<Value, Stri
 }
 
 fn export(session: &Session, node: &Node, network: Network) -> Result<SecretString, String> {
-    let request = bsc_rpc::request(node, network, "export-custody")?.to_string();
+    let request = rpc::request(node, network, "export-custody")?.to_string();
     let output = session
         .run(
             &RemoteCommand::BscControl(erpc_ssh::bsc::Control::new()?),
@@ -86,15 +87,15 @@ pub(crate) fn finish(
     store: &Store<OpCli>,
     vault: &str,
 ) -> Result<Value, String> {
-    let status = bsc_rpc::control(session, node, network, "status")?;
+    let status = rpc::control(session, node, network, "status")?;
     if !node.is_validator() {
         return Ok(status);
     }
     bind(node, network, &status)?;
-    bsc_owned::save(store, node).map_err(|e| e.to_string())?;
+    owned::save(store, node).map_err(|e| e.to_string())?;
     let backup = export(session, node, network)?;
-    let op = node_common::op_runner()?;
-    let reference = crate::bsc_backup::ensure(
+    let op = common::op_runner()?;
+    let reference = crate::chains::bsc::backup::ensure(
         &op,
         vault,
         network.name(),
@@ -108,14 +109,14 @@ pub(crate) fn finish(
         return Err("custody backup reference changed; inspect before acknowledgement".into());
     }
     signer.backup_ref = reference.to_string();
-    bsc_owned::save(store, node).map_err(|e| e.to_string())?;
-    let mut request = bsc_rpc::request(node, network, "confirm-backup")?;
+    owned::save(store, node).map_err(|e| e.to_string())?;
+    let mut request = rpc::request(node, network, "confirm-backup")?;
     request["backup_digest"] = json!(format!(
         "{:x}",
         Sha256::digest(backup.expose_secret().as_bytes())
     ));
-    bsc_rpc::control_request(session, &request)?;
-    bsc_rpc::control(session, node, network, "status")
+    rpc::control_request(session, &request)?;
+    rpc::control(session, node, network, "status")
 }
 
 pub(crate) fn registration(
@@ -123,7 +124,7 @@ pub(crate) fn registration(
     node: &Node,
     network: Network,
 ) -> Result<Value, String> {
-    let status = bsc_rpc::control(session, node, network, "status")?;
+    let status = rpc::control(session, node, network, "status")?;
     if status["backup_confirmed"] != true {
         return Err(
             "verify the concealed custody backup through deploy before registration".into(),
@@ -145,10 +146,11 @@ pub(crate) fn restore(session: &Session, node: &Node, network: Network) -> Resul
     };
     let reference = OpRef::parse(&signer.backup_ref)
         .map_err(|_| "this owner has no valid concealed backup reference")?;
-    let backup = crate::rollup_credentials::read_concealed(&node_common::op_runner()?, &reference)?;
+    let backup =
+        crate::chains::rollup::credentials::read_concealed(&common::op_runner()?, &reference)?;
     let input = SecretString::from(
         serde_json::to_string(&Recovery {
-            public: bsc_rpc::request(node, network, "restore-custody")?,
+            public: rpc::request(node, network, "restore-custody")?,
             backup: backup.expose_secret(),
         })
         .map_err(|_| "cannot encode custody recovery")?,

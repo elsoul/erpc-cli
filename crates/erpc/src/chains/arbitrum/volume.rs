@@ -112,8 +112,9 @@ mod tests {
             data_uuid: "00000000-0000-0000-0000-000000000001".into(),
         };
         let request = request(&contract, &Value::Null).unwrap();
-        let inventory = crate::arbitrum_bundle::control_inventory("fixture", &request).unwrap();
-        let bundle = crate::arbitrum_bundle::build(&inventory).unwrap();
+        let inventory =
+            crate::chains::arbitrum::bundle::control_inventory("fixture", &request).unwrap();
+        let bundle = crate::chains::arbitrum::bundle::build(&inventory).unwrap();
         let mut child = std::process::Command::new("python3")
             .arg("-B")
             .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/arbitrum_volume_play.py"))
@@ -138,7 +139,7 @@ mod tests {
             &output.stdout,
             "r-original-volume-upgrade",
             &bundle.sha256,
-            &crate::arbitrum_bundle::helpers().unwrap(),
+            &crate::chains::arbitrum::bundle::helpers().unwrap(),
             &request,
         )
         .unwrap();

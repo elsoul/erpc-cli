@@ -3,8 +3,8 @@
 //! Separate AQA host lifecycle. External approval stays with the selected master.
 use crate::{
     account::commands::Outcome,
-    hyperliquid_ops as shared,
-    node_common::{self, Say},
+    chains::hyperliquid::ops as shared,
+    node::common::{self, Say},
 };
 use clap::{Arg, ArgAction, ArgMatches, Command, value_parser};
 use erpc_chain::inventory::hyperliquid_aqa::Publisher;
@@ -144,7 +144,7 @@ fn target(node: &Publisher, args: &ArgMatches) -> Result<Target, String> {
         user: node.ssh_user.clone(),
         host_key: HostKey::parse(&node.host_key).map_err(|e| e.to_string())?,
         identity: Identity::Agent {
-            socket: node_common::agent_socket(
+            socket: common::agent_socket(
                 args.try_get_one::<PathBuf>("ssh-agent")
                     .ok()
                     .flatten()
@@ -199,8 +199,8 @@ fn control(session: &Session, value: &Value) -> Result<Value, String> {
         .map_err(|_| "AQA control refused; original authority and custody remain retained")?;
     serde_json::from_slice(&response.stdout).map_err(|_| "invalid public publisher response".into())
 }
-fn facts(session: &Session) -> Result<crate::eth_rpc::Facts, String> {
-    let value = crate::eth_rpc::facts(session)?;
+fn facts(session: &Session) -> Result<crate::chains::eth::rpc::Facts, String> {
+    let value = crate::chains::eth::rpc::facts(session)?;
     if value.os != "ubuntu 24.04"
         || value.machine != "x86_64"
         || !value.sudo
@@ -214,7 +214,7 @@ fn facts(session: &Session) -> Result<crate::eth_rpc::Facts, String> {
 }
 fn inventory(
     node: &Publisher,
-    facts: &crate::eth_rpc::Facts,
+    facts: &crate::chains::eth::rpc::Facts,
     value: &Value,
 ) -> Result<String, String> {
     let mut v4 = Vec::new();
@@ -279,7 +279,7 @@ fn play(
     let archive = bundle.finish().map_err(|e| e.to_string())?;
     let run = erpc_ops::run::start(session, &archive, &format!("ansible/aqa/{phase}.yml"))
         .map_err(|e| e.to_string())?;
-    let result = node_common::follow(
+    let result = common::follow(
         target,
         &run,
         "Repair the original host condition and retry the same publisher target; custody is retained",
@@ -297,8 +297,8 @@ fn play(
 fn material(reference: &str) -> Result<AgentMaterial, String> {
     let reference = OpRef::parse(reference)
         .map_err(|_| "identifier-only concealed agent reference required")?;
-    AgentMaterial::parse(crate::rollup_credentials::read_concealed(
-        &node_common::op_runner()?,
+    AgentMaterial::parse(crate::chains::rollup::credentials::read_concealed(
+        &common::op_runner()?,
         &reference,
     )?)
     .map_err(str::to_owned)
@@ -488,7 +488,7 @@ fn init(network: Network, args: &ArgMatches, say: &Say) -> Result<Value, String>
     }
     settings(&mut node, args)?;
     erpc_ssh::config::check_host(&node.address).map_err(|e| e.to_string())?;
-    node.host_key = node_common::host_key(
+    node.host_key = common::host_key(
         &node.address,
         node.ssh_port,
         previous.as_ref().map(|n| n.host_key.as_str()),
@@ -505,8 +505,7 @@ fn init(network: Network, args: &ArgMatches, say: &Say) -> Result<Value, String>
     let target = target(&node, args)?;
     let session = Session::open(&target).map_err(|e| e.to_string())?;
     let facts = facts(&session)?;
-    node_common::go_ahead(shared::flag(args, "yes"), "AQA host unchanged")
-        .map_err(|e| e.to_string())?;
+    common::go_ahead(shared::flag(args, "yes"), "AQA host unchanged").map_err(|e| e.to_string())?;
     let vars = inventory(&node, &facts, &request(&node, "preflight", None)?)?;
     play(&session, &target, &vars, "preflight", say)?;
     node = if previous.is_some() {
@@ -522,7 +521,7 @@ fn init(network: Network, args: &ArgMatches, say: &Say) -> Result<Value, String>
     store
         .update_hyperliquid_publisher(&node)
         .map_err(|e| e.to_string())?;
-    node_common::save_vault(network.name(), &vault)?;
+    common::save_vault(network.name(), &vault)?;
     Ok(json!({"publisher":public(&node),"custody":imported,"started":false,"approval":"external"}))
 }
 
@@ -825,7 +824,7 @@ fn operation(
             &json!({"action":"status","contract":node.contract}),
         );
     }
-    node_common::go_ahead(shared::flag(args, "yes"), "AQA publisher unchanged")
+    common::go_ahead(shared::flag(args, "yes"), "AQA publisher unchanged")
         .map_err(|e| e.to_string())?;
     if ["start", "stop", "restart", "destroy"].contains(&verb) {
         let result = if ["stop", "destroy"].contains(&verb) {
@@ -893,7 +892,7 @@ pub(crate) fn report_status(
     json_out: bool,
     output: &mut dyn FnMut(&str),
 ) -> Outcome {
-    crate::node_report::status(result, "/publisher_service_ready", json_out, output)
+    crate::node::report::status(result, "/publisher_service_ready", json_out, output)
 }
 
 fn report_operation(
@@ -976,7 +975,7 @@ mod tests {
     fn parse(verb: &str, extra: &[&str]) -> ArgMatches {
         let mut args = vec!["v", "--network", "testnet", "aqa", verb];
         args.extend(extra);
-        crate::tree::command(Role::Validator, Chain::Hyperliquid)
+        crate::node::tree::command(Role::Validator, Chain::Hyperliquid)
             .try_get_matches_from(args)
             .unwrap()
     }
@@ -1035,13 +1034,13 @@ mod tests {
                 ),
             ] {
                 assert_eq!(
-                    crate::tree::command(Role::Validator, Chain::Hyperliquid)
+                    crate::node::tree::command(Role::Validator, Chain::Hyperliquid)
                         .try_get_matches_from(["v", "aqa", verb.name, flag])
                         .is_ok(),
                     allowed
                 );
             }
-            let missing = crate::tree::command(Role::Validator, Chain::Hyperliquid)
+            let missing = crate::node::tree::command(Role::Validator, Chain::Hyperliquid)
                 .try_get_matches_from(["v", "aqa", verb.name])
                 .unwrap();
             assert!(matches!(
@@ -1053,7 +1052,7 @@ mod tests {
                 Outcome::Usage(_)
             ));
             if !verb.read_only {
-                let main = crate::tree::command(Role::Validator, Chain::Hyperliquid)
+                let main = crate::node::tree::command(Role::Validator, Chain::Hyperliquid)
                     .try_get_matches_from([
                         "v",
                         "--network",
@@ -1071,7 +1070,7 @@ mod tests {
             }
         }
         assert!(
-            crate::tree::command(Role::Validator, Chain::Hyperliquid)
+            crate::node::tree::command(Role::Validator, Chain::Hyperliquid)
                 .try_get_matches_from([
                     "v",
                     "aqa",
@@ -1082,7 +1081,7 @@ mod tests {
                 .is_err()
         );
         assert!(
-            crate::tree::command(Role::Rpc, Chain::Hyperliquid)
+            crate::node::tree::command(Role::Rpc, Chain::Hyperliquid)
                 .try_get_matches_from(["rpc", "aqa", "plan"])
                 .is_err()
         );
@@ -1118,7 +1117,7 @@ mod tests {
     fn observed_server_port_and_exact_policy_and_helper_digest_are_carried() {
         let node = fixture();
         let request = request(&node, "prepare", Some(&"a".repeat(32))).unwrap();
-        let mut facts = crate::eth_rpc::Facts {
+        let mut facts = crate::chains::eth::rpc::Facts {
             os: "ubuntu 24.04".into(),
             machine: "x86_64".into(),
             cpus: 2,
@@ -1126,7 +1125,7 @@ mod tests {
             sudo: true,
             controller: "192.0.2.10".into(),
             ssh_port: 2200,
-            ..crate::eth_rpc::Facts::default()
+            ..crate::chains::eth::rpc::Facts::default()
         };
         let vars: Value =
             serde_json::from_str(&inventory(&node, &facts, &request).unwrap()).unwrap();

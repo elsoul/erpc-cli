@@ -582,7 +582,7 @@ async fn delete(
             clean(path)
         ));
     }
-    if let Err(e) = crate::node_common::go_ahead(yes, "nothing was deleted") {
+    if let Err(e) = crate::node::common::go_ahead(yes, "nothing was deleted") {
         return Ok(e.into());
     }
     api::delete(client, token, path, region).await?;
@@ -715,7 +715,7 @@ async fn keys_revoke(
             "Revoke storage access key {id}. Anything signing in with it stops working."
         ));
     }
-    if let Err(e) = crate::node_common::go_ahead(yes, "the key was not revoked") {
+    if let Err(e) = crate::node::common::go_ahead(yes, "the key was not revoked") {
         return Ok(e.into());
     }
     api::revoke_access_key(client, token, id).await?;
@@ -1348,7 +1348,7 @@ async fn resize(
             )
         });
     }
-    if let Err(e) = crate::node_common::go_ahead(yes, "the plan was not changed") {
+    if let Err(e) = crate::node::common::go_ahead(yes, "the plan was not changed") {
         return Ok(e.into());
     }
     let done = api::upgrade_plan(client, token, units).await?;
@@ -1453,7 +1453,7 @@ async fn buy(
     if !json || !yes {
         crate::cli::interrupt::say(&quote);
     }
-    if let Err(e) = crate::node_common::go_ahead(yes, "nothing was bought") {
+    if let Err(e) = crate::node::common::go_ahead(yes, "nothing was bought") {
         return Ok(e.into());
     }
     let units = u32::try_from(units).unwrap_or(1);
