@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Read the explicitly selected concealed L1 field without exposing provider text.
+//! Reading one concealed 1Password field without exposing provider text
+//! ([`read_concealed`]), and the L1 upstream configuration a rollup node
+//! keeps in such a field ([`read_l1_upstream`]).
 
 use erpc_auth::store::one_password::OpRunner;
 use erpc_chain_rollup::upstreams::Credential;
@@ -75,14 +77,19 @@ pub(crate) fn read_concealed(
     Ok(value)
 }
 
-pub(crate) fn read(op: &impl OpRunner, reference: &OpRef) -> Result<Credential, String> {
+/// The L1 upstream configuration in the concealed field `reference` names,
+/// checked against its schema.
+pub(crate) fn read_l1_upstream(
+    op: &impl OpRunner,
+    reference: &OpRef,
+) -> Result<Credential, String> {
     Credential::parse(read_concealed(op, reference)?)
         .map_err(|_| "invalid concealed L1 upstream configuration".into())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{read, read_concealed};
+    use super::{read_concealed, read_l1_upstream};
     use erpc_auth::store::{
         StoreError,
         one_password::{OpOutput, OpRunner},
@@ -123,7 +130,8 @@ mod tests {
     #[test]
     fn credential_is_selected_by_reference_and_never_added_to_process_arguments() {
         let op = fake("CONCEALED");
-        let value = read(&op, &reference()).unwrap_or_else(|_| panic!("valid concealed field"));
+        let value =
+            read_l1_upstream(&op, &reference()).unwrap_or_else(|_| panic!("valid concealed field"));
         assert!(
             value
                 .secret()
@@ -150,7 +158,7 @@ mod tests {
             "synthetic node input"
         );
         assert!(
-            read(&op, &reference()).is_err(),
+            read_l1_upstream(&op, &reference()).is_err(),
             "the rollup wrapper still validates its schema"
         );
         op.output = serde_json::json!({"id":"field","label":"upstreams","type":"CONCEALED","value":"x".repeat(65_537)}).to_string();
@@ -160,20 +168,22 @@ mod tests {
     #[test]
     fn plain_fields_errors_and_ambiguous_fields_do_not_reveal_provider_text() {
         let mut op = fake("STRING");
-        assert!(read(&op, &reference()).is_err());
+        assert!(read_l1_upstream(&op, &reference()).is_err());
         op = fake("CONCEALED");
         op.success = false;
-        let error = read(&op, &reference()).err().expect("failed read");
+        let error = read_l1_upstream(&op, &reference())
+            .err()
+            .expect("failed read");
         assert!(!error.contains("unit-test-provider-placeholder"));
         op = fake("CONCEALED");
         let body: serde_json::Value = serde_json::from_str(&op.output).expect("fixture");
         op.output = serde_json::json!([body, body]).to_string();
-        assert!(read(&op, &reference()).is_err());
+        assert!(read_l1_upstream(&op, &reference()).is_err());
         op = fake("CONCEALED");
         let field: serde_json::Value = serde_json::from_str(&op.output).expect("field");
         op.output = serde_json::json!({"fields":[field]}).to_string();
         assert!(
-            read(&op, &reference()).is_err(),
+            read_l1_upstream(&op, &reference()).is_err(),
             "never fall back to parsing an unfiltered item"
         );
     }

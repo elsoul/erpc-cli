@@ -112,7 +112,7 @@ fn control(session: &Session, body: &Value) -> Result<Value, String> {
 fn credential<R: OpRunner>(runner: &R, reference: &str) -> Result<ExecutionCredential, String> {
     let reference = OpRef::parse(reference)
         .map_err(|_| "Polygon parent requires an identifier-only op reference")?;
-    ExecutionCredential::parse(crate::chains::rollup::credentials::read_concealed(
+    ExecutionCredential::parse(crate::node::credentials::read_concealed(
         runner, &reference,
     )?)
     .map_err(|_| "invalid concealed Polygon execution-parent configuration".to_string())

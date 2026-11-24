@@ -198,7 +198,7 @@ fn provision_upstreams(
 ) -> Result<(), String> {
     let reference =
         OpRef::parse(&node.upstream_ref).map_err(|_| "invalid concealed upstream reference")?;
-    let credential = crate::chains::rollup::credentials::read(&common::op_runner()?, &reference)?;
+    let credential = crate::node::credentials::read_l1_upstream(&common::op_runner()?, &reference)?;
     let public = json!({"contract": bundle::contract(node)?, "action":"upstreams", "intent":intent, "firewall":{"run":receipt.0.as_str(),"bundle":receipt.1}}).to_string();
     let header = public
         .strip_suffix('}')

@@ -26,7 +26,7 @@ impl Live<'_> {
                 .map_err(|_| "original registered identity reference changed")?;
             let reference = erpc_secret::OpRef::parse(&identity.reference)
                 .map_err(|_| "invalid original registered identity reference")?;
-            let raw = crate::chains::rollup::credentials::read_concealed(&op, &reference)?;
+            let raw = crate::node::credentials::read_concealed(&op, &reference)?;
             let _verified = original_key(raw.expose_secret(), &identity.public)?;
             identity
                 .verify(&op)

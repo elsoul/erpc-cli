@@ -76,7 +76,7 @@ fn control(
 fn credential<R: OpRunner>(runner: &R, reference: &str) -> Result<Credential, String> {
     let reference = OpRef::parse(reference)
         .map_err(|_| "L1 upstreams require an identifier-only op reference")?;
-    crate::chains::rollup::credentials::read(runner, &reference)
+    crate::node::credentials::read_l1_upstream(runner, &reference)
 }
 fn send_credential(
     session: &Session,

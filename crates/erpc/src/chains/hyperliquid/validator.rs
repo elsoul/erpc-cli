@@ -122,8 +122,7 @@ fn settings(node: &mut ValidatorNode, args: &ArgMatches) -> Result<(), String> {
 fn material(reference: &str) -> Result<HotMaterial, String> {
     let reference = OpRef::parse(reference)
         .map_err(|_| "identifier-only concealed hot-key reference required")?;
-    let value =
-        crate::chains::rollup::credentials::read_concealed(&common::op_runner()?, &reference)?;
+    let value = crate::node::credentials::read_concealed(&common::op_runner()?, &reference)?;
     HotMaterial::parse(value).map_err(str::to_owned)
 }
 #[derive(Serialize)]
