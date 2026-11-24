@@ -25,7 +25,6 @@ use erpc_ssh::{Session, Target};
 use serde_json::{Map, Value, json};
 
 use crate::account::commands::Outcome;
-use crate::chains::arc::rpc::{Facts, facts};
 use crate::chains::solana::rpc::init::{Pins, Wanted, pin};
 use crate::chains::solana::rpc::{
     Opened, RunVars, Status, find_ready, list_or_nobody, lockout_warning, memory_warning, open,
@@ -33,6 +32,7 @@ use crate::chains::solana::rpc::{
 };
 use crate::cli::error::CliError;
 use crate::node::common::{Say, check_ubuntu, free_disks, go_ahead, public_key_line};
+use crate::node::host::{Facts, facts};
 use crate::node::host::{Login, allow_list};
 
 /// What a change to a node was asked to do.

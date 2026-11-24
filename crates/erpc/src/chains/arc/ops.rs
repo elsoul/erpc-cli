@@ -392,7 +392,7 @@ impl Status {
         {
             out.push(format!(
                 "only {} free for the chain data",
-                crate::chains::arc::rpc::gb(free)
+                crate::node::host::gb(free)
             ));
         }
         if self.firewall_revoked {
@@ -477,8 +477,8 @@ fn render_status(node: &RpcNode, network: &str, s: &Status, problems: &[String])
     let _ = writeln!(
         out,
         "  data       {} used, {} free",
-        crate::chains::arc::rpc::gb(s.data_used_kb.unwrap_or(0)),
-        crate::chains::arc::rpc::gb(s.data_free_kb.unwrap_or(0))
+        crate::node::host::gb(s.data_used_kb.unwrap_or(0)),
+        crate::node::host::gb(s.data_free_kb.unwrap_or(0))
     );
     let _ = writeln!(
         out,

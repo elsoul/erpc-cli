@@ -18,8 +18,8 @@ use erpc_chain_solana::rpc;
 use erpc_ssh::{RemoteCommand, Session, Target};
 use serde_json::{Map, Value, json};
 
-use crate::chains::arc::rpc::Facts;
 use crate::node::common::{Say, op_runner, store, vault_for};
+use crate::node::host::Facts;
 use crate::node::host::Login;
 
 /// The chain, as the inventory names it.
@@ -533,7 +533,7 @@ mod tests {
     use serde_json::Value;
 
     use super::{RunVars, Status, memory_warning, pins, refusals};
-    use crate::chains::arc::rpc::Facts;
+    use crate::node::host::Facts;
 
     fn facts() -> Facts {
         Facts::parse(

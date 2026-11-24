@@ -173,6 +173,8 @@ pub(crate) struct Facts {
     pub(crate) machine: String,
     pub(crate) mem_kb: u64,
     pub(crate) cpus: u32,
+    /// The processor's highest clock, in MHz, where `lscpu` reports one.
+    pub(crate) cpu_max_mhz: u32,
     /// How many of AVX2, BMI2, FMA and MOVBE the processor has.
     pub(crate) x86_64_v3: u32,
     pub(crate) root_free_kb: u64,
@@ -195,6 +197,7 @@ impl Facts {
                 "machine" => value.clone_into(&mut f.machine),
                 "mem_kb" => f.mem_kb = value.parse().unwrap_or(0),
                 "cpus" => f.cpus = value.parse().unwrap_or(0),
+                "cpu_max_mhz" => f.cpu_max_mhz = value.parse().unwrap_or(0),
                 "x86_64_v3" => f.x86_64_v3 = value.parse().unwrap_or(0),
                 "root_free_kb" => f.root_free_kb = value.parse().unwrap_or(0),
                 "data_free_kb" => f.data_free_kb = value.parse().ok(),
@@ -226,6 +229,11 @@ pub(crate) fn facts(session: &Session) -> Result<Facts, String> {
     Ok(Facts::parse(&String::from_utf8_lossy(&out.stdout)))
 }
 
+/// Short form of a byte count in kilobytes.
+pub(crate) fn gb(kb: u64) -> String {
+    format!("{} GB", kb / 1_000_000)
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
@@ -234,7 +242,7 @@ mod tests {
     use erpc_ssh::{HostKey, Identity};
 
     use super::{
-        Endpoint, Facts, Login, NO_SSH_KEY, allow_list, checked_target, lockout_warning, target,
+        Endpoint, Facts, Login, NO_SSH_KEY, allow_list, checked_target, gb, lockout_warning, target,
     };
 
     const HOST_KEY: &str =
@@ -370,7 +378,7 @@ mod tests {
     #[test]
     fn facts_are_read_from_their_lines_and_anything_unreadable_is_a_default() {
         let f = Facts::parse(
-            "os=ubuntu 24.04\nmachine=x86_64\nmem_kb=131000000\ncpus=32\nx86_64_v3=4\n\
+            "os=ubuntu 24.04\nmachine=x86_64\nmem_kb=131000000\ncpus=32\ncpu_max_mhz=4000\nx86_64_v3=4\n\
              root_free_kb=400000000\ndata_free_kb=\ncontroller=203.0.113.7\nssh_port=2222\n\
              sudo=yes\nnot a fact\nunknown=1\n",
         );
@@ -379,12 +387,13 @@ mod tests {
             ("ubuntu 24.04", "x86_64")
         );
         assert_eq!((f.mem_kb, f.cpus, f.x86_64_v3), (131_000_000, 32, 4));
+        assert_eq!(f.cpu_max_mhz, 4000);
         assert_eq!((f.root_free_kb, f.data_free_kb), (400_000_000, None));
         assert_eq!(
             (f.controller.as_str(), f.ssh_port, f.sudo),
             ("203.0.113.7", 2222, true)
         );
-        let unreadable = Facts::parse("mem_kb=lots\nssh_port=-1\nsudo=maybe\n");
+        let unreadable = Facts::parse("mem_kb=lots\ncpu_max_mhz=\nssh_port=-1\nsudo=maybe\n");
         assert_eq!(unreadable, Facts::default());
     }
 
@@ -393,5 +402,11 @@ mod tests {
         let f = Facts::parse("controller=203.0.113.7\n");
         assert_eq!(f.controller_ip().expect("ip").to_string(), "203.0.113.7");
         assert!(Facts::default().controller_ip().is_err());
+    }
+
+    #[test]
+    fn kilobytes_are_shown_in_whole_gigabytes() {
+        assert_eq!(gb(131_000_000), "131 GB");
+        assert_eq!(gb(999_999), "0 GB");
     }
 }
