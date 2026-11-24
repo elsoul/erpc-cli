@@ -956,8 +956,11 @@ mod tests {
     /// returns what it found.
     fn child(probe: &str, app: &std::path::Path, env: &[(&str, &std::ffi::OsStr)]) -> String {
         let out = app.with_file_name("found");
+        // libtest names a test by its path without the crate's name.
+        let (_, module) = module_path!().split_once("::").expect("a crate's module");
+        let probe_child = format!("{module}::probe_child");
         let status = std::process::Command::new(std::env::current_exe().expect("this test binary"))
-            .args(["--exact", "worker_build::tests::probe_child", "--nocapture"])
+            .args(["--exact", &probe_child, "--nocapture"])
             .env("ERPC_TEST_PROBE", probe)
             .env("ERPC_TEST_PROBE_OUT", &out)
             .envs(env.iter().copied())

@@ -49,7 +49,6 @@ mod bsc_owned;
 mod bsc_rpc;
 mod bsc_signer;
 mod bsc_tree;
-mod elf;
 mod eth_authority;
 mod eth_authority_evidence;
 mod eth_deploy;
@@ -120,21 +119,6 @@ mod validator_init;
 mod validator_keys;
 mod validator_vote;
 mod worker;
-mod worker_backup;
-mod worker_bench;
-mod worker_build;
-mod worker_charges;
-mod worker_deploy;
-mod worker_firewall;
-mod worker_import;
-mod worker_inventory;
-mod worker_keys;
-mod worker_keystore;
-mod worker_remote;
-mod worker_run;
-mod worker_secrets;
-mod worker_vps;
-mod worker_waf;
 
 // Temporary: the old paths of the modules that moved into `cli/`, so the
 // move changes no imports. Each goes when its users import from `cli::`.
@@ -158,6 +142,24 @@ pub(crate) use ai::{conversations, memory, skills, vps_access};
 pub(crate) use storage::crypt as storage_crypt;
 pub(crate) use storage::key as storage_key;
 pub(crate) use storage::{backup, backup_schedule, restic};
+
+// Temporary, as above, for the modules that moved into `worker/`.
+pub(crate) use worker::backup as worker_backup;
+pub(crate) use worker::bench as worker_bench;
+pub(crate) use worker::build as worker_build;
+pub(crate) use worker::charges as worker_charges;
+pub(crate) use worker::deploy as worker_deploy;
+pub(crate) use worker::elf;
+pub(crate) use worker::firewall as worker_firewall;
+pub(crate) use worker::import as worker_import;
+pub(crate) use worker::inventory as worker_inventory;
+pub(crate) use worker::keys as worker_keys;
+pub(crate) use worker::keystore as worker_keystore;
+pub(crate) use worker::remote as worker_remote;
+pub(crate) use worker::run as worker_run;
+pub(crate) use worker::secrets as worker_secrets;
+pub(crate) use worker::vps as worker_vps;
+pub(crate) use worker::waf as worker_waf;
 
 /// Exit statuses outside a failure's own ([`error::Code::exit`]).
 mod exit {

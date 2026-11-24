@@ -11,6 +11,23 @@
 //! half of a file it could not read. A verb whose step is not done yet
 //! says which step it waits for.
 
+pub(crate) mod backup;
+pub(crate) mod bench;
+pub(crate) mod build;
+pub(crate) mod charges;
+pub(crate) mod deploy;
+pub(crate) mod elf;
+pub(crate) mod firewall;
+pub(crate) mod import;
+pub(crate) mod inventory;
+pub(crate) mod keys;
+pub(crate) mod keystore;
+pub(crate) mod remote;
+pub(crate) mod run;
+pub(crate) mod secrets;
+pub(crate) mod vps;
+pub(crate) mod waf;
+
 use std::path::{Path, PathBuf};
 
 use clap::{Args, Subcommand};
@@ -2407,50 +2424,50 @@ mod tests {
     /// comments and tests, with Rust's line continuations joined.
     fn named_sources() -> Vec<(&'static str, &'static str)> {
         vec![
-            ("worker.rs", include_str!("worker.rs")),
-            ("worker_backup.rs", include_str!("worker_backup.rs")),
-            ("worker_bench.rs", include_str!("worker_bench.rs")),
-            ("worker_build.rs", include_str!("worker_build.rs")),
-            ("worker_charges.rs", include_str!("worker_charges.rs")),
-            ("worker_deploy.rs", include_str!("worker_deploy.rs")),
-            ("worker_firewall.rs", include_str!("worker_firewall.rs")),
-            ("worker_import.rs", include_str!("worker_import.rs")),
-            ("worker_inventory.rs", include_str!("worker_inventory.rs")),
-            ("worker_keys.rs", include_str!("worker_keys.rs")),
-            ("worker_keystore.rs", include_str!("worker_keystore.rs")),
-            ("worker_remote.rs", include_str!("worker_remote.rs")),
-            ("worker_run.rs", include_str!("worker_run.rs")),
-            ("worker_secrets.rs", include_str!("worker_secrets.rs")),
-            ("worker_vps.rs", include_str!("worker_vps.rs")),
-            ("worker_waf.rs", include_str!("worker_waf.rs")),
-            ("node_common.rs", include_str!("node_common.rs")),
+            ("worker/mod.rs", include_str!("mod.rs")),
+            ("worker/backup.rs", include_str!("backup.rs")),
+            ("worker/bench.rs", include_str!("bench.rs")),
+            ("worker/build.rs", include_str!("build.rs")),
+            ("worker/charges.rs", include_str!("charges.rs")),
+            ("worker/deploy.rs", include_str!("deploy.rs")),
+            ("worker/firewall.rs", include_str!("firewall.rs")),
+            ("worker/import.rs", include_str!("import.rs")),
+            ("worker/inventory.rs", include_str!("inventory.rs")),
+            ("worker/keys.rs", include_str!("keys.rs")),
+            ("worker/keystore.rs", include_str!("keystore.rs")),
+            ("worker/remote.rs", include_str!("remote.rs")),
+            ("worker/run.rs", include_str!("run.rs")),
+            ("worker/secrets.rs", include_str!("secrets.rs")),
+            ("worker/vps.rs", include_str!("vps.rs")),
+            ("worker/waf.rs", include_str!("waf.rs")),
+            ("node_common.rs", include_str!("../node_common.rs")),
             (
                 "erpc-worker/manifest.rs",
-                include_str!("../../erpc-worker/src/manifest.rs"),
+                include_str!("../../../erpc-worker/src/manifest.rs"),
             ),
             (
                 "erpc-worker/edit.rs",
-                include_str!("../../erpc-worker/src/edit.rs"),
+                include_str!("../../../erpc-worker/src/edit.rs"),
             ),
             (
                 "erpc-worker/inventory.rs",
-                include_str!("../../erpc-worker/src/inventory.rs"),
+                include_str!("../../../erpc-worker/src/inventory.rs"),
             ),
             (
                 "erpc-worker/release.rs",
-                include_str!("../../erpc-worker/src/release.rs"),
+                include_str!("../../../erpc-worker/src/release.rs"),
             ),
             (
                 "erpc-worker/template.rs",
-                include_str!("../../erpc-worker/src/template.rs"),
+                include_str!("../../../erpc-worker/src/template.rs"),
             ),
             (
                 "erpc-worker/bench.rs",
-                include_str!("../../erpc-worker/src/bench.rs"),
+                include_str!("../../../erpc-worker/src/bench.rs"),
             ),
             (
                 "erpc-worker/index.rs",
-                include_str!("../../erpc-worker/src/index.rs"),
+                include_str!("../../../erpc-worker/src/index.rs"),
             ),
         ]
     }
@@ -2620,12 +2637,19 @@ mod tests {
     fn every_worker_source_is_scanned() {
         let scanned: Vec<&str> = named_sources().iter().map(|(name, _)| *name).collect();
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        for entry in std::fs::read_dir(&src).expect("src") {
-            let name = entry.expect("entry").file_name();
-            let name = name.to_string_lossy();
-            if name.starts_with("worker") && name.ends_with(".rs") {
+        // Moved here from beside the worker's sources, whose names they did
+        // not share, and never scanned: an ELF reader and two test files.
+        let unscanned = [
+            "worker/elf.rs",
+            "worker/udp_line_tests.rs",
+            "worker/user_api_stub.rs",
+        ];
+        for entry in std::fs::read_dir(src.join("worker")).expect("src/worker") {
+            let entry = entry.expect("entry");
+            let name = format!("worker/{}", entry.file_name().to_string_lossy());
+            if entry.path().extension().is_some_and(|e| e == "rs") {
                 assert!(
-                    scanned.contains(&name.as_ref()),
+                    scanned.contains(&name.as_str()) || unscanned.contains(&name.as_str()),
                     "{name} is not scanned for hints"
                 );
             }
