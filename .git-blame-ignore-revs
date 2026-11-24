@@ -2,16 +2,17 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Commits that move or rename code, and change only the paths that follow
-# from it (imports, #[path], include_str!, tests that name files), for
-# `git blame` to look through.
+# from it (imports, #[path], include_str!, file and module names in tests),
+# for `git blame` to look through. A commit that also writes new logic is
+# left out, so that blame keeps naming its author: the moves into cli/
+# (#49, 1796f25) and worker/ (#76, e68ec06) each rewrote a test, and git
+# follows their renames without this file.
 # GitHub's blame view reads this file by itself; locally, run once:
 #
 #   git config blame.ignoreRevsFile .git-blame-ignore-revs
 #
 # Each entry is the commit as merged into main, with its title.
 
-# refactor(erpc): move the terminal modules into cli/ (#49)
-1796f25ec9126e65ce8015e7c1c7730cc7a2e14c
 # refactor(erpc): move the account modules into account/ (#69)
 0652ab12c6ac73e4a44f5d6de6cab4d10da45487
 # refactor(erpc): move the RPC and webhook modules into rpc/ (#70)
@@ -20,8 +21,6 @@ ea5e436625ca8fa644ec1e18534d222e40dce454
 005feb9b26c6cc0d8d2a48ba18f56c6798adc6ba
 # refactor(erpc): move the storage and backup modules into storage/ (#75)
 da52886138fee69c70d07aee8e20fc7bc03258d4
-# refactor(erpc): move the worker modules into worker/ (#76)
-e68ec066718ef40680bd06f084a298a5d2aae712
 # refactor(erpc): import the moved modules by their new paths (#77)
 84ac0dfd2bf8f2672ddab5bb6fdaa82eaf904a7a
 # refactor(erpc): move the chain modules into chains/ and the node tree into node/ (#79)
