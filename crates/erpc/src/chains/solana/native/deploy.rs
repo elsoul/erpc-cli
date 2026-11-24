@@ -163,7 +163,7 @@ impl Remote<'_> {
             .run(&RemoteCommand::SolanaNative(Command::Facts), None)
             .map_err(|_| "cannot inspect the current native SSH connection")?;
         let text = std::str::from_utf8(&result.stdout).map_err(|_| "invalid native SSH facts")?;
-        let facts = crate::chains::eth::rpc::Facts::parse(text);
+        let facts = crate::node::host::Facts::parse(text);
         let controller: std::net::IpAddr = facts
             .controller
             .parse()

@@ -123,8 +123,8 @@ pub(crate) fn control(session: &Session, value: &Value) -> Result<Value, String>
         .map_err(|_| "Hyperliquid control refused; original data and ownership remain retained")?;
     serde_json::from_slice(&output.stdout).map_err(|_| "invalid public Hyperliquid response".into())
 }
-pub(crate) fn facts(session: &Session) -> Result<crate::chains::eth::rpc::Facts, String> {
-    let facts = crate::chains::eth::rpc::facts(session)?;
+pub(crate) fn facts(session: &Session) -> Result<crate::node::host::Facts, String> {
+    let facts = crate::node::host::facts(session)?;
     if facts.os != "ubuntu 24.04"
         || facts.machine != "x86_64"
         || !facts.sudo
@@ -138,7 +138,7 @@ pub(crate) fn facts(session: &Session) -> Result<crate::chains::eth::rpc::Facts,
 }
 pub(crate) fn inventory(
     node: &HyperliquidNode,
-    facts: &crate::chains::eth::rpc::Facts,
+    facts: &crate::node::host::Facts,
     intent: &str,
 ) -> Result<String, String> {
     let mut v4 = Vec::new();
@@ -475,7 +475,7 @@ mod tests {
     #[test]
     fn firewall_uses_observed_server_port_and_refuses_unknown_listener() {
         let node = node();
-        let mut facts = crate::chains::eth::rpc::Facts {
+        let mut facts = crate::node::host::Facts {
             controller: "192.0.2.20".into(),
             ssh_port: 22,
             ..Default::default()

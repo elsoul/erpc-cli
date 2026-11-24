@@ -5,8 +5,8 @@
 
 use crate::{
     account::commands::Outcome,
-    chains::eth::rpc::Facts,
     node::common::{self, Say},
+    node::host::Facts,
 };
 use clap::ArgMatches;
 use erpc_auth::store::one_password::OpCli;
@@ -405,7 +405,7 @@ async fn init(network: Network, args: &ArgMatches, say: &Say) -> Result<Value, S
     storage(&node)?;
     let target = target(&node, args)?;
     let session = Session::open(&target).map_err(|e| e.to_string())?;
-    let facts = crate::chains::eth::rpc::facts(&session)?;
+    let facts = crate::node::host::facts(&session)?;
     let platform = host_check(&facts)?;
     let verified = if node.id.is_none() {
         download::fetch(
@@ -467,7 +467,7 @@ async fn change(
         *node = store.update_bitcoin_rpc(node).map_err(|e| e.to_string())?;
         return Ok(response);
     }
-    let platform = host_check(&crate::chains::eth::rpc::facts(&session)?)?;
+    let platform = host_check(&crate::node::host::facts(&session)?)?;
     if Platform::parse(&node.platform) != Some(platform) {
         return Err("host architecture differs from the stored release".into());
     }

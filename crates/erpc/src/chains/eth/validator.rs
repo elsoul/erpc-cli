@@ -6,8 +6,8 @@
 use crate::node::host::Login;
 use crate::{
     account::commands::Outcome,
-    chains::eth::rpc::Facts,
     node::common::{self, Say},
+    node::host::Facts,
 };
 use clap::ArgMatches;
 use erpc_auth::store::one_password::OpCli;
@@ -207,7 +207,7 @@ async fn pin(
     facts: &Facts,
     previous: Option<&str>,
 ) -> Result<(String, String, String), String> {
-    let platform = facts.platform()?;
+    let platform = crate::chains::eth::rpc::platform(facts)?;
     let github = releases::Github::new().map_err(|e| e.to_string())?;
     // Deliberately no carried-list fallback for validator deployment or upgrade.
     let listing = github.releases(client).await.map_err(|e| e.to_string())?;
@@ -229,8 +229,8 @@ async fn pin(
 }
 
 fn checked_facts(session: &Session) -> Result<Facts, String> {
-    let facts = crate::chains::eth::rpc::facts(session)?;
-    let failures = facts.refusals();
+    let facts = crate::node::host::facts(session)?;
+    let failures = crate::chains::eth::rpc::refusals(&facts);
     if !failures.is_empty() {
         return Err(failures.join("; "));
     }
@@ -1028,7 +1028,7 @@ async fn operation(
             )?;
             let retry = deployment_retry(&node, sub, verb, &state)?;
             if verb == "update" && !retry {
-                update_pins(&mut node, sub, &crate::chains::eth::rpc::facts(&session)?).await?;
+                update_pins(&mut node, sub, &crate::node::host::facts(&session)?).await?;
             }
             if let Some(fee) = one(sub, "fee-recipient") {
                 node.fee_recipient = validator::address(fee)?;

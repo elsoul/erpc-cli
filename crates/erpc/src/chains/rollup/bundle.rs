@@ -51,7 +51,7 @@ pub(crate) fn architecture(node: &RollupRpc) -> Result<Architecture, String> {
 pub(crate) fn vars(
     node: &RollupRpc,
     profile: Profile,
-    facts: &crate::chains::eth::rpc::Facts,
+    facts: &crate::node::host::Facts,
     have_manifest: bool,
 ) -> Result<Value, String> {
     if node.family != profile.family.name() || node.network != profile.network {
@@ -117,7 +117,7 @@ pub(crate) fn vars(
 pub(crate) fn build(
     node: &RollupRpc,
     profile: Profile,
-    facts: &crate::chains::eth::rpc::Facts,
+    facts: &crate::node::host::Facts,
     prepared: Option<&Prepared>,
     firewall: Option<(&erpc_ssh::RunId, &str)>,
     intent: Option<&str>,
@@ -213,7 +213,7 @@ mod tests {
                             .expect("pair"),
                         ..RollupRpc::default()
                     };
-                    let facts = crate::chains::eth::rpc::Facts {
+                    let facts = crate::node::host::Facts {
                         controller: "192.0.2.3".into(),
                         ssh_port: 2222,
                         ..Default::default()
@@ -273,7 +273,7 @@ mod tests {
                 pair: stored.clone(),
                 ..Default::default()
             };
-            let facts = crate::chains::eth::rpc::Facts {
+            let facts = crate::node::host::Facts {
                 controller: "192.0.2.3".into(),
                 ssh_port: 22,
                 ..Default::default()

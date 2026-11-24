@@ -6,8 +6,8 @@
 use crate::chains::bsc::owned::{self, Node};
 use crate::{
     account::commands::Outcome,
-    chains::eth::rpc::Facts,
     node::common::{self, Say},
+    node::host::Facts,
 };
 use clap::ArgMatches;
 use erpc_auth::store::one_password::OpCli;
@@ -354,7 +354,7 @@ fn init(network: Network, args: &ArgMatches, say: &Say, validator: bool) -> Resu
     network.qualify(&node.version)?;
     let target = target(&node, args)?;
     let session = Session::open(&target).map_err(|e| e.to_string())?;
-    let facts = crate::chains::eth::rpc::facts(&session)?;
+    let facts = crate::node::host::facts(&session)?;
     let platform = host_check(&facts, node.is_validator(), network)?;
     if node.id.is_some() && node.platform != platform {
         return Err("stored BSC platform differs from host".into());
@@ -492,7 +492,7 @@ fn operation(
     common::go_ahead(yes(args), "no BSC host changed").map_err(|e| e.to_string())?;
     match verb {
         "deploy" | "update" | "update-config" => {
-            let facts = crate::chains::eth::rpc::facts(&session)?;
+            let facts = crate::node::host::facts(&session)?;
             host_check(&facts, node.is_validator(), network)?;
             if verb == "update" {
                 let wanted = one(args, "version").ok_or("update requires --version")?;

@@ -3,8 +3,8 @@
 //! Dedicated NEAR follower lifecycle with persistent original identity.
 use crate::{
     account::commands::Outcome,
-    chains::eth::rpc::Facts,
     node::common::{self, Say},
+    node::host::Facts,
 };
 use clap::ArgMatches;
 use erpc_auth::store::one_password::OpCli;
@@ -388,7 +388,7 @@ fn init(network: Network, args: &ArgMatches, say: &Say, validator: bool) -> Resu
     }
     let target = target(&node, args)?;
     let session = Session::open(&target).map_err(|e| e.to_string())?;
-    let facts = crate::chains::eth::rpc::facts(&session)?;
+    let facts = crate::node::host::facts(&session)?;
     host_check(&facts, network, validator)?;
     common::go_ahead(yes(args), "no NEAR host changed").map_err(|e| e.to_string())?;
     if node.id.is_none() {
@@ -494,7 +494,7 @@ fn operation(
             node.management_allow = ranges(args, "management-allow", &node.management_allow)?;
             node.rpc_allow = ranges(args, "rpc-allow", &node.rpc_allow)?;
             node.metrics_allow = ranges(args, "metrics-allow", &node.metrics_allow)?;
-            let facts = crate::chains::eth::rpc::facts(&session)?;
+            let facts = crate::node::host::facts(&session)?;
             let vars = preparation_variables(&node, network, &facts, verb)?;
             node = store.update_near_rpc(&node).map_err(|e| e.to_string())?;
             let inventory = json!({"all":{"hosts":{node.name.clone():vars}}}).to_string();
@@ -688,7 +688,7 @@ mod journal_tests {
             ssh_port: 22,
             ..Default::default()
         };
-        let facts = crate::chains::eth::rpc::Facts::parse(
+        let facts = crate::node::host::Facts::parse(
             "os=ubuntu 24.04\nmachine=x86_64\nmem_kb=131072000\ncpus=16\nsudo=yes\ncontroller=192.0.2.1\nssh_port=22\n",
         );
         for verb in ["deploy", "update", "update-config"] {
@@ -755,15 +755,13 @@ mod journal_tests {
         };
         let observed = "os=ubuntu 24.04\nmachine=x86_64\nmem_kb=32000000\ncpus=16\nsudo=yes\ncontroller=192.0.2.1\n";
         for port in [22, 2222] {
-            let facts =
-                crate::chains::eth::rpc::Facts::parse(&format!("{observed}ssh_port={port}\n"));
+            let facts = crate::node::host::Facts::parse(&format!("{observed}ssh_port={port}\n"));
             let vars = super::variables(&node, network, &facts).unwrap();
             assert_eq!(vars["near_ssh_port"], port);
             assert_eq!(node.ssh_port, 2222);
         }
         for value in ["", "0", "invalid", "65536"] {
-            let facts =
-                crate::chains::eth::rpc::Facts::parse(&format!("{observed}ssh_port={value}\n"));
+            let facts = crate::node::host::Facts::parse(&format!("{observed}ssh_port={value}\n"));
             assert!(
                 super::variables(&node, network, &facts)
                     .unwrap_err()
@@ -771,12 +769,7 @@ mod journal_tests {
             );
         }
         assert!(
-            super::variables(
-                &node,
-                network,
-                &crate::chains::eth::rpc::Facts::parse(observed)
-            )
-            .is_err()
+            super::variables(&node, network, &crate::node::host::Facts::parse(observed)).is_err()
         );
     }
 

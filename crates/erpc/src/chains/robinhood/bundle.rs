@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Complete immutable source profile and public-only Robinhood Defensive run inventories.
-use crate::chains::eth::rpc::Facts;
+use crate::node::host::Facts;
 use erpc_chain::inventory::robinhood_validator::Validator;
 use erpc_chain_nitro::robinhood_validator::{
     Deployment, Network, helper_files, helpers_digest, request_digest,

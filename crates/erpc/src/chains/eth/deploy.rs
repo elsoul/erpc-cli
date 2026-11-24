@@ -24,11 +24,12 @@ use serde_json::{Map, Value, json};
 
 use crate::account::commands::Outcome;
 use crate::chains::eth::ops::{Status, head_line, read_status};
-use crate::chains::eth::rpc::{Facts, Opened, RunVars, facts, find, open, run_play, target};
+use crate::chains::eth::rpc::{Opened, RunVars, find, open, refusals, run_play, target};
 use crate::cli::error::CliError;
 use crate::node::common::{Say, go_ahead};
 use crate::node::host::Login;
 use crate::node::host::allow_list;
+use crate::node::host::{Facts, facts};
 
 /// What a change to a node was asked to do.
 #[derive(Debug, Clone, Default)]
@@ -87,7 +88,7 @@ fn reach(args: &Args, say: &Say) -> Result<Reached, String> {
     let target = target(&node, &args.login)?;
     let session = Session::open(&target).map_err(|e| e.to_string())?;
     let facts = facts(&session)?;
-    let refusals = facts.refusals();
+    let refusals = refusals(&facts);
     if !refusals.is_empty() {
         return Err(format!("{}: {}", node.name, refusals.join("; ")));
     }

@@ -5,9 +5,9 @@
 
 use crate::{
     account::commands::Outcome,
-    chains::eth::rpc::Facts,
     chains::kaia::owned::{self, Node},
     node::common::{self, Say},
+    node::host::Facts,
 };
 use clap::ArgMatches;
 use erpc_auth::store::one_password::OpCli;
@@ -387,7 +387,7 @@ fn init(network: Network, args: &ArgMatches, say: &Say, validator: bool) -> Resu
     network.qualify(&node.version)?;
     let target = target(&node, args)?;
     let session = Session::open(&target).map_err(|e| e.to_string())?;
-    let facts = crate::chains::eth::rpc::facts(&session)?;
+    let facts = crate::node::host::facts(&session)?;
     let platform = host_check(&facts)?;
     if node.id.is_some() && node.platform != platform {
         return Err("stored Kaia platform differs from host".into());
@@ -503,7 +503,7 @@ impl DeploymentOperations for HostDeployment<'_> {
         crate::chains::kaia::signer::restore(self.session, self.node, self.network).map(|_| ())
     }
     fn configure(&mut self, verb: &str, args: &ArgMatches) -> Result<(), String> {
-        let facts = crate::chains::eth::rpc::facts(self.session)?;
+        let facts = crate::node::host::facts(self.session)?;
         host_check(&facts)?;
         if verb == "update" {
             let wanted = one(args, "version").ok_or("update requires --version")?;

@@ -94,8 +94,8 @@ fn target(node: &RollupRpc, args: &ArgMatches) -> Result<Target, String> {
         &crate::node::host::Login::from_args(args),
     )
 }
-fn facts(session: &Session) -> Result<(crate::chains::eth::rpc::Facts, Architecture), String> {
-    let facts = crate::chains::eth::rpc::facts(session)?;
+fn facts(session: &Session) -> Result<(crate::node::host::Facts, Architecture), String> {
+    let facts = crate::node::host::facts(session)?;
     if !["ubuntu 24.04", "ubuntu 26.04"].contains(&facts.os.as_str())
         || !facts.sudo
         || facts.mem_kb < 63_000_000
@@ -168,7 +168,7 @@ fn follow(
 fn firewall(
     node: &RollupRpc,
     profile: Profile,
-    facts: &crate::chains::eth::rpc::Facts,
+    facts: &crate::node::host::Facts,
     session: &Session,
     target: &Target,
     say: &Say,

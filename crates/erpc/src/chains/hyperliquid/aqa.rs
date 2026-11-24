@@ -188,8 +188,8 @@ fn control(session: &Session, value: &Value) -> Result<Value, String> {
         .map_err(|_| "AQA control refused; original authority and custody remain retained")?;
     serde_json::from_slice(&response.stdout).map_err(|_| "invalid public publisher response".into())
 }
-fn facts(session: &Session) -> Result<crate::chains::eth::rpc::Facts, String> {
-    let value = crate::chains::eth::rpc::facts(session)?;
+fn facts(session: &Session) -> Result<crate::node::host::Facts, String> {
+    let value = crate::node::host::facts(session)?;
     if value.os != "ubuntu 24.04"
         || value.machine != "x86_64"
         || !value.sudo
@@ -203,7 +203,7 @@ fn facts(session: &Session) -> Result<crate::chains::eth::rpc::Facts, String> {
 }
 fn inventory(
     node: &Publisher,
-    facts: &crate::chains::eth::rpc::Facts,
+    facts: &crate::node::host::Facts,
     value: &Value,
 ) -> Result<String, String> {
     let mut v4 = Vec::new();
@@ -1106,7 +1106,7 @@ mod tests {
     fn observed_server_port_and_exact_policy_and_helper_digest_are_carried() {
         let node = fixture();
         let request = request(&node, "prepare", Some(&"a".repeat(32))).unwrap();
-        let mut facts = crate::chains::eth::rpc::Facts {
+        let mut facts = crate::node::host::Facts {
             os: "ubuntu 24.04".into(),
             machine: "x86_64".into(),
             cpus: 2,
@@ -1114,7 +1114,7 @@ mod tests {
             sudo: true,
             controller: "192.0.2.10".into(),
             ssh_port: 2200,
-            ..crate::chains::eth::rpc::Facts::default()
+            ..crate::node::host::Facts::default()
         };
         let vars: Value =
             serde_json::from_str(&inventory(&node, &facts, &request).unwrap()).unwrap();

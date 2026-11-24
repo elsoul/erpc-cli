@@ -88,8 +88,8 @@ fn settings(node: &mut MonadNode, args: &ArgMatches) -> Result<(), String> {
     }
     Ok(())
 }
-fn facts(session: &Session) -> Result<crate::chains::eth::rpc::Facts, String> {
-    let f = crate::chains::eth::rpc::facts(session)?;
+fn facts(session: &Session) -> Result<crate::node::host::Facts, String> {
+    let f = crate::node::host::facts(session)?;
     if f.os != "ubuntu 24.04"
         || f.machine != "x86_64"
         || !f.sudo
@@ -103,7 +103,7 @@ fn facts(session: &Session) -> Result<crate::chains::eth::rpc::Facts, String> {
 }
 fn inventory(
     node: &MonadNode,
-    f: &crate::chains::eth::rpc::Facts,
+    f: &crate::node::host::Facts,
     intent: &str,
     initial: bool,
     initialize_device: bool,

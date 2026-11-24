@@ -5,9 +5,9 @@
 use crate::node::host::Login;
 use crate::{
     account::commands::Outcome,
-    chains::eth::rpc::Facts,
     cli::error::CliError,
     node::common::{self, Say},
+    node::host::Facts,
 };
 use erpc_chain::inventory::sui::SuiNode;
 use erpc_chain_sui::validator::{self, Metadata};

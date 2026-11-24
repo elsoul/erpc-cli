@@ -9,11 +9,11 @@
 //! written: a chain says where its node listens ([`Endpoint`]) and passes
 //! the operator's [`Login`].
 
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 
 use clap::ArgMatches;
-use erpc_ssh::{HostKey, Identity, Target};
+use erpc_ssh::{HostKey, Identity, RemoteCommand, Session, Target};
 
 use crate::node::common::agent_socket;
 
@@ -162,6 +162,70 @@ pub(crate) fn allow_list(
     Ok(out)
 }
 
+/// A host's facts, as `key=value` lines from a remote facts script.
+/// [`facts`] runs [`RemoteCommand::EthFacts`], which measures `data_free_kb`
+/// at `/var/lib/ethereum`. Polygon, Sui, Tron and Solana's native hosts run
+/// the same script with their own data directory instead, and parse it into
+/// this type.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Facts {
+    pub(crate) os: String,
+    pub(crate) machine: String,
+    pub(crate) mem_kb: u64,
+    pub(crate) cpus: u32,
+    /// How many of AVX2, BMI2, FMA and MOVBE the processor has.
+    pub(crate) x86_64_v3: u32,
+    pub(crate) root_free_kb: u64,
+    pub(crate) data_free_kb: Option<u64>,
+    pub(crate) controller: String,
+    pub(crate) ssh_port: u16,
+    pub(crate) sudo: bool,
+}
+
+impl Facts {
+    pub(crate) fn parse(text: &str) -> Self {
+        let mut f = Self::default();
+        for line in text.lines() {
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
+            let value = value.trim();
+            match key {
+                "os" => value.clone_into(&mut f.os),
+                "machine" => value.clone_into(&mut f.machine),
+                "mem_kb" => f.mem_kb = value.parse().unwrap_or(0),
+                "cpus" => f.cpus = value.parse().unwrap_or(0),
+                "x86_64_v3" => f.x86_64_v3 = value.parse().unwrap_or(0),
+                "root_free_kb" => f.root_free_kb = value.parse().unwrap_or(0),
+                "data_free_kb" => f.data_free_kb = value.parse().ok(),
+                "controller" => value.clone_into(&mut f.controller),
+                "ssh_port" => f.ssh_port = value.parse().unwrap_or(0),
+                "sudo" => f.sudo = value == "yes",
+                _ => {}
+            }
+        }
+        f
+    }
+
+    /// The controller's address, as the node sees erpc's connection.
+    pub(crate) fn controller_ip(&self) -> Result<IpAddr, String> {
+        self.controller.parse().map_err(|_| {
+            format!(
+                "could not read the address erpc connects from ({:?}); the firewall needs it",
+                self.controller
+            )
+        })
+    }
+}
+
+/// Reads the host's facts.
+pub(crate) fn facts(session: &Session) -> Result<Facts, String> {
+    let out = session
+        .run(&RemoteCommand::EthFacts, None)
+        .map_err(|e| e.to_string())?;
+    Ok(Facts::parse(&String::from_utf8_lossy(&out.stdout)))
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
@@ -169,7 +233,9 @@ mod tests {
     use clap::{Arg, Command};
     use erpc_ssh::{HostKey, Identity};
 
-    use super::{Endpoint, Login, NO_SSH_KEY, allow_list, checked_target, lockout_warning, target};
+    use super::{
+        Endpoint, Facts, Login, NO_SSH_KEY, allow_list, checked_target, lockout_warning, target,
+    };
 
     const HOST_KEY: &str =
         "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINUFbvp9NNSqiS0AfqlG4aRt4PZ125MdCaIRGfMurzG/";
@@ -299,5 +365,33 @@ mod tests {
             allow_list("rpc", &["0.0.0.0/0".to_owned()], true).expect("open"),
             ["0.0.0.0/0"]
         );
+    }
+
+    #[test]
+    fn facts_are_read_from_their_lines_and_anything_unreadable_is_a_default() {
+        let f = Facts::parse(
+            "os=ubuntu 24.04\nmachine=x86_64\nmem_kb=131000000\ncpus=32\nx86_64_v3=4\n\
+             root_free_kb=400000000\ndata_free_kb=\ncontroller=203.0.113.7\nssh_port=2222\n\
+             sudo=yes\nnot a fact\nunknown=1\n",
+        );
+        assert_eq!(
+            (f.os.as_str(), f.machine.as_str()),
+            ("ubuntu 24.04", "x86_64")
+        );
+        assert_eq!((f.mem_kb, f.cpus, f.x86_64_v3), (131_000_000, 32, 4));
+        assert_eq!((f.root_free_kb, f.data_free_kb), (400_000_000, None));
+        assert_eq!(
+            (f.controller.as_str(), f.ssh_port, f.sudo),
+            ("203.0.113.7", 2222, true)
+        );
+        let unreadable = Facts::parse("mem_kb=lots\nssh_port=-1\nsudo=maybe\n");
+        assert_eq!(unreadable, Facts::default());
+    }
+
+    #[test]
+    fn the_controller_address_is_read_or_refused() {
+        let f = Facts::parse("controller=203.0.113.7\n");
+        assert_eq!(f.controller_ip().expect("ip").to_string(), "203.0.113.7");
+        assert!(Facts::default().controller_ip().is_err());
     }
 }
