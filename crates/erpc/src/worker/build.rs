@@ -956,6 +956,8 @@ mod tests {
     /// returns what it found.
     fn child(probe: &str, app: &std::path::Path, env: &[(&str, &std::ffi::OsStr)]) -> String {
         let out = app.with_file_name("found");
+        // Left by an earlier child, it would stand in for one that did not run.
+        let _ = std::fs::remove_file(&out);
         // libtest names a test by its path without the crate's name.
         let (_, module) = module_path!().split_once("::").expect("a crate's module");
         let probe_child = format!("{module}::probe_child");
@@ -970,7 +972,9 @@ mod tests {
             .status()
             .expect("the child");
         assert!(status.success(), "the child failed: {status}");
-        std::fs::read_to_string(&out).unwrap_or_default()
+        // The child writes this whenever it runs, if only an empty line: a
+        // missing file means `--exact` named no test, and nothing was probed.
+        std::fs::read_to_string(&out).expect("what the child found")
     }
 
     /// A `rust-version` the app takes from the workspace it is a member of
