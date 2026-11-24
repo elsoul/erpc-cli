@@ -285,38 +285,50 @@ fn descend(homes: bool, depth: usize, start_dev: u64, dev: u64) -> Option<u64> {
     }
 }
 
-/// Who can reach a directory, as the modes of the directories above it
-/// allow.
-#[derive(Clone, Copy)]
-struct Reach {
-    others: bool,
-    group: bool,
-}
+/// The directories above a file, from the root down, as their groups and
+/// modes: who can pass through them to it.
+#[derive(Clone, Default)]
+struct Reach(Vec<(u32, u32)>);
 
 impl Reach {
-    const ALL: Self = Self {
-        others: true,
-        group: true,
-    };
-
-    /// The reach of a directory with `mode` inside this one.
-    const fn through(self, mode: u32) -> Self {
-        Self {
-            others: self.others && mode & 0o001 != 0,
-            group: self.group && mode & 0o011 != 0,
-        }
+    /// The reach of a directory with `gid` and `mode` inside this one.
+    fn through(&self, gid: u32, mode: u32) -> Self {
+        let mut dirs = self.0.clone();
+        dirs.push((gid, mode));
+        Self(dirs)
     }
 
-    /// Who can read a file with `mode` in a directory of this reach.
-    const fn access(self, mode: u32) -> Access {
-        if self.others && mode & 0o004 != 0 {
+    /// Who can read a file with `gid` and `mode` in a directory of this
+    /// reach, from permission bits and groups alone. Every account when
+    /// others may pass every directory and read the file; its group when
+    /// the group may read it and pass every directory, through the group
+    /// bits of a directory of the same group and the others bits of any
+    /// other; otherwise its owner. An account that owns a directory above
+    /// the file is not considered, nor are access control lists.
+    fn access(&self, gid: u32, mode: u32) -> Access {
+        let others = self.0.iter().all(|&(_, dir)| dir & 0o001 != 0);
+        let group = self
+            .0
+            .iter()
+            .all(|&(dir_gid, dir)| dir & if dir_gid == gid { 0o010 } else { 0o001 } != 0);
+        if others && mode & 0o004 != 0 {
             Access::World
-        } else if self.group && mode & 0o040 != 0 {
+        } else if group && mode & 0o040 != 0 {
             Access::Group
         } else {
             Access::OwnerOnly
         }
     }
+}
+
+/// The identity files running validators were given.
+#[derive(Default)]
+pub(super) struct Identities {
+    /// The files, with the validators that were given them.
+    pub(super) given: Vec<Given>,
+    /// Whether a validator runs whose identity file could not be told, so
+    /// a key may be its identity without being known as one.
+    pub(super) undetermined: bool,
 }
 
 /// The identity file a running validator was given.
@@ -334,7 +346,7 @@ pub(super) fn search(
     root: &Path,
     budget: Budget,
     scan: &super::procs::Scan,
-    identities: &[Given],
+    identities: &Identities,
 ) -> (Keys, Places) {
     let mut search = walk::Search::new(root, budget);
     search.identities(identities);
@@ -354,7 +366,7 @@ pub(super) fn search(
     _root: &Path,
     _budget: Budget,
     _scan: &super::procs::Scan,
-    _identities: &[Given],
+    _identities: &Identities,
 ) -> (Keys, Places) {
     (Keys::unreadable(), Places::default())
 }
@@ -374,7 +386,7 @@ mod walk {
     use rustix::fs::{Dir, FileType, Mode, OFlags};
 
     use super::{
-        Budget, Buffer, CHAIN_DATA, FILE_LIMIT, Found, Given, MAX_DEPTH, Places, Reach,
+        Budget, Buffer, CHAIN_DATA, FILE_LIMIT, Found, Identities, MAX_DEPTH, Places, Reach,
         SKIPPED_PATHS, Start, TAIL_LIMIT, descend, place,
     };
     use crate::node::security::secrets;
@@ -394,73 +406,126 @@ mod walk {
         Other,
     }
 
-    /// Opens `name` in the directory `dir` (or a path, with
-    /// [`rustix::fs::CWD`]): a directory to list, or a regular file to read.
-    /// On Linux the entry is first opened as a path only, which opens no
-    /// device and waits on no pipe; only a directory or a regular file is
-    /// then opened for reading, through that same descriptor.
+    /// An entry held but not yet open to read: on Linux a path-only
+    /// descriptor, which opens no device and waits on no pipe, so its kind,
+    /// owner, size and filesystem are known before anything is read.
+    pub(super) struct Entry {
+        handle: File,
+        pub(super) meta: Metadata,
+    }
+
+    /// Holds `name` in the directory `dir`, or a path with
+    /// [`rustix::fs::CWD`].
     #[cfg(target_os = "linux")]
-    pub(super) fn open_entry(
+    pub(super) fn hold(
         dir: impl rustix::fd::AsFd,
         name: &CStr,
         follow: bool,
-    ) -> std::io::Result<Opened> {
+    ) -> std::io::Result<Entry> {
         let mut flags = OFlags::PATH | OFlags::CLOEXEC;
         if !follow {
             flags |= OFlags::NOFOLLOW;
         }
-        let path = File::from(rustix::fs::openat(dir, name, flags, Mode::empty())?);
-        let meta = path.metadata()?;
-        // An error from here on is a loss of view, never a file gone.
-        let reopen = |e: std::io::Error| std::io::Error::other(e.to_string());
-        if meta.is_dir() {
-            let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
-            let fd = rustix::fs::openat(&path, c".", flags, Mode::empty())
-                .map_err(|e| reopen(e.into()))?;
-            Ok(Opened::Dir(fd, meta))
-        } else if meta.is_file() {
-            // The descriptor's own link in /proc names this very file.
-            use std::os::fd::AsRawFd as _;
-            use std::os::unix::fs::OpenOptionsExt as _;
-            let file = std::fs::OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY)
-                .open(format!("/proc/self/fd/{}", path.as_raw_fd()))
-                .map_err(reopen)?;
-            Ok(Opened::File(file, meta))
-        } else {
-            Ok(Opened::Other)
-        }
+        let handle = File::from(rustix::fs::openat(dir, name, flags, Mode::empty())?);
+        let meta = handle.metadata()?;
+        Ok(Entry { handle, meta })
     }
 
-    /// Elsewhere there is no path-only open; the check itself runs on Linux
-    /// only, and this serves the tests.
+    /// Elsewhere there is no path-only open, so the entry is opened as it
+    /// is held; the check itself runs on Linux only, and this serves the
+    /// tests.
     #[cfg(not(target_os = "linux"))]
-    pub(super) fn open_entry(
+    pub(super) fn hold(
         dir: impl rustix::fd::AsFd,
         name: &CStr,
         follow: bool,
-    ) -> std::io::Result<Opened> {
+    ) -> std::io::Result<Entry> {
         let nofollow = if follow {
             OFlags::empty()
         } else {
             OFlags::NOFOLLOW
         };
         let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | nofollow;
-        match rustix::fs::openat(&dir, name, flags, Mode::empty()) {
-            Ok(fd) => {
-                let file = File::from(fd);
-                let meta = file.metadata()?;
-                return Ok(Opened::Dir(file.into(), meta));
+        let fd = match rustix::fs::openat(&dir, name, flags, Mode::empty()) {
+            Ok(fd) => fd,
+            Err(rustix::io::Errno::NOTDIR) => {
+                let flags =
+                    OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOCTTY | OFlags::CLOEXEC | nofollow;
+                rustix::fs::openat(&dir, name, flags, Mode::empty())?
             }
-            Err(rustix::io::Errno::NOTDIR) => {}
             Err(e) => return Err(e.into()),
+        };
+        let handle = File::from(fd);
+        let meta = handle.metadata()?;
+        Ok(Entry { handle, meta })
+    }
+
+    /// An error once an entry is held is a loss of view, never a file gone.
+    fn lost(error: impl std::fmt::Display) -> std::io::Error {
+        std::io::Error::other(error.to_string())
+    }
+
+    impl Entry {
+        /// The directory held, opened to list without changing its access
+        /// time where that is allowed.
+        #[cfg(target_os = "linux")]
+        pub(super) fn into_dir(self) -> std::io::Result<OwnedFd> {
+            let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
+            match rustix::fs::openat(&self.handle, c".", flags | OFlags::NOATIME, Mode::empty()) {
+                Err(rustix::io::Errno::PERM) => {
+                    rustix::fs::openat(&self.handle, c".", flags, Mode::empty()).map_err(lost)
+                }
+                opened => opened.map_err(lost),
+            }
         }
-        let flags = OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOCTTY | OFlags::CLOEXEC | nofollow;
-        let file = File::from(rustix::fs::openat(&dir, name, flags, Mode::empty())?);
-        let meta = file.metadata()?;
-        Ok(if meta.is_file() {
-            Opened::File(file, meta)
+
+        /// The regular file held, opened to read through the descriptor's
+        /// own link in /proc, which names this very file, without changing
+        /// its access time where that is allowed.
+        #[cfg(target_os = "linux")]
+        fn into_file(self) -> std::io::Result<File> {
+            use std::os::fd::AsRawFd as _;
+            use std::os::unix::fs::OpenOptionsExt as _;
+            let link = format!("/proc/self/fd/{}", self.handle.as_raw_fd());
+            let open = |flags: i32| {
+                std::fs::OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY | flags)
+                    .open(&link)
+            };
+            match open(libc::O_NOATIME) {
+                Err(e) if e.raw_os_error() == Some(libc::EPERM) => open(0).map_err(lost),
+                opened => opened.map_err(lost),
+            }
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        #[allow(clippy::unnecessary_wraps)] // Linux's signature, where it can fail.
+        pub(super) fn into_dir(self) -> std::io::Result<OwnedFd> {
+            Ok(self.handle.into())
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        #[allow(clippy::unnecessary_wraps)] // Linux's signature, where it can fail.
+        fn into_file(self) -> std::io::Result<File> {
+            Ok(self.handle)
+        }
+    }
+
+    /// Opens `name` in the directory `dir`, or a path with
+    /// [`rustix::fs::CWD`]: a directory to list, or a regular file to read.
+    /// Anything else is held, never opened to read.
+    pub(super) fn open_entry(
+        dir: impl rustix::fd::AsFd,
+        name: &CStr,
+        follow: bool,
+    ) -> std::io::Result<Opened> {
+        let entry = hold(dir, name, follow)?;
+        let meta = entry.meta.clone();
+        Ok(if meta.is_dir() {
+            Opened::Dir(entry.into_dir()?, meta)
+        } else if meta.is_file() {
+            Opened::File(entry.into_file()?, meta)
         } else {
             Opened::Other
         })
@@ -493,15 +558,16 @@ mod walk {
         0x1980_0202,
     ];
 
-    /// Whether `file` is on one of [`KERNEL_FILESYSTEMS`], or its
+    /// Whether the entry is on one of [`KERNEL_FILESYSTEMS`], or its
     /// filesystem cannot be told.
     #[cfg(target_os = "linux")]
-    pub(super) fn kernel_file(file: &File) -> bool {
-        rustix::fs::fstatfs(file).map_or(true, |fs| KERNEL_FILESYSTEMS.contains(&fs.f_type))
+    pub(super) fn kernel_file(entry: &Entry) -> bool {
+        rustix::fs::fstatfs(&entry.handle)
+            .map_or(true, |fs| KERNEL_FILESYSTEMS.contains(&fs.f_type))
     }
 
     #[cfg(not(target_os = "linux"))]
-    pub(super) fn kernel_file(_file: &File) -> bool {
+    pub(super) fn kernel_file(_entry: &Entry) -> bool {
         false
     }
 
@@ -585,29 +651,34 @@ mod walk {
         /// runs as root, and no more of it than its size. So a program
         /// merely named like a validator cannot point this at a file its
         /// user does not own.
-        pub(super) fn identities(&mut self, givens: &[Given]) {
-            for given in givens {
+        pub(super) fn identities(&mut self, identities: &Identities) {
+            // A validator whose identity file is not known.
+            self.partial |= identities.undetermined;
+            for given in &identities.given {
                 let Some(uid) = process_uid(&given.process) else {
                     // The process ended, or its status cannot be read.
                     self.partial |= given.process.exists();
                     continue;
                 };
-                let pubkey = rustix::ffi::CString::new(given.file.as_os_str().as_bytes())
+                // Everything about the file is checked on the held entry,
+                // before the file is opened to read.
+                let pubkey = std::ffi::CString::new(given.file.as_os_str().as_bytes())
                     .map_err(std::io::Error::other)
-                    .and_then(|path| open_entry(rustix::fs::CWD, &path, true))
-                    .and_then(|opened| match opened {
-                        Opened::File(file, meta)
-                            if (uid == 0 || meta.uid() == uid)
-                                && (1..=FILE_LIMIT as u64).contains(&meta.len())
-                                && !kernel_file(&file) =>
+                    .and_then(|path| hold(rustix::fs::CWD, &path, true))
+                    .and_then(|entry| {
+                        let meta = &entry.meta;
+                        let size = meta.len();
+                        if !meta.is_file()
+                            || !(uid == 0 || meta.uid() == uid)
+                            || !(1..=FILE_LIMIT as u64).contains(&size)
+                            || kernel_file(&entry)
                         {
-                            let mut sized = std::io::Read::take(file, meta.len());
-                            self.buffer
-                                .read(&mut sized, FILE_LIMIT, true, secrets::solana_pubkey)
-                                .map(|pubkey| Some(pubkey.flatten()))
+                            return Ok(None);
                         }
-                        // Not a file this reads.
-                        Opened::File(..) | Opened::Dir(..) | Opened::Other => Ok(None),
+                        let mut sized = std::io::Read::take(entry.into_file()?, size);
+                        self.buffer
+                            .read(&mut sized, FILE_LIMIT, true, secrets::solana_pubkey)
+                            .map(|pubkey| Some(pubkey.flatten()))
                     });
                 match pubkey {
                     Ok(Some(Some(pubkey))) => {
@@ -662,7 +733,7 @@ mod walk {
         /// cannot be read or is a link.
         fn reach_of(&self, path: &str) -> Option<Reach> {
             let mut at = self.root.to_path_buf();
-            let mut reach = Reach::ALL;
+            let mut reach = Reach::default();
             let parts: Vec<_> = Path::new(path).components().collect();
             for part in std::iter::once(None).chain(parts.iter().map(Some)) {
                 if let Some(part) = part {
@@ -672,7 +743,7 @@ mod walk {
                 if meta.file_type().is_symlink() {
                     return None;
                 }
-                reach = reach.through(meta.mode());
+                reach = reach.through(meta.gid(), meta.mode());
             }
             Some(reach)
         }
@@ -695,9 +766,10 @@ mod walk {
                 }
             }
             let reach = self.reach_of(start.path);
-            let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-            let opened = rustix::fs::open(&path, flags, Mode::empty())
-                .map_err(std::io::Error::from)
+            let opened = std::ffi::CString::new(path.as_os_str().as_bytes())
+                .map_err(std::io::Error::other)
+                .and_then(|path| hold(rustix::fs::CWD, &path, false))
+                .and_then(Entry::into_dir)
                 .and_then(|fd| {
                     let file = File::from(fd);
                     let meta = file.metadata()?;
@@ -777,13 +849,13 @@ mod walk {
                             dir,
                             path,
                             dev,
-                            reach: frame.reach.through(meta.mode()),
+                            reach: frame.reach.through(meta.gid(), meta.mode()),
                             depth: frame.depth + 1,
                         }
                     }
                     Ok(Opened::File(file, meta)) => {
-                        let reach = frame.reach;
-                        self.file(&path, name.to_bytes(), file, &meta, reach, start.location);
+                        let reach = frame.reach.clone();
+                        self.file(&path, name.to_bytes(), file, &meta, &reach, start.location);
                         continue;
                     }
                     Ok(Opened::Other) => continue,
@@ -812,14 +884,14 @@ mod walk {
             name: &[u8],
             mut file: File,
             meta: &Metadata,
-            reach: Reach,
+            reach: &Reach,
             location: KeyLocation,
         ) {
             let history = is_history(path, name);
             if meta.len() == 0 || (!history && meta.len() > FILE_LIMIT as u64) {
                 return;
             }
-            let access = reach.access(meta.mode());
+            let access = reach.access(meta.gid(), meta.mode());
             let found = if history {
                 let skip = meta.len().saturating_sub(TAIL_LIMIT as u64);
                 if skip > 0 {
@@ -931,7 +1003,9 @@ pub(super) mod tests {
     use super::super::procs::{Budget, Scan};
     use super::super::secrets::tests::{array_with, hex_key, phrase};
     use super::walk::{Opened, link, open_entry};
-    use super::{BUDGET, Found, Given, MAX_DEPTH, Reach, TAIL_LIMIT, descend, printable, search};
+    use super::{
+        BUDGET, Found, Given, Identities, MAX_DEPTH, Reach, TAIL_LIMIT, descend, printable, search,
+    };
 
     fn write(root: &Path, path: &str, contents: &[u8], mode: u32) {
         let path = root.join(path);
@@ -1091,11 +1165,19 @@ pub(super) mod tests {
     }
 
     /// The identity file `file` under the root, as process `pid` was given it.
-    fn given(root: &Path, pid: u32, file: &str) -> Given {
-        Given {
-            process: root.join(format!("proc/{pid}")),
-            file: root.join(file),
+    fn given(root: &Path, pid: u32, file: &str) -> Identities {
+        Identities {
+            given: vec![Given {
+                process: root.join(format!("proc/{pid}")),
+                file: root.join(file),
+            }],
+            undetermined: false,
         }
+    }
+
+    /// No validator.
+    fn none() -> Identities {
+        Identities::default()
     }
 
     fn scan(pids: &[u32]) -> Scan {
@@ -1116,13 +1198,13 @@ pub(super) mod tests {
 
         let host = key_host("keys-found");
         let identity = given(&host.root, 41, "home/sol/validator-keypair.json");
-        let (keys, places) = search(&host.root, BUDGET, &scan(&[41]), &[identity]);
+        let (keys, places) = search(&host.root, BUDGET, &scan(&[41]), &identity);
         assert_eq!(
             groups(&keys),
             [
                 (K::SolanaKeypair, R::ValidatorIdentity, L::Home, A::Group, 1),
                 (K::SolanaKeypair, R::Unknown, L::Home, A::OwnerOnly, 2),
-                (K::SolanaKeypair, R::Unknown, L::Docker, A::Group, 1),
+                (K::SolanaKeypair, R::Unknown, L::Docker, A::OwnerOnly, 1),
                 (K::EvmPrivateKey, R::Unknown, L::Home, A::OwnerOnly, 1),
                 (K::EvmPrivateKey, R::Unknown, L::Var, A::World, 1),
                 (K::EvmPrivateKey, R::Unknown, L::Tmp, A::World, 1),
@@ -1177,7 +1259,7 @@ pub(super) mod tests {
     #[test]
     fn without_the_identity_its_keypair_is_a_wallet_key() {
         let host = key_host("keys-no-identity");
-        let (keys, _) = search(&host.root, BUDGET, &scan(&[]), &[]);
+        let (keys, _) = search(&host.root, BUDGET, &scan(&[]), &none());
         let groups = groups(&keys);
         assert!(groups.contains(&(
             KeyKind::SolanaKeypair,
@@ -1197,20 +1279,20 @@ pub(super) mod tests {
             entries: 5,
             time: Duration::from_secs(20),
         };
-        let (keys, _) = search(&host.root, small, &scan(&[41]), &[]);
+        let (keys, _) = search(&host.root, small, &scan(&[41]), &none());
         assert_eq!(keys.coverage(), Coverage::Partial);
 
         let unlisted = Scan {
             listed: false,
             ..scan(&[])
         };
-        let (keys, _) = search(&host.root, BUDGET, &unlisted, &[]);
+        let (keys, _) = search(&host.root, BUDGET, &unlisted, &none());
         assert_eq!(keys.coverage(), Coverage::Partial);
 
         // A process whose environment cannot be read.
         std::fs::create_dir_all(host.root.join("proc/42/environ"))
             .unwrap_or_else(|e| panic!("{e}"));
-        let (keys, _) = search(&host.root, BUDGET, &scan(&[42]), &[]);
+        let (keys, _) = search(&host.root, BUDGET, &scan(&[42]), &none());
         assert_eq!(keys.coverage(), Coverage::Partial);
         let _ = std::fs::remove_dir_all(&host.root);
     }
@@ -1227,7 +1309,7 @@ pub(super) mod tests {
         );
         write(&root, "etc/hostname", b"node\n", 0o644);
         symlink("elsewhere", root.join("home")).unwrap_or_else(|e| panic!("{e}"));
-        let (keys, _) = search(&root, BUDGET, &scan(&[]), &[]);
+        let (keys, _) = search(&root, BUDGET, &scan(&[]), &none());
         assert!(keys.items().is_empty());
         assert_eq!(keys.coverage(), Coverage::Partial);
         let _ = std::fs::remove_dir_all(&root);
@@ -1236,30 +1318,36 @@ pub(super) mod tests {
     #[test]
     fn nothing_to_read_is_unreadable_and_nothing_found_is_complete() {
         let root = crate::node::security::fixture("keys-empty");
-        let (keys, _) = search(&root, BUDGET, &scan(&[]), &[]);
+        let (keys, _) = search(&root, BUDGET, &scan(&[]), &none());
         assert_eq!(keys.coverage(), Coverage::Unreadable);
         write(&root, "etc/hostname", b"node\n", 0o644);
         chmod(&root, 0o755);
-        let (keys, places) = search(&root, BUDGET, &scan(&[]), &[]);
+        let (keys, places) = search(&root, BUDGET, &scan(&[]), &none());
         assert_eq!(keys.coverage(), Coverage::Complete);
         assert!(keys.items().is_empty() && places.of(0).is_none());
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn access_is_the_narrowest_the_modes_allow() {
-        let open = Reach::ALL.through(0o755);
-        assert_eq!(open.access(0o644), Access::World);
-        assert_eq!(open.access(0o640), Access::Group);
-        assert_eq!(open.access(0o600), Access::OwnerOnly);
-        let group = open.through(0o750);
-        assert_eq!(group.access(0o644), Access::Group);
-        assert_eq!(group.access(0o604), Access::OwnerOnly);
-        let closed = open.through(0o700);
-        assert_eq!(closed.access(0o666), Access::OwnerOnly);
-        // Docker's directories let only their group, or others, pass.
-        let docker = open.through(0o710).through(0o701);
-        assert_eq!(docker.access(0o644), Access::Group);
+    fn access_is_the_narrowest_the_modes_and_groups_allow() {
+        // Group 0 is root's, 50 a staff group, 1000 a person's.
+        let open = Reach::default().through(0, 0o755);
+        assert_eq!(open.access(0, 0o644), Access::World);
+        assert_eq!(open.access(0, 0o640), Access::Group);
+        assert_eq!(open.access(0, 0o600), Access::OwnerOnly);
+        let home = open.through(1000, 0o750);
+        assert_eq!(home.access(1000, 0o644), Access::Group);
+        assert_eq!(home.access(1000, 0o604), Access::OwnerOnly);
+        // The group of another directory passes it as others do.
+        assert_eq!(home.access(50, 0o640), Access::OwnerOnly);
+        let shared = open.through(1000, 0o751);
+        assert_eq!(shared.access(50, 0o640), Access::Group);
+        let closed = open.through(1000, 0o700);
+        assert_eq!(closed.access(1000, 0o666), Access::OwnerOnly);
+        // Docker's 0710 and 0701 directories let no group but root's pass.
+        let docker = open.through(0, 0o710).through(0, 0o701);
+        assert_eq!(docker.access(0, 0o644), Access::OwnerOnly);
+        assert_eq!(open.through(0, 0o710).access(0, 0o640), Access::Group);
     }
 
     #[test]
@@ -1353,7 +1441,7 @@ pub(super) mod tests {
         }
         status(&root, 7, own_uid(&root));
         let identity = given(&root, 7, "home/sol/identity.json");
-        let (keys, places) = search(&root, BUDGET, &scan(&[]), &[identity]);
+        let (keys, places) = search(&root, BUDGET, &scan(&[]), &identity);
         assert_eq!(
             groups(&keys),
             [(
@@ -1378,7 +1466,7 @@ pub(super) mod tests {
         let root = crate::node::security::fixture("keys-unreadable");
         chmod(&root, 0o755);
         write(&root, "etc/hostname", b"node\n", 0o644);
-        let complete = search(&root, BUDGET, &scan(&[]), &[]).0;
+        let complete = search(&root, BUDGET, &scan(&[]), &none()).0;
         assert_eq!(complete.coverage(), Coverage::Complete);
 
         let hidden = root.join("mnt/id.json");
@@ -1393,9 +1481,9 @@ pub(super) mod tests {
             let _ = std::fs::remove_dir_all(&root);
             return;
         }
-        let identity = search(&root, BUDGET, &scan(&[]), &[given(&root, 9, "mnt/id.json")]).0;
+        let identity = search(&root, BUDGET, &scan(&[]), &given(&root, 9, "mnt/id.json")).0;
         assert_eq!(identity.coverage(), Coverage::Partial);
-        let unread = |root: &Path| search(root, BUDGET, &scan(&[]), &[]).0.coverage();
+        let unread = |root: &Path| search(root, BUDGET, &scan(&[]), &none()).0.coverage();
         assert_eq!(unread(&root), Coverage::Partial);
         chmod(&root.join("etc/private"), 0o755);
         assert_eq!(unread(&root), Coverage::Partial, "the file alone");
@@ -1412,7 +1500,7 @@ pub(super) mod tests {
         chmod(&root, 0o755);
         let deepest = (0..=MAX_DEPTH).fold(root.join("opt"), |path, _| path.join("d"));
         std::fs::create_dir_all(&deepest).unwrap_or_else(|e| panic!("{e}"));
-        let coverage = |root: &Path| search(root, BUDGET, &scan(&[]), &[]).0.coverage();
+        let coverage = |root: &Path| search(root, BUDGET, &scan(&[]), &none()).0.coverage();
         assert_eq!(coverage(&root), Coverage::Partial);
         std::fs::remove_dir(&deepest).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(coverage(&root), Coverage::Complete);
@@ -1472,7 +1560,7 @@ pub(super) mod tests {
         write(&root, "home/sol/empty.json", b"", 0o600);
         let uid = own_uid(&root);
         let role = |pid: u32, file: &str| {
-            let (keys, _) = search(&root, BUDGET, &scan(&[]), &[given(&root, pid, file)]);
+            let (keys, _) = search(&root, BUDGET, &scan(&[]), &given(&root, pid, file));
             let roles: Vec<KeyRole> = keys.items().iter().map(|g| g.role).collect();
             (roles, keys.coverage())
         };
@@ -1509,14 +1597,44 @@ pub(super) mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn kernel_filesystems_are_told_apart() {
-        use super::walk::kernel_file;
+        use super::walk::{hold, kernel_file};
 
-        let open = |path: &str| std::fs::File::open(path).unwrap_or_else(|e| panic!("{e}"));
-        assert!(kernel_file(&open("/proc/self/status")));
+        let held = |path: &Path| {
+            let path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
+                .unwrap_or_else(|e| panic!("{e}"));
+            hold(rustix::fs::CWD, &path, true).unwrap_or_else(|e| panic!("{e}"))
+        };
+        assert!(kernel_file(&held(Path::new("/proc/self/status"))));
         let root = crate::node::security::fixture("keys-kernel-fs");
-        write(&root, "id.json", b"[]", 0o644);
-        let file = std::fs::File::open(root.join("id.json")).unwrap_or_else(|e| panic!("{e}"));
-        assert!(!kernel_file(&file));
+        chmod(&root, 0o755);
+        write(&root, "etc/hostname", b"node\n", 0o644);
+        assert!(!kernel_file(&held(&root.join("etc/hostname"))));
+        // A validator of this user named a kernel file it owns: it is not
+        // read, and the search says it could not tell.
+        status(&root, 15, own_uid(&root));
+        let kernel = Identities {
+            given: vec![Given {
+                process: root.join("proc/15"),
+                file: "/proc/self/status".into(),
+            }],
+            undetermined: false,
+        };
+        let (keys, _) = search(&root, BUDGET, &scan(&[]), &kernel);
+        assert_eq!(keys.coverage(), Coverage::Partial);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_validator_whose_identity_is_unknown_makes_the_search_partial() {
+        let root = crate::node::security::fixture("keys-undetermined");
+        chmod(&root, 0o755);
+        write(&root, "etc/hostname", b"node\n", 0o644);
+        let unknown = Identities {
+            given: Vec::new(),
+            undetermined: true,
+        };
+        let (keys, _) = search(&root, BUDGET, &scan(&[]), &unknown);
+        assert_eq!(keys.coverage(), Coverage::Partial);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1528,7 +1646,7 @@ pub(super) mod tests {
         let mut environ = format!("PRIVATE_KEY={}\0", hex_key()).into_bytes();
         environ.resize(TAIL_LIMIT + 1, b'x');
         write(&root, "proc/43/environ", &environ, 0o644);
-        let (keys, _) = search(&root, BUDGET, &scan(&[43]), &[]);
+        let (keys, _) = search(&root, BUDGET, &scan(&[43]), &none());
         assert_eq!(keys.coverage(), Coverage::Partial);
         assert!(keys.items().is_empty());
         let _ = std::fs::remove_dir_all(&root);
@@ -1546,7 +1664,7 @@ pub(super) mod tests {
         let history = format!("{early}{cut}{}\n{last}", "l".repeat(filler - 1));
         assert_eq!(history.len() - TAIL_LIMIT, early.len() + 50);
         write(&root, "root/.bash_history", history.as_bytes(), 0o600);
-        let (keys, _) = search(&root, BUDGET, &scan(&[]), &[]);
+        let (keys, _) = search(&root, BUDGET, &scan(&[]), &none());
         assert_eq!(
             groups(&keys),
             [(

@@ -150,7 +150,7 @@ fn owner(uid: u32) -> Owner {
 const CMDLINE_LIMIT: u64 = 256 * 1024;
 
 /// The validators running, and the identity files they were given.
-fn solana_nodes(host: &Host, scan: &procs::Scan) -> (SolanaNodes, Vec<keys::Given>) {
+fn solana_nodes(host: &Host, scan: &procs::Scan) -> (SolanaNodes, keys::Identities) {
     let mut pids: Vec<(u32, SolanaApp)> = scan
         .apps
         .iter()
@@ -175,34 +175,38 @@ fn solana_nodes(host: &Host, scan: &procs::Scan) -> (SolanaNodes, Vec<keys::Give
             },
             Vec::new(),
         );
-        return (nodes, Vec::new());
+        return (nodes, keys::Identities::default());
     }
     pids.sort_unstable();
     let mut partial = !scan.listed;
     let mut nodes = Vec::new();
-    let mut identities = Vec::new();
+    let mut identities = keys::Identities::default();
     for (pid, app) in pids {
         // Firedancer reads its settings from a file this check does not
         // parse; the listeners still show what it opened.
         if app == SolanaApp::Firedancer {
             partial = true;
+            identities.undetermined = true;
             continue;
         }
         let dir = host.proc().join(pid.to_string());
         let Some(cmdline) = read_bytes(&dir.join("cmdline"), CMDLINE_LIMIT) else {
             partial = true;
+            identities.undetermined = true;
             continue;
         };
         let args = solana::arguments(&cmdline);
         let cwd = std::fs::read_link(dir.join("cwd")).ok();
-        nodes.push(solana::node(app, &args, |path| {
+        let node = solana::node(app, &args, |path| {
             let (on_disk, file) = identity_file(&host.root, cwd.as_deref(), path);
-            identities.extend(file.map(|file| keys::Given {
+            identities.given.extend(file.map(|file| keys::Given {
                 process: dir.clone(),
                 file,
             }));
             on_disk
-        }));
+        });
+        identities.undetermined |= node.identity_on_disk == Tristate::Unknown;
+        nodes.push(node);
     }
     let nodes = SolanaNodes::new(
         if partial {
@@ -484,5 +488,15 @@ mod tests {
         }
         assert!(!format!("{inventory:?}").contains(root.as_ref()));
         let _ = std::fs::remove_dir_all(&keys.root);
+    }
+
+    #[test]
+    fn a_validator_whose_identity_cannot_be_told_leaves_the_keys_partial() {
+        let root = super::fixture("firedancer");
+        write(&root.join("etc/hostname"), "node\n");
+        write(&root.join("proc/50/comm"), "fdctl\n");
+        let (inventory, _) = collect(&host(&root));
+        assert_eq!(inventory.keys.coverage(), Coverage::Partial);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

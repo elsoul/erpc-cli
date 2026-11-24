@@ -328,23 +328,25 @@ fn is_base58(b: u8) -> bool {
 }
 
 /// Whether a command line sets a secret's variable, such as
-/// `export PRIVATE_KEY=…`, to a value written out.
+/// `export PRIVATE_KEY=…`, to a value written out. The line is taken a
+/// word at a time and each byte looked at once, so a line built to be slow
+/// costs no more than its length.
 fn assigns_secret(line: &[u8]) -> bool {
-    line.iter().enumerate().any(|(eq, &b)| {
-        if b != b'=' {
-            return false;
+    line.split(u8::is_ascii_whitespace).any(|word| {
+        // Where the name that ends at the next `=` starts.
+        let mut start = 0;
+        for (at, &b) in word.iter().enumerate() {
+            if b == b'=' {
+                let name = &word[start..at];
+                if !name.is_empty() && is_secret_name(name) && is_written_out(&word[at + 1..]) {
+                    return true;
+                }
+            }
+            if !is_name_byte(b) {
+                start = at + 1;
+            }
         }
-        let start = line[..eq]
-            .iter()
-            .rposition(|&b| !is_name_byte(b))
-            .map_or(0, |i| i + 1);
-        let name = &line[start..eq];
-        let value = &line[eq + 1..];
-        let end = value
-            .iter()
-            .position(u8::is_ascii_whitespace)
-            .unwrap_or(value.len());
-        !name.is_empty() && is_secret_name(name) && is_written_out(&value[..end])
+        false
     })
 }
 
@@ -574,5 +576,31 @@ pub(super) mod tests {
         );
         assert_eq!(history_secret_lines(history.as_bytes()), 4);
         assert_eq!(history_secret_lines(b"git log --oneline\n"), 0);
+        assert_eq!(history_secret_lines(b"a=b PRIVATE_KEY=x=y\n"), 1);
+    }
+
+    #[test]
+    fn a_line_built_to_be_slow_is_checked_in_time_with_its_length() {
+        // Each of these took time growing with the square of its length.
+        let mib = 1024 * 1024;
+        let lines: [Vec<u8>; 4] = [
+            vec![b'='; mib],
+            b"PRIVATE_KEY=$".repeat(mib / 13),
+            b"a=".repeat(mib / 2),
+            [vec![b'A'; mib], b"=x".to_vec()].concat(),
+        ];
+        let started = std::time::Instant::now();
+        let mut found = Vec::new();
+        for line in &lines {
+            found.push(history_secret_lines(line));
+            assert_eq!(environ_secrets(line), 0);
+            assert!(classify(b".env", line).is_none());
+        }
+        assert_eq!(found, [0, 0, 0, 0]);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "took {:?}",
+            started.elapsed()
+        );
     }
 }

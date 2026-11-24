@@ -144,14 +144,18 @@ The key search opens each directory and file relative to the directory it
 was listed in. It does not follow symbolic links or cross into another
 filesystem, though each directory in `/home` may be one of its own, and it
 reads only directories and regular files: it opens no device and waits on
-no pipe. It skips Docker's image layers and every directory named `ledger`,
-`accounts`, `snapshots`, `rocksdb`, `chaindata`, `geth`, `nodes` or `data`,
-where chains keep their databases, so a key kept in one of those is not
-found. It reads files of up to 64 KiB, the last 1 MiB of a history and
+no pipe. It skips Docker's `overlay2` image layers and every directory named
+`ledger`, `accounts`, `snapshots`, `rocksdb`, `chaindata`, `geth`, `nodes` or
+`data`, where chains keep their databases, so a key kept in one of those is
+not found. It reads files of up to 64 KiB, the last 1 MiB of a history and
 process environments of up to 1 MiB, goes at most 48 directories deep, and
-stops after 200,000 entries or 20 seconds. Running out of time or entries,
-a deeper tree, a larger environment, or a directory, file, environment or
-identity file it may not read makes it report the search as partial.
+stops after 200,000 entries or 20 seconds, counted between one entry and
+the next. Running out of time or entries, a deeper tree, a larger
+environment, a validator whose identity file it cannot tell, or a
+directory, file, environment or identity file it may not read makes it
+report the search as partial. It opens files and directories without
+updating their access times where the system allows it, as it always does
+for root.
 
 A Solana keypair counts as the validator identity when its public key,
 worked out on the server, is that of the identity file a running validator
@@ -161,9 +165,12 @@ filesystem. It is read only if it is a regular file of at most 64 KiB, not
 on a kernel filesystem such as `/proc` or `/sys`, and owned by the
 validator's user unless the validator runs as root; otherwise the search is
 reported as partial. Who can read a key is judged from the permission bits
-of the file and of the directories above it, not from access control lists.
-Each file's contents go into one buffer that is wiped after the file is
-checked.
+and groups of the file and of the directories above it: everyone when
+others may pass every directory and read the file, its group when the group
+may read it and pass every directory, and otherwise its owner. That is an
+approximation: an account that owns a directory above the file, and access
+control lists, are not taken into account. Each file's contents go into one
+buffer that is wiped after the file is checked.
 
 What goes to ERPC is that list in a fixed form: port numbers, address
 classes such as loopback or public, program kinds such as `agave_validator`,
