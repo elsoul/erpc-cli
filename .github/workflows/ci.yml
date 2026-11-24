@@ -135,6 +135,12 @@ jobs:
       - name: Test the opt-in Node Check
         if: ${{ !cancelled() }}
         run: cargo nextest run --locked -p erpc -p erpc-api --features erpc/node-check-pilot --no-fail-fast -E 'test(node_check) | binary(node_check_entry)'
+      - name: Lint the opt-in security check
+        if: ${{ !cancelled() }}
+        run: cargo clippy --locked -p erpc -p erpc-api --all-targets --features erpc/security-check-pilot -- -D warnings
+      - name: Test the opt-in security check
+        if: ${{ !cancelled() }}
+        run: cargo nextest run --locked -p erpc -p erpc-api --features erpc/security-check-pilot --no-fail-fast -E 'test(security) | binary(security_check_entry)'
 
   # The worker agents erpc embeds are cross-built with zig before every
   # release build (.github/build-setup.yml) on cargo-dist's four runners; both

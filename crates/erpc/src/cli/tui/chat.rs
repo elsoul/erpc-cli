@@ -983,6 +983,10 @@ impl App {
             return None;
         }
         self.set_input(String::new());
+        if crate::ai::is_security_check_command(&text) {
+            self.note(Tone::Warn, crate::ai::security_check_reply());
+            return None;
+        }
         if crate::ai::is_node_check_command(&text) {
             #[cfg(feature = "node-check-pilot")]
             {
@@ -1790,6 +1794,27 @@ mod tests {
             Some(Action::Send("What is a node check?".to_owned()))
         );
         assert!(!crate::command_reference().contains("--node-check"));
+    }
+
+    #[test]
+    fn security_check_stays_local_in_every_build() {
+        let mut app = app();
+        for text in ["/security-check", "/security-check vps:1 check everything"] {
+            app.set_input(text.to_owned());
+            assert_eq!(app.submit(), None);
+            assert!(app.recall.is_empty());
+            assert!(app.queue.is_empty());
+        }
+        let said = if cfg!(feature = "security-check-pilot") {
+            "erpc ai --security-check"
+        } else {
+            "Unknown command: /security-check"
+        };
+        assert!(matches!(
+            app.entries.last(),
+            Some(super::Entry::Note(super::Tone::Warn, message)) if message.contains(said)
+        ));
+        assert!(!crate::command_reference().contains("--security-check"));
     }
 
     #[cfg(feature = "node-check-pilot")]

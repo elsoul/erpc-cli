@@ -97,6 +97,23 @@ pub(crate) fn is_node_check_command(text: &str) -> bool {
     text.split_whitespace().next() == Some(NODE_CHECK_COMMAND)
 }
 
+/// Reserved in all builds, like the node check, so it never goes to chat.
+pub(crate) const SECURITY_CHECK_COMMAND: &str = "/security-check";
+
+pub(crate) fn is_security_check_command(text: &str) -> bool {
+    text.split_whitespace().next() == Some(SECURITY_CHECK_COMMAND)
+}
+
+/// What the console says to `/security-check`: the check runs from its own
+/// menu, on the server to be checked.
+pub(crate) fn security_check_reply() -> String {
+    if cfg!(feature = "security-check-pilot") {
+        t!("security_check.console_only")
+    } else {
+        t!("tui.unknown_command", command = SECURITY_CHECK_COMMAND)
+    }
+}
+
 /// Runs `erpc ai`, bare `erpc`, and `erpc resume`. `size` puts every turn
 /// on one model size; none, and each turn's words decide it.
 pub async fn run(
@@ -139,6 +156,9 @@ pub async fn run(
             t!("tui.unknown_command", command = NODE_CHECK_COMMAND)
         };
         return Outcome::Usage(message);
+    }
+    if one_shot.as_deref().is_some_and(is_security_check_command) {
+        return Outcome::Usage(security_check_reply());
     }
 
     if let Some(text) = one_shot {

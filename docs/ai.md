@@ -95,6 +95,46 @@ network reachability. If the RPC runs in another network namespace, run
 the CLI in that namespace. Other ports and network namespaces are
 outside the check's scope.
 
+## Server security check (pilot builds)
+
+Standard releases omit this check. Anyone can compile it by enabling the
+`security-check-pilot` Cargo feature. Completing a check requires signing
+in, and the server decides which accounts and servers can be checked.
+
+With the feature enabled, run `erpc ai --security-check` on a Linux server
+you rent from ERPC. The menu lists the account's servers; pick the one the
+command runs on, and confirm that you own it or are authorized to test it
+and will not resell the check. The menu takes no host, address or other
+arguments, and it starts on **Cancel**. In all builds, input whose first
+word is `/security-check` stays local, including with `--message` or piped
+input.
+
+The check has two parts. ERPC scans the picked server's ports from outside.
+On the server itself, `erpc` reads, without changing anything or starting
+any program:
+
+- the listening TCP sockets and bound UDP sockets of the current network
+  namespace, on every port, and the program that holds each one;
+- the RPC settings on a Solana validator's command line;
+- the SSH server's settings in `sshd_config` and the files it includes;
+- the host firewall's configuration (ufw, firewalld, nftables), not the
+  rules the kernel holds now;
+- the operating system's release, the kernel's release, and the versions of
+  a fixed list of installed Debian packages.
+
+What goes to ERPC is that list in a fixed form: port numbers, address
+classes such as loopback or public, program kinds such as `agave_validator`,
+settings such as whether SSH accepts passwords, and version numbers.
+Addresses, paths, command lines and file contents stay on the server. Run
+it as root to read every process; otherwise the report says that part of
+the server could not be read.
+
+The report names each finding from a catalog built into `erpc`, with what
+to do about it, and adds the details from this server on your screen. It
+covers the ports ERPC's scanners can reach and what could be read at that
+moment. It does not try exploits or passwords, and it does not change the
+server.
+
 ## Wallet: `erpc wallet`
 
 `erpc wallet create` sets up your one Base wallet. It uses the ERPC wallet

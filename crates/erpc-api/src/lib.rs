@@ -21,6 +21,8 @@ pub mod gasless;
 pub mod hourly;
 #[cfg(feature = "node-check-pilot")]
 pub mod node_check;
+#[cfg(feature = "security-check-pilot")]
+pub mod security_check;
 pub mod storage;
 pub mod udp;
 pub mod worker;

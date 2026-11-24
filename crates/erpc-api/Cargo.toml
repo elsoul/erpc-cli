@@ -15,6 +15,7 @@ publish = true
 
 [features]
 node-check-pilot = []
+security-check-pilot = []
 
 [dependencies]
 erpc-core = { workspace = true }

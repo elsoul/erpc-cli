@@ -186,6 +186,10 @@ enum Command {
         #[cfg(feature = "node-check-pilot")]
         #[arg(long, conflicts_with_all = ["message", "continue_last", "model"])]
         node_check: bool,
+        /// Open the server security check menu.
+        #[cfg(feature = "security-check-pilot")]
+        #[arg(long, conflicts_with_all = ["message", "continue_last", "model"])]
+        security_check: bool,
     },
     /// Continue a saved conversation. Without an id, pick one from a list.
     Resume {
@@ -272,9 +276,9 @@ pub fn command_reference() -> String {
             let mut usage = full.clone();
             for arg in sub.get_arguments() {
                 let id = arg.get_id().as_str();
-                // The node check is an operator-only action, outside the assistant's prompt.
+                // The checks are operator-only actions, outside the assistant's prompt.
                 if matches!(id, "json" | "help" | "version" | "args")
-                    || (name == "ai" && id == "node_check")
+                    || (name == "ai" && matches!(id, "node_check" | "security_check"))
                 {
                     continue;
                 }
@@ -558,10 +562,16 @@ async fn dispatch(cli: Cli) -> ExitCode {
             model,
             #[cfg(feature = "node-check-pilot")]
             node_check,
+            #[cfg(feature = "security-check-pilot")]
+            security_check,
         } => {
             #[cfg(feature = "node-check-pilot")]
             if node_check {
                 return finish(node::check::menu(cli.json).await);
+            }
+            #[cfg(feature = "security-check-pilot")]
+            if security_check {
+                return finish(node::security::menu::menu(cli.json).await);
             }
             let start = if continue_last {
                 ai::Start::Latest
@@ -589,16 +599,7 @@ async fn dispatch(cli: Cli) -> ExitCode {
             node::tree::run(erpc_core::chain::Role::Rpc, &args, cli.json).await
         }
         Command::Webhook { action } => rpc::webhook::run(action, cli.json).await,
-        Command::Completions { shell } => {
-            let mut buffer = Vec::new();
-            clap_complete::generate(
-                shell,
-                &mut <Cli as clap::CommandFactory>::command(),
-                "erpc",
-                &mut buffer,
-            );
-            account::commands::Outcome::Done(String::from_utf8_lossy(&buffer).into_owned())
-        }
+        Command::Completions { shell } => completions(shell),
         Command::Node { args } => {
             node::tree::run(erpc_core::chain::Role::Node, &args, cli.json).await
         }
@@ -633,6 +634,18 @@ async fn dispatch(cli: Cli) -> ExitCode {
         ai::skills::notice_once();
     }
     code
+}
+
+/// `erpc completions <shell>`: the script, as the outcome's text.
+fn completions(shell: clap_complete::Shell) -> account::commands::Outcome {
+    let mut buffer = Vec::new();
+    clap_complete::generate(
+        shell,
+        &mut <Cli as clap::CommandFactory>::command(),
+        "erpc",
+        &mut buffer,
+    );
+    account::commands::Outcome::Done(String::from_utf8_lossy(&buffer).into_owned())
 }
 
 /// `erpc version`, with the digests of the worker agents this erpc

@@ -13,4 +13,6 @@ pub(crate) mod help;
 pub(crate) mod host;
 pub(crate) mod nodes;
 pub(crate) mod report;
+#[cfg(feature = "security-check-pilot")]
+pub(crate) mod security;
 pub(crate) mod tree;

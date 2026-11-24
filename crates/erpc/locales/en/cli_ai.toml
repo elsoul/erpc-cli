@@ -6,3 +6,4 @@
 "ai --continue" = "Continue the most recent conversation: in the console, or with `-m` or a question piped in, which is then saved to it"
 "ai --model" = "Put every turn on one model size: small, medium, large or xlarge, the most capable, which uses tokens at 2x. Without it, each turn's words decide"
 "ai --node-check" = "Open the local Solana RPC listener check menu"
+"ai --security-check" = "Open the server security check menu"
