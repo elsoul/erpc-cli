@@ -22,9 +22,22 @@ const SECRET_NAMES: &[&[u8]] = &[
 ];
 
 /// Starts of a value that points to a secret kept elsewhere rather than
-/// holding it: a password manager, a keychain, a keystore, or a shell
-/// expansion such as `${…}`.
-const REFERENCES: &[&[u8]] = &[b"op://", b"keychain:", b"keystore:", b"$"];
+/// holding it: a password manager, a keychain, a keystore, a shell
+/// expansion such as `${…}`, or a file's path.
+const REFERENCES: &[&[u8]] = &[
+    b"op://",
+    b"keychain:",
+    b"keystore:",
+    b"$",
+    b"/",
+    b"~/",
+    b"./",
+    b"../",
+];
+
+/// Ends of a variable's name that say it holds where a secret is, not the
+/// secret, such as `KEYPAIR_PATH`.
+const LOCATION_NAMES: &[&[u8]] = &[b"_PATH", b"_FILE", b"_DIR"];
 
 /// What a file holds.
 #[derive(Debug, PartialEq, Eq)]
@@ -346,9 +359,13 @@ fn is_name(name: &[u8]) -> bool {
 }
 
 fn is_secret_name(name: &[u8]) -> bool {
-    SECRET_NAMES
-        .iter()
-        .any(|secret| contains_ignore_case(name, secret))
+    let location = LOCATION_NAMES.iter().any(|end| {
+        name.len() >= end.len() && name[name.len() - end.len()..].eq_ignore_ascii_case(end)
+    });
+    !location
+        && SECRET_NAMES
+            .iter()
+            .any(|secret| contains_ignore_case(name, secret))
 }
 
 /// Whether a variable's value is the secret itself: not empty, and not a
@@ -519,7 +536,9 @@ pub(super) mod tests {
         let file = format!(
             "# PRIVATE_KEY={key}\nexport PRIVATE_KEY={key}\nBOT_MNEMONIC=\"{words}\"\nSOLANA_KEYPAIR='{key}'\n\
              SECRET_KEY=op://vault/item/field\nWALLET_KEY=${{WALLET_KEY_FILE}}\nSEED_PHRASE=keychain:seed\n\
-             KEYPAIR_PATH=keystore:bot\nEMPTY_PRIVATE_KEY=\nQUOTED_PRIVATE_KEY=\"\"\nLOG_LEVEL=info\n",
+             KEYPAIR_PATH=keystore:bot\nEMPTY_PRIVATE_KEY=\nQUOTED_PRIVATE_KEY=\"\"\nLOG_LEVEL=info\n\
+             SOLANA_KEYPAIR=~/.config/solana/id.json\nVALIDATOR_KEYPAIR=/home/sol/id.json\n\
+             PRIVATE_KEY=./deployer.key\nKEYPAIR_FILE=id.json\nwallet_key_dir={key}\n",
             words = phrase(12)
         );
         for name in [".env", "bot.env", "environment"] {
@@ -534,8 +553,9 @@ pub(super) mod tests {
     #[test]
     fn process_environments_count_secrets_written_out() {
         let key = hex_key();
-        let environ =
-            format!("PATH=/usr/bin\0PRIVATE_KEY={key}\0SEED_PHRASE=op://v/i/f\0HOME=/root\0");
+        let environ = format!(
+            "PATH=/usr/bin\0PRIVATE_KEY={key}\0SEED_PHRASE=op://v/i/f\0HOME=/root\0KEYPAIR=/run/keys/id.json\0"
+        );
         assert_eq!(environ_secrets(environ.as_bytes()), 1);
         assert_eq!(environ_secrets(b"PATH=/usr/bin\0WALLET_KEY=\0"), 0);
     }
@@ -548,7 +568,8 @@ pub(super) mod tests {
         let history = format!(
             "ls -la\ncast send --private-key 0x{key} 0xab\nimport-key {secret}\n\
              export PRIVATE_KEY=abc\nexport PRIVATE_KEY=\"$(op read op://v/i/f)\"\n\
-             echo {short}\nunset PRIVATE_KEY\n: 1700000000:0;WALLET_KEY=xyz ./bot\n",
+             echo {short}\nunset PRIVATE_KEY\n: 1700000000:0;WALLET_KEY=xyz ./bot\n\
+             export SOLANA_KEYPAIR=~/.config/solana/id.json\nKEYPAIR_PATH=id.json ./bot\n",
             short = &key[1..]
         );
         assert_eq!(history_secret_lines(history.as_bytes()), 4);

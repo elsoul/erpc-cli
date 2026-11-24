@@ -149,9 +149,8 @@ fn owner(uid: u32) -> Owner {
 
 const CMDLINE_LIMIT: u64 = 256 * 1024;
 
-/// The validators running, and the identity files they were given, as
-/// paths under the root.
-fn solana_nodes(host: &Host, scan: &procs::Scan) -> (SolanaNodes, Vec<PathBuf>) {
+/// The validators running, and the identity files they were given.
+fn solana_nodes(host: &Host, scan: &procs::Scan) -> (SolanaNodes, Vec<keys::Given>) {
     let mut pids: Vec<(u32, SolanaApp)> = scan
         .apps
         .iter()
@@ -198,7 +197,10 @@ fn solana_nodes(host: &Host, scan: &procs::Scan) -> (SolanaNodes, Vec<PathBuf>) 
         let cwd = std::fs::read_link(dir.join("cwd")).ok();
         nodes.push(solana::node(app, &args, |path| {
             let (on_disk, file) = identity_file(&host.root, cwd.as_deref(), path);
-            identities.extend(file);
+            identities.extend(file.map(|file| keys::Given {
+                process: dir.clone(),
+                file,
+            }));
             on_disk
         }));
     }

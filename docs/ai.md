@@ -130,7 +130,9 @@ any program:
   of `.env`, `*.env` and `environment` files that set a variable whose name
   contains `PRIVATE_KEY`, `SECRET_KEY`, `MNEMONIC`, `SEED_PHRASE`, `KEYPAIR`
   or `WALLET_KEY` to a value written out rather than an `op://`,
-  `keychain:`, `keystore:` or `$` reference;
+  `keychain:`, `keystore:` or `$` reference or a path starting with `/`,
+  `~/`, `./` or `../` (a name ending in `_PATH`, `_FILE` or `_DIR` is not
+  counted either);
 - the same variables, set to a value, in the environments of running
   processes;
 - lines of bash, zsh and fish histories that hold 64 hexadecimal digits in a
@@ -155,10 +157,13 @@ A Solana keypair counts as the validator identity when its public key,
 worked out on the server, is that of the identity file a running validator
 was given. That identity file is the one read outside the rules above: it is
 read where the validator reads it, through symbolic links and on any
-filesystem, though only if it is a regular file. Who can read a key is
-judged from the permission bits of the file and of the directories above
-it, not from access control lists. Each file's contents go into one buffer
-that is wiped after the file is checked.
+filesystem. It is read only if it is a regular file of at most 64 KiB, not
+on a kernel filesystem such as `/proc` or `/sys`, and owned by the
+validator's user unless the validator runs as root; otherwise the search is
+reported as partial. Who can read a key is judged from the permission bits
+of the file and of the directories above it, not from access control lists.
+Each file's contents go into one buffer that is wiped after the file is
+checked.
 
 What goes to ERPC is that list in a fixed form: port numbers, address
 classes such as loopback or public, program kinds such as `agave_validator`,
