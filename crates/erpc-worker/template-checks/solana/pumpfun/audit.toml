@@ -14,6 +14,7 @@ ignore = [
     "RUSTSEC-2024-0384", # 2026-11-11: instant 0.1.13, from backoff 0.4.0, the template's own dependency; unmaintained
     "RUSTSEC-2025-0141", # 2026-11-11: bincode 1.3.3, from the Solana crates; unmaintained, in the lock before the UDP source
     "RUSTSEC-2026-0543", # 2026-11-17: chrono 0.4.45, the template's own dependency and solana-stream-sdk 5.0.0's; unmaintained, every version affected, in the lock before the UDP source
+    "RUSTSEC-2026-0592", # 2026-11-22: url 2.5.8, the template's own dependency and reqwest's, redis', solana-stream-sdk's and tower-http's; fix 2.5.9 too new for the lock until 2026-12-05, then bump and remove; Url::origin() is never called
 ]
 informational_warnings = ["unmaintained", "unsound", "notice"]
 
