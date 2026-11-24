@@ -57,12 +57,35 @@ pub(crate) struct Endpoint<'a> {
 /// The target that logs in to `endpoint` with the operator's key, through
 /// its agent, and accepts only the pinned host key.
 pub(crate) fn target(endpoint: Endpoint<'_>, login: &Login) -> Result<Target, String> {
+    // The missing flag is what to fix first, before the stored key is read.
+    login.ssh_key.as_ref().ok_or(NO_SSH_KEY)?;
+    let host_key = HostKey::parse(endpoint.host_key).map_err(|e| e.to_string())?;
+    checked_target(
+        endpoint.address,
+        endpoint.port,
+        endpoint.user,
+        host_key,
+        login,
+    )
+}
+
+/// As [`target`], with the host key already in hand. This pins whatever key
+/// it is given and checks nothing about it: which key to trust is the
+/// caller's to settle (a stored pin it read, or a key the operator accepted
+/// by `--fingerprint` or at a prompt) before calling this.
+pub(crate) fn checked_target(
+    address: &str,
+    port: u16,
+    user: &str,
+    host_key: HostKey,
+    login: &Login,
+) -> Result<Target, String> {
     let public_key = login.ssh_key.clone().ok_or(NO_SSH_KEY)?;
     Ok(Target {
-        host: endpoint.address.to_owned(),
-        port: endpoint.port,
-        user: endpoint.user.to_owned(),
-        host_key: HostKey::parse(endpoint.host_key).map_err(|e| e.to_string())?,
+        host: address.to_owned(),
+        port,
+        user: user.to_owned(),
+        host_key,
         identity: Identity::Agent {
             socket: agent_socket(login.ssh_agent.as_deref())?,
             public_key,
@@ -146,7 +169,7 @@ mod tests {
     use clap::{Arg, Command};
     use erpc_ssh::{HostKey, Identity};
 
-    use super::{Endpoint, Login, NO_SSH_KEY, allow_list, lockout_warning, target};
+    use super::{Endpoint, Login, NO_SSH_KEY, allow_list, checked_target, lockout_warning, target};
 
     const HOST_KEY: &str =
         "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINUFbvp9NNSqiS0AfqlG4aRt4PZ125MdCaIRGfMurzG/";
@@ -192,6 +215,28 @@ mod tests {
     #[test]
     fn a_host_key_that_does_not_parse_is_refused() {
         assert!(target(endpoint("ssh-ed25519 AAAA"), &login(Some("/k.pub"))).is_err());
+    }
+
+    #[test]
+    fn a_target_given_its_host_key_pins_that_key() {
+        let given = HostKey::parse(HOST_KEY).expect("key");
+        let t = checked_target(
+            "192.0.2.10",
+            22,
+            "ubuntu",
+            given.clone(),
+            &login(Some("/k.pub")),
+        )
+        .expect("target");
+        assert_eq!(
+            (t.host.as_str(), t.port, t.user.as_str()),
+            ("192.0.2.10", 22, "ubuntu")
+        );
+        assert_eq!(t.host_key, given);
+        // Without --ssh-key there is no target, whatever agent is named.
+        let e =
+            checked_target("192.0.2.10", 22, "ubuntu", given, &login(None)).expect_err("no key");
+        assert_eq!(e, NO_SSH_KEY);
     }
 
     #[test]

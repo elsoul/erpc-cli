@@ -6,10 +6,10 @@ use clap::ArgMatches;
 use erpc_chain::inventory::RpcNode;
 use erpc_chain::inventory::arc_validator::ArcValidatorNode;
 use erpc_chain_arc::{key, validator};
-use erpc_ssh::{Identity, Session, Target};
+use erpc_ssh::{Session, Target};
 use serde_json::{Value, json};
 
-use crate::node::common::{Say, agent_socket, check_ubuntu, go_ahead, host_key, save_vault};
+use crate::node::common::{Say, check_ubuntu, go_ahead, host_key, save_vault};
 use crate::{chains::arc::rpc, chains::arc::validator::host, chains::arc::validator::ops};
 
 fn public_profile(
@@ -127,19 +127,13 @@ fn reach(
         ops::string(sub, "fingerprint"),
         say,
     )?;
-    let login = ops::login(sub);
-    let target = Target {
-        host: address.clone(),
+    let target = crate::node::host::checked_target(
+        &address,
         port,
-        user: user.clone(),
-        host_key: offered.clone(),
-        identity: Identity::Agent {
-            socket: agent_socket(login.ssh_agent.as_deref())?,
-            public_key: login
-                .ssh_key
-                .ok_or("--ssh-key must name the login identity's public key")?,
-        },
-    };
+        &user,
+        offered.clone(),
+        &ops::login(sub),
+    )?;
     let session =
         Session::open(&target).map_err(|_| "could not open the original pinned Arc host")?;
     check_ubuntu(&session)?;

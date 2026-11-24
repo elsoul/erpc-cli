@@ -551,7 +551,7 @@ fn run(args: &Args, say: &Say) -> Result<(Host, String, Status), String> {
     let authorized = public_key_line(
         args.ssh_key
             .as_deref()
-            .ok_or("pass --ssh-key <path to the .pub of the key that logs in>")?,
+            .ok_or(crate::node::host::NO_SSH_KEY)?,
     )?;
     let target = target(&host, args)?;
     let session = Session::open(&target).map_err(|e| e.to_string())?;

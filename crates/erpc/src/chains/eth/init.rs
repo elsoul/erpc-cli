@@ -21,7 +21,7 @@ use erpc_chain::inventory::EthRpc;
 use erpc_chain_eth::kind::RpcType;
 use erpc_chain_eth::plays;
 use erpc_chain_eth::releases::{self, Client};
-use erpc_ssh::{Identity, Session, Target};
+use erpc_ssh::Session;
 use serde_json::json;
 
 use crate::account::commands::Outcome;
@@ -29,7 +29,7 @@ use crate::chains::arc::rpc::gb;
 use crate::chains::eth::rpc::{Facts, RunVars, facts, open, rpc_type, run_play};
 use crate::cli::error::CliError;
 use crate::node::common::{
-    FreeDisk, Say, agent_socket, check_ubuntu, free_disks, go_ahead, host_key, save_vault,
+    FreeDisk, Say, check_ubuntu, free_disks, go_ahead, host_key, save_vault,
 };
 use crate::node::host::{Login, allow_list};
 
@@ -413,21 +413,8 @@ async fn init(args: &Args, say: &Say) -> Result<Done, CliError> {
         args.fingerprint.as_deref(),
         say,
     )?;
-    let ssh_key = args
-        .login
-        .ssh_key
-        .clone()
-        .ok_or("pass --ssh-key <path to the .pub of the key that logs in>")?;
-    let target = Target {
-        host: address.clone(),
-        port,
-        user: user.clone(),
-        host_key: key_seen.clone(),
-        identity: Identity::Agent {
-            socket: agent_socket(args.login.ssh_agent.as_deref())?,
-            public_key: ssh_key,
-        },
-    };
+    let target =
+        crate::node::host::checked_target(&address, port, &user, key_seen.clone(), &args.login)?;
     let session = Session::open(&target).map_err(|e| e.to_string())?;
     let os = check_ubuntu(&session)?;
     let facts = facts(&session)?;
