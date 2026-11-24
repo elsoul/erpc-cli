@@ -12,9 +12,10 @@ use erpc_ssh::{RemoteCommand, Session, Stream};
 use serde_json::{Value, json};
 
 use crate::account::commands::Outcome;
-use crate::chains::arc::rpc::{Login, find, open, target};
+use crate::chains::arc::rpc::{find, open, target};
 use crate::cli::error::CliError;
 use crate::node::common::{Say, go_ahead};
+use crate::node::host::Login;
 
 /// The networks Arc has, in the order they are listed.
 const NETWORKS: [&str; 2] = ["mainnet", "testnet"];

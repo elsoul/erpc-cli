@@ -13,7 +13,7 @@ use erpc_auth::store::one_password::OpCli;
 use erpc_chain::inventory::{Store, robinhood_validator::Validator};
 use erpc_chain_nitro::robinhood_validator::{self as validator, Network, Phase};
 use erpc_secret::OpRef;
-use erpc_ssh::{HostKey, Identity, RemoteCommand, Session, Target};
+use erpc_ssh::{RemoteCommand, Session, Target};
 use secrecy::{ExposeSecret, SecretString};
 use serde_json::{Value, json};
 
@@ -59,26 +59,15 @@ fn target(
     key: &str,
     args: &ArgMatches,
 ) -> Result<Target, String> {
-    Ok(Target {
-        host: address.into(),
-        user: user.into(),
-        port,
-        host_key: HostKey::parse(key).map_err(|e| e.to_string())?,
-        identity: Identity::Agent {
-            socket: common::agent_socket(
-                args.try_get_one::<std::path::PathBuf>("ssh-agent")
-                    .ok()
-                    .flatten()
-                    .map(std::path::PathBuf::as_path),
-            )?,
-            public_key: args
-                .try_get_one::<std::path::PathBuf>("ssh-key")
-                .ok()
-                .flatten()
-                .ok_or("pass --ssh-key with the operator public key")?
-                .clone(),
+    crate::node::host::target(
+        crate::node::host::Endpoint {
+            address,
+            port,
+            user,
+            host_key: key,
         },
-    })
+        &crate::node::host::Login::from_args(args),
+    )
 }
 fn owned_target(node: &Validator, args: &ArgMatches) -> Result<Target, String> {
     target(
@@ -558,7 +547,7 @@ fn management(args: &ArgMatches, old: &[String]) -> Result<Vec<String>, String> 
         .ok()
         .flatten()
         .map_or_else(|| old.to_vec(), |v| v.cloned().collect());
-    crate::chains::arc::rpc::allow_list("management", &values, false)
+    crate::node::host::allow_list("management", &values, false)
 }
 fn deployment_order(
     desired: Phase,

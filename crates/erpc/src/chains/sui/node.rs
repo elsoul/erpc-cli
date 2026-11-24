@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Sui orchestration using the existing pinned SSH, remote runs and 1Password store.
+use crate::node::host::Login;
 use crate::{
     account::commands::Outcome,
-    chains::eth::rpc::{Facts, Login},
+    chains::eth::rpc::Facts,
     cli::error::CliError,
     node::common::{self, Say},
 };
@@ -16,7 +17,7 @@ use erpc_chain_sui::{
 };
 use erpc_ops::bundle::Bundle;
 use erpc_ssh::sui::{Command, Confirmation, Contract};
-use erpc_ssh::{HostKey, Identity, RemoteCommand, Session, Target};
+use erpc_ssh::{RemoteCommand, Session, Target};
 use secrecy::ExposeSecret as _;
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
@@ -50,19 +51,15 @@ pub(crate) struct Args {
 }
 
 fn target(node: &SuiNode, login: &Login) -> Result<Target, String> {
-    Ok(Target {
-        host: node.address.clone(),
-        port: node.ssh_port,
-        user: node.ssh_user.clone(),
-        host_key: HostKey::parse(&node.host_key).map_err(|e| e.to_string())?,
-        identity: Identity::Agent {
-            socket: common::agent_socket(login.ssh_agent.as_deref())?,
-            public_key: login
-                .ssh_key
-                .clone()
-                .ok_or("pass --ssh-key with the login public key")?,
+    crate::node::host::target(
+        crate::node::host::Endpoint {
+            address: &node.address,
+            port: node.ssh_port,
+            user: &node.ssh_user,
+            host_key: &node.host_key,
         },
-    })
+        login,
+    )
 }
 fn facts(session: &Session) -> Result<Facts, String> {
     let out = session
@@ -99,7 +96,7 @@ fn allow_lists(node: &mut SuiNode, args: &Args) -> Result<(), String> {
         ),
     ] {
         if let Some(values) = flag {
-            *field = crate::chains::arc::rpc::allow_list(name, values, false)?;
+            *field = crate::node::host::allow_list(name, values, false)?;
         }
     }
     Ok(())
@@ -128,7 +125,7 @@ fn vars(node: &SuiNode, net: Network, facts: &Facts, phase: &str) -> Result<Valu
         ("stored management ranges", &node.management_allow),
         ("stored monitoring ranges", &node.monitoring_allow),
     ] {
-        crate::chains::arc::rpc::allow_list(name, list, false)?;
+        crate::node::host::allow_list(name, list, false)?;
     }
 
     if node.role == "validator" {

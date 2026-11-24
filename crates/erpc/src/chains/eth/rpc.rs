@@ -3,11 +3,10 @@
 
 //! What the `erpc r --chain eth` verbs share: the network's vault and RPC
 //! nodes, reaching a node, its facts, the variables and bundle of a run,
-//! running a play to its end, and the firewall confirmation. The allow-list
-//! check is Arc's ([`crate::chains::arc::rpc::allow_list`]).
+//! running a play to its end, and the firewall confirmation. Logging in
+//! and the allow-list check are every chain's ([`crate::node::host`]).
 
 use std::net::IpAddr;
-use std::path::PathBuf;
 
 use erpc_auth::store::one_password::OpCli;
 use erpc_chain::inventory::{EthRpc, Store};
@@ -15,25 +14,17 @@ use erpc_chain_eth::kind::RpcType;
 use erpc_chain_eth::network::Network;
 use erpc_chain_eth::releases::{self, Client, Platform};
 use erpc_ops::bundle::{Built, Bundle};
-use erpc_ssh::{HostKey, Identity, RemoteCommand, Session, Target};
+use erpc_ssh::{RemoteCommand, Session, Target};
 use serde_json::{Map, Value, json};
 
-use crate::node::common::{Say, agent_socket, op_runner, store, vault_for};
+use crate::node::common::{Say, op_runner, store, vault_for};
+use crate::node::host::Login;
 
 /// The chain, as the inventory names it.
 pub(crate) const CHAIN: &str = "eth";
 /// Memory below which a node is refused: a Reth and Lighthouse node wants
 /// 32 GB, and a 32 GB machine reports a little less.
 pub(crate) const MIN_MEMORY_KB: u64 = 30_000_000;
-
-/// How to log in: the operator's key in its agent.
-#[derive(Debug, Clone, Default)]
-pub(crate) struct Login {
-    /// The `.pub` file of the key that logs in.
-    pub(crate) ssh_key: Option<PathBuf>,
-    /// The agent's socket.
-    pub(crate) ssh_agent: Option<PathBuf>,
-}
 
 /// The network's vault, its store, and the RPC nodes in it.
 pub(crate) struct Opened {
@@ -79,20 +70,15 @@ pub(crate) fn find<'a>(
 
 /// The target that logs in to a stored node with its pinned host key.
 pub(crate) fn target(node: &EthRpc, login: &Login) -> Result<Target, String> {
-    let ssh_key = login
-        .ssh_key
-        .clone()
-        .ok_or("pass --ssh-key <path to the .pub of the key that logs in>")?;
-    Ok(Target {
-        host: node.address.clone(),
-        port: node.ssh_port,
-        user: node.ssh_user.clone(),
-        host_key: HostKey::parse(&node.host_key).map_err(|e| e.to_string())?,
-        identity: Identity::Agent {
-            socket: agent_socket(login.ssh_agent.as_deref())?,
-            public_key: ssh_key,
+    crate::node::host::target(
+        crate::node::host::Endpoint {
+            address: &node.address,
+            port: node.ssh_port,
+            user: &node.ssh_user,
+            host_key: &node.host_key,
         },
-    })
+        login,
+    )
 }
 
 /// A host's facts, from [`RemoteCommand::EthFacts`].
@@ -244,18 +230,6 @@ pub(crate) fn management(node: &EthRpc, controller: IpAddr) -> (Vec<String>, Vec
         IpAddr::V6(ip) => v6.push(ip.to_string()),
     }
     (v4, v6)
-}
-
-/// A warning when SSH would be admitted from erpc's present address alone.
-pub(crate) fn lockout_warning(management: &[String], facts: &Facts) -> Option<String> {
-    management.is_empty().then(|| {
-        format!(
-            "warning    SSH will be admitted only from {}, the address erpc connects from now. \
-             If it changes, only the provider's console reaches the node: add a stable range \
-             with --management-allow",
-            facts.controller
-        )
-    })
 }
 
 /// What a run on the node is told about it: the inventory's host variables.

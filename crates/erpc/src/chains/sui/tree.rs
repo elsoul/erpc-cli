@@ -207,18 +207,7 @@ pub(crate) fn run(
             .unwrap_or(22),
         fingerprint: one("fingerprint"),
         vault: one("vault"),
-        login: crate::chains::eth::rpc::Login {
-            ssh_key: sub
-                .try_get_one::<std::path::PathBuf>("ssh-key")
-                .ok()
-                .flatten()
-                .cloned(),
-            ssh_agent: sub
-                .try_get_one::<std::path::PathBuf>("ssh-agent")
-                .ok()
-                .flatten()
-                .cloned(),
-        },
+        login: crate::node::host::Login::from_args(sub),
         yes: sub
             .try_get_one::<bool>("yes")
             .ok()

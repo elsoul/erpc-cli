@@ -11,7 +11,7 @@ use erpc_chain::inventory::{Store, monad::MonadNode};
 use erpc_chain_monad::{contract::Contract, registration::Registration};
 use erpc_core::chain::Role;
 use erpc_secret::OpRef;
-use erpc_ssh::{HostKey, Identity, RemoteCommand, Session, Target, monad::Command as HostCommand};
+use erpc_ssh::{RemoteCommand, Session, Target, monad::Command as HostCommand};
 use secrecy::{ExposeSecret as _, SecretString};
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -53,26 +53,15 @@ fn open(network: &str, args: &ArgMatches) -> Result<(Store<OpCli>, String), Stri
     ))
 }
 fn target(node: &MonadNode, args: &ArgMatches) -> Result<Target, String> {
-    Ok(Target {
-        host: node.address.clone(),
-        port: node.ssh_port,
-        user: node.ssh_user.clone(),
-        host_key: HostKey::parse(&node.host_key).map_err(|e| e.to_string())?,
-        identity: Identity::Agent {
-            socket: common::agent_socket(
-                args.try_get_one::<PathBuf>("ssh-agent")
-                    .ok()
-                    .flatten()
-                    .map(PathBuf::as_path),
-            )?,
-            public_key: args
-                .try_get_one::<PathBuf>("ssh-key")
-                .ok()
-                .flatten()
-                .cloned()
-                .ok_or("pass --ssh-key <operator public key file>")?,
+    crate::node::host::target(
+        crate::node::host::Endpoint {
+            address: &node.address,
+            port: node.ssh_port,
+            user: &node.ssh_user,
+            host_key: &node.host_key,
         },
-    })
+        &crate::node::host::Login::from_args(args),
+    )
 }
 fn request(node: &MonadNode, operation: &str) -> Value {
     json!({"contract":node.contract,"operation":operation})

@@ -17,9 +17,10 @@ use serde_json::{Value, json};
 
 use crate::account::commands::Outcome;
 use crate::chains::arc::rpc::gb;
-use crate::chains::eth::rpc::{Login, find, open, target};
+use crate::chains::eth::rpc::{find, open, target};
 use crate::cli::error::CliError;
 use crate::node::common::{Say, go_ahead};
+use crate::node::host::Login;
 
 /// The networks erpc runs Ethereum RPC nodes on, in the order they are listed.
 const NETWORKS: [&str; 1] = ["mainnet"];

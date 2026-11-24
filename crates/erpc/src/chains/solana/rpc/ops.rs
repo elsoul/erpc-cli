@@ -14,10 +14,10 @@ use erpc_ssh::{RemoteCommand, Session, Stream};
 use serde_json::{Value, json};
 
 use crate::account::commands::Outcome;
-use crate::chains::arc::rpc::Login;
 use crate::chains::solana::rpc::{Status, find_ready, list_or_nobody, open, read_status, target};
 use crate::cli::error::CliError;
 use crate::node::common::{Say, go_ahead};
+use crate::node::host::Login;
 
 /// What one of these verbs is asked about.
 #[derive(Debug, Clone, Default)]

@@ -3,9 +3,10 @@
 
 //! Dedicated Ethereum signer ownership, deployment and lifecycle.
 
+use crate::node::host::Login;
 use crate::{
     account::commands::Outcome,
-    chains::eth::rpc::{Facts, Login},
+    chains::eth::rpc::Facts,
     node::common::{self, Say},
 };
 use clap::ArgMatches;
@@ -34,18 +35,7 @@ fn flag(sub: &ArgMatches, name: &str) -> bool {
         .unwrap_or(false)
 }
 fn login(sub: &ArgMatches) -> Login {
-    Login {
-        ssh_key: sub
-            .try_get_one::<std::path::PathBuf>("ssh-key")
-            .ok()
-            .flatten()
-            .cloned(),
-        ssh_agent: sub
-            .try_get_one::<std::path::PathBuf>("ssh-agent")
-            .ok()
-            .flatten()
-            .cloned(),
-    }
+    Login::from_args(sub)
 }
 fn owner(node: &EthValidator) -> Result<&str, String> {
     node.node

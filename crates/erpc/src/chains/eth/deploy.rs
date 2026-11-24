@@ -23,13 +23,12 @@ use erpc_ssh::Session;
 use serde_json::{Map, Value, json};
 
 use crate::account::commands::Outcome;
-use crate::chains::arc::rpc::allow_list;
 use crate::chains::eth::ops::{Status, head_line, read_status};
-use crate::chains::eth::rpc::{
-    Facts, Login, Opened, RunVars, facts, find, lockout_warning, open, run_play, target,
-};
+use crate::chains::eth::rpc::{Facts, Opened, RunVars, facts, find, open, run_play, target};
 use crate::cli::error::CliError;
 use crate::node::common::{Say, go_ahead};
+use crate::node::host::Login;
+use crate::node::host::allow_list;
 
 /// What a change to a node was asked to do.
 #[derive(Debug, Clone, Default)]
@@ -365,7 +364,9 @@ pub fn deploy(args: &Args, json_out: bool) -> Outcome {
             list_or_nobody(&r.node.rpc_allow),
             list_or_nobody(&r.node.monitoring_allow)
         ));
-        if let Some(warning) = lockout_warning(&r.node.management_allow, &r.facts) {
+        if let Some(warning) =
+            crate::node::host::lockout_warning(&r.node.management_allow, &r.facts.controller)
+        {
             say.line(&warning);
         }
         go_ahead(args.yes, "nothing was changed")?;
@@ -449,7 +450,9 @@ pub fn update_config(args: &Args, json_out: bool) -> Outcome {
                 changes.join("; ")
             }
         ));
-        if let Some(warning) = lockout_warning(&next.management_allow, &r.facts) {
+        if let Some(warning) =
+            crate::node::host::lockout_warning(&next.management_allow, &r.facts.controller)
+        {
             say.line(&warning);
         }
         go_ahead(args.yes, "nothing was changed")?;

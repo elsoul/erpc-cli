@@ -25,7 +25,7 @@ use erpc_chain_solana_native::{
 use erpc_core::chain::Verb;
 use erpc_ops::bundle::{Built, Bundle};
 use erpc_ssh::{
-    HostKey, Identity, RemoteCommand, Session, Target,
+    RemoteCommand, Session, Target,
     solana_native::{Command as Remote, Revision},
 };
 use serde_json::{Value, json};
@@ -309,26 +309,15 @@ fn open(network: &str, args: &ArgMatches) -> Result<(Store<OpCli>, String), Stri
     Ok((store, vault))
 }
 pub(crate) fn target(node: &NativeHost, args: &ArgMatches) -> Result<Target, String> {
-    Ok(Target {
-        host: node.address.clone(),
-        port: node.ssh_port,
-        user: node.ssh_user.clone(),
-        host_key: HostKey::parse(&node.host_key).map_err(|e| e.to_string())?,
-        identity: Identity::Agent {
-            socket: common::agent_socket(
-                args.try_get_one::<std::path::PathBuf>("ssh-agent")
-                    .ok()
-                    .flatten()
-                    .map(std::path::PathBuf::as_path),
-            )?,
-            public_key: args
-                .try_get_one::<std::path::PathBuf>("ssh-key")
-                .ok()
-                .flatten()
-                .cloned()
-                .ok_or("pass --ssh-key <management public key file>")?,
+    crate::node::host::target(
+        crate::node::host::Endpoint {
+            address: &node.address,
+            port: node.ssh_port,
+            user: &node.ssh_user,
+            host_key: &node.host_key,
         },
-    })
+        &crate::node::host::Login::from_args(args),
+    )
 }
 pub(crate) fn request(session: &Session, command: Remote, body: &Value) -> Result<Value, String> {
     let out = session

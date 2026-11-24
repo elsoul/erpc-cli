@@ -25,12 +25,13 @@ use erpc_ssh::{Identity, Session, Target};
 use serde_json::json;
 
 use crate::account::commands::Outcome;
-use crate::chains::arc::rpc::{allow_list, gb};
-use crate::chains::eth::rpc::{Facts, Login, RunVars, facts, open, rpc_type, run_play};
+use crate::chains::arc::rpc::gb;
+use crate::chains::eth::rpc::{Facts, RunVars, facts, open, rpc_type, run_play};
 use crate::cli::error::CliError;
 use crate::node::common::{
     FreeDisk, Say, agent_socket, check_ubuntu, free_disks, go_ahead, host_key, save_vault,
 };
+use crate::node::host::{Login, allow_list};
 
 /// What `erpc r --chain eth init` was asked to do.
 #[derive(Debug, Clone, Default)]
@@ -491,7 +492,7 @@ async fn init(args: &Args, say: &Say) -> Result<Done, CliError> {
              today, growing; keep --rpc-allow to your own proxies",
         );
     }
-    if let Some(warning) = crate::chains::eth::rpc::lockout_warning(&management, &facts) {
+    if let Some(warning) = crate::node::host::lockout_warning(&management, &facts.controller) {
         say.line(&warning);
     }
     go_ahead(args.yes, "nothing was written")?;

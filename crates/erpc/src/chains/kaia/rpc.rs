@@ -14,7 +14,7 @@ use erpc_auth::store::one_password::OpCli;
 use erpc_chain::inventory::{Store, kaia::KaiaRpc};
 use erpc_chain_kaia::Network;
 use erpc_ops::bundle::{Built, Bundle};
-use erpc_ssh::{HostKey, Identity, RemoteCommand, Session, Target};
+use erpc_ssh::{RemoteCommand, Session, Target};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -115,27 +115,15 @@ pub(crate) fn control_request(session: &Session, request: &Value) -> Result<Valu
     serde_json::from_slice(&output.stdout).map_err(|_| "invalid Kaia controller response".into())
 }
 fn target(node: &Node, args: &ArgMatches) -> Result<Target, String> {
-    let public_key = args
-        .try_get_one::<std::path::PathBuf>("ssh-key")
-        .ok()
-        .flatten()
-        .ok_or("pass --ssh-key with the operator public key file")?
-        .clone();
-    Ok(Target {
-        host: node.address.clone(),
-        port: node.ssh_port,
-        user: node.ssh_user.clone(),
-        host_key: HostKey::parse(&node.host_key).map_err(|e| e.to_string())?,
-        identity: Identity::Agent {
-            socket: common::agent_socket(
-                args.try_get_one::<std::path::PathBuf>("ssh-agent")
-                    .ok()
-                    .flatten()
-                    .map(std::path::PathBuf::as_path),
-            )?,
-            public_key,
+    crate::node::host::target(
+        crate::node::host::Endpoint {
+            address: &node.address,
+            port: node.ssh_port,
+            user: &node.ssh_user,
+            host_key: &node.host_key,
         },
-    })
+        &crate::node::host::Login::from_args(args),
+    )
 }
 fn host_check(facts: &Facts) -> Result<&'static str, String> {
     let ubuntu = facts
@@ -180,7 +168,7 @@ fn management(args: &ArgMatches, old: &[String]) -> Result<Vec<String>, String> 
         .ok()
         .flatten()
         .map_or_else(|| old.to_vec(), |v| v.cloned().collect());
-    crate::chains::arc::rpc::allow_list("management", &values, false)
+    crate::node::host::allow_list("management", &values, false)
 }
 fn helper_sha() -> Result<String, String> {
     let mut hash = Sha256::new();
@@ -226,7 +214,7 @@ fn variables(node: &Node, network: Network, facts: &Facts) -> Result<Value, Stri
     if facts.ssh_port == 0 {
         return Err("cannot establish the host SSH listener port".into());
     }
-    let mut v4 = crate::chains::arc::rpc::allow_list("management", &node.management_allow, false)?;
+    let mut v4 = crate::node::host::allow_list("management", &node.management_allow, false)?;
     let mut v6 = Vec::new();
     match facts.controller_ip()? {
         std::net::IpAddr::V4(ip) => {

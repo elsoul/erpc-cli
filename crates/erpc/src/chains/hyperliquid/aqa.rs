@@ -15,7 +15,7 @@ use erpc_chain_hyperliquid::{
 use erpc_core::chain::{COMMON_VERBS, Chain, Source, guard_mainnet};
 use erpc_secret::OpRef;
 use erpc_ssh::{
-    HostKey, Identity, RemoteCommand, Session, Target,
+    RemoteCommand, Session, Target,
     hyperliquid_aqa::{Command as HostCommand, Owner},
 };
 use secrecy::ExposeSecret as _;
@@ -138,26 +138,15 @@ fn required<'a>(args: &'a ArgMatches, name: &str) -> Result<&'a str, String> {
     shared::one(args, name).ok_or_else(|| format!("pass --{name}"))
 }
 fn target(node: &Publisher, args: &ArgMatches) -> Result<Target, String> {
-    Ok(Target {
-        host: node.address.clone(),
-        port: node.ssh_port,
-        user: node.ssh_user.clone(),
-        host_key: HostKey::parse(&node.host_key).map_err(|e| e.to_string())?,
-        identity: Identity::Agent {
-            socket: common::agent_socket(
-                args.try_get_one::<PathBuf>("ssh-agent")
-                    .ok()
-                    .flatten()
-                    .map(PathBuf::as_path),
-            )?,
-            public_key: args
-                .try_get_one::<PathBuf>("ssh-key")
-                .ok()
-                .flatten()
-                .cloned()
-                .ok_or("pass --ssh-key <operator public key>")?,
+    crate::node::host::target(
+        crate::node::host::Endpoint {
+            address: &node.address,
+            port: node.ssh_port,
+            user: &node.ssh_user,
+            host_key: &node.host_key,
         },
-    })
+        &crate::node::host::Login::from_args(args),
+    )
 }
 fn settings(node: &mut Publisher, args: &ArgMatches) -> Result<(), String> {
     if let Some(values) = args
