@@ -10,6 +10,12 @@
 //! What comes back from the server is printed through [`clean`], so a file
 //! name cannot carry a terminal escape sequence onto the screen.
 
+pub(crate) mod backup;
+pub(crate) mod backup_schedule;
+pub(crate) mod crypt;
+pub(crate) mod key;
+pub(crate) mod restic;
+
 use clap::Subcommand;
 use erpc_api::storage::{self as api, Cadence, Permission, StorageError};
 use erpc_auth::credential::CredKey;

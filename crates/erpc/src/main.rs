@@ -42,8 +42,6 @@ mod arc_validator_ops;
 mod arc_validator_tree;
 mod avax_ops;
 mod avax_tree;
-mod backup;
-mod backup_schedule;
 mod bitcoin_rpc;
 mod bitcoin_tree;
 mod bsc_backup;
@@ -86,7 +84,6 @@ mod nodes;
 mod polygon_custody;
 mod polygon_rpc;
 mod polygon_tree;
-mod restic;
 mod robinhood_admission;
 mod robinhood_admission_input;
 mod robinhood_bundle;
@@ -112,8 +109,6 @@ mod solana_rpc_init;
 mod solana_rpc_ops;
 mod solana_source_upgrade;
 mod storage;
-mod storage_crypt;
-mod storage_key;
 mod sui_node;
 mod sui_source;
 mod sui_tree;
@@ -158,6 +153,11 @@ pub(crate) use rpc::{webhook, webhook_delivery};
 #[cfg(test)]
 pub(crate) use ai::skill_check;
 pub(crate) use ai::{conversations, memory, skills, vps_access};
+
+// Temporary, as above, for the modules that moved into `storage/`.
+pub(crate) use storage::crypt as storage_crypt;
+pub(crate) use storage::key as storage_key;
+pub(crate) use storage::{backup, backup_schedule, restic};
 
 /// Exit statuses outside a failure's own ([`error::Code::exit`]).
 mod exit {
