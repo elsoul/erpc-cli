@@ -18,7 +18,7 @@
 //! - **Keychain:** service `erpc-worker`, account `<app>.<NAME>`, or
 //!   `<app>.wallet` for the key, holding the same text.
 //! - **Keystore:** the same service and account, as an entry of the
-//!   keystore ([`crate::worker_keystore`]): a file sealed under a key that
+//!   keystore ([`crate::worker::keystore`]): a file sealed under a key that
 //!   only the keystore's passphrase opens. It is where a value goes on a
 //!   machine with neither 1Password nor a keychain that outlasts a reboot.
 //!
@@ -198,8 +198,8 @@ fn durable_keychain() -> bool {
 /// `--store`, `--vault`, where `erpc login` keeps the session, and whether
 /// the keychain here lasts.
 pub(crate) fn choose(flag: Option<StoreFlag>, vault: Option<&str>) -> Result<Store, String> {
-    let config = crate::session::config_path()
-        .and_then(|p| crate::config::load(&p))
+    let config = crate::account::session::config_path()
+        .and_then(|p| crate::account::config::load(&p))
         .unwrap_or_default();
     decide(&Facts {
         flag,
@@ -218,10 +218,10 @@ pub(crate) fn choose(flag: Option<StoreFlag>, vault: Option<&str>) -> Result<Sto
 /// value. The other stores ask for nothing here.
 pub(crate) fn ready(store: &Store) -> Result<(), String> {
     match store {
-        Store::Keystore { by_default } => crate::worker_keystore::open_now(if *by_default {
-            crate::worker_keystore::Make::ByDefault
+        Store::Keystore { by_default } => crate::worker::keystore::open_now(if *by_default {
+            crate::worker::keystore::Make::ByDefault
         } else {
-            crate::worker_keystore::Make::Asked
+            crate::worker::keystore::Make::Asked
         }),
         Store::OnePassword { .. } | Store::Keychain => Ok(()),
     }
@@ -235,7 +235,7 @@ pub(crate) fn ready(store: &Store) -> Result<(), String> {
 /// nothing.
 pub(crate) fn ready_for(m: &erpc_worker::manifest::Manifest) -> Result<(), String> {
     if kept_for(m)? {
-        crate::worker_keystore::open_now(crate::worker_keystore::Make::No)?;
+        crate::worker::keystore::open_now(crate::worker::keystore::Make::No)?;
     }
     Ok(())
 }
@@ -254,7 +254,7 @@ pub(crate) fn kept_for(m: &erpc_worker::manifest::Manifest) -> Result<bool, Stri
         .chain(m.wallet.iter().map(|w| (&w.source, Kind::Key)));
     for (reference, kind) in named {
         if let SecretRef::Keystore { service, account } = reference {
-            if !crate::worker_keystore::kept_as(service, account, kind)? {
+            if !crate::worker::keystore::kept_as(service, account, kind)? {
                 return Err(t!("worker_secrets.nothing_kept", reference));
             }
             any = true;
@@ -371,7 +371,7 @@ pub(crate) fn put(
         }
         Store::Keystore { by_default } => {
             let account = format!("{app}.{name}");
-            crate::worker_keystore::write(SERVICE, &account, Kind::Secret, secret, *by_default)?;
+            crate::worker::keystore::write(SERVICE, &account, Kind::Secret, secret, *by_default)?;
             reference(&format!("keystore:{SERVICE}/{account}"))?
         }
     };
@@ -422,15 +422,16 @@ pub(crate) fn put_key(store: &Store, app: &str, keypair: &Keypair) -> Result<Sec
             let account = format!("{app}.wallet");
             // A key that is there may be a funded wallet's only copy: it
             // is never written over, and said before anything is asked.
-            if crate::worker_keystore::has(SERVICE, &account)? {
+            if crate::worker::keystore::has(SERVICE, &account)? {
                 return Err(t!(
                     "worker_secrets.keystore_key_exists",
                     app,
                     reference = format!("keystore:{SERVICE}/{account}"),
-                    file = crate::ui::tidy(&crate::worker_keystore::file_of(SERVICE, &account)?)
+                    file =
+                        crate::cli::ui::tidy(&crate::worker::keystore::file_of(SERVICE, &account)?)
                 ));
             }
-            crate::worker_keystore::write(
+            crate::worker::keystore::write(
                 SERVICE,
                 &account,
                 Kind::Key,
@@ -474,7 +475,7 @@ fn read_as(reference: &SecretRef, kind: Kind) -> Result<Zeroizing<String>, Strin
         SecretRef::Keychain { service, account } => item::read(service, account)?
             .ok_or_else(|| t!("worker_secrets.nothing_kept", reference)),
         SecretRef::Keystore { service, account } => {
-            crate::worker_keystore::read(service, account, kind)?
+            crate::worker::keystore::read(service, account, kind)?
                 .ok_or_else(|| t!("worker_secrets.nothing_kept", reference))
         }
     }
@@ -524,7 +525,7 @@ pub(crate) fn forget(
     {
         return Fate::Shared(format!("secrets.{other}"));
     }
-    match crate::worker_keystore::remove(service, account) {
+    match crate::worker::keystore::remove(service, account) {
         Ok(true) => Fate::Deleted,
         Ok(false) => Fate::Absent,
         Err(e) => Fate::NotDeleted(e),
@@ -533,7 +534,11 @@ pub(crate) fn forget(
 
 /// Where this process runs, as the secret gate reads it.
 pub(crate) fn context() -> Context {
-    Context::from_env(crate::session::has_terminal(), false, std::env::vars())
+    Context::from_env(
+        crate::account::session::has_terminal(),
+        false,
+        std::env::vars(),
+    )
 }
 
 /// Whether the secret gate lets a process in `context` read a trading key:
@@ -596,7 +601,7 @@ mod tests {
     use zeroize::Zeroizing;
 
     use super::{Facts, Fate, Store, StoreFlag, decide, is_vault_id};
-    use crate::worker_keystore::fake::{FakeDesk, PASSPHRASE, set_up};
+    use crate::worker::keystore::fake::{FakeDesk, PASSPHRASE, set_up};
 
     const VAULT: &str = "abcdefghijklmnopqrstuvwxyz";
     const OTHER_VAULT: &str = "zyxwvutsrqponmlkjihgfedcba";
@@ -934,7 +939,7 @@ mod tests {
         let key = Keypair::generate().expect("random");
         // A key kept as one, by hand, under an account that does not say
         // so; and a secret.
-        crate::worker_keystore::write("erpc-worker", "bot.hand", Kind::Key, &key.to_json(), true)
+        crate::worker::keystore::write("erpc-worker", "bot.hand", Kind::Key, &key.to_json(), true)
             .expect("kept");
         let hand = SecretRef::parse("keystore:erpc-worker/bot.hand").expect("ref");
         let secret = Zeroizing::new(key.to_json().as_str().to_owned());
@@ -1028,14 +1033,15 @@ mod tests {
         // The keystore refuses the other spelling on its own account,
         // whoever asks.
         for kind in [Kind::Secret, Kind::Key] {
-            let e = crate::worker_keystore::write("erpc-worker", "bot.WALLET", kind, "tok-1", true)
-                .expect_err("refused");
+            let e =
+                crate::worker::keystore::write("erpc-worker", "bot.WALLET", kind, "tok-1", true)
+                    .expect_err("refused");
             assert!(
                 e.starts_with("erpc-worker/bot.WALLET cannot be told apart from"),
                 "{e}"
             );
         }
-        let e = crate::worker_keystore::remove("erpc-worker", "bot.WALLET").expect_err("refused");
+        let e = crate::worker::keystore::remove("erpc-worker", "bot.WALLET").expect_err("refused");
         assert!(e.contains("Nothing was read, written or removed"), "{e}");
         still_the_key();
         assert_eq!(desk.asked(), asked, "nothing was asked for");
@@ -1098,7 +1104,7 @@ mod tests {
         // under [wallet], a key under [secrets]. Said now, locked or not,
         // and not when the key is read, after the server is bought.
         desk.will_type(&[PASSPHRASE]);
-        crate::worker_keystore::write("erpc-worker", "bot.hand", Kind::Key, "the key", true)
+        crate::worker::keystore::write("erpc-worker", "bot.hand", Kind::Key, "the key", true)
             .expect("kept");
         desk.lock();
         let asked = desk.asked();
@@ -1206,7 +1212,7 @@ mod tests {
         let english = said();
         assert!(english.contains("wallet.pubkey is PK2"), "{english}");
         for lang in [Lang::Ja, Lang::Ru] {
-            let text = crate::i18n::speaking(lang, said);
+            let text = crate::cli::i18n::speaking(lang, said);
             assert_ne!(text, english);
             assert!(!text.contains('{'), "{text}");
         }

@@ -12,7 +12,7 @@
 //! An item that is not on the list is said to be not on it, and no more.
 //! The snapshot is cached for up to a minute, so something just started is
 //! missing from it for a while, and whether a line is gone is decided
-//! elsewhere, by a stricter rule ([`crate::worker_vps::is_gone`]). The
+//! elsewhere, by a stricter rule ([`crate::worker::vps::is_gone`]). The
 //! status ends nothing and takes nothing off the record.
 
 use erpc_api::account;
@@ -20,7 +20,7 @@ use erpc_worker::manifest::{Env, ResourceKind};
 use serde_json::{Value, json};
 use unicode_width::UnicodeWidthStr as _;
 
-use crate::worker_vps::{Api, is_product_of};
+use crate::worker::vps::{Api, is_product_of};
 
 /// What the account's list of charges says of one item on record.
 #[derive(Debug, Clone, Copy, PartialEq)]

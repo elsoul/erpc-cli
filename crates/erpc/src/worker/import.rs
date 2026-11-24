@@ -40,8 +40,8 @@ use erpc_worker::index;
 use erpc_worker::manifest::{self, Chain, LineKind, Manifest, ManifestError, Services};
 use serde_json::json;
 
-use crate::commands::Outcome;
-use crate::error::{CliError, Code};
+use crate::account::commands::Outcome;
+use crate::cli::error::{CliError, Code};
 use crate::worker::shell_word;
 
 /// What `erpc worker import` was asked for.
@@ -1182,7 +1182,7 @@ fn imported(json: bool, req: &Request<'_>) -> Result<Outcome, CliError> {
     let root = std::fs::canonicalize(&root)
         .map_err(|e| usage(t!("worker_import.no_dir", dir = root.display(), error = e)))?;
     let (found, path) = written(&root, req)?;
-    let indexed = crate::session::beside_config(index::FILE_NAME)
+    let indexed = crate::account::session::beside_config(index::FILE_NAME)
         .and_then(|p| index::update(&p, |i| Ok(((), i.remember(&found.name, &root)?))))
         .err();
     let listed = indexed
@@ -1327,7 +1327,7 @@ fn report(
     unlisted: Option<&str>,
     next: &[String],
     dir_scope: &str,
-) -> crate::ui::Report {
+) -> crate::cli::ui::Report {
     let built = match &found.build {
         Build::Cargo { bin } => t!(
             "worker_import.built.cargo",
@@ -1343,9 +1343,9 @@ fn report(
         let names: Vec<&str> = found.vars.iter().map(|(n, _)| n.as_str()).collect();
         fields.push((t!("worker_import.field.vars"), names.join(", ")));
     }
-    let mut out = crate::ui::Report::new()
+    let mut out = crate::cli::ui::Report::new()
         .done(t!("worker_import.done", name = found.name))
-        .detail(crate::ui::tidy(path))
+        .detail(crate::cli::ui::tidy(path))
         .fields(fields);
     if !found.secrets.is_empty() {
         out = out.warning(t!(
@@ -1924,7 +1924,7 @@ mod tests {
         let m = Manifest::parse(&text).expect("a manifest check accepts");
         assert!(m.services.postgres);
         assert!(!m.vars.contains_key("DATABASE_URL"), "{:?}", m.vars);
-        let said = crate::i18n::speaking(erpc_core::i18n::Lang::En, || {
+        let said = crate::cli::i18n::speaking(erpc_core::i18n::Lang::En, || {
             super::report(&found, dir.path(), None, &[], "").text()
         });
         assert!(said.contains("DATABASE_URL (postgres)"), "{said}");
@@ -2069,7 +2069,7 @@ mod tests {
         let made: Vec<_> = std::fs::read_dir(elsewhere.path()).expect("it").collect();
         assert!(made.is_empty(), "a step did more than run erpc: {made:?}");
         // Nothing a terminal acts on is printed, as text or as JSON.
-        let said = crate::i18n::speaking(erpc_core::i18n::Lang::En, || {
+        let said = crate::cli::i18n::speaking(erpc_core::i18n::Lang::En, || {
             super::report(
                 &found,
                 &root.join("erpc.toml"),
@@ -2345,7 +2345,7 @@ mod tests {
         let text = manifest_text(&found, Chain::Solana);
         assert!(!text.contains("ELSEWHERE"), "{text}");
         // Each is said, by its own name.
-        let said = crate::i18n::speaking(erpc_core::i18n::Lang::En, || {
+        let said = crate::cli::i18n::speaking(erpc_core::i18n::Lang::En, || {
             super::report(&found, dir.path(), None, &[], "").text()
         });
         for line in [
@@ -2363,7 +2363,7 @@ mod tests {
             dir.path().join("Cargo.toml"),
         )
         .expect("a link");
-        let refused = crate::i18n::speaking(erpc_core::i18n::Lang::En, || {
+        let refused = crate::cli::i18n::speaking(erpc_core::i18n::Lang::En, || {
             survey(dir.path(), &request()).expect_err("refused")
         });
         assert!(
@@ -2458,7 +2458,7 @@ mod tests {
             "{text}"
         );
         // Said, and there for a script.
-        let said = crate::i18n::speaking(erpc_core::i18n::Lang::En, || {
+        let said = crate::cli::i18n::speaking(erpc_core::i18n::Lang::En, || {
             super::report(&found, root, None, &[], "").text()
         });
         assert!(
@@ -2644,7 +2644,7 @@ mod tests {
                 .contains(&("LOG_LEVEL".to_owned(), "info".to_owned()))
         );
         let text = manifest_text(&found, Chain::Solana);
-        let said = crate::i18n::speaking(erpc_core::i18n::Lang::En, || {
+        let said = crate::cli::i18n::speaking(erpc_core::i18n::Lang::En, || {
             super::report(&found, root, None, &[], "").text()
         });
         let json = super::as_json(&found, root, root, false, &[]).to_string();
@@ -2684,7 +2684,7 @@ mod tests {
         std::fs::write(root.join(".env.example"), "db_url=x\n").expect("an example");
         std::fs::remove_file(root.join(".env")).expect("removed");
         let found = survey(root, &request()).expect("read");
-        let said = crate::i18n::speaking(erpc_core::i18n::Lang::En, || {
+        let said = crate::cli::i18n::speaking(erpc_core::i18n::Lang::En, || {
             super::report(&found, root, None, &[], "").text()
         });
         assert!(
@@ -2751,7 +2751,7 @@ mod tests {
             binary: Some("dist/service"),
             ..request()
         };
-        let refused = crate::i18n::speaking(erpc_core::i18n::Lang::En, || {
+        let refused = crate::cli::i18n::speaking(erpc_core::i18n::Lang::En, || {
             survey(dir.path(), &req).expect_err("refused")
         });
         assert!(
@@ -2862,7 +2862,7 @@ mod tests {
                 .unset
                 .contains(&("GREETING".to_owned(), ".env.example"))
         );
-        let said = crate::i18n::speaking(erpc_core::i18n::Lang::En, || {
+        let said = crate::cli::i18n::speaking(erpc_core::i18n::Lang::En, || {
             super::report(&found, dir.path(), None, &[], "").text()
         });
         assert!(
@@ -2953,7 +2953,7 @@ mod tests {
                 .contains(&("APP_PORT".to_owned(), "9000".to_owned()))
         );
         let text = manifest_text(&found, Chain::Solana);
-        let said = crate::i18n::speaking(Lang::En, || {
+        let said = crate::cli::i18n::speaking(Lang::En, || {
             super::report(&found, dir.path(), None, &[], "").text()
         });
         for out in [&text, &said] {
@@ -2986,7 +2986,7 @@ mod tests {
             port: Some(0),
             ..request()
         };
-        let refused = crate::i18n::speaking(Lang::En, || {
+        let refused = crate::cli::i18n::speaking(Lang::En, || {
             written(dir.path(), &zero).expect_err("no port")
         });
         assert_eq!(refused.message, "--port takes a port from 1 to 65535");
@@ -2998,7 +2998,7 @@ mod tests {
             bin: Some("my.bot"),
             ..request()
         };
-        let refused = crate::i18n::speaking(Lang::En, || {
+        let refused = crate::cli::i18n::speaking(Lang::En, || {
             written(dir.path(), &dotted).expect_err("a name check refuses")
         });
         assert!(
@@ -3024,7 +3024,7 @@ mod tests {
             ]
             .map(|(name, file)| (name.to_owned(), file))
         );
-        let said = crate::i18n::speaking(erpc_core::i18n::Lang::En, || {
+        let said = crate::cli::i18n::speaking(erpc_core::i18n::Lang::En, || {
             super::report(&found, dir.path(), None, &[], "").text()
         });
         assert!(

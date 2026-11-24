@@ -38,7 +38,7 @@ pub struct NetworkVault {
 ///
 /// Returns a message when there is no home directory.
 pub fn path() -> Result<PathBuf, String> {
-    crate::session::beside_config("keyless.toml")
+    crate::account::session::beside_config("keyless.toml")
 }
 
 /// Reads the file; a missing file is an empty one.

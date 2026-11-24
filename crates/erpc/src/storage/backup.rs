@@ -28,10 +28,10 @@ use secrecy::{ExposeSecret as _, SecretString};
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
-use crate::account_secret::{self, Slot};
-use crate::commands::Outcome;
-use crate::error::{CliError, Code};
-use crate::restic::{self, Credentials};
+use crate::account::account_secret::{self, Slot};
+use crate::account::commands::Outcome;
+use crate::cli::error::{CliError, Code};
+use crate::storage::restic::{self, Credentials};
 
 /// The repository's master password.
 pub const PASSWORD: Slot = Slot {
@@ -151,7 +151,7 @@ pub enum Action {
     /// macOS.
     Schedule {
         /// How often, or `off` to stop.
-        every: crate::backup_schedule::Every,
+        every: crate::storage::backup_schedule::Every,
         /// The time of day, 24-hour.
         #[arg(long, default_value = "03:00")]
         at: String,
@@ -230,7 +230,7 @@ pub async fn run(json: bool, action: Action) -> Outcome {
             paths,
             exclude,
         } => schedule(json, every, &at, paths, exclude),
-        Action::Status => Ok(crate::backup_schedule::status(json)),
+        Action::Status => Ok(crate::storage::backup_schedule::status(json)),
         Action::Password { show } => password(json, show),
     };
     result.unwrap_or_else(Outcome::from)
@@ -316,7 +316,7 @@ fn secret_patterns_in(homes: &[&str]) -> Vec<String> {
         .flat_map(|home| HOME_SECRETS.iter().map(move |p| format!("{home}/{p}")))
         .collect();
     patterns.extend(SYSTEM_SECRETS.iter().map(|p| (*p).to_owned()));
-    if let Ok(cache) = crate::session::beside_config("cache") {
+    if let Ok(cache) = crate::account::session::beside_config("cache") {
         patterns.push(cache.display().to_string());
     }
     patterns
@@ -492,7 +492,7 @@ struct Host {
 }
 
 fn host_path() -> Result<PathBuf, String> {
-    crate::session::beside_config(HOST_FILE)
+    crate::account::session::beside_config(HOST_FILE)
 }
 
 impl Host {
@@ -565,7 +565,7 @@ pub(crate) fn random_secret() -> Result<Zeroizing<String>, String> {
 
 /// The session `erpc login` holds, for making access keys.
 pub(crate) async fn signed_in() -> Result<(AuthClient, SecretString), Failure> {
-    let client = AuthClient::new().map_err(|e| Failure(crate::error::classify(&e)))?;
+    let client = AuthClient::new().map_err(|e| Failure(crate::cli::error::classify(&e)))?;
     match crate::storage::access_token(&client).await {
         Ok(token) => Ok((client, token)),
         Err(outcome) => {
@@ -743,7 +743,7 @@ async fn init(json: bool, password_file: Option<&Path>) -> Done {
     } = account(&program, &client, &token, password_file).await?;
 
     // This machine's own key, unless the one it has still works.
-    let name = crate::session::host_label();
+    let name = crate::account::session::host_label();
     let old = Host::load()?;
     if let Some(host) = &old
         && probe(&program, &host.credentials)?.status.success()
@@ -877,7 +877,7 @@ pub(crate) fn add_restic_key(
 ) -> Result<String, String> {
     // restic takes the new password from a file. It lives only while restic
     // reads it, 0600, beside the config.
-    let dir = crate::session::beside_config("")?;
+    let dir = crate::account::session::beside_config("")?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("could not make {}: {e}", dir.display()))?;
     let file = tempfile::NamedTempFile::new_in(&dir)
         .map_err(|e| format!("could not write in {}: {e}", dir.display()))?;
@@ -958,7 +958,7 @@ async fn backup(json: bool, paths: &[PathBuf], exclude: &[String], dry_run: bool
     }
     let status = restic::loud(command)?;
     if !dry_run {
-        crate::backup_schedule::record(&host.name, status.code().unwrap_or(-1));
+        crate::storage::backup_schedule::record(&host.name, status.code().unwrap_or(-1));
     }
     match status.code() {
         Some(0) => Ok(Outcome::Done(if json || dry_run {
@@ -1099,7 +1099,7 @@ async fn restore(json: bool, wanted: &str, how: &Restore) -> Done {
         how.target.as_deref(),
     );
     if how.in_place {
-        crate::interrupt::say(&format!(
+        crate::cli::interrupt::say(&format!(
             "Restore {} of snapshot {} of {} ({}) over this machine, into {}. Files it holds \
              replace the ones there.",
             under.as_deref().unwrap_or("everything"),
@@ -1176,7 +1176,7 @@ async fn prune(
     dry_run: bool,
     yes: bool,
 ) -> Done {
-    let name = host.map_or_else(crate::session::host_label, ToOwned::to_owned);
+    let name = host.map_or_else(crate::account::session::host_label, ToOwned::to_owned);
     let (Some(password), _) = PASSWORD.read()? else {
         return Err(Failure(
             CliError::new(
@@ -1205,7 +1205,7 @@ async fn prune(
         password: SecretString::from(password.to_string()),
     };
     if !dry_run {
-        crate::interrupt::say(&format!(
+        crate::cli::interrupt::say(&format!(
             "Forget {name}'s snapshots beyond the last {daily} daily, {weekly} weekly and \
              {monthly} monthly ones, and delete the data only they held."
         ));
@@ -1240,13 +1240,14 @@ async fn prune(
 
 fn schedule(
     json: bool,
-    every: crate::backup_schedule::Every,
+    every: crate::storage::backup_schedule::Every,
     at: &str,
     paths: Vec<PathBuf>,
     exclude: Vec<String>,
 ) -> Done {
-    use crate::backup_schedule::{Every, Plan};
-    let at = crate::backup_schedule::parse_at(at).map_err(|e| CliError::new(Code::Usage, e))?;
+    use crate::storage::backup_schedule::{Every, Plan};
+    let at =
+        crate::storage::backup_schedule::parse_at(at).map_err(|e| CliError::new(Code::Usage, e))?;
     if every != Every::Off {
         Host::require()?;
         backup_excludes(paths.is_empty(), &exclude)?;
@@ -1290,7 +1291,7 @@ fn schedule(
             .filter(|v| !v.is_empty())
             .map(PathBuf::from),
     };
-    let said = crate::backup_schedule::apply(&plan)?;
+    let said = crate::storage::backup_schedule::apply(&plan)?;
     Ok(done(
         json,
         &json!({ "every": format!("{every:?}").to_lowercase(), "at": format!("{:02}:{:02}", at.0, at.1) }),
@@ -1361,8 +1362,9 @@ mod tests {
     #[test]
     #[ignore = "needs the pinned restic in ~/.erpc/bin"]
     fn restic_leaves_out_key_material_at_any_depth() {
-        let program = crate::session::beside_config(&format!("bin/restic-{}", restic::VERSION))
-            .expect("config dir");
+        let program =
+            crate::account::session::beside_config(&format!("bin/restic-{}", restic::VERSION))
+                .expect("config dir");
         assert!(program.is_file(), "run `erpc backup init` first");
         let dir = tempfile::tempdir().expect("dir");
         let home = dir.path().join("home/solv");

@@ -27,11 +27,11 @@ use erpc_worker::manifest::{Env, LineKind, Manifest, SecretRef};
 use serde_json::json;
 use zeroize::Zeroizing;
 
-use crate::commands::Outcome;
-use crate::error::{CliError, Code};
+use crate::account::commands::Outcome;
+use crate::cli::error::{CliError, Code};
 use crate::worker::App;
-use crate::worker_remote::{ctl_ok, failed, reach};
-use crate::worker_vps::{KeySource, Tried, keys_tried};
+use crate::worker::remote::{ctl_ok, failed, reach};
+use crate::worker::vps::{KeySource, Tried, keys_tried};
 
 use erpc_core::endpoints::SHARED_RPC_URL as SHARED_RPC;
 
@@ -53,7 +53,7 @@ pub(crate) async fn bench(json: bool, app: &App, asked: &Asked) -> Outcome {
                 crate::print_json(&body);
                 Outcome::Done(String::new())
             } else {
-                Outcome::Done(crate::ui::decorate(&text, "⏱️"))
+                Outcome::Done(crate::cli::ui::decorate(&text, "⏱️"))
             }
         }
         Err(e) => e.into(),
@@ -64,7 +64,7 @@ async fn run(app: &App, asked: &Asked) -> Result<(serde_json::Value, String), Cl
     let (m, id, session) = reach(app)?;
     let env = crate::worker::env_of(&m, app)?.clone();
     let (request, refused_here) =
-        request_for(&m, &env, asked, crate::worker_vps::Api::open).await?;
+        request_for(&m, &env, asked, crate::worker::vps::Api::open).await?;
     let line = Zeroizing::new(serde_json::to_vec(&request).map_err(|e| failed(e.to_string()))?);
     drop(request);
     let answer = ctl_ok(&session, &id, Verb::BenchRpc, Some(&line))?;
@@ -159,7 +159,7 @@ async fn request_for<K: KeySource>(
 
 /// The key `shared` is measured with: the app's `ERPC_API_KEY` secret when
 /// it has one, else the account's, opened with `account` and tried from
-/// this machine ([`crate::worker_vps::keys_tried`]).
+/// this machine ([`crate::worker::vps::keys_tried`]).
 ///
 /// The calls are made from the server, not from here. So when this
 /// machine is refused with every key of the account, the bench goes on
@@ -172,7 +172,7 @@ async fn shared_key<K: KeySource>(
     account: impl AsyncFnOnce() -> Result<K, CliError>,
 ) -> Result<(Zeroizing<String>, Option<usize>), CliError> {
     if let Some(reference) = m.secrets.get("ERPC_API_KEY") {
-        let key = crate::worker_secrets::read(reference).map_err(failed)?;
+        let key = crate::worker::secrets::read(reference).map_err(failed)?;
         return Ok((key, None));
     }
     Ok(match keys_tried(&account().await?).await? {
@@ -245,7 +245,7 @@ fn endpoint(
         if std::mem::replace(asked, true) {
             return Err(CliError::new(Code::Usage, t!("worker_bench.one_stdin")));
         }
-        return crate::worker_keys::read_secret(&t!("worker_bench.url_of", name));
+        return crate::worker::keys::read_secret(&t!("worker_bench.url_of", name));
     }
     if ["op://", "keychain:", "keystore:"]
         .iter()
@@ -255,7 +255,7 @@ fn endpoint(
         if let Some(why) = m.key_as_setting(&reference) {
             return Err(CliError::new(Code::Usage, format!("--url {name}: {why}")));
         }
-        return crate::worker_secrets::read(&reference)
+        return crate::worker::secrets::read(&reference)
             .map(|url| Zeroizing::new(url.trim().to_owned()))
             .map_err(failed);
     }
@@ -448,16 +448,16 @@ mod tests {
 
     #[test]
     fn a_url_by_reference_is_never_the_trading_key() {
-        use crate::worker_keystore::fake::{FakeDesk, PASSPHRASE, set_up};
+        use crate::worker::keystore::fake::{FakeDesk, PASSPHRASE, set_up};
         let desk = FakeDesk::typing(&[PASSPHRASE, PASSPHRASE]);
         let _kept = set_up(&desk);
-        let store = crate::worker_secrets::Store::Keystore { by_default: true };
+        let store = crate::worker::secrets::Store::Keystore { by_default: true };
         let key = erpc_chain_solana::identity::Keypair::generate().expect("random");
-        crate::worker_secrets::put_key(&store, "bot", &key).expect("kept");
+        crate::worker::secrets::put_key(&store, "bot", &key).expect("kept");
         let asked = desk.asked();
         let refused = |m: &erpc_worker::manifest::Manifest, value: &str| {
             let e = super::endpoint(m, "other", value, &mut false).expect_err("refused");
-            assert_eq!(e.code, crate::error::Code::Usage, "{value}");
+            assert_eq!(e.code, crate::cli::error::Code::Usage, "{value}");
             e.text()
         };
         // An entry filed as a key, in an app with no [wallet] of its own;
@@ -496,7 +496,7 @@ mod tests {
         assert_eq!(desk.asked(), asked, "nothing was asked for");
         // A URL kept as a secret is read as before.
         let url = ["https", "rpc.example.com/?api-key=k"].join("://");
-        let kept = crate::worker_secrets::put(
+        let kept = crate::worker::secrets::put(
             &store,
             "bot",
             "OTHER_RPC",
@@ -531,8 +531,8 @@ mod tests {
     /// account is opened: user-api is not read, and no key goes to the RPC.
     #[tokio::test]
     async fn a_bench_that_is_going_to_be_refused_does_not_read_the_account() {
-        use crate::error::Code;
-        use crate::worker_vps::fake::Scripted;
+        use crate::cli::error::Code;
+        use crate::worker::vps::fake::Scripted;
         use erpc_worker::manifest::Env;
         let (m, env) = (manifest(""), Env::default());
         let account = Scripted::account(&serde_json::json!({ "apiKey": "primary" }));
@@ -592,8 +592,8 @@ mod tests {
     /// goes into `shared`, which stays the first of the endpoints.
     #[tokio::test]
     async fn a_bench_reads_the_account_once_its_request_holds() {
-        use crate::worker_vps::Verdict;
-        use crate::worker_vps::fake::Scripted;
+        use crate::worker::vps::Verdict;
+        use crate::worker::vps::fake::Scripted;
         use erpc_core::endpoints::SHARED_RPC_URL;
         use erpc_worker::manifest::{Env, Line, LineKind};
         let m = manifest("");
@@ -669,10 +669,10 @@ mod tests {
     /// The key `shared` is measured with, with the account scripted.
     #[tokio::test]
     async fn the_shared_rpc_is_measured_with_the_apps_key_or_the_accounts() {
-        use crate::error::{CliError, Code};
-        use crate::worker_keystore::fake::{FakeDesk, PASSPHRASE, set_up};
-        use crate::worker_vps::Verdict;
-        use crate::worker_vps::fake::Scripted;
+        use crate::cli::error::{CliError, Code};
+        use crate::worker::keystore::fake::{FakeDesk, PASSPHRASE, set_up};
+        use crate::worker::vps::Verdict;
+        use crate::worker::vps::fake::Scripted;
         use serde_json::json;
         let account = || {
             Scripted::account(&json!({
@@ -727,8 +727,8 @@ mod tests {
         // the account is not opened.
         let desk = FakeDesk::typing(&[PASSPHRASE, PASSPHRASE]);
         let _keystore = set_up(&desk);
-        let kept = crate::worker_secrets::put(
-            &crate::worker_secrets::Store::Keystore { by_default: false },
+        let kept = crate::worker::secrets::put(
+            &crate::worker::secrets::Store::Keystore { by_default: false },
             "bot",
             "ERPC_API_KEY",
             &zeroize::Zeroizing::new("the-apps-own-key".to_owned()),
@@ -745,7 +745,7 @@ mod tests {
 
     #[test]
     fn a_key_this_machine_was_refused_with_is_said_under_the_table_and_in_the_json() {
-        use crate::i18n::speaking;
+        use crate::cli::i18n::speaking;
         use erpc_core::i18n::Lang;
         let asked = super::Asked {
             method: "getSlot".to_owned(),
@@ -820,7 +820,7 @@ mod tests {
 
     #[test]
     fn the_table_is_said_in_the_language_of_the_run_and_still_lines_up() {
-        use crate::i18n::speaking;
+        use crate::cli::i18n::speaking;
         use erpc_core::i18n::Lang;
         let rows = [row("shared", 3.4), row("unlimited", 0.85)];
         let table = || super::render("getSlot", 100, 0, "bot", "198.51.100.7", None, &rows);

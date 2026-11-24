@@ -31,7 +31,7 @@
 //! stop a command the assistant is running, which would otherwise run on
 //! with nobody reading it ([`erpc_ai::commands::stop_live`], on Unix), and
 //! turn the terminal's echo back on where a passphrase prompt holds it off
-//! ([`crate::echo::restore`]).
+//! ([`crate::cli::echo::restore`]).
 
 use std::io::Write as _;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -78,7 +78,7 @@ fn park_on_panic(fatal: bool) {
     std::panic::set_hook(Box::new(move |info| {
         erpc_chain_solana::cli::wipe_live();
         erpc_ai::commands::stop_live();
-        crate::echo::restore();
+        crate::cli::echo::restore();
         let _ = Leaving::start().park();
         previous(info);
     }));
@@ -257,7 +257,7 @@ async fn leave(signals: &mut Signals, asked: Asked, grace: Duration) {
     // passphrase prompt holds off gets it back.
     erpc_chain_solana::cli::wipe_live();
     erpc_ai::commands::stop_live();
-    crate::echo::restore();
+    crate::cli::echo::restore();
     end(asked);
 }
 
@@ -406,7 +406,7 @@ mod tests {
     }
 
     fn key() -> CredKey {
-        CredKey::new(crate::session::LOGIN_AUDIENCE, "alice")
+        CredKey::new(crate::account::session::LOGIN_AUDIENCE, "alice")
     }
 
     fn store_at(dir: &Path) -> FileStore {
@@ -414,7 +414,7 @@ mod tests {
     }
 
     fn parked_at(dir: &Path) -> PathBuf {
-        erpc_auth::session::parked_path(dir, crate::session::LOGIN_AUDIENCE)
+        erpc_auth::session::parked_path(dir, crate::account::session::LOGIN_AUDIENCE)
     }
 
     fn env_ms(name: &str, otherwise: u64) -> Duration {
@@ -509,7 +509,7 @@ mod tests {
                     // that is no longer there.
                     rotate(Arc::new(store_at(&dir)), dir);
                     until(&ASKED).await;
-                    let _ = crate::finish(crate::commands::Outcome::Failed(
+                    let _ = crate::finish(crate::account::commands::Outcome::Failed(
                         "could not draw to the terminal".to_owned(),
                     ));
                     crate::print_json(&serde_json::json!({ "status": "failed" }));
@@ -991,7 +991,7 @@ mod tests {
         if panics {
             super::park_on_panic(true);
         }
-        core::mem::forget(crate::echo::off());
+        core::mem::forget(crate::cli::echo::off());
         println!("ready");
         if panics {
             while !dir.join("go").exists() {
@@ -1010,7 +1010,7 @@ mod tests {
         case: &str,
         dir: &Path,
     ) -> (Child, std::fs::File, std::os::fd::OwnedFd) {
-        use crate::echo::tests::{echoes, terminal};
+        use crate::cli::echo::tests::{echoes, terminal};
         let (typed, read) = terminal();
         assert!(echoes(&read), "a new terminal shows what is typed");
         let child = Child::spawn(&Setup {
@@ -1028,7 +1028,7 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn a_signal_gives_back_the_echo_a_prompt_holds_off() {
-        use crate::echo::tests::echoes;
+        use crate::cli::echo::tests::echoes;
         for (name, signal) in [("INT", SIGINT), ("TERM", SIGTERM), ("HUP", SIGHUP)] {
             let dir = tempfile::tempdir().expect("a temporary directory");
             let (child, _typed, read) = holding_the_echo_off("echo", dir.path());
@@ -1043,7 +1043,7 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn a_panic_gives_back_the_echo_before_it_aborts() {
-        use crate::echo::tests::echoes;
+        use crate::cli::echo::tests::echoes;
         let dir = tempfile::tempdir().expect("a temporary directory");
         let (child, _typed, read) = holding_the_echo_off("echo panic", dir.path());
         std::fs::write(dir.path().join("go"), b"").expect("the go-ahead");

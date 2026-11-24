@@ -3,8 +3,8 @@
 
 //! Original Arbitrum One assertion-validator CLI orchestration.
 use crate::{
+    account::commands::Outcome,
     arbitrum_bundle as bundle, arbitrum_custody as custody,
-    commands::Outcome,
     node_common::{self, Say},
 };
 use clap::ArgMatches;

@@ -4,7 +4,7 @@
 //! Bitcoin RPC lifecycle over pinned SSH and scoped 1Password metadata.
 
 use crate::{
-    commands::Outcome,
+    account::commands::Outcome,
     eth_rpc::Facts,
     node_common::{self, Say},
 };

@@ -11,8 +11,8 @@ use erpc_core::private_file;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::commands::Outcome;
-use crate::rpc_call::{Network, operator_url, output};
+use crate::account::commands::Outcome;
+use crate::rpc::call::{Network, operator_url, output};
 
 #[derive(Subcommand)]
 pub(crate) enum Action {
@@ -212,7 +212,7 @@ fn create(args: Create, path: &Path) -> Result<Value, Outcome> {
 
 fn change(path: &Path, change: &Change, verb: &str) -> Result<Value, Outcome> {
     if !change.yes {
-        if !crate::session::has_terminal() {
+        if !crate::account::session::has_terminal() {
             return Err(Outcome::NeedsTerminal(
                 "use --yes to confirm the webhook change".into(),
             ));
@@ -246,7 +246,7 @@ fn change(path: &Path, change: &Change, verb: &str) -> Result<Value, Outcome> {
 }
 
 pub(crate) async fn run(action: Action, json: bool) -> Outcome {
-    let path = match crate::session::state_dir() {
+    let path = match crate::account::session::state_dir() {
         Ok(dir) => dir.join("webhooks.json"),
         Err(e) => return Outcome::Failed(e),
     };
@@ -259,7 +259,7 @@ pub(crate) async fn run(action: Action, json: bool) -> Outcome {
             id,
             endpoint_url,
             once,
-        } => crate::webhook_delivery::run(&path, id, endpoint_url.as_deref(), once).await,
+        } => crate::rpc::webhook_delivery::run(&path, id, endpoint_url.as_deref(), once).await,
         read => Registry::read(&path)
             .map_err(Outcome::Failed)
             .and_then(|r| match read {

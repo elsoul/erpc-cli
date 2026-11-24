@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! A completed readiness observation is a report; transport failures are errors.
-use crate::commands::Outcome;
+use crate::account::commands::Outcome;
 use serde_json::Value;
 
 pub(crate) fn status(
@@ -33,7 +33,7 @@ pub(crate) fn status(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::Code;
+    use crate::cli::error::Code;
     use serde_json::json;
     use std::process::ExitCode;
     type Adapter = fn(Result<Value, String>, bool, &mut dyn FnMut(&str)) -> Outcome;

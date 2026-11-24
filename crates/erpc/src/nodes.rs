@@ -10,7 +10,7 @@ use std::fmt::Write as _;
 
 use erpc_chain::inventory::{Inventory, Role};
 
-use crate::commands::Outcome;
+use crate::account::commands::Outcome;
 
 /// The inventory of one network, read with the `op` this machine has.
 fn inventory(network: &str, vault: &str) -> Result<Inventory, String> {
@@ -22,10 +22,11 @@ fn inventory(network: &str, vault: &str) -> Result<Inventory, String> {
 
 /// Runs `erpc v list`, for one network or every network with a vault.
 pub fn list_validators(network: Option<&str>, json: bool) -> Outcome {
-    let keyless = match crate::keyless::path().and_then(|p| crate::keyless::load(&p)) {
-        Ok(keyless) => keyless,
-        Err(e) => return Outcome::Failed(e),
-    };
+    let keyless =
+        match crate::account::keyless::path().and_then(|p| crate::account::keyless::load(&p)) {
+            Ok(keyless) => keyless,
+            Err(e) => return Outcome::Failed(e),
+        };
     let networks: Vec<(String, String)> = keyless
         .networks
         .iter()

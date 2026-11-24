@@ -50,7 +50,7 @@ struct Pin {
 }
 
 fn pins_path() -> Result<PathBuf, String> {
-    crate::session::beside_config("vps_hosts.json")
+    crate::account::session::beside_config("vps_hosts.json")
 }
 
 /// The pins; none when there is no file yet. A file that cannot be read
@@ -83,9 +83,9 @@ fn save_pin(path: &Path, ip: &str, pin: Pin) -> Result<(), String> {
 
 /// The user's key: its `.pub` and how its private half is reached.
 pub(crate) fn login_key() -> Result<(PathBuf, Identity), String> {
-    let configured = crate::session::config_path()
+    let configured = crate::account::session::config_path()
         .ok()
-        .and_then(|path| crate::config::get(&path, "ssh_key").ok().flatten())
+        .and_then(|path| crate::account::config::get(&path, "ssh_key").ok().flatten())
         .map(PathBuf::from);
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let public = configured
@@ -210,7 +210,7 @@ fn secure(prepared: &Prepared, password: Result<&str, &str>) -> Result<Secured, 
             PORT,
             &prepared.user,
             &host_key,
-            &crate::session::state_dir()?,
+            &crate::account::session::state_dir()?,
         )
         .map_err(|e| e.to_string())
     };

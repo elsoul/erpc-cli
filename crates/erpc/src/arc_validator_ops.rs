@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
-use crate::commands::Outcome;
+use crate::account::commands::Outcome;
 use crate::node_common::{Say, op_runner, store, vault_for};
 use crate::{arc_rpc, arc_validator_host as host};
 
@@ -246,7 +246,7 @@ fn public_node(node: &ArcValidatorNode) -> Value {
 }
 
 fn list_nodes(network: &str, say: &Say) -> Result<Value, String> {
-    let config = crate::keyless::load(&crate::keyless::path()?)?;
+    let config = crate::account::keyless::load(&crate::account::keyless::path()?)?;
     let nodes = if config.networks.contains_key(network) {
         open(network, None, say)?.nodes
     } else {
@@ -564,7 +564,7 @@ fn logs(session: &Session, sub: &ArgMatches, json_out: bool) -> Result<Value, St
                 } else {
                     match stream {
                         erpc_ssh::Stream::Stdout => crate::print_line(line),
-                        erpc_ssh::Stream::Stderr => crate::interrupt::say(line),
+                        erpc_ssh::Stream::Stderr => crate::cli::interrupt::say(line),
                     }
                 }
             },

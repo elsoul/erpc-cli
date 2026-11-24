@@ -17,7 +17,7 @@
 //! erpc either.
 //!
 //! erpc also ends by a signal or by a panic, and neither runs destructors
-//! ([`crate::interrupt`]): both call [`restore`] before they end it.
+//! ([`crate::cli::interrupt`]): both call [`restore`] before they end it.
 //!
 //! This is for Unix, where the terminal echoes what is typed whether or
 //! not anything is reading. The Windows console shows a typed character

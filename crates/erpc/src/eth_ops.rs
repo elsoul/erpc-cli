@@ -15,9 +15,9 @@ use erpc_ssh::arc::{Action, Layer};
 use erpc_ssh::{RemoteCommand, Session, Stream};
 use serde_json::{Value, json};
 
+use crate::account::commands::Outcome;
 use crate::arc_rpc::gb;
-use crate::commands::Outcome;
-use crate::error::CliError;
+use crate::cli::error::CliError;
 use crate::eth_rpc::{Login, find, open, target};
 use crate::node_common::{Say, go_ahead};
 
@@ -44,10 +44,11 @@ pub struct Args {
 /// vault.
 pub fn list(network: Option<&str>, json_out: bool) -> Outcome {
     let say = Say { quiet: true };
-    let keyless = match crate::keyless::path().and_then(|p| crate::keyless::load(&p)) {
-        Ok(k) => k,
-        Err(e) => return Outcome::Failed(e),
-    };
+    let keyless =
+        match crate::account::keyless::path().and_then(|p| crate::account::keyless::load(&p)) {
+            Ok(k) => k,
+            Err(e) => return Outcome::Failed(e),
+        };
     let networks: Vec<&str> = NETWORKS
         .into_iter()
         .filter(|n| network.is_none_or(|w| w == *n))

@@ -3,7 +3,7 @@
 
 //! Owned Bor/Heimdall RPC lifecycle; parent credentials are carried only on stdin.
 use crate::{
-    commands::Outcome,
+    account::commands::Outcome,
     eth_rpc::Facts,
     node_common::{self, Say},
 };

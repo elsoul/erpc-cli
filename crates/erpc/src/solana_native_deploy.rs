@@ -3,7 +3,7 @@
 
 //! Resume the original build, confirm ingress, then enter one fenced cutover.
 use crate::{
-    error::CliError,
+    cli::error::CliError,
     node_common::{self, Say},
     solana_native as node,
 };

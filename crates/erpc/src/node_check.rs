@@ -9,7 +9,7 @@ use erpc_ai::session::Access as _;
 use erpc_api::node_check::{Finding, Observation, SOLANA_RPC_BIND};
 use erpc_auth::AuthClient;
 
-use crate::commands::Outcome;
+use crate::account::commands::Outcome;
 
 pub(crate) const SUPPORTED: bool = cfg!(target_os = "linux");
 
@@ -27,7 +27,7 @@ pub(crate) async fn menu(json: bool) -> Outcome {
         .interact();
     match selection {
         Ok(true) => match check().await {
-            Ok(finding) if json => crate::commands::Said::Json(
+            Ok(finding) if json => crate::account::commands::Said::Json(
                 serde_json::json!({ "check": SOLANA_RPC_BIND, "finding": finding }),
             )
             .done(),

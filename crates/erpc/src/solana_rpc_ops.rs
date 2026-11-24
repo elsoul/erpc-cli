@@ -13,9 +13,9 @@ use erpc_ssh::solana_rpc::{LogSource, Service};
 use erpc_ssh::{RemoteCommand, Session, Stream};
 use serde_json::{Value, json};
 
+use crate::account::commands::Outcome;
 use crate::arc_rpc::Login;
-use crate::commands::Outcome;
-use crate::error::CliError;
+use crate::cli::error::CliError;
 use crate::node_common::{Say, go_ahead};
 use crate::solana_rpc::{Status, find_ready, list_or_nobody, open, read_status, target};
 
@@ -33,10 +33,11 @@ pub struct Args {
 /// Runs `erpc r --chain solana list`, for every network with a vault.
 pub fn list(network: Option<&str>, json_out: bool) -> Outcome {
     let say = Say { quiet: true };
-    let keyless = match crate::keyless::path().and_then(|p| crate::keyless::load(&p)) {
-        Ok(k) => k,
-        Err(e) => return Outcome::Failed(e),
-    };
+    let keyless =
+        match crate::account::keyless::path().and_then(|p| crate::account::keyless::load(&p)) {
+            Ok(k) => k,
+            Err(e) => return Outcome::Failed(e),
+        };
     let networks: Vec<&str> = rpc::NETWORKS
         .into_iter()
         .filter(|n| network.is_none_or(|w| w == *n))

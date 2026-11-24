@@ -22,9 +22,9 @@ use erpc_chain_eth::releases::Client;
 use erpc_ssh::Session;
 use serde_json::{Map, Value, json};
 
+use crate::account::commands::Outcome;
 use crate::arc_rpc::allow_list;
-use crate::commands::Outcome;
-use crate::error::CliError;
+use crate::cli::error::CliError;
 use crate::eth_ops::{Status, head_line, read_status};
 use crate::eth_rpc::{
     Facts, Login, Opened, RunVars, facts, find, lockout_warning, open, run_play, target,

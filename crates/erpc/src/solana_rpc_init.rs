@@ -25,9 +25,9 @@ use erpc_chain_solana::{crypt, plays, regions, versions};
 use erpc_ssh::{Identity, RemoteCommand, Session, Target};
 use serde_json::json;
 
+use crate::account::commands::Outcome;
 use crate::arc_rpc::{Login, allow_list, facts, gb};
-use crate::commands::Outcome;
-use crate::error::CliError;
+use crate::cli::error::CliError;
 use crate::node_common::{
     Say, agent_socket, check_ubuntu, go_ahead, host_key, public_key_line, save_vault,
 };

@@ -3,8 +3,8 @@
 
 //! Sui orchestration using the existing pinned SSH, remote runs and 1Password store.
 use crate::{
-    commands::Outcome,
-    error::CliError,
+    account::commands::Outcome,
+    cli::error::CliError,
     eth_rpc::{Facts, Login},
     node_common::{self, Say},
 };

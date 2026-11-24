@@ -161,7 +161,7 @@ mod tests {
             .map(String::from);
             assert!(matches!(
                 crate::tree::run(Role::Validator, &args, true).await,
-                crate::commands::Outcome::Usage(_)
+                crate::account::commands::Outcome::Usage(_)
             ));
         }
         let verb = erpc_core::chain::COMMON_VERBS

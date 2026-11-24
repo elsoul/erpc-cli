@@ -36,13 +36,10 @@ use erpc_worker::manifest::{self, Chain, DEFAULT_ENV, LineKind, Manifest, Manife
 use erpc_worker::template::{self, Template};
 use serde_json::json;
 
-use crate::commands::Outcome;
-use crate::error::{CliError, Code};
-use crate::worker_secrets::StoreFlag;
-use crate::{
-    worker_backup, worker_bench, worker_build, worker_deploy, worker_firewall, worker_import,
-    worker_keys, worker_remote, worker_run,
-};
+use crate::account::commands::Outcome;
+use crate::cli::error::{CliError, Code};
+use crate::cli::prompt;
+use crate::worker::secrets::StoreFlag;
 
 /// Where the app is: its name, or its directory.
 #[derive(Args, Debug, Clone, Default)]
@@ -666,13 +663,13 @@ pub(crate) struct ValueArgs {
 
 impl ValueArgs {
     /// The source the flags name: the account, here, or the person.
-    const fn value(self) -> worker_keys::Value {
+    const fn value(self) -> keys::Value {
         if self.from_account {
-            worker_keys::Value::Account
+            keys::Value::Account
         } else if self.generate {
-            worker_keys::Value::Generated
+            keys::Value::Generated
         } else {
-            worker_keys::Value::Typed
+            keys::Value::Typed
         }
     }
 }
@@ -829,7 +826,7 @@ pub(crate) async fn run(json: bool, action: Action) -> Outcome {
                 name: name.as_deref(),
                 into: into.as_deref(),
                 git: !no_git,
-                ask: !yes && !json && crate::session::has_terminal(),
+                ask: !yes && !json && crate::account::session::has_terminal(),
             },
         ),
         Action::Import {
@@ -840,9 +837,9 @@ pub(crate) async fn run(json: bool, action: Action) -> Outcome {
             port,
             health,
             chain,
-        } => worker_import::import(
+        } => import::import(
             json,
-            &worker_import::Request {
+            &import::Request {
                 dir: dir.as_deref(),
                 name: name.as_deref(),
                 binary: binary.as_deref(),
@@ -855,14 +852,14 @@ pub(crate) async fn run(json: bool, action: Action) -> Outcome {
         Action::Check { dir, env } => check(json, &dir, env.as_deref()),
         Action::Key { action } => match action {
             KeyAction::New { dir, store } => {
-                worker_keys::new(json, &dir, store.store, store.vault.as_deref())
+                keys::new(json, &dir, store.store, store.vault.as_deref())
             }
             KeyAction::Import {
                 dir,
                 file,
                 store,
                 wipe,
-            } => worker_keys::import(
+            } => keys::import(
                 json,
                 &dir.into(),
                 &file,
@@ -870,17 +867,15 @@ pub(crate) async fn run(json: bool, action: Action) -> Outcome {
                 store.vault.as_deref(),
                 wipe,
             ),
-            KeyAction::Show { dir } => worker_keys::show(json, &dir),
-            KeyAction::Balance { dir, rpc } => {
-                worker_keys::balance(json, &dir, rpc.as_deref()).await
-            }
+            KeyAction::Show { dir } => keys::show(json, &dir),
+            KeyAction::Balance { dir, rpc } => keys::balance(json, &dir, rpc.as_deref()).await,
             KeyAction::Send {
                 dir,
                 to,
                 sol,
                 all,
                 rpc,
-            } => worker_keys::send(json, &dir, &to, sol, all, rpc.as_deref()).await,
+            } => keys::send(json, &dir, &to, sol, all, rpc.as_deref()).await,
         },
         Action::Secret { action } => match action {
             SecretAction::Put {
@@ -890,7 +885,7 @@ pub(crate) async fn run(json: bool, action: Action) -> Outcome {
                 replace,
                 value,
             } => {
-                worker_keys::put(
+                keys::put(
                     json,
                     &dir.into(),
                     &name,
@@ -901,10 +896,10 @@ pub(crate) async fn run(json: bool, action: Action) -> Outcome {
                 )
                 .await
             }
-            SecretAction::List { dir } => worker_keys::list(json, &dir),
-            SecretAction::Rm { dir, name } => worker_keys::remove(json, &dir.into(), &name),
-            SecretAction::Unlock => crate::worker_keystore::unlock_command(json),
-            SecretAction::Lock => crate::worker_keystore::lock_command(json),
+            SecretAction::List { dir } => keys::list(json, &dir),
+            SecretAction::Rm { dir, name } => keys::remove(json, &dir.into(), &name),
+            SecretAction::Unlock => crate::worker::keystore::unlock_command(json),
+            SecretAction::Lock => crate::worker::keystore::lock_command(json),
         },
         Action::Run {
             dir,
@@ -923,14 +918,14 @@ pub(crate) async fn run(json: bool, action: Action) -> Outcome {
             .into_iter()
             .filter_map(|(kind, asked, plan)| asked.then_some((kind, plan)))
             .collect();
-            let lines = worker_run::Lines {
+            let lines = run::Lines {
                 kinds,
                 ip,
                 keep: keep_lines,
             };
-            worker_run::run(json, &dir, check, &lines).await
+            run::run(json, &dir, check, &lines).await
         }
-        Action::Build { dir } => worker_build::build(json, &dir),
+        Action::Build { dir } => build::build(json, &dir),
         Action::Deploy {
             app,
             host,
@@ -958,7 +953,7 @@ pub(crate) async fn run(json: bool, action: Action) -> Outcome {
             prepare,
             yes,
         } => {
-            let at = worker_deploy::Where {
+            let at = deploy::Where {
                 host,
                 user,
                 port,
@@ -983,10 +978,10 @@ pub(crate) async fn run(json: bool, action: Action) -> Outcome {
                 vault,
                 inline,
                 forget_lines: forget_line,
-                starts: worker_deploy::Starts::from_yes(yes),
-                upto: worker_deploy::Upto::from_prepare(prepare),
+                starts: deploy::Starts::from_yes(yes),
+                upto: deploy::Upto::from_prepare(prepare),
             };
-            worker_deploy::deploy(json, &app, &at, yes).await
+            deploy::deploy(json, &app, &at, yes).await
         }
         Action::Bench {
             app,
@@ -996,29 +991,29 @@ pub(crate) async fn run(json: bool, action: Action) -> Outcome {
             urls,
             no_shared,
         } => {
-            let asked = worker_bench::Asked {
+            let asked = bench::Asked {
                 method,
                 rounds,
                 interval_ms: interval,
                 urls,
                 shared: !no_shared,
             };
-            worker_bench::bench(json, &app, &asked).await
+            bench::bench(json, &app, &asked).await
         }
-        Action::Status { app } => worker_remote::status(json, &app).await,
+        Action::Status { app } => remote::status(json, &app).await,
         Action::Logs {
             app,
             follow,
             lines,
             waf,
-        } => worker_remote::logs(&app, lines, follow, waf),
+        } => remote::logs(&app, lines, follow, waf),
         Action::Api {
             path,
             app,
             method,
             data,
-        } => worker_remote::api(&app.into(), &method, &path, data.as_deref()),
-        Action::Trades { app, profit } => worker_remote::api(
+        } => remote::api(&app.into(), &method, &path, data.as_deref()),
+        Action::Trades { app, profit } => remote::api(
             &app,
             "GET",
             if profit {
@@ -1028,13 +1023,11 @@ pub(crate) async fn run(json: bool, action: Action) -> Outcome {
             },
             None,
         ),
-        Action::Start { app, yes } => worker_remote::start(json, &app, yes, false),
-        Action::Stop { app, lock, yes } => worker_remote::stop(json, &app, lock, yes),
-        Action::Restart { app, yes } => worker_remote::start(json, &app, yes, true),
-        Action::Rollback { app, to, yes } => {
-            worker_remote::rollback(json, &app, to.as_deref(), yes)
-        }
-        Action::Releases { app } => worker_remote::releases(json, &app),
+        Action::Start { app, yes } => remote::start(json, &app, yes, false),
+        Action::Stop { app, lock, yes } => remote::stop(json, &app, lock, yes),
+        Action::Restart { app, yes } => remote::start(json, &app, yes, true),
+        Action::Rollback { app, to, yes } => remote::rollback(json, &app, to.as_deref(), yes),
+        Action::Releases { app } => remote::releases(json, &app),
         Action::Delete {
             app,
             release_server,
@@ -1042,35 +1035,35 @@ pub(crate) async fn run(json: bool, action: Action) -> Outcome {
             forget_line,
             yes,
         } => {
-            let ask = worker_remote::DeleteAsk {
+            let ask = remote::DeleteAsk {
                 release_server,
                 forget,
                 forget_lines: forget_line,
                 yes,
             };
-            worker_remote::delete(json, &app, &ask).await
+            remote::delete(json, &app, &ask).await
         }
         Action::Firewall { action } => match action {
-            FirewallAction::List { app } => worker_firewall::list(json, &app),
+            FirewallAction::List { app } => firewall::list(json, &app),
             FirewallAction::Allow {
                 app,
                 to,
                 addresses,
                 yes,
-            } => worker_firewall::change(json, &app.into(), to, &addresses, true, yes),
+            } => firewall::change(json, &app.into(), to, &addresses, true, yes),
             FirewallAction::Deny {
                 app,
                 to,
                 addresses,
                 yes,
-            } => worker_firewall::change(json, &app.into(), to, &addresses, false, yes),
-            FirewallAction::Sync { app, yes } => worker_firewall::sync_verb(json, &app, yes),
+            } => firewall::change(json, &app.into(), to, &addresses, false, yes),
+            FirewallAction::Sync { app, yes } => firewall::sync_verb(json, &app, yes),
         },
         Action::Backup { action } => match action {
-            BackupAction::On { app, at, yes } => worker_backup::on(json, &app, &at, yes).await,
-            BackupAction::Off { app, yes } => worker_backup::off(json, &app, yes).await,
-            BackupAction::Status { app } => worker_backup::status(json, &app),
-            BackupAction::Now { app } => worker_backup::now(json, &app),
+            BackupAction::On { app, at, yes } => backup::on(json, &app, &at, yes).await,
+            BackupAction::Off { app, yes } => backup::off(json, &app, yes).await,
+            BackupAction::Status { app } => backup::status(json, &app),
+            BackupAction::Now { app } => backup::now(json, &app),
         },
         Action::List { prune } => list(json, prune),
     }
@@ -1093,7 +1086,7 @@ pub(crate) fn load_env(app: &App) -> Result<(PathBuf, Manifest), CliError> {
     if let Some(env) = m.env.get(&app.env).cloned()
         && let Some(inventory) = &env.inventory
     {
-        let facts = crate::worker_inventory::read(&inventory.vault, &m.name, &app.env)
+        let facts = crate::worker::inventory::read(&inventory.vault, &m.name, &app.env)
             .map_err(|e| CliError::new(Code::Failed, e))?;
         if let Some(facts) = facts {
             m.env
@@ -1121,7 +1114,7 @@ impl EnvRecord<'_> {
         deployed: Option<&erpc_worker::inventory::Deployed>,
     ) -> Result<(), String> {
         let in_file = if let Some(inventory) = &env.inventory {
-            crate::worker_inventory::write(&inventory.vault, self.app, self.env, env, deployed)?;
+            crate::worker::inventory::write(&inventory.vault, self.app, self.env, env, deployed)?;
             erpc_worker::inventory::stripped(env)
         } else {
             env.clone()
@@ -1136,7 +1129,7 @@ impl EnvRecord<'_> {
     /// stays recoverable in 1Password).
     pub(crate) fn forget(&self, env: &manifest::Env) -> Result<(), String> {
         if let Some(inventory) = &env.inventory {
-            crate::worker_inventory::archive(&inventory.vault, self.app, self.env)?;
+            crate::worker::inventory::archive(&inventory.vault, self.app, self.env)?;
         }
         std::fs::read_to_string(self.path)
             .map_err(|e| e.to_string())
@@ -1282,9 +1275,9 @@ fn manifest_error(path: &Path, error: &ManifestError) -> CliError {
 /// runs nothing in the app's directory, since `erpc ai` runs it without
 /// asking, in a directory that may be anyone's.
 pub(crate) fn deploy_needs(manifest: &Manifest, path: &Path) -> Vec<String> {
-    let root = crate::worker_build::app_root(path);
-    let probe = crate::worker_build::Probe::Look;
-    let mut needs: Vec<String> = crate::worker_build::missing_tools(manifest, &root, probe)
+    let root = crate::worker::build::app_root(path);
+    let probe = crate::worker::build::Probe::Look;
+    let mut needs: Vec<String> = crate::worker::build::missing_tools(manifest, &root, probe)
         .into_iter()
         .map(|(what, hint)| {
             if hint.is_empty() {
@@ -1294,7 +1287,7 @@ pub(crate) fn deploy_needs(manifest: &Manifest, path: &Path) -> Vec<String> {
             }
         })
         .collect();
-    if let Err(no_key) = crate::vps_access::login_key() {
+    if let Err(no_key) = crate::ai::vps_access::login_key() {
         needs.push(no_key);
     }
     needs
@@ -1363,7 +1356,7 @@ fn keystore_warnings(m: &Manifest) -> Vec<String> {
             let manifest::SecretRef::Keystore { service, account } = reference else {
                 return None;
             };
-            match crate::worker_keystore::has(service, account) {
+            match crate::worker::keystore::has(service, account) {
                 Ok(true) => None,
                 Ok(false) => Some(t!("worker.check.keystore_missing", at, reference)),
                 Err(error) => Some(t!("worker.check.keystore_unread", at, reference, error)),
@@ -1408,11 +1401,10 @@ fn problems_found(json: bool, path: &Path, problems: &[String]) -> Outcome {
         report.push_str("\n  - ");
         report.push_str(problem);
     }
-    let drawn = problems
-        .iter()
-        .fold(crate::ui::Report::new().marked("🩺", head), |r, p| {
-            r.detail(format!("• {p}"))
-        });
+    let drawn = problems.iter().fold(
+        crate::cli::ui::Report::new().marked("🩺", head),
+        |r, p| r.detail(format!("• {p}")),
+    );
     Outcome::Problems(drawn.or_plain(report))
 }
 
@@ -1441,7 +1433,7 @@ fn describe_drawn(
     m: &Manifest,
     warnings: &[String],
     dir_scope: &str,
-) -> crate::ui::Report {
+) -> crate::cli::ui::Report {
     let scope = format!(" --env {DEFAULT_ENV}{dir_scope}");
     let mut fields: Vec<(String, String)> = vec![("chain".into(), m.chain.to_string())];
     if let Some(template) = &m.template {
@@ -1467,7 +1459,7 @@ fn describe_drawn(
     if let Some(services) = services_named(m) {
         fields.push(("services".into(), services));
     }
-    if let Some([listens, limits]) = crate::worker_waf::described(m) {
+    if let Some([listens, limits]) = crate::worker::waf::described(m) {
         fields.push(("waf".into(), listens));
         fields.push((String::new(), limits));
     }
@@ -1494,13 +1486,13 @@ fn describe_drawn(
         fields.push(("env".into(), format!("{name}: {place}")));
     }
     // "Ready" only when nothing is left to set.
-    let head = crate::ui::Report::new();
+    let head = crate::cli::ui::Report::new();
     let head = if warnings.is_empty() {
         head.done(t!("worker.check.ready", name = m.name))
     } else {
         head.marked("📦", m.name.clone())
     };
-    let mut report = head.detail(crate::ui::tidy(path)).fields(fields);
+    let mut report = head.detail(crate::cli::ui::tidy(path)).fields(fields);
     for warning in warnings {
         report = report.warning(warning.clone());
     }
@@ -1576,7 +1568,7 @@ fn describe(path: &Path, m: &Manifest, warnings: &[String]) -> String {
     if let Some(services) = services_named(m) {
         lines.push(format!("  services  {services}"));
     }
-    if let Some([listens, limits]) = crate::worker_waf::described(m) {
+    if let Some([listens, limits]) = crate::worker::waf::described(m) {
         lines.push(format!("  waf       {listens}"));
         lines.push(format!("            {limits}"));
     }
@@ -1671,9 +1663,9 @@ fn init(json: bool, req: &InitRequest<'_>) -> Outcome {
     // script (--yes, --json, no terminal) gets plain lines or JSON.
     // Drawn only when the result goes to a terminal too: `init > log` keeps
     // the plain lines on stdout.
-    let drawn = req.ask && crate::ui::stdout_drawn();
+    let drawn = req.ask && crate::cli::ui::stdout_drawn();
     if drawn {
-        crate::prompt::intro("erpc worker init");
+        prompt::intro("erpc worker init");
     }
     let (template, name, dest) = match choose(req).and_then(|(template, default_name)| {
         let (name, dest) = app_name(req, default_name)?;
@@ -1682,20 +1674,20 @@ fn init(json: bool, req: &InitRequest<'_>) -> Outcome {
         Ok(chosen) => chosen,
         Err(e) => {
             if drawn {
-                crate::prompt::outro_cancel(&t!("worker.init.nothing_made"));
+                prompt::outro_cancel(&t!("worker.init.nothing_made"));
             }
             return e.into();
         }
     };
     let spinner = drawn.then(|| {
-        crate::prompt::Spinner::start(&t!("worker.init.making", name, template = template.tag()))
+        prompt::Spinner::start(&t!("worker.init.making", name, template = template.tag()))
     });
     let files = match template.write(&name, &dest) {
         Ok(files) => files,
         Err(e) => {
             if let Some(spinner) = spinner {
                 spinner.error(&e);
-                crate::prompt::outro_cancel(&t!("worker.init.nothing_made"));
+                prompt::outro_cancel(&t!("worker.init.nothing_made"));
             }
             return CliError::new(Code::Failed, e)
                 .hint(t!("worker.init.pick_another"))
@@ -1751,7 +1743,7 @@ fn init(json: bool, req: &InitRequest<'_>) -> Outcome {
             name,
             template = template.tag()
         ));
-        crate::prompt::info(&t!("worker.init.at", dir = near(&dest).display()));
+        prompt::info(&t!("worker.init.at", dir = near(&dest).display()));
         draw_made(&git, indexed.as_ref(), &next, &closing);
         return Outcome::Done(String::new());
     }
@@ -1861,19 +1853,19 @@ fn next_steps(dest: &Path, dir_scope: &str, flag_scope: &str, made_from: &Templa
 fn draw_made(git: &Repository, indexed: Option<&CliError>, next: &[String], closing: &Closing) {
     match git {
         Repository::Failed(why) => {
-            crate::prompt::warning(&t!("worker.init.git.failed_drawn", why));
+            prompt::warning(&t!("worker.init.git.failed_drawn", why));
         }
-        _ => crate::prompt::info(&git.text()),
+        _ => prompt::info(&git.text()),
     }
     if let Some(e) = indexed {
-        crate::prompt::warning(&t!("worker.init.unlisted", error = e.message));
+        prompt::warning(&t!("worker.init.unlisted", error = e.message));
     }
-    crate::prompt::note("Next", &next.join("\n"));
+    prompt::note("Next", &next.join("\n"));
     match closing {
-        Closing::Funds(text) => crate::prompt::warning(text),
-        Closing::Ready(text) => crate::prompt::info(text),
+        Closing::Funds(text) => prompt::warning(text),
+        Closing::Ready(text) => prompt::info(text),
     }
-    crate::prompt::outro(&t!("worker.init.done"));
+    prompt::outro(&t!("worker.init.done"));
 }
 
 /// The app's name and directory: `--name`'s, or the choice's own. For a
@@ -1970,11 +1962,11 @@ fn pick_kind(kinds: &[template::Kind]) -> Result<(Template, &'static str), CliEr
     let options: Vec<(&str, &str)> = kinds.iter().map(|k| (k.label, k.about)).collect();
     let mut at = 0;
     loop {
-        at = crate::prompt::pick_described(&t!("worker.init.what"), &options, Some(at))
+        at = prompt::pick_described(&t!("worker.init.what"), &options, Some(at))
             .map_err(|e| CliError::new(Code::Failed, e))?;
         match kinds[at].template() {
             Ok(made) => return Ok((made, kinds[at].default_name)),
-            Err(soon) => crate::prompt::info(&soon),
+            Err(soon) => prompt::info(&soon),
         }
     }
 }
@@ -2041,7 +2033,8 @@ fn repository(dir: &Path) -> Repository {
 
 /// Where the index of apps on this machine is.
 pub(crate) fn index_path() -> Result<PathBuf, CliError> {
-    crate::session::beside_config(index::FILE_NAME).map_err(|e| CliError::new(Code::Failed, e))
+    crate::account::session::beside_config(index::FILE_NAME)
+        .map_err(|e| CliError::new(Code::Failed, e))
 }
 
 /// `erpc worker list`: every app this machine knows, as its erpc.toml says.
@@ -2205,8 +2198,8 @@ fn list_drawn(
     rows: &[serde_json::Value],
     vault_rows: &[serde_json::Value],
     vault_note: Option<&String>,
-) -> crate::ui::Report {
-    let mut drawn = crate::ui::Report::new();
+) -> crate::cli::ui::Report {
+    let mut drawn = crate::cli::ui::Report::new();
     if rows.is_empty() && vault_rows.is_empty() {
         drawn = drawn
             .info(t!("worker.list.none_drawn"))
@@ -2230,7 +2223,7 @@ fn list_drawn(
                 };
                 drawn
                     .marked("📦", format!("{name}  ·  {state}"))
-                    .detail(crate::ui::tidy(Path::new(dir)))
+                    .detail(crate::cli::ui::tidy(Path::new(dir)))
             }
             Some("missing") => drawn.warning(t!("worker.list.gone_drawn", name, dir)),
             _ => drawn.warning(t!("worker.list.invalid_drawn", name)).hint({
@@ -2283,8 +2276,8 @@ fn vault_lines(
 /// note when the vault could not be read. Nothing when the session is not
 /// in 1Password.
 fn elsewhere(rows: &[serde_json::Value]) -> (Vec<serde_json::Value>, Option<String>) {
-    let Ok(crate::worker_secrets::Store::OnePassword { vault }) =
-        crate::worker_secrets::choose(None, None)
+    let Ok(crate::worker::secrets::Store::OnePassword { vault }) =
+        crate::worker::secrets::choose(None, None)
     else {
         return (Vec::new(), None);
     };
@@ -2300,7 +2293,7 @@ fn elsewhere(rows: &[serde_json::Value]) -> (Vec<serde_json::Value>, Option<Stri
             })
         })
         .collect();
-    match crate::worker_inventory::list(&vault) {
+    match crate::worker::inventory::list(&vault) {
         Ok(items) => (
             items
                 .into_iter()
@@ -2320,7 +2313,7 @@ fn elsewhere(rows: &[serde_json::Value]) -> (Vec<serde_json::Value>, Option<Stri
 mod tests {
 
     use super::{App, Dir, check, locate};
-    use crate::commands::Outcome;
+    use crate::account::commands::Outcome;
 
     #[test]
     fn a_hint_names_an_app_given_by_name_by_its_directory() {
@@ -2594,10 +2587,10 @@ mod tests {
 
     #[test]
     fn check_warns_of_what_this_machines_keystore_does_not_hold() {
-        use crate::worker_keystore::fake::{FakeDesk, PASSPHRASE, set_up};
+        use crate::worker::keystore::fake::{FakeDesk, PASSPHRASE, set_up};
         let desk = FakeDesk::typing(&[PASSPHRASE, PASSPHRASE]);
         let _kept = set_up(&desk);
-        crate::worker_keystore::write(
+        crate::worker::keystore::write(
             "erpc-worker",
             "bot.API_TOKEN",
             erpc_auth::store::keystore::Kind::Secret,
@@ -2807,7 +2800,7 @@ mod tests {
     /// together are a usage error (exit 2) before anything is read.
     #[test]
     fn secret_put_takes_its_value_from_one_place() {
-        use crate::worker_keys::Value;
+        use crate::worker::keys::Value;
         let parsed = |flags: &str| {
             let line = format!("erpc worker secret put API_TOKEN {flags}");
             <crate::Cli as clap::Parser>::try_parse_from(line.split_whitespace()).map(|cli| {
@@ -3137,7 +3130,7 @@ mod tests {
 
     #[test]
     fn check_says_what_the_waf_will_do_and_what_is_wrong_with_it() {
-        crate::ui::force_drawn(false);
+        crate::cli::ui::force_drawn(false);
         let app = "name = \"bot\"\nchain = \"solana\"\n[run]\nport = 3000\n";
         let root = app_dir("waf", &format!("{app}[waf]\nport = 8080\n"));
         let Outcome::Done(report) = check(false, &Dir::at(&root), None) else {
@@ -3174,9 +3167,9 @@ mod tests {
 
     #[test]
     fn check_says_its_findings_in_the_language_of_the_run() {
-        use crate::i18n::speaking;
+        use crate::cli::i18n::speaking;
         use erpc_core::i18n::Lang;
-        crate::ui::force_drawn(false);
+        crate::cli::ui::force_drawn(false);
         let root = app_dir("lang", "name = \"Bot\"\nchain = \"solana\"\n");
         let dir = Dir::at(&root);
         let said = |lang| match speaking(lang, || check(false, &dir, None)) {
@@ -3198,9 +3191,9 @@ mod tests {
     /// reads the binary `build.prebuilt` names, and says what it is.
     #[test]
     fn check_warns_of_a_prebuilt_binary_no_server_can_run() {
-        use crate::i18n::speaking;
+        use crate::cli::i18n::speaking;
         use erpc_core::i18n::Lang;
-        crate::ui::force_drawn(false);
+        crate::cli::ui::force_drawn(false);
         let root = app_dir(
             "prebuilt",
             "name = \"bot\"\nchain = \"solana\"\n[build]\nprebuilt = \"dist/bot\"\n",
@@ -3240,7 +3233,7 @@ mod tests {
         assert!(ja.contains("Linux（ELF）のバイナリではありません"), "{ja}");
         // A program for the servers' machine is not warned of.
         let program = {
-            use crate::elf::fixture::{GLIBC_X86_64, X86_64, linked};
+            use crate::worker::elf::fixture::{GLIBC_X86_64, X86_64, linked};
             linked(X86_64, GLIBC_X86_64, b"\0GLIBC_2.31\0")
         };
         std::fs::write(root.join("dist/bot"), program).expect("a binary");
@@ -3252,9 +3245,9 @@ mod tests {
 
     #[test]
     fn check_warns_of_a_credential_under_vars_and_the_app_still_passes() {
-        use crate::i18n::speaking;
+        use crate::cli::i18n::speaking;
         use erpc_core::i18n::Lang;
-        crate::ui::force_drawn(false);
+        crate::cli::ui::force_drawn(false);
         // Joined from parts: no file holds a URL with a password whole.
         let url = ["postgres", "://app:devpass", "@", "db/app"].concat();
         let root = app_dir(

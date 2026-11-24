@@ -23,9 +23,9 @@ use erpc_auth::{AuthClient, session as auth_session};
 use secrecy::{ExposeSecret as _, SecretString};
 use serde_json::{Value, json};
 
-use crate::commands::Outcome;
-use crate::error::{CliError, Code};
-use crate::session;
+use crate::account::commands::Outcome;
+use crate::account::session;
+use crate::cli::error::{CliError, Code};
 
 /// What `erpc storage` does.
 #[derive(Subcommand)]
@@ -212,7 +212,7 @@ pub async fn run(json: bool, action: Action) -> Outcome {
     }
     let client = match AuthClient::new() {
         Ok(client) => client,
-        Err(e) => return crate::error::classify(&e).into(),
+        Err(e) => return crate::cli::error::classify(&e).into(),
     };
     let token = match access_token(&client).await {
         Ok(token) => token,
@@ -315,14 +315,20 @@ pub async fn run(json: bool, action: Action) -> Outcome {
 /// The current access token from the store `erpc login` chose.
 pub(crate) async fn access_token(client: &AuthClient) -> Result<SecretString, Outcome> {
     let path = session::config_path().map_err(Outcome::Failed)?;
-    let config = crate::config::load(&path).map_err(Outcome::Failed)?;
+    let config = crate::account::config::load(&path).map_err(Outcome::Failed)?;
     let selection = session::plan_store(None, config.credential_store);
     let store = crate::store_for(selection.kind, config.credential_vault.as_deref())
-        .map_err(|e| Outcome::from(crate::error::classify(&e)))?;
+        .map_err(|e| Outcome::from(crate::cli::error::classify(&e)))?;
     let key = CredKey::new(session::LOGIN_AUDIENCE, session::local_account());
     let state_dir = session::state_dir().map_err(Outcome::Failed)?;
-    match auth_session::current_session(client, &store, &key, &state_dir, crate::commands::now())
-        .await
+    match auth_session::current_session(
+        client,
+        &store,
+        &key,
+        &state_dir,
+        crate::account::commands::now(),
+    )
+    .await
     {
         Ok(credential) => Ok(credential.access_token),
         Err(erpc_auth::SessionError::NoSession) => {
@@ -333,7 +339,7 @@ pub(crate) async fn access_token(client: &AuthClient) -> Result<SecretString, Ou
             "the session has expired or was signed out elsewhere",
         )
         .into()),
-        Err(e) => Err(crate::error::classify(&e).into()),
+        Err(e) => Err(crate::cli::error::classify(&e).into()),
     }
 }
 
@@ -343,7 +349,7 @@ pub(crate) fn refused(e: StorageError) -> CliError {
         StorageError::Api(erpc_api::ApiError::Unauthorized) => {
             CliError::new(Code::NotSignedIn, "the session was refused")
         }
-        StorageError::Api(erpc_api::ApiError::Http(e)) => crate::error::classify(&e),
+        StorageError::Api(erpc_api::ApiError::Http(e)) => crate::cli::error::classify(&e),
         StorageError::NoPlan(_) => CliError::new(Code::Failed, "this account has no storage plan")
             .hint("buy one with `erpc storage buy 5`"),
         StorageError::BudgetExhausted { .. } => CliError::new(Code::Failed, e.to_string())
@@ -571,7 +577,7 @@ async fn delete(
     yes: bool,
 ) -> Result<Outcome, StorageError> {
     if !yes {
-        crate::interrupt::say(&format!(
+        crate::cli::interrupt::say(&format!(
             "Delete {} from storage. This cannot be undone.",
             clean(path)
         ));
@@ -705,7 +711,7 @@ async fn keys_revoke(
     yes: bool,
 ) -> Result<Outcome, StorageError> {
     if !yes {
-        crate::interrupt::say(&format!(
+        crate::cli::interrupt::say(&format!(
             "Revoke storage access key {id}. Anything signing in with it stops working."
         ));
     }
@@ -757,7 +763,7 @@ async fn pause(attempt: u32) {
 /// A line on stderr while a transfer runs, when someone is watching.
 fn progress(done: u64, total: u64, verb: &str) {
     if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
-        crate::interrupt::say(&format!("  {verb} {} of {}", bytes(done), bytes(total)));
+        crate::cli::interrupt::say(&format!("  {verb} {} of {}", bytes(done), bytes(total)));
     }
 }
 
@@ -794,7 +800,7 @@ async fn put(
     }
     let plain_len = meta.len();
     let (size, key_note) = if encrypt {
-        let (key, kind, made) = match crate::storage_key::load_or_create() {
+        let (key, kind, made) = match crate::storage::key::load_or_create() {
             Ok(k) => k,
             Err(e) => {
                 return Ok(CliError::new(Code::Failed, format!("no storage key: {e}"))
@@ -805,11 +811,11 @@ async fn put(
         let note = made.then(|| {
             format!(
                 "A new storage encryption key was made and kept in {}.\n  Without it the encrypted files cannot be read: keep a copy with `erpc storage key export --show`.",
-                crate::storage_key::place(kind)
+                crate::storage::key::place(kind)
             )
         });
         (
-            crate::storage_crypt::sealed_len(plain_len),
+            crate::storage::crypt::sealed_len(plain_len),
             Some((key, note)),
         )
     } else {
@@ -823,14 +829,14 @@ async fn put(
         Err(e) => return usage_err(format!("cannot read {}: {e}", file.display())),
     };
     let mut source: Box<dyn std::io::Read> = match &key_note {
-        Some((key, _)) => match crate::storage_crypt::Sealer::new(opened, key) {
+        Some((key, _)) => match crate::storage::crypt::Sealer::new(opened, key) {
             Ok(sealer) => Box::new(sealer),
             Err(e) => return Ok(CliError::new(Code::Failed, e.to_string()).into()),
         },
         None => Box::new(opened),
     };
     if let Some((_, Some(note))) = &key_note {
-        crate::interrupt::say(note);
+        crate::cli::interrupt::say(note);
     }
     let region = match region {
         Some(r) => Some(r.to_owned()),
@@ -969,12 +975,12 @@ enum Sink<'k> {
     /// none; and whether a file erpc did not encrypt is taken.
     Undecided(
         Vec<u8>,
-        Result<&'k crate::storage_crypt::MasterKey, &'k str>,
+        Result<&'k crate::storage::crypt::MasterKey, &'k str>,
         bool,
         tempfile::NamedTempFile,
     ),
     Plain(tempfile::NamedTempFile),
-    Sealed(crate::storage_crypt::Opener<'k, tempfile::NamedTempFile>),
+    Sealed(crate::storage::crypt::Opener<'k, tempfile::NamedTempFile>),
 }
 
 impl Sink<'_> {
@@ -982,11 +988,11 @@ impl Sink<'_> {
         match self {
             Self::Undecided(mut head, key, plain, file) => {
                 head.extend_from_slice(data);
-                if head.len() < crate::storage_crypt::MAGIC.len() {
+                if head.len() < crate::storage::crypt::MAGIC.len() {
                     return Ok(Self::Undecided(head, key, plain, file));
                 }
-                let next = if crate::storage_crypt::is_sealed(&head) {
-                    Self::Sealed(crate::storage_crypt::Opener::new(file, key?))
+                let next = if crate::storage::crypt::is_sealed(&head) {
+                    Self::Sealed(crate::storage::crypt::Opener::new(file, key?))
                 } else if plain {
                     Self::Plain(file)
                 } else {
@@ -1077,7 +1083,7 @@ async fn get(
             .into());
         }
     };
-    let key = match crate::storage_key::load() {
+    let key = match crate::storage::key::load() {
         Ok((Some(key), _)) => Ok(key),
         Ok((None, _)) => Err(
             "the file is encrypted and this machine has no storage key; \
@@ -1208,24 +1214,24 @@ async fn get(
 /// `erpc storage key`: no session needed, only the store.
 fn key(json: bool, action: &KeyAction) -> Outcome {
     match action {
-        KeyAction::Show => match crate::storage_key::load() {
+        KeyAction::Show => match crate::storage::key::load() {
             Ok((Some(key), kind)) => {
                 if json {
                     crate::print_json(
-                        &json!({ "keyId": key.id_hex(), "keptIn": crate::storage_key::place(kind) }),
+                        &json!({ "keyId": key.id_hex(), "keptIn": crate::storage::key::place(kind) }),
                     );
                     return Outcome::Done(String::new());
                 }
                 Outcome::Done(format!(
                     "Storage key {}\n  kept in {}",
                     key.id_hex(),
-                    crate::storage_key::place(kind)
+                    crate::storage::key::place(kind)
                 ))
             }
             Ok((None, kind)) => {
                 if json {
                     crate::print_json(
-                        &json!({ "keyId": null, "keptIn": crate::storage_key::place(kind) }),
+                        &json!({ "keyId": null, "keptIn": crate::storage::key::place(kind) }),
                     );
                     return Outcome::Done(String::new());
                 }
@@ -1242,7 +1248,7 @@ fn key(json: bool, action: &KeyAction) -> Outcome {
                     .hint("anyone who sees it can read every file it encrypted; write it down or keep it in a password manager")
                     .into();
             }
-            match crate::storage_key::load() {
+            match crate::storage::key::load() {
                 Ok((Some(key), _)) => {
                     let hex = key.to_hex();
                     if json {
@@ -1264,28 +1270,30 @@ fn key(json: bool, action: &KeyAction) -> Outcome {
         KeyAction::Import => {
             let mut line = zeroize::Zeroizing::new(String::new());
             if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-                crate::interrupt::say("Paste the storage key (64 hex digits) and press Enter:");
+                crate::cli::interrupt::say(
+                    "Paste the storage key (64 hex digits) and press Enter:",
+                );
             }
             if let Err(e) = std::io::stdin().read_line(&mut line) {
                 return Outcome::Failed(format!("could not read the key: {e}"));
             }
-            let key = match crate::storage_crypt::MasterKey::from_hex(&line) {
+            let key = match crate::storage::crypt::MasterKey::from_hex(&line) {
                 Ok(k) => k,
                 Err(e) => return CliError::new(Code::Usage, e).into(),
             };
             drop(line);
-            match crate::storage_key::import(&key) {
+            match crate::storage::key::import(&key) {
                 Ok(kind) => {
                     if json {
                         crate::print_json(
-                            &json!({ "keyId": key.id_hex(), "keptIn": crate::storage_key::place(kind) }),
+                            &json!({ "keyId": key.id_hex(), "keptIn": crate::storage::key::place(kind) }),
                         );
                         return Outcome::Done(String::new());
                     }
                     Outcome::Done(format!(
                         "Storage key {} is kept in {}.",
                         key.id_hex(),
-                        crate::storage_key::place(kind)
+                        crate::storage::key::place(kind)
                     ))
                 }
                 Err(e) => Outcome::Failed(e),
@@ -1330,7 +1338,7 @@ async fn resize(
         .map(|cents| format!(" (€{:.2} a period)", cents * f64::from(units) / 100.0))
         .unwrap_or_default();
     if !yes {
-        crate::interrupt::say(&if gb > now_gb {
+        crate::cli::interrupt::say(&if gb > now_gb {
             format!(
                 "Resize the plan from {now_gb} GB to {gb} GB{monthly}. The card is charged the prorated difference now."
             )
@@ -1443,7 +1451,7 @@ async fn buy(
         euros(total),
     );
     if !json || !yes {
-        crate::interrupt::say(&quote);
+        crate::cli::interrupt::say(&quote);
     }
     if let Err(e) = crate::node_common::go_ahead(yes, "nothing was bought") {
         return Ok(e.into());
@@ -1560,10 +1568,10 @@ mod tests {
 
     #[test]
     fn an_encrypted_file_says_why_there_is_no_key() {
-        let key = crate::storage_crypt::MasterKey::new([3; 32]);
+        let key = crate::storage::crypt::MasterKey::new([3; 32]);
         let mut sealed = Vec::new();
         std::io::Read::read_to_end(
-            &mut crate::storage_crypt::Sealer::new(&b"secret"[..], &key).expect("sealer"),
+            &mut crate::storage::crypt::Sealer::new(&b"secret"[..], &key).expect("sealer"),
             &mut sealed,
         )
         .expect("seals");

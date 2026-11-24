@@ -6,7 +6,7 @@
 //! check, the vault a network's inventory lives in, and following a run on
 //! the node through dropped connections.
 
-use crate::error::{CliError, Code};
+use crate::cli::error::{CliError, Code};
 use std::path::{Path, PathBuf};
 
 use erpc_auth::store::one_password::{Mode, OpCli};
@@ -22,12 +22,15 @@ pub(crate) struct Say {
 }
 
 impl Say {
-    /// A step of the work, marked at a terminal (see [`crate::ui::step_line`]).
+    /// A step of the work, marked at a terminal (see [`crate::cli::ui::step_line`]).
     pub(crate) fn line(&self, text: &str) {
         #[cfg(test)]
         heard::note(text);
         if !self.quiet {
-            eprintln!("{}", crate::ui::step_line(text, crate::ui::stderr_drawn()));
+            eprintln!(
+                "{}",
+                crate::cli::ui::step_line(text, crate::cli::ui::stderr_drawn())
+            );
         }
     }
 }
@@ -83,9 +86,9 @@ pub(crate) fn op_why(stderr: &str, no_reason: &str) -> String {
 
 /// A spinner while `op` waits on the 1Password app, which can take as long
 /// as the person takes to allow it; none off a terminal.
-pub(crate) fn op_waiting(doing: &str) -> Option<crate::prompt::Spinner> {
-    crate::ui::stderr_drawn()
-        .then(|| crate::prompt::Spinner::start(&t!("worker_secrets.op_waiting", doing)))
+pub(crate) fn op_waiting(doing: &str) -> Option<crate::cli::prompt::Spinner> {
+    crate::cli::ui::stderr_drawn()
+        .then(|| crate::cli::prompt::Spinner::start(&t!("worker_secrets.op_waiting", doing)))
 }
 
 /// The `op` this machine has: a service account when its token is in the
@@ -178,7 +181,7 @@ pub(crate) fn host_key(
         say.line(&format!("host key  {fingerprint} (matches --fingerprint)"));
         return Ok(offered);
     }
-    if !crate::session::has_terminal() {
+    if !crate::account::session::has_terminal() {
         return Err(format!(
             "{address} offers host key {fingerprint}. Check it against the server's console \
              (ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub) and pass --fingerprint {fingerprint}"
@@ -202,7 +205,7 @@ pub(crate) fn confirm(question: &str) -> Result<bool, String> {
     // into a yes. An arrow only moves the cursor (a toggling prompt would
     // flip the answer), and Enter on No, or Esc, is no.
     let rows = [t!("tui.picker.yes"), t!("tui.picker.no")];
-    match crate::prompt::pick(question, &rows, Some(1)) {
+    match crate::cli::prompt::pick(question, &rows, Some(1)) {
         Ok(i) => Ok(i == 0),
         Err(e) if e == "nothing was chosen" => Ok(false),
         Err(e) => Err(e),
@@ -216,7 +219,7 @@ pub(crate) fn go_ahead(yes: bool, refused: &str) -> Result<(), CliError> {
     if yes {
         return Ok(());
     }
-    if !crate::session::has_terminal() {
+    if !crate::account::session::has_terminal() {
         return Err(
             CliError::new(Code::NeedsTerminal, t!("tui.picker.no_terminal", refused))
                 .hint(t!("tui.picker.pass_yes")),
@@ -271,8 +274,8 @@ pub(crate) fn vault_for(network: &str, flag: Option<&str>, first: &str) -> Resul
 /// [`vault_for`]'s vault, or none when neither the flag nor `keyless.toml`
 /// names one, for a command that says what to do then in its own words.
 pub(crate) fn vault_given(network: &str, flag: Option<&str>) -> Result<Option<String>, String> {
-    let path = crate::keyless::path()?;
-    let keyless = crate::keyless::load(&path)?;
+    let path = crate::account::keyless::path()?;
+    let keyless = crate::account::keyless::load(&path)?;
     let vault = match (flag, keyless.networks.get(network)) {
         (Some(v), Some(saved)) if v != saved.vault_id => {
             return Err(format!(
@@ -286,7 +289,7 @@ pub(crate) fn vault_given(network: &str, flag: Option<&str>) -> Result<Option<St
         (None, Some(saved)) => saved.vault_id.clone(),
         (None, None) => return Ok(None),
     };
-    if !crate::keyless::is_vault_id(&vault) {
+    if !crate::account::keyless::is_vault_id(&vault) {
         return Err(format!(
             "{vault:?} is not a vault id; `op vault list` prints them"
         ));
@@ -306,21 +309,21 @@ pub(crate) fn store(
         chain: chain.to_owned(),
         network: network.to_owned(),
     };
-    let lock = crate::session::state_dir()?.join("inventory.lock");
+    let lock = crate::account::session::state_dir()?.join("inventory.lock");
     Ok(Store::new(runner.clone(), vault, scope, lock))
 }
 
 /// Records the network's vault in `keyless.toml`, once it has been used.
 pub(crate) fn save_vault(network: &str, vault: &str) -> Result<(), String> {
-    let path = crate::keyless::path()?;
-    let mut keyless = crate::keyless::load(&path)?;
+    let path = crate::account::keyless::path()?;
+    let mut keyless = crate::account::keyless::load(&path)?;
     keyless.networks.insert(
         network.to_owned(),
-        crate::keyless::NetworkVault {
+        crate::account::keyless::NetworkVault {
             vault_id: vault.to_owned(),
         },
     );
-    crate::keyless::save(&path, &keyless)
+    crate::account::keyless::save(&path, &keyless)
 }
 
 /// Follows a run to its end, opening the connection again when it drops,

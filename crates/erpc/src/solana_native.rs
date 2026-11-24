@@ -3,8 +3,8 @@
 
 //! Dedicated native hosts: public inventory, sealed preparation and typed control.
 use crate::{
-    commands::Outcome,
-    error::{CliError, Code},
+    account::commands::Outcome,
+    cli::error::{CliError, Code},
     node_common::{self, Say},
 };
 use clap::{Arg, ArgAction, ArgMatches, Command};
@@ -1093,7 +1093,7 @@ mod tests {
         .hint("pass --yes to go ahead without being asked");
         // Nobody at a terminal, as in CI or a pipe: the refusal is asked for
         // real. At a terminal, `confirm` would ask instead.
-        if !crate::session::has_terminal() {
+        if !crate::account::session::has_terminal() {
             let asked = start(&[]);
             let refused = confirm(
                 asked.subcommand().unwrap().1,

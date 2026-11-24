@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Dedicated consensus custody, follower activation and external unsigned plans.
 use crate::{
-    commands::Outcome,
+    account::commands::Outcome,
     hyperliquid_ops as rpc,
     node_common::{self, Say},
 };

@@ -3,8 +3,8 @@
 
 //! Select the recorded Solana backend without reading concealed inventory fields.
 use crate::{
-    commands::Outcome,
-    error::{CliError, Code},
+    account::commands::Outcome,
+    cli::error::{CliError, Code},
     node_common,
     solana_native::one,
 };
@@ -43,7 +43,7 @@ pub(crate) fn native_selected(
     let recorded = store.solana_backend(name, rpc).map_err(|e| e.to_string())?;
     let native = choose(recorded, one(args, "backend"), init)?;
     if !native && !init && one(args, "vault").is_some() {
-        let keyless = crate::keyless::load(&crate::keyless::path()?)?;
+        let keyless = crate::account::keyless::load(&crate::account::keyless::path()?)?;
         if keyless
             .networks
             .get(network)
@@ -168,7 +168,7 @@ fn list(args: &ArgMatches, network: Option<&str>, rpc: bool) -> Result<Value, St
             vault.to_owned(),
         )]
     } else {
-        let keyless = crate::keyless::load(&crate::keyless::path()?)?;
+        let keyless = crate::account::keyless::load(&crate::account::keyless::path()?)?;
         keyless
             .networks
             .into_iter()

@@ -25,8 +25,8 @@ use erpc_ssh::{HostKey, Identity, RemoteCommand, Session, Target};
 use secrecy::SecretString;
 use serde_json::json;
 
-use crate::commands::Outcome;
-use crate::error::CliError;
+use crate::account::commands::Outcome;
+use crate::cli::error::CliError;
 use crate::node_common::{
     Say, agent_socket, check_ubuntu, host_key, op_runner, public_key_line, save_vault, store,
     vault_for,

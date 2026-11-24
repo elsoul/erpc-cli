@@ -7,11 +7,11 @@
 use erpc_ai::memory::Memory;
 use serde_json::json;
 
-use crate::commands::Outcome;
+use crate::account::commands::Outcome;
 
 /// The memory: `memory.json` beside the config.
 pub(crate) fn store() -> Result<Memory, String> {
-    crate::session::beside_config("memory.json").map(Memory::at)
+    crate::account::session::beside_config("memory.json").map(Memory::at)
 }
 
 /// `erpc memory list`.

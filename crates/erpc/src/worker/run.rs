@@ -39,14 +39,14 @@ use erpc_worker::server::probe;
 use serde_json::json;
 use zeroize::Zeroizing;
 
-use crate::commands::Outcome;
-use crate::error::{CliError, Code};
-use crate::interrupt::Hold;
+use crate::account::commands::Outcome;
+use crate::cli::error::{CliError, Code};
+use crate::cli::interrupt::Hold;
 use crate::node_common::Say;
+use crate::worker::deploy::said_in;
+use crate::worker::secrets;
+use crate::worker::vps::{self, Api, LineTarget};
 use crate::worker::{Dir, load};
-use crate::worker_deploy::said_in;
-use crate::worker_secrets;
-use crate::worker_vps::{self, Api, LineTarget};
 
 /// What the app's environment keeps of erpc's own, so that it runs and
 /// prints as it would from a shell.
@@ -89,7 +89,7 @@ async fn start_and_watch(
 ) -> Result<Outcome, CliError> {
     let say = Say { quiet: json };
     let (path, m) = load(dir)?;
-    let root = crate::worker_build::app_root(&path);
+    let root = crate::worker::build::app_root(&path);
     let given: Vec<&str> = lines.kinds.iter().map(|(k, _)| k.setting()).collect();
     let missing = m.missing_besides(&given);
     if !missing.is_empty() {
@@ -121,10 +121,10 @@ async fn start_and_watch(
         return Err(failed(t!("worker_run.missing", name = m.name, settings)).hint(hint));
     }
     if m.wallet.is_some() {
-        worker_secrets::may_read_key().map_err(failed)?;
+        secrets::may_read_key().map_err(failed)?;
     }
     // What is kept in the keystore is opened now, not after the build.
-    worker_secrets::ready_for(&m).map_err(failed)?;
+    secrets::ready_for(&m).map_err(failed)?;
     let bin = build(&m, &root, &say)?;
     let mut command = Command::new(&bin);
     command
@@ -138,12 +138,12 @@ async fn start_and_watch(
         )
         .envs(&m.vars);
     for (name, reference) in &m.secrets {
-        let value = worker_secrets::read(reference).map_err(failed)?;
+        let value = secrets::read(reference).map_err(failed)?;
         command.env(name, value.as_str());
     }
     let key = if let Some(wallet) = &m.wallet {
         let keypair =
-            worker_secrets::read_key(&wallet.source, wallet.pubkey.as_deref()).map_err(failed)?;
+            secrets::read_key(&wallet.source, wallet.pubkey.as_deref()).map_err(failed)?;
         command.env("ERPC_WORKER_KEY_FD", "0");
         if let Some(pubkey) = &wallet.pubkey {
             command.env("ERPC_WORKER_PUBKEY", pubkey);
@@ -202,7 +202,7 @@ async fn take_lines(
     say: &Say,
     interrupt: &mut Hold,
 ) -> Result<(), CliError> {
-    let charged = worker_vps::charged(api).await?;
+    let charged = vps::charged(api).await?;
     // This machine, by its address: a run takes no UDP Forwarding line
     // (a laptop behind NAT cannot receive it), so no port or region.
     let target = LineTarget {
@@ -218,7 +218,7 @@ async fn take_lines(
             held,
             interrupt,
             async || {
-                let Some(id) = worker_vps::line_letting_in(api, kind, ip).await? else {
+                let Some(id) = vps::line_letting_in(api, kind, ip).await? else {
                     return Ok(None);
                 };
                 let mut line = Line {
@@ -228,7 +228,7 @@ async fn take_lines(
                     hourly: true,
                     sources: Vec::new(),
                 };
-                line.hourly = worker_vps::is_charged(&charged, &line);
+                line.hourly = vps::is_charged(&charged, &line);
                 say.line(&t!(
                     "worker_run.line.taking_up",
                     kind = label,
@@ -240,9 +240,9 @@ async fn take_lines(
             async |named| {
                 let mut record = Unrecorded(named);
                 let plan = plan.as_deref();
-                worker_vps::start_line(api, kind, &target, plan, "", say, &mut record).await
+                vps::start_line(api, kind, &target, plan, "", say, &mut record).await
             },
-            async |id, hourly| worker_vps::wait_line(api, kind, id, &target, hourly, say).await,
+            async |id, hourly| vps::wait_line(api, kind, id, &target, hourly, say).await,
         )
         .await?;
         say.line(&t!(
@@ -268,7 +268,7 @@ type Named<'a> = &'a mut dyn FnMut(&str) -> Result<(), CliError>;
 /// holds.
 struct Unrecorded<'a, 'b>(&'a mut (dyn FnMut(&str) -> Result<(), CliError> + 'b));
 
-impl worker_vps::StartRecord for Unrecorded<'_, '_> {
+impl vps::StartRecord for Unrecorded<'_, '_> {
     fn pending(&self) -> Option<erpc_worker::manifest::Start> {
         None
     }
@@ -285,12 +285,12 @@ impl worker_vps::StartRecord for Unrecorded<'_, '_> {
     /// same of it: the line may have been started, where to look, and
     /// that the next run takes it up. No request is kept, so nothing is
     /// said to stay on a record or to be carried on.
-    fn stays_hint(&self, _: worker_vps::Stays) -> String {
+    fn stays_hint(&self, _: vps::Stays) -> String {
         t!("worker_run.line.maybe_started")
     }
 }
 
-impl worker_vps::LineRecord for Unrecorded<'_, '_> {
+impl vps::LineRecord for Unrecorded<'_, '_> {
     fn named(&mut self, id: &str) -> Result<(), CliError> {
         (self.0)(id)
     }
@@ -380,11 +380,11 @@ async fn let_go(api: &Api, held: &[Line], keep: bool, ip: Ipv4Addr, dir_scope: &
         if !line.hourly {
             say.line(&t!("worker_run.line.not_hourly", kind, id));
         } else if keep {
-            crate::interrupt::say(&t!("worker_run.line.kept", kind, id, dir_scope, flag, ip));
+            crate::cli::interrupt::say(&t!("worker_run.line.kept", kind, id, dir_scope, flag, ip));
         } else {
-            match worker_vps::end_line(api, line, say).await {
+            match vps::end_line(api, line, say).await {
                 Ok(_) => say.line(&t!("worker_run.line.ended", kind, id)),
-                Err(e) => crate::interrupt::say(&t!(
+                Err(e) => crate::cli::interrupt::say(&t!(
                     "worker_run.line.not_ended",
                     kind,
                     id,
@@ -469,7 +469,7 @@ fn build(m: &Manifest, root: &Path, say: &Say) -> Result<PathBuf, CliError> {
     // Built already, for the servers: run as it is where this machine is
     // one of their kind, and said to be the servers' where it is not.
     if let Some(path) = &m.build.prebuilt {
-        return crate::worker_build::prebuilt_here(m, root, path, say);
+        return crate::worker::build::prebuilt_here(m, root, path, say);
     }
     let (program, args) = m
         .build
@@ -545,7 +545,7 @@ async fn watch(
 
 fn stopped(m: &Manifest, dir_scope: &str) -> Outcome {
     let stopped = t!("worker_run.stopped", name = m.name);
-    let mut report = crate::ui::Report::new().marked("👋", stopped.clone());
+    let mut report = crate::cli::ui::Report::new().marked("👋", stopped.clone());
     let mut plain = stopped;
     // An app that trades with a key may have held positions when it stopped.
     if m.wallet.is_some() {
@@ -566,7 +566,11 @@ async fn check_and_stop(
     interrupt: Option<&mut Hold>,
 ) -> Outcome {
     // The reason is English in `--json` output, which scripts read.
-    let lang = if json { Lang::En } else { crate::i18n::lang() };
+    let lang = if json {
+        Lang::En
+    } else {
+        crate::cli::i18n::lang()
+    };
     let started = Instant::now();
     let health = m.run.health.as_ref();
     let timeout = Duration::from_secs(u64::from(health.map_or(30, |h| h.timeout_secs)));
@@ -610,7 +614,11 @@ async fn check_and_stop(
         Ok(()) => {
             let secs = format!("{:.1}", after.as_secs_f64());
             let text = t!("worker_run.check.healthy", name = m.name, secs);
-            Outcome::Done(crate::ui::Report::new().done(text.clone()).or_plain(text))
+            Outcome::Done(
+                crate::cli::ui::Report::new()
+                    .done(text.clone())
+                    .or_plain(text),
+            )
         }
         Err(why) if json => {
             let _ = why;
@@ -619,7 +627,7 @@ async fn check_and_stop(
         Err(why) => {
             let text = t!("worker_run.check.failed", name = m.name, why);
             Outcome::Problems(
-                crate::ui::Report::new()
+                crate::cli::ui::Report::new()
                     .marked("🩺", text.clone())
                     .or_plain(text),
             )
@@ -634,8 +642,8 @@ mod tests {
     use erpc_worker::manifest::{Line, LineKind};
 
     use super::{failed, take_line};
-    use crate::i18n::speaking;
-    use crate::interrupt::Hold;
+    use crate::cli::i18n::speaking;
+    use crate::cli::interrupt::Hold;
     use crate::worker::Action;
 
     #[derive(Parser)]
@@ -783,7 +791,7 @@ mod tests {
     #[tokio::test]
     async fn a_start_of_a_run_that_is_not_settled_says_nothing_of_a_record() {
         use crate::node_common::Say;
-        use crate::worker_vps::{Sent, start_on_record};
+        use crate::worker::vps::{Sent, start_on_record};
         use erpc_ai::actions::StartError;
         use erpc_worker::manifest::Start;
         use serde_json::json;

@@ -299,7 +299,7 @@ mod tests {
             "{english}"
         );
         for lang in [Lang::Ja, Lang::Ru] {
-            let text = crate::i18n::speaking(lang, said);
+            let text = crate::cli::i18n::speaking(lang, said);
             assert_ne!(text, english);
             assert!(!text.contains('{'), "{text}");
         }

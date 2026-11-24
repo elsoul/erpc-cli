@@ -3,7 +3,7 @@
 
 //! Avalanche lifecycle with pinned host/identity, in-memory custody and external staking.
 use crate::{
-    error::CliError,
+    cli::error::CliError,
     node_common::{self, Say},
 };
 use clap::ArgMatches;

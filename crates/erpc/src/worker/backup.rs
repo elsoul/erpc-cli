@@ -9,7 +9,7 @@
 //! - This machine makes the worker's own `append_only` access key and its
 //!   own restic key, named for the worker and its server ([`Whose`]), with
 //!   the account's admin key and master password
-//!   ([`crate::backup::account`]).
+//!   ([`crate::storage::backup::account`]).
 //! - The server gets the pinned Linux restic, checked against its digest,
 //!   and the credentials on standard input to the agent's `backup-setup`,
 //!   which keeps them root-only and runs restic from a systemd timer over
@@ -38,13 +38,13 @@ use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
-use crate::backup::{self, Account};
-use crate::commands::Outcome;
-use crate::error::CliError;
+use crate::account::commands::Outcome;
+use crate::cli::error::CliError;
 use crate::node_common::go_ahead;
-use crate::restic::{self, Credentials};
+use crate::storage::backup::{self, Account};
+use crate::storage::restic::{self, Credentials};
+use crate::worker::remote::{ctl, ctl_ok, done, failed, open, reach, target};
 use crate::worker::{App, load_env};
-use crate::worker_remote::{ctl, ctl_ok, done, failed, open, reach, target};
 
 /// The longest access-key label user-api keeps.
 const LABEL_MAX: usize = 64;
@@ -635,12 +635,13 @@ async fn undo(
 #[allow(clippy::too_many_lines)] // one setup, read top to bottom
 pub(crate) async fn on(json: bool, app: &App, at: &str, yes: bool) -> Outcome {
     let run = async || -> Result<Outcome, CliError> {
-        let at = TimeOfDay::new(at).map_err(|e| CliError::new(crate::error::Code::Usage, e))?;
+        let at =
+            TimeOfDay::new(at).map_err(|e| CliError::new(crate::cli::error::Code::Usage, e))?;
         let place = Place::of(app)?;
         let whose = &place.whose;
         let id = &whose.id;
         let host = whose.host();
-        crate::interrupt::say(&t!(
+        crate::cli::interrupt::say(&t!(
             "worker_backup.on.ask",
             id = id.as_str(),
             at = at.as_str(),
@@ -661,7 +662,7 @@ pub(crate) async fn on(json: bool, app: &App, at: &str, yes: bool) -> Outcome {
             })
             .collect();
         if !services.is_empty() {
-            crate::interrupt::say(&t!(
+            crate::cli::interrupt::say(&t!(
                 "worker_backup.on.services_excluded",
                 names = services.join(" and ")
             ));
@@ -673,8 +674,8 @@ pub(crate) async fn on(json: bool, app: &App, at: &str, yes: bool) -> Outcome {
         let session = open(&place.server(app)?)?;
         let machine = machine(&session)?;
         let (bytes, digest) = restic::linux_program(&machine).await.map_err(failed)?;
-        let staged = format!("{}/restic/restic", crate::worker_deploy::UPLOADS);
-        crate::worker_deploy::upload(&session, &staged, &bytes)?;
+        let staged = format!("{}/restic/restic", crate::worker::deploy::UPLOADS);
+        crate::worker::deploy::upload(&session, &staged, &bytes)?;
         session
             .run(
                 &RemoteCommand::Worker(Worker::InstallRestic {
@@ -701,7 +702,7 @@ pub(crate) async fn on(json: bool, app: &App, at: &str, yes: bool) -> Outcome {
         // failed before, is said too.
         let told = kept_password || made_repository;
         if told {
-            crate::interrupt::say(&custody(made_repository, kind));
+            crate::cli::interrupt::say(&custody(made_repository, kind));
         }
 
         // What an earlier `on` for this worker on this server made, revoked
@@ -880,7 +881,7 @@ pub(crate) async fn off(json: bool, app: &App, yes: bool) -> Outcome {
         let host = recorded
             .as_ref()
             .map_or_else(|| whose.host(), |b| b.host.clone());
-        crate::interrupt::say(&t!("worker_backup.off.ask", id = whose.id.as_str(), host));
+        crate::cli::interrupt::say(&t!("worker_backup.off.ask", id = whose.id.as_str(), host));
         go_ahead(yes, &t!("worker_backup.nothing_changed"))?;
         let mut gone = Revoked::default();
         gone.access_signed_in(whose, recorded.as_ref().map(|b| b.access_key))
@@ -1011,7 +1012,7 @@ pub(crate) fn status(json: bool, app: &App) -> Outcome {
 pub(crate) fn now(json: bool, app: &App) -> Outcome {
     let run = || -> Result<Outcome, CliError> {
         let (_, id, session) = reach(app)?;
-        crate::interrupt::say(&t!("worker_backup.now.running", id = id.as_str()));
+        crate::cli::interrupt::say(&t!("worker_backup.now.running", id = id.as_str()));
         let answer = ctl(&session, &id, Verb::BackupNow, None)?;
         if answer["ok"].as_bool() == Some(false) && answer["on"].is_null() {
             return Err(failed(answer["error"].as_str().map_or_else(
@@ -1237,7 +1238,7 @@ mod tests {
                          "last": { "result": "success", "exit": 0, "at": "Thu 2026-10-29 03:20:01 UTC" } });
         let english = describe(&ok);
         for lang in [Lang::Ja, Lang::Ru] {
-            let said = crate::i18n::speaking(lang, || describe(&ok));
+            let said = crate::cli::i18n::speaking(lang, || describe(&ok));
             assert_ne!(said, english);
             assert!(!said.contains('{'), "{said}");
             assert!(said.contains("Fri 2026-10-30 03:12:00 UTC"), "{said}");

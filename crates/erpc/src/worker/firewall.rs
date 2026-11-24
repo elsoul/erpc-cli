@@ -69,12 +69,12 @@ use erpc_worker::server::{FirewallRequest, NewConnections, Opening, UdpOpening};
 use erpc_worker::waf::WafConfig;
 use serde_json::{Value, json};
 
-use crate::commands::{Outcome, Said};
-use crate::error::{CliError, Code};
+use crate::account::commands::{Outcome, Said};
+use crate::cli::error::{CliError, Code};
 use crate::node_common::{Say, go_ahead};
+use crate::worker::remote::{ctl, ctl_ok, failed, open, target};
+use crate::worker::waf::{Rules, addresses};
 use crate::worker::{App, Port, load_env};
-use crate::worker_remote::{ctl, ctl_ok, failed, open, target};
-use crate::worker_waf::{Rules, addresses};
 
 /// `key=value` lines' value for `key`.
 fn value(stdout: &[u8], key: &str) -> Option<String> {
@@ -346,7 +346,7 @@ pub(crate) fn decide(
     on_server: &Value,
     in_force: Option<&Opening>,
 ) -> Decision {
-    let (apply, why) = match crate::worker_waf::rules(on_server, waf) {
+    let (apply, why) = match crate::worker::waf::rules(on_server, waf) {
         Rules::Asked => (wanted.clone(), None),
         Rules::NotRunning => (None, Some(Why::NoWaf)),
         Rules::Other | Rules::Unsaid | Rules::EarlierAgent | Rules::BeforeConfig
@@ -416,7 +416,7 @@ fn udp_line(env: &Env) -> Option<(&Line, u16)> {
         .lines
         .iter()
         .find(|l| l.kind == LineKind::Udp && !l.is_pending())?;
-    Some((line, crate::worker_vps::udp_port(line)?))
+    Some((line, crate::worker::vps::udp_port(line)?))
 }
 
 /// The UDP part of the worker's opening: the port of the line on record,
@@ -806,17 +806,17 @@ fn listed(m: &Manifest, env_name: &str, host: &str, server: &Value, scope: &str)
             )
         ));
     }
-    match crate::worker_waf::said(&server["waf"], scope) {
+    match crate::worker::waf::said(&server["waf"], scope) {
         Some(waf) => {
             lines.push(waf);
-            if let Some(blocked) = crate::worker_waf::blocked_by_rule(&server["waf"]) {
+            if let Some(blocked) = crate::worker::waf::blocked_by_rule(&server["waf"]) {
                 lines.push(format!("  {blocked}"));
             }
         }
-        None if m.waf.is_some() => lines.push(crate::worker_waf::absent(scope)),
+        None if m.waf.is_some() => lines.push(crate::worker::waf::absent(scope)),
         None => {}
     }
-    lines.extend(crate::worker_waf::out_of_step(
+    lines.extend(crate::worker::waf::out_of_step(
         m,
         env_name,
         &server["waf"],
@@ -857,13 +857,13 @@ pub(crate) fn list(json: bool, app: &App) -> Outcome {
                     json!({ "port": port, "sources": line.sources })
                 }),
                 // Whether the WAF on the server runs erpc.toml's rules.
-                "waf_rules": crate::worker_waf::rules_named(&m, &app.env, &server["waf"]),
+                "waf_rules": crate::worker::waf::rules_named(&m, &app.env, &server["waf"]),
                 "server": server,
             }));
             return Ok(Outcome::Done(String::new()));
         }
         let text = listed(&m, &app.env, &target.host, &server, &app.scope());
-        Ok(Outcome::Done(crate::ui::decorate(&text, "🛡️")))
+        Ok(Outcome::Done(crate::cli::ui::decorate(&text, "🛡️")))
     };
     run().unwrap_or_else(Into::into)
 }
@@ -955,7 +955,7 @@ fn unchanged(
     } else {
         t!("worker_firewall.unchanged.denied", addresses, command)
     };
-    Said::Text(crate::ui::decorate(&text, "👌"))
+    Said::Text(crate::cli::ui::decorate(&text, "👌"))
 }
 
 /// `erpc worker firewall allow|deny`: changes erpc.toml's list, then the server.
@@ -1245,7 +1245,7 @@ fn report_as(
         crate::print_json(&body);
         return Ok(Outcome::Done(String::new()));
     }
-    Ok(Outcome::Done(crate::ui::decorate(
+    Ok(Outcome::Done(crate::cli::ui::decorate(
         &in_force_said(id.as_str(), m, synced, scope),
         "🛡️",
     )))
@@ -1262,9 +1262,9 @@ pub(crate) mod recorded {
     use serde_json::{Value, json};
 
     use super::Server;
-    use crate::error::CliError;
-    use crate::worker_remote::failed;
-    use crate::worker_waf::addresses;
+    use crate::cli::error::CliError;
+    use crate::worker::remote::failed;
+    use crate::worker::waf::addresses;
 
     /// A server that changes nothing: it writes down what it was asked, in
     /// order, and answers as the test has it.
@@ -1401,7 +1401,7 @@ mod tests {
 
     use super::recorded::{Recorded, running};
     use super::{Decision, Held, Port, Synced, Why};
-    use crate::error::Code;
+    use crate::cli::error::Code;
     use crate::node_common::Say;
 
     const SCOPE: &str = " --env prod";
@@ -2260,7 +2260,7 @@ mod tests {
             "firewall list"
         );
         assert_eq!(
-            crate::worker_waf::status_lines(&m, "prod", &server.shown["waf"], SCOPE)[1],
+            crate::worker::waf::status_lines(&m, "prod", &server.shown["waf"], SCOPE)[1],
             rules,
             "status"
         );
@@ -2378,7 +2378,7 @@ mod tests {
         let english = super::in_force_said("bot-prod", &m, &synced, SCOPE);
         let english_asked = super::asked_said(&synced).expect("a line");
         for lang in [Lang::Ja, Lang::Zh, Lang::Ru] {
-            let (said, asked) = crate::i18n::speaking(lang, || {
+            let (said, asked) = crate::cli::i18n::speaking(lang, || {
                 (
                     super::in_force_said("bot-prod", &m, &synced, SCOPE),
                     super::asked_said(&synced).expect("a line"),
@@ -2416,7 +2416,7 @@ mod tests {
             .expect("allowed")
             .expect("a change");
         assert_eq!(
-            crate::worker_waf::addresses(&allowed.firewall.app_allow),
+            crate::worker::waf::addresses(&allowed.firewall.app_allow),
             "198.51.100.7/32, 0.0.0.0/0"
         );
         assert_eq!(allowed.firewall.ssh_allow, env.firewall.ssh_allow);
@@ -2449,9 +2449,9 @@ mod tests {
     /// `--json` as JSON, as every other answer of the two is.
     #[test]
     fn nothing_to_change_is_said_as_text_and_under_json_as_json() {
-        use crate::commands::Said;
-        use crate::i18n::speaking;
-        crate::ui::force_drawn(false);
+        use crate::account::commands::Said;
+        use crate::cli::i18n::speaking;
+        crate::cli::ui::force_drawn(false);
         let m = app("", ONE);
         let env = &m.env["prod"];
         let (listed, absent) = (["198.51.100.7".to_owned()], ["203.0.113.9".to_owned()]);
@@ -2595,16 +2595,17 @@ mod tests {
                     why,
                 }),
             };
-            let (plan, held, kept, unsaid, earlier, before) = crate::i18n::speaking(lang, || {
-                (
-                    super::plan(&m.env["prod"], &m).join("\n"),
-                    super::dropping(Some(8080), &held(Why::NoWaf)),
-                    super::dropping(Some(8080), &held(Why::OtherRules)),
-                    super::dropping(Some(8080), &held(Why::UnsaidRules)),
-                    super::dropping(Some(8080), &held(Why::EarlierAgent)),
-                    super::dropping(Some(8080), &held(Why::BeforeConfig)),
-                )
-            });
+            let (plan, held, kept, unsaid, earlier, before) =
+                crate::cli::i18n::speaking(lang, || {
+                    (
+                        super::plan(&m.env["prod"], &m).join("\n"),
+                        super::dropping(Some(8080), &held(Why::NoWaf)),
+                        super::dropping(Some(8080), &held(Why::OtherRules)),
+                        super::dropping(Some(8080), &held(Why::UnsaidRules)),
+                        super::dropping(Some(8080), &held(Why::EarlierAgent)),
+                        super::dropping(Some(8080), &held(Why::BeforeConfig)),
+                    )
+                });
             assert_ne!(plan, english);
             assert!(plan.contains("  waf 8080  0.0.0.0/0, ::/0"), "{plan}");
             for said in [&plan, &held, &kept, &unsaid, &earlier, &before] {
@@ -2630,7 +2631,7 @@ mod tests {
                     why: Why::EarlierAgent,
                 }),
             };
-            let hint = crate::i18n::speaking(lang, || {
+            let hint = crate::cli::i18n::speaking(lang, || {
                 let held = synced.held.as_ref().expect("held");
                 super::held_back("bot-prod", &synced, held, SCOPE).hint
             })
@@ -2648,7 +2649,7 @@ mod tests {
         let english = said();
         assert!(english.contains("all else  dropped"), "{english}");
         for lang in [Lang::Ja, Lang::Ru] {
-            let text = crate::i18n::speaking(lang, said);
+            let text = crate::cli::i18n::speaking(lang, said);
             assert_ne!(text, english);
             assert!(!text.contains('{'), "{text}");
         }

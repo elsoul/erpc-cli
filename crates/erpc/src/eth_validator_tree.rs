@@ -3,7 +3,7 @@
 
 //! Ethereum validator CLI contract, including explicit key import and deposit review.
 
-use crate::commands::Outcome;
+use crate::account::commands::Outcome;
 use clap::{Arg, ArgAction, ArgMatches, Command, value_parser};
 use erpc_core::chain::{Source, Verb};
 

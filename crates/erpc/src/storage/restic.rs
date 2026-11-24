@@ -98,7 +98,7 @@ fn pin() -> Result<&'static Pin, String> {
 
 /// Where the pinned restic is kept.
 pub(crate) fn program_path() -> Result<PathBuf, String> {
-    crate::session::beside_config(&format!("bin/restic-{VERSION}"))
+    crate::account::session::beside_config(&format!("bin/restic-{VERSION}"))
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -135,7 +135,8 @@ pub async fn linux_program(machine: &str) -> Result<(Vec<u8>, &'static str), Str
         .iter()
         .find(|p| p.os == "linux" && p.arch == arch)
         .ok_or_else(|| format!("erpc has no restic for {machine} Linux"))?;
-    let path = crate::session::beside_config(&format!("bin/restic-{VERSION}-linux-{arch}"))?;
+    let path =
+        crate::account::session::beside_config(&format!("bin/restic-{VERSION}-linux-{arch}"))?;
     if let Ok(bytes) = std::fs::read(&path)
         && sha256_hex(&bytes) == pin.program
     {
@@ -180,12 +181,12 @@ pub async fn ensure() -> Result<PathBuf, String> {
         return Ok(path);
     }
     if path.exists() {
-        crate::interrupt::say(&format!(
+        crate::cli::interrupt::say(&format!(
             "{} is not the restic {VERSION} erpc pinned; installing it again.",
             path.display()
         ));
     } else {
-        crate::interrupt::say(&format!("Installing restic {VERSION}..."));
+        crate::cli::interrupt::say(&format!("Installing restic {VERSION}..."));
     }
     let program = fetch(pin).await?;
     keep(&path, &program)?;
@@ -318,7 +319,7 @@ pub fn command(program: &Path, credentials: &Credentials) -> Command {
             command.env(name, value);
         }
     }
-    if let Ok(cache) = crate::session::beside_config("cache/restic") {
+    if let Ok(cache) = crate::account::session::beside_config("cache/restic") {
         command.env("RESTIC_CACHE_DIR", cache);
     }
     command

@@ -19,7 +19,7 @@ use erpc_chain_solana::identity;
 use erpc_chain_solana::vote::{self, CREATE_LAMPORTS, VoteAccount};
 use serde_json::json;
 
-use crate::commands::Outcome;
+use crate::account::commands::Outcome;
 use crate::node_common::{Say, confirm};
 use crate::validator_init::open_vault;
 
@@ -91,7 +91,7 @@ fn vote_account(args: &Args, say: &Say) -> Result<(Validator, VoteAccount), Stri
         cli: SolanaCli::find().map_err(|e| e.to_string())?,
         url: rpc_url(&args.network)
             .ok_or_else(|| format!("erpc has no RPC for {}", args.network))?,
-        dir: crate::session::state_dir()?,
+        dir: crate::account::session::state_dir()?,
     };
     say.line(&format!(
         "solana     {} ({})",
@@ -292,7 +292,7 @@ fn go_ahead(yes: bool, question: &str) -> Result<(), String> {
     if yes {
         return Ok(());
     }
-    if !crate::session::has_terminal() {
+    if !crate::account::session::has_terminal() {
         return Err("nothing was sent: pass --yes to go ahead without a terminal".to_owned());
     }
     if confirm(question)? {

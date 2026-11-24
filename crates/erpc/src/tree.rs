@@ -11,9 +11,9 @@
 use clap::{Arg, ArgMatches, Command};
 use erpc_core::chain::{COMMON_VERBS, Chain, Role, Source, Verb, guard_mainnet, resolve};
 
+use crate::account::commands::Outcome;
+use crate::cli::error::{CliError, Code};
 use crate::cli::ui;
-use crate::commands::Outcome;
-use crate::error::{CliError, Code};
 
 /// Finds `--chain X` or `--chain=X` without parsing anything else, so the
 /// tree can be built for that chain first.
@@ -110,9 +110,13 @@ fn chain_named(args: &[String]) -> bool {
 /// a name [`chain_for`] refuses.
 fn chain_set_elsewhere() -> bool {
     let env = std::env::var("ERPC_CHAIN").ok();
-    let configured = crate::session::config_path()
+    let configured = crate::account::session::config_path()
         .ok()
-        .and_then(|path| crate::config::get(&path, "default_chain").ok().flatten());
+        .and_then(|path| {
+            crate::account::config::get(&path, "default_chain")
+                .ok()
+                .flatten()
+        });
     !matches!(
         resolve(None, env.as_deref(), configured.as_deref()),
         Ok(None)
@@ -318,9 +322,13 @@ fn role_refused(role: Role, chain: Chain, from: &str) -> Option<Outcome> {
 fn chain_for(role: Role, args: &[String], json: bool) -> Result<(Chain, Source), Outcome> {
     let flag = chain_flag(args);
     let env = std::env::var("ERPC_CHAIN").ok();
-    let configured = crate::session::config_path()
+    let configured = crate::account::session::config_path()
         .ok()
-        .and_then(|path| crate::config::get(&path, "default_chain").ok().flatten());
+        .and_then(|path| {
+            crate::account::config::get(&path, "default_chain")
+                .ok()
+                .flatten()
+        });
     match resolve(flag.as_deref(), env.as_deref(), configured.as_deref()) {
         Err(e) => Err(Outcome::Usage(e)),
         Ok(Some(found)) => Ok(found),
@@ -332,7 +340,7 @@ fn chain_for(role: Role, args: &[String], json: bool) -> Result<(Chain, Source),
             if let [only] = candidates.as_slice() {
                 return Ok((*only, Source::Prompt));
             }
-            if json || !crate::session::has_terminal() {
+            if json || !crate::account::session::has_terminal() {
                 return Err(Outcome::Usage(
                     "no chain is chosen: pass --chain, set ERPC_CHAIN, or \
                      `erpc config set default_chain <chain>`"
@@ -340,8 +348,8 @@ fn chain_for(role: Role, args: &[String], json: bool) -> Result<(Chain, Source),
                 ));
             }
             let labels: Vec<String> = candidates.iter().map(ToString::to_string).collect();
-            let index =
-                crate::prompt::pick("Which chain?", &labels, Some(0)).map_err(Outcome::Failed)?;
+            let index = crate::cli::prompt::pick("Which chain?", &labels, Some(0))
+                .map_err(Outcome::Failed)?;
             Ok((candidates[index], Source::Prompt))
         }
     }
@@ -2086,7 +2094,7 @@ mod tests {
         )
         .await;
         assert!(
-            matches!(result, crate::commands::Outcome::Usage(ref reason) if reason.contains("--name") && reason.contains("before inventory access"))
+            matches!(result, crate::account::commands::Outcome::Usage(ref reason) if reason.contains("--name") && reason.contains("before inventory access"))
         );
     }
 
@@ -2400,14 +2408,14 @@ mod tests {
 
     #[test]
     fn a_chain_where_the_verb_goes_is_its_help_or_refused_with_the_line_meant() {
-        use crate::commands::Outcome;
+        use crate::account::commands::Outcome;
         let refused = |role: Role, chain: Chain, line: &[&str]| match super::chain_help(
             role,
             chain,
             &args(line),
             false,
         ) {
-            Outcome::Error(e) if e.code == crate::error::Code::Usage => {
+            Outcome::Error(e) if e.code == crate::cli::error::Code::Usage => {
                 (e.message, e.hint.unwrap_or_default())
             }
             other => panic!("{line:?}: refused, not {other:?}"),
