@@ -15,7 +15,7 @@ use erpc_api::security_check::{Bind, SolanaApp, SolanaNode, Tristate};
 pub(super) fn node(
     app: SolanaApp,
     args: &[String],
-    identity: impl Fn(&str) -> Tristate,
+    identity: impl FnOnce(&str) -> Tristate,
 ) -> SolanaNode {
     let mut rpc_port = None;
     let mut rpc_bind_address = None;

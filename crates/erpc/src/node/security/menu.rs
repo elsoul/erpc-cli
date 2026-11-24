@@ -10,7 +10,7 @@ use std::io::IsTerminal as _;
 use std::time::{Duration, Instant};
 
 use erpc_ai::session::Access as _;
-use erpc_api::security_check::{self, Error, FailReason, Inventory, Keys, Poll, Refusal, Server};
+use erpc_api::security_check::{self, Error, FailReason, Inventory, Poll, Refusal, Server};
 use erpc_auth::AuthClient;
 
 use crate::account::commands::{Outcome, Said};
@@ -76,7 +76,7 @@ async fn run(json: bool) -> Result<Outcome, Outcome> {
     }
 
     let spinner = Spinner::start(&t!("security_check.reading"));
-    let inventory = read_this_server().await.ok_or_else(failed)?;
+    let (inventory, places) = read_this_server().await.ok_or_else(failed)?;
     spinner.stop(&t!(
         "security_check.read",
         listeners = inventory.listeners.items().len(),
@@ -106,7 +106,7 @@ async fn run(json: bool) -> Result<Outcome, Outcome> {
                 return Ok(if json {
                     Said::Json(super::report::json(&report, &server.id)).done()
                 } else {
-                    Outcome::Done(super::report::render(&report, server, &inventory))
+                    Outcome::Done(super::report::render(&report, server, &inventory, &places))
                 });
             }
             Ok(Poll::Failed(reason)) => {
@@ -166,15 +166,17 @@ fn agreed() -> Result<bool, Outcome> {
     }
 }
 
+/// This server's inventory, and where the keys it counts were found.
 #[cfg(target_os = "linux")]
-async fn read_this_server() -> Option<Inventory> {
-    tokio::task::spawn_blocking(|| super::collect(&super::Host::this_machine(), Keys::unreadable()))
+async fn read_this_server() -> Option<(Inventory, super::Places)> {
+    tokio::task::spawn_blocking(|| super::collect(&super::Host::this_machine()))
         .await
         .ok()
 }
 
+// `menu` stops before this on other systems; the signature is Linux's.
 #[cfg(not(target_os = "linux"))]
-async fn read_this_server() -> Option<Inventory> {
-    let _ = Keys::unreadable();
+#[allow(clippy::unused_async)]
+async fn read_this_server() -> Option<(Inventory, super::Places)> {
     None
 }

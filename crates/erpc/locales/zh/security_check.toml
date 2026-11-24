@@ -67,6 +67,7 @@ ssh = "SSH 服务器设置"
 firewall = "主机防火墙（{tool}）"
 package = "{name} {version}"
 key = "{kind}（{role}），位置 {location}，可读范围 {access}：{count} 个"
+key_more = "另有 {count} 处"
 
 [finding]
 solana_rpc_public = "Solana JSON-RPC 可从互联网访问。"

@@ -13,8 +13,16 @@ use erpc_api::security_check::{
 };
 use serde_json::{Value, json};
 
-/// The report for a terminal.
-pub(crate) fn render(report: &Report, server: &Server, inventory: &Inventory) -> String {
+use super::Places;
+
+/// The report for a terminal. `places` says where on this server the keys
+/// the inventory counts were found.
+pub(crate) fn render(
+    report: &Report,
+    server: &Server,
+    inventory: &Inventory,
+    places: &Places,
+) -> String {
     let mut out = t!(
         "security_check.report.title",
         label = server.label.as_str(),
@@ -42,7 +50,11 @@ pub(crate) fn render(report: &Report, server: &Server, inventory: &Inventory) ->
             describe(finding.id)
         );
         for reference in &finding.refs {
-            let _ = writeln!(out, "   - {}", detail(*reference, report, inventory));
+            let _ = writeln!(
+                out,
+                "   - {}",
+                detail(*reference, report, inventory, places)
+            );
         }
         if !finding.advisories.is_empty() {
             let list: Vec<&str> = finding.advisories.iter().map(Advisory::as_str).collect();
@@ -126,7 +138,7 @@ fn path_kind(kind: PathKind) -> String {
 /// One detail a finding points to. The reply was checked against the
 /// inventory, so an index out of range cannot reach here; it reads as
 /// nothing if it did.
-fn detail(reference: Ref, report: &Report, inventory: &Inventory) -> String {
+fn detail(reference: Ref, report: &Report, inventory: &Inventory, places: &Places) -> String {
     let at = usize::from(reference.index);
     let found = match reference.source {
         RefSource::ExternalTcp => report.external.tcp.get(at).map(|p| {
@@ -169,14 +181,24 @@ fn detail(reference: Ref, report: &Report, inventory: &Inventory) -> String {
             )
         }),
         RefSource::Key => inventory.keys.items().get(at).map(|k| {
-            t!(
+            let mut text = t!(
                 "security_check.detail.key",
                 kind = k.kind.wire(),
                 role = k.role.wire(),
                 location = k.location.wire(),
                 access = k.access.wire(),
                 count = k.count
-            )
+            );
+            if let Some(shown) = places.of(at) {
+                for path in &shown.paths {
+                    let _ = write!(text, "\n     {path}");
+                }
+                if shown.more > 0 {
+                    let more = t!("security_check.detail.key_more", count = shown.more);
+                    let _ = write!(text, "\n     {more}");
+                }
+            }
+            text
         }),
     };
     found.unwrap_or_default()
@@ -261,12 +283,16 @@ mod tests {
     use std::num::NonZeroU16;
 
     use erpc_api::security_check::{
-        App, Bind, Coverage, FindingId, Firewall, FirewallTool, Inventory, Listener, Listeners, Os,
-        OsFamily, Owner, Package, Packages, PathKind, Policy, Proto, Report, RootLogin, Server,
-        Severity, SolanaNodes, Ssh, Token, Tristate,
+        Access, App, Bind, Coverage, FindingId, Firewall, FirewallTool, Inventory, KeyGroup,
+        KeyKind, KeyLocation, KeyRole, Keys, Listener, Listeners, Os, OsFamily, Owner, Package,
+        Packages, PathKind, Policy, Proto, Report, RootLogin, Server, Severity, SolanaNodes, Ssh,
+        Token, Tristate,
     };
     use erpc_core::i18n::Lang;
     use serde_json::json;
+
+    use crate::node::security::Places;
+    use crate::node::security::keys::Shown;
 
     fn inventory() -> Inventory {
         Inventory {
@@ -335,8 +361,9 @@ mod tests {
             ],
             "paths": [{"kind": "remote_code_execution", "steps": [0]}]
         }));
-        let text =
-            crate::cli::i18n::speaking(Lang::En, || super::render(&report, &server, &inventory()));
+        let text = crate::cli::i18n::speaking(Lang::En, || {
+            super::render(&report, &server, &inventory(), &Places::default())
+        });
         for expected in [
             "Security check of trader (203.0.113.9)",
             "The scan from outside covered only part of the server.",
@@ -361,6 +388,43 @@ mod tests {
             json!(["CVE-2024-6387"])
         );
         assert!(!record.to_string().contains("1:9.6p1"));
+    }
+
+    #[test]
+    fn key_findings_list_where_the_keys_are_on_screen_only() {
+        let server: Server = parse(json!({"id": "vps:9", "kind": "vps", "label": "validator",
+            "address": "203.0.113.9", "region": "Frankfurt"}));
+        let mut inventory = inventory();
+        inventory.keys = Keys::new(
+            Coverage::Complete,
+            vec![KeyGroup {
+                kind: KeyKind::SolanaKeypair,
+                role: KeyRole::ValidatorIdentity,
+                location: KeyLocation::Home,
+                access: Access::Group,
+                count: 12,
+            }],
+        );
+        let places = Places::of_groups(vec![Shown {
+            paths: vec!["/home/sol/validator-keypair.json".to_owned()],
+            more: 11,
+        }]);
+        let report: Report = parse(json!({
+            "check": "server_security_v1", "server": "vps:9",
+            "coverage": {"external": "complete", "local": "complete"},
+            "external": {"tcp": [], "udp": []},
+            "findings": [{"id": "validator_identity_permissions", "severity": "medium",
+                          "refs": [{"source": "key", "index": 0}], "advisories": []}],
+            "paths": []
+        }));
+        let text = crate::cli::i18n::speaking(Lang::En, || {
+            super::render(&report, &server, &inventory, &places)
+        });
+        let expected = "   - solana_keypair (validator_identity) in home, readable by group: 12\n     \
+                        /home/sol/validator-keypair.json\n     and 11 more\n";
+        assert!(text.contains(expected), "{expected:?} not in:\n{text}");
+        let record = super::json(&report, &server.id).to_string();
+        assert!(!record.contains("/home") && !record.contains("validator-keypair"));
     }
 
     #[test]

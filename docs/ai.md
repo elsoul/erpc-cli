@@ -120,13 +120,67 @@ any program:
 - the host firewall's configuration (ufw, firewalld, nftables), not the
   rules the kernel holds now;
 - the operating system's release, the kernel's release, and the versions of
-  a fixed list of installed Debian packages.
+  a fixed list of installed Debian packages;
+- files under `/root`, `/home`, `/etc`, `/opt`, `/srv`, `/var/lib`, `/tmp`
+  and `/var/tmp` that hold a private key or secret in plain text: Solana CLI
+  keypair files (a JSON array of 64 numbers), files whose name contains
+  `key`, `private` or `wallet` in any case and that hold only 64
+  hexadecimal digits (`.pem` files excepted), BIP-39 English seed phrases,
+  JSON keystores with a private key field and no `crypto` object, and lines
+  of `.env`, `*.env` and `environment` files that set a variable whose name
+  contains `PRIVATE_KEY`, `SECRET_KEY`, `MNEMONIC`, `SEED_PHRASE`, `KEYPAIR`
+  or `WALLET_KEY` to a value written out rather than an `op://`,
+  `keychain:`, `keystore:` or `$` reference or a path starting with `/`,
+  `~/`, `./` or `../` (a name ending in `_PATH`, `_FILE` or `_DIR` is not
+  counted either);
+- the same variables, set to a value, in the environments of running
+  processes;
+- lines of bash, zsh and fish histories that hold 64 hexadecimal digits in a
+  row, 87 or 88 base58 characters in a row (the length of a Solana secret
+  key), or set one of those variables. A transaction signature, hash or
+  digest of the same length is counted too.
+
+The key search opens each directory and file relative to the directory it
+was listed in. It does not follow symbolic links or cross into another
+filesystem, though each directory in `/home` may be one of its own, and it
+reads only directories and regular files: it opens no device and waits on
+no pipe. It skips Docker's `overlay2` image layers and every directory named
+`ledger`, `accounts`, `snapshots`, `rocksdb`, `chaindata`, `geth`, `nodes` or
+`data`, where chains keep their databases, so a key kept in one of those is
+not found. It reads files of up to 64 KiB, the last 1 MiB of a history and
+process environments of up to 1 MiB, goes at most 48 directories deep, and
+stops after 200,000 entries or 20 seconds, counted between one entry and
+the next. Running out of time or entries, a deeper tree, a larger
+environment, a validator whose identity file it cannot tell, or a
+directory, file, environment or identity file it may not read makes it
+report the search as partial. It opens files and directories without
+updating their access times where the system allows it, as it always does
+for root.
+
+A Solana keypair counts as the validator identity when its public key,
+worked out on the server, is that of the identity file a running validator
+was given. That identity file is the one read outside the rules above: it is
+read where the validator reads it, through symbolic links and on any
+filesystem. It is read only if it is a regular file of at most 64 KiB, not
+on a kernel filesystem such as `/proc` or `/sys`, and owned by the
+validator's user unless the validator runs as root; otherwise the search is
+reported as partial. Who can read a key is judged from the permission bits
+and groups of the file and of the directories above it: everyone when
+others may pass every directory and read the file, its group when the group
+may read it and pass every directory, and otherwise its owner. That is an
+approximation: an account that owns a directory above the file, and access
+control lists, are not taken into account. Each file's contents go into one
+buffer that is wiped after the file is checked.
 
 What goes to ERPC is that list in a fixed form: port numbers, address
 classes such as loopback or public, program kinds such as `agave_validator`,
-settings such as whether SSH accepts passwords, and version numbers.
-Addresses, paths, command lines and file contents stay on the server. Run
-it as root to read every process; otherwise the report says that part of
+settings such as whether SSH accepts passwords, version numbers, and for
+keys their kind, whether one is the validator identity, the kind of place
+(such as a home directory or `/etc`), whether its owner, its group or
+everyone can read it, and how many there are. Addresses, paths, command
+lines and file contents stay on the server: the paths of the keys found are
+shown on your screen with the report and left out of `--json`. Run it as
+root to read every process and file; otherwise the report says that part of
 the server could not be read.
 
 The report names each finding from a catalog built into `erpc`, with what

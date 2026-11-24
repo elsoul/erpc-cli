@@ -67,6 +67,7 @@ ssh = "SSH server settings"
 firewall = "host firewall ({tool})"
 package = "{name} {version}"
 key = "{kind} ({role}) in {location}, readable by {access}: {count}"
+key_more = "and {count} more"
 
 [finding]
 solana_rpc_public = "Solana JSON-RPC is reachable from the internet."
