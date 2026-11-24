@@ -509,11 +509,6 @@ pub(crate) fn run_play(
     }
 }
 
-/// Short form of a byte count in kilobytes.
-pub(crate) fn gb(kb: u64) -> String {
-    format!("{} GB", kb / 1_000_000)
-}
-
 #[cfg(test)]
 mod tests {
     use std::net::IpAddr;
