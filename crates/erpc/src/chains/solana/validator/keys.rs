@@ -23,13 +23,13 @@ use std::path::{Path, PathBuf};
 use erpc_auth::store::one_password::OpCli;
 use erpc_chain::inventory::{Inventory, Store, Validator};
 use erpc_chain_solana::identity::{self, KeyRole, Keypair, StoredIdentity};
-use erpc_ssh::{HostKey, Identity, KeyFilePath, RemoteCommand, Session, Target};
+use erpc_ssh::{HostKey, KeyFilePath, RemoteCommand, Session};
 use serde_json::json;
 use zeroize::Zeroizing;
 
 use crate::account::commands::Outcome;
 use crate::chains::solana::validator::init::open_vault;
-use crate::node::common::{Say, agent_socket, confirm};
+use crate::node::common::{Say, confirm};
 
 /// Where a key comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -337,20 +337,12 @@ fn read_remote(
     path: &KeyFilePath,
     reach: &Reach<'_>,
 ) -> Result<Keypair, String> {
-    let ssh_key = reach
-        .ssh_key
-        .ok_or("pass --ssh-key <path to the .pub of the key that logs in>")?;
-    let session = Session::open(&Target {
-        host: address.to_owned(),
-        port,
-        user: user.to_owned(),
-        host_key,
-        identity: Identity::Agent {
-            socket: agent_socket(reach.ssh_agent)?,
-            public_key: ssh_key.to_owned(),
-        },
-    })
-    .map_err(|e| e.to_string())?;
+    let login = crate::node::host::Login {
+        ssh_key: reach.ssh_key.map(Path::to_path_buf),
+        ssh_agent: reach.ssh_agent.map(Path::to_path_buf),
+    };
+    let target = crate::node::host::checked_target(address, port, user, host_key, &login)?;
+    let session = Session::open(&target).map_err(|e| e.to_string())?;
     let out = session
         .run(&RemoteCommand::ReadKeyFile(path.clone()), None)
         .map_err(|e| format!("could not read {}: {e}", path.as_str()))?;

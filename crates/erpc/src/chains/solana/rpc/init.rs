@@ -394,7 +394,7 @@ async fn init(args: &Args, say: &Say) -> Result<Done, CliError> {
         .login
         .ssh_key
         .clone()
-        .ok_or("pass --ssh-key <path to the .pub of the key that logs in>")?;
+        .ok_or(crate::node::host::NO_SSH_KEY)?;
     let authorized = public_key_line(&ssh_key)?;
     let socket = agent_socket(args.login.ssh_agent.as_deref())?;
     let target_for = |login_user: &str| Target {

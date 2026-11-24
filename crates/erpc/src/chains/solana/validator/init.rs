@@ -531,10 +531,7 @@ impl Link {
 
 /// Works out how to reach the server, and confirms its host key.
 fn connect(plan: &Plan, args: &Args, say: &Say) -> Result<Link, String> {
-    let ssh_key = args
-        .ssh_key
-        .clone()
-        .ok_or("pass --ssh-key <path to the .pub of the key that logs in>")?;
+    let ssh_key = args.ssh_key.clone().ok_or(crate::node::host::NO_SSH_KEY)?;
     let authorized = public_key_line(&ssh_key)?;
     let socket = agent_socket(args.ssh_agent.as_deref())?;
     // A stored host logs in as the user it has now: `solv` once init is done.

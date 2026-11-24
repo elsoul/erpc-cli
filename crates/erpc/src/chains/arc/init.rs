@@ -18,13 +18,13 @@ use std::fmt::Write as _;
 
 use erpc_chain::inventory::RpcNode;
 use erpc_chain_arc::{key, plays, releases};
-use erpc_ssh::{Identity, Session, Target};
+use erpc_ssh::Session;
 use serde_json::json;
 
 use crate::account::commands::Outcome;
 use crate::chains::arc::rpc::{Facts, KindFlags, RunVars, facts, gb, open, run_play, with_kind};
 use crate::cli::error::CliError;
-use crate::node::common::{Say, agent_socket, check_ubuntu, go_ahead, host_key, save_vault};
+use crate::node::common::{Say, check_ubuntu, go_ahead, host_key, save_vault};
 use crate::node::host::{Login, allow_list};
 
 /// What `erpc r --chain arc init` was asked to do.
@@ -275,21 +275,8 @@ async fn init(args: &Args, say: &Say) -> Result<Done, CliError> {
         args.fingerprint.as_deref(),
         say,
     )?;
-    let ssh_key = args
-        .login
-        .ssh_key
-        .clone()
-        .ok_or("pass --ssh-key <path to the .pub of the key that logs in>")?;
-    let target = Target {
-        host: address.clone(),
-        port,
-        user: user.clone(),
-        host_key: key_seen.clone(),
-        identity: Identity::Agent {
-            socket: agent_socket(args.login.ssh_agent.as_deref())?,
-            public_key: ssh_key,
-        },
-    };
+    let target =
+        crate::node::host::checked_target(&address, port, &user, key_seen.clone(), &args.login)?;
     let session = Session::open(&target).map_err(|e| e.to_string())?;
     let os = check_ubuntu(&session)?;
     let facts = facts(&session)?;
