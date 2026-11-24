@@ -930,7 +930,7 @@ pub(super) mod tests {
 
     use super::super::procs::{Budget, Scan};
     use super::super::secrets::tests::{array_with, hex_key, phrase};
-    use super::walk::{Opened, kernel_file, link, open_entry};
+    use super::walk::{Opened, link, open_entry};
     use super::{BUDGET, Found, Given, MAX_DEPTH, Reach, TAIL_LIMIT, descend, printable, search};
 
     fn write(root: &Path, path: &str, contents: &[u8], mode: u32) {
@@ -1509,6 +1509,8 @@ pub(super) mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn kernel_filesystems_are_told_apart() {
+        use super::walk::kernel_file;
+
         let open = |path: &str| std::fs::File::open(path).unwrap_or_else(|e| panic!("{e}"));
         assert!(kernel_file(&open("/proc/self/status")));
         let root = crate::node::security::fixture("keys-kernel-fs");
