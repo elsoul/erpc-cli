@@ -65,7 +65,7 @@ pub(crate) fn deploy_inventory(
     intent: &str,
 ) -> Result<String, String> {
     let mut management =
-        crate::chains::arc::rpc::allow_list("management", &node.management_allow, false)?;
+        crate::node::host::allow_list("management", &node.management_allow, false)?;
     let mut ipv6 = Vec::new();
     match facts.controller_ip()? {
         std::net::IpAddr::V4(ip) => {

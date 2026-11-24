@@ -18,7 +18,7 @@ use erpc_chain_bitcoin::{
     storage::Storage,
 };
 use erpc_ops::bundle::Bundle;
-use erpc_ssh::{HostKey, Identity, RemoteCommand, Session, Target};
+use erpc_ssh::{RemoteCommand, Session, Target};
 use serde_json::{Value, json};
 
 fn one<'a>(args: &'a ArgMatches, name: &str) -> Option<&'a str> {
@@ -52,26 +52,15 @@ fn storage(node: &BitcoinRpc) -> Result<Storage, String> {
     Ok(value)
 }
 fn target(node: &BitcoinRpc, args: &ArgMatches) -> Result<Target, String> {
-    let key = args
-        .try_get_one::<std::path::PathBuf>("ssh-key")
-        .ok()
-        .flatten()
-        .ok_or("pass --ssh-key with the operator public key file")?;
-    Ok(Target {
-        host: node.address.clone(),
-        port: node.ssh_port,
-        user: node.ssh_user.clone(),
-        host_key: HostKey::parse(&node.host_key).map_err(|e| e.to_string())?,
-        identity: Identity::Agent {
-            socket: common::agent_socket(
-                args.try_get_one::<std::path::PathBuf>("ssh-agent")
-                    .ok()
-                    .flatten()
-                    .map(std::path::PathBuf::as_path),
-            )?,
-            public_key: key.clone(),
+    crate::node::host::target(
+        crate::node::host::Endpoint {
+            address: &node.address,
+            port: node.ssh_port,
+            user: &node.ssh_user,
+            host_key: &node.host_key,
         },
-    })
+        &crate::node::host::Login::from_args(args),
+    )
 }
 fn host_check(facts: &Facts) -> Result<Platform, String> {
     let ubuntu = facts

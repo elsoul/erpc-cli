@@ -18,7 +18,7 @@ use erpc_chain_rollup::upstreams::ExecutionCredential;
 use erpc_ops::bundle::{Built, Bundle};
 use erpc_secret::OpRef;
 use erpc_ssh::{
-    HostKey, Identity, RemoteCommand, Session, Target,
+    RemoteCommand, Session, Target,
     polygon::{Command, Contract},
 };
 use secrecy::{ExposeSecret, SecretString};
@@ -196,27 +196,15 @@ fn send_signer(session: &Session, base: &Value, secret: &SecretString) -> Result
     Ok(())
 }
 fn target(node: &PolygonNode, args: &ArgMatches) -> Result<Target, String> {
-    let public_key = args
-        .try_get_one::<std::path::PathBuf>("ssh-key")
-        .ok()
-        .flatten()
-        .ok_or("pass --ssh-key with the operator public key file")?
-        .clone();
-    Ok(Target {
-        host: node.address.clone(),
-        port: node.ssh_port,
-        user: node.ssh_user.clone(),
-        host_key: HostKey::parse(&node.host_key).map_err(|e| e.to_string())?,
-        identity: Identity::Agent {
-            socket: common::agent_socket(
-                args.try_get_one::<std::path::PathBuf>("ssh-agent")
-                    .ok()
-                    .flatten()
-                    .map(std::path::PathBuf::as_path),
-            )?,
-            public_key,
+    crate::node::host::target(
+        crate::node::host::Endpoint {
+            address: &node.address,
+            port: node.ssh_port,
+            user: &node.ssh_user,
+            host_key: &node.host_key,
         },
-    })
+        &crate::node::host::Login::from_args(args),
+    )
 }
 fn facts(session: &Session) -> Result<Facts, String> {
     let output = session

@@ -1676,19 +1676,8 @@ async fn arc(
 }
 
 /// The login flags every node verb but `list` takes.
-fn login(sub: &ArgMatches) -> crate::chains::arc::rpc::Login {
-    crate::chains::arc::rpc::Login {
-        ssh_key: sub
-            .try_get_one::<std::path::PathBuf>("ssh-key")
-            .ok()
-            .flatten()
-            .cloned(),
-        ssh_agent: sub
-            .try_get_one::<std::path::PathBuf>("ssh-agent")
-            .ok()
-            .flatten()
-            .cloned(),
-    }
+fn login(sub: &ArgMatches) -> crate::node::host::Login {
+    crate::node::host::Login::from_args(sub)
 }
 
 /// A string flag a verb may not have.

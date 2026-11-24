@@ -5,8 +5,7 @@
 //! nodes, reaching a node, its facts, the allow lists, the variables and
 //! bundle of a run, and running a play to its end.
 
-use std::net::{IpAddr, Ipv4Addr};
-use std::path::PathBuf;
+use std::net::IpAddr;
 
 use erpc_auth::store::one_password::OpCli;
 use erpc_chain::inventory::{RpcNode, Store};
@@ -14,10 +13,11 @@ use erpc_chain_arc::kind;
 use erpc_chain_arc::network::Network;
 use erpc_chain_arc::releases::{self, Platform};
 use erpc_ops::bundle::{Built, Bundle};
-use erpc_ssh::{HostKey, Identity, RemoteCommand, Session, Target};
+use erpc_ssh::{RemoteCommand, Session, Target};
 use serde_json::{Map, Value, json};
 
-use crate::node::common::{Say, agent_socket, op_runner, store, vault_for};
+use crate::node::common::{Say, op_runner, store, vault_for};
+use crate::node::host::Login;
 
 /// The chain, as the inventory names it.
 pub(crate) const CHAIN: &str = "arc";
@@ -26,15 +26,6 @@ pub(crate) const CHAIN: &str = "arc";
 pub(crate) const MIN_MEMORY_KB: u64 = 60_000_000;
 /// The source-qualified credential-recipient ordering used by this profile.
 pub(crate) const SUPPORTED_SYSTEMD: u32 = 255;
-
-/// How to log in: the operator's key in its agent.
-#[derive(Debug, Clone, Default)]
-pub(crate) struct Login {
-    /// The `.pub` file of the key that logs in.
-    pub(crate) ssh_key: Option<PathBuf>,
-    /// The agent's socket.
-    pub(crate) ssh_agent: Option<PathBuf>,
-}
 
 /// The network's vault, its store, and the RPC nodes in it.
 pub(crate) struct Opened {
@@ -80,20 +71,15 @@ pub(crate) fn find<'a>(
 
 /// The target that logs in to a stored node with its pinned host key.
 pub(crate) fn target(node: &RpcNode, login: &Login) -> Result<Target, String> {
-    let ssh_key = login
-        .ssh_key
-        .clone()
-        .ok_or("pass --ssh-key <path to the .pub of the key that logs in>")?;
-    Ok(Target {
-        host: node.address.clone(),
-        port: node.ssh_port,
-        user: node.ssh_user.clone(),
-        host_key: HostKey::parse(&node.host_key).map_err(|e| e.to_string())?,
-        identity: Identity::Agent {
-            socket: agent_socket(login.ssh_agent.as_deref())?,
-            public_key: ssh_key,
+    crate::node::host::target(
+        crate::node::host::Endpoint {
+            address: &node.address,
+            port: node.ssh_port,
+            user: &node.ssh_user,
+            host_key: &node.host_key,
         },
-    })
+        login,
+    )
 }
 
 /// A host's facts, from [`RemoteCommand::NodeFacts`].
@@ -193,62 +179,6 @@ pub(crate) fn facts(session: &Session) -> Result<Facts, String> {
         .run(&RemoteCommand::NodeFacts, None)
         .map_err(|e| e.to_string())?;
     Ok(Facts::parse(&String::from_utf8_lossy(&out.stdout)))
-}
-
-/// Checks an allow list: IPv4 addresses or CIDRs, without duplicates.
-/// `open_ok` allows `0.0.0.0/0`, everyone.
-pub(crate) fn allow_list(
-    what: &str,
-    items: &[String],
-    open_ok: bool,
-) -> Result<Vec<String>, String> {
-    let mut out: Vec<String> = Vec::new();
-    for item in items {
-        let item = item.trim();
-        if item.is_empty() {
-            continue;
-        }
-        let (addr, prefix) = match item.split_once('/') {
-            Some((a, p)) => (a, Some(p)),
-            None => (item, None),
-        };
-        let ip: Ipv4Addr = addr
-            .parse()
-            .map_err(|_| format!("{what}: {item:?} is not an IPv4 address or CIDR"))?;
-        let canonical = match prefix {
-            None => ip.to_string(),
-            Some(p) => {
-                let bits: u8 = p
-                    .parse()
-                    .ok()
-                    .filter(|b| *b <= 32)
-                    .ok_or_else(|| format!("{what}: {item:?} has no prefix length 0–32"))?;
-                let mask = if bits == 0 {
-                    0
-                } else {
-                    u32::MAX << (32 - bits)
-                };
-                if u32::from(ip) & !mask != 0 {
-                    return Err(format!(
-                        "{what}: {item} has host bits set; the network is {}/{bits}",
-                        Ipv4Addr::from(u32::from(ip) & mask)
-                    ));
-                }
-                if bits == 0 && !open_ok {
-                    return Err(format!("{what}: 0.0.0.0/0 would admit everyone"));
-                }
-                if bits == 32 {
-                    ip.to_string()
-                } else {
-                    format!("{ip}/{bits}")
-                }
-            }
-        };
-        if !out.contains(&canonical) {
-            out.push(canonical);
-        }
-    }
-    Ok(out)
 }
 
 /// The type flags: `None` keeps what is stored.
@@ -357,19 +287,6 @@ pub(crate) fn management(node: &RpcNode, controller: IpAddr) -> (Vec<String>, Ve
         IpAddr::V6(ip) => v6.push(ip.to_string()),
     }
     (v4, v6)
-}
-
-/// A warning when SSH would be admitted from erpc's present address alone:
-/// if that address changes, nothing can reach the node but its console.
-pub(crate) fn lockout_warning(node_management: &[String], facts: &Facts) -> Option<String> {
-    node_management.is_empty().then(|| {
-        format!(
-            "warning    SSH will be admitted only from {}, the address erpc connects from now. \
-             If it changes, only the provider's console reaches the node: add a stable range \
-             with --management-allow",
-            facts.controller
-        )
-    })
 }
 
 /// What a run on the node is told about it: the inventory's host variables.
@@ -604,7 +521,7 @@ mod tests {
     use erpc_chain::inventory::RpcNode;
     use serde_json::Value;
 
-    use super::{Facts, KindFlags, RunVars, allow_list, management, with_kind};
+    use super::{Facts, KindFlags, RunVars, management, with_kind};
 
     #[cfg(unix)]
     #[test]
@@ -752,26 +669,6 @@ mod tests {
             ..f
         };
         assert_eq!(old.refusals().len(), 4);
-    }
-
-    #[test]
-    fn allow_lists_are_canonical_and_refuse_what_is_not_a_network() {
-        let items: Vec<String> = ["198.51.100.0/24", "203.0.113.5", "203.0.113.5/32", " "]
-            .iter()
-            .map(|s| (*s).to_owned())
-            .collect();
-        assert_eq!(
-            allow_list("rpc", &items, false).expect("ok"),
-            ["198.51.100.0/24", "203.0.113.5"]
-        );
-        for bad in ["198.51.100.1/24", "300.1.1.1", "10.0.0.0/33", "::1", "x"] {
-            assert!(allow_list("rpc", &[bad.to_owned()], true).is_err(), "{bad}");
-        }
-        assert!(allow_list("ssh", &["0.0.0.0/0".to_owned()], false).is_err());
-        assert_eq!(
-            allow_list("rpc", &["0.0.0.0/0".to_owned()], true).expect("open"),
-            ["0.0.0.0/0"]
-        );
     }
 
     #[test]

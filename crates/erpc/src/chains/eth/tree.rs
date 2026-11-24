@@ -257,7 +257,7 @@ fn init_request(
     sub: &ArgMatches,
     network: &str,
     name: &str,
-    login: crate::chains::eth::rpc::Login,
+    login: crate::node::host::Login,
     yes: bool,
 ) -> crate::chains::eth::init::Args {
     crate::chains::eth::init::Args {
@@ -298,18 +298,7 @@ pub(crate) async fn run(
     name: Option<&str>,
     json: bool,
 ) -> Outcome {
-    let login = crate::chains::eth::rpc::Login {
-        ssh_key: sub
-            .try_get_one::<std::path::PathBuf>("ssh-key")
-            .ok()
-            .flatten()
-            .cloned(),
-        ssh_agent: sub
-            .try_get_one::<std::path::PathBuf>("ssh-agent")
-            .ok()
-            .flatten()
-            .cloned(),
-    };
+    let login = crate::node::host::Login::from_args(sub);
     let yes = sub
         .try_get_one::<bool>("yes")
         .ok()

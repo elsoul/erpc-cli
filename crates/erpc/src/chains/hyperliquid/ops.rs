@@ -10,12 +10,11 @@ use erpc_auth::store::one_password::OpCli;
 use erpc_chain::inventory::{Store, hyperliquid::HyperliquidNode};
 use erpc_chain_hyperliquid::{Network, contract::Contract};
 use erpc_ssh::{
-    HostKey, Identity, RemoteCommand, Session, Target,
+    RemoteCommand, Session, Target,
     hyperliquid::{Command as HostCommand, Owner},
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::path::PathBuf;
 
 pub(crate) fn one<'a>(args: &'a ArgMatches, key: &str) -> Option<&'a str> {
     args.try_get_one::<String>(key)
@@ -89,26 +88,15 @@ pub(crate) fn settings(node: &mut HyperliquidNode, args: &ArgMatches) -> Result<
     Ok(())
 }
 pub(crate) fn target(node: &HyperliquidNode, args: &ArgMatches) -> Result<Target, String> {
-    Ok(Target {
-        host: node.address.clone(),
-        port: node.ssh_port,
-        user: node.ssh_user.clone(),
-        host_key: HostKey::parse(&node.host_key).map_err(|e| e.to_string())?,
-        identity: Identity::Agent {
-            socket: common::agent_socket(
-                args.try_get_one::<PathBuf>("ssh-agent")
-                    .ok()
-                    .flatten()
-                    .map(PathBuf::as_path),
-            )?,
-            public_key: args
-                .try_get_one::<PathBuf>("ssh-key")
-                .ok()
-                .flatten()
-                .cloned()
-                .ok_or("pass --ssh-key <operator public key>")?,
+    crate::node::host::target(
+        crate::node::host::Endpoint {
+            address: &node.address,
+            port: node.ssh_port,
+            user: &node.ssh_user,
+            host_key: &node.host_key,
         },
-    })
+        &crate::node::host::Login::from_args(args),
+    )
 }
 pub(crate) fn request(node: &HyperliquidNode, action: &str, intent: &str) -> Result<Value, String> {
     let profile = node.contract.network.profile()?;

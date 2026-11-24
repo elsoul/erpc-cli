@@ -15,14 +15,12 @@ use std::path::PathBuf;
 
 use erpc_chain::inventory::{Host, Inventory, Role, Validator};
 use erpc_chain_solana::{plays, regions, versions};
-use erpc_ssh::{HostKey, Identity, RemoteCommand, Session, Target};
+use erpc_ssh::{RemoteCommand, Session, Target};
 use serde_json::json;
 
 use crate::account::commands::Outcome;
 use crate::chains::solana::validator::init::{bundle, inventory_json, open_vault};
-use crate::node::common::{
-    FreeDisk, Say, agent_socket, check_ubuntu, confirm, free_disks, public_key_line,
-};
+use crate::node::common::{FreeDisk, Say, check_ubuntu, confirm, free_disks, public_key_line};
 
 /// The RPC port the startup script binds to 127.0.0.1.
 const RPC_PORT: u16 = 7211;
@@ -94,20 +92,19 @@ fn pick<'a>(
 
 /// The target that logs in to `host` as `solv`, with its pinned key.
 fn target(host: &Host, args: &Args) -> Result<Target, String> {
-    let ssh_key = args
-        .ssh_key
-        .clone()
-        .ok_or("pass --ssh-key <path to the .pub of the key that logs in>")?;
-    Ok(Target {
-        host: host.address.clone(),
-        port: host.ssh_port,
-        user: host.ssh_user.clone(),
-        host_key: HostKey::parse(&host.host_key).map_err(|e| e.to_string())?,
-        identity: Identity::Agent {
-            socket: agent_socket(args.ssh_agent.as_deref())?,
-            public_key: ssh_key,
+    let login = crate::node::host::Login {
+        ssh_key: args.ssh_key.clone(),
+        ssh_agent: args.ssh_agent.clone(),
+    };
+    crate::node::host::target(
+        crate::node::host::Endpoint {
+            address: &host.address,
+            port: host.ssh_port,
+            user: &host.ssh_user,
+            host_key: &host.host_key,
         },
-    })
+        &login,
+    )
 }
 
 /// The validator's state on the node.

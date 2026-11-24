@@ -18,7 +18,7 @@ use erpc_chain_op::{
 use erpc_chain_rollup::profile::{self, Family, Profile};
 use erpc_secret::OpRef;
 use erpc_ssh::rollup::Command as NodeCommand;
-use erpc_ssh::{HostKey, Identity, RemoteCommand, RunId, Session, Target};
+use erpc_ssh::{RemoteCommand, RunId, Session, Target};
 use secrecy::{ExposeSecret, SecretString};
 use serde_json::{Value, json};
 
@@ -84,26 +84,15 @@ fn settings(node: &mut RollupRpc, args: &ArgMatches) -> Result<(), String> {
     Ok(())
 }
 fn target(node: &RollupRpc, args: &ArgMatches) -> Result<Target, String> {
-    Ok(Target {
-        host: node.address.clone(),
-        port: node.ssh_port,
-        user: node.ssh_user.clone(),
-        host_key: HostKey::parse(&node.host_key).map_err(|e| e.to_string())?,
-        identity: Identity::Agent {
-            socket: common::agent_socket(
-                args.try_get_one::<std::path::PathBuf>("ssh-agent")
-                    .ok()
-                    .flatten()
-                    .map(std::path::PathBuf::as_path),
-            )?,
-            public_key: args
-                .try_get_one::<std::path::PathBuf>("ssh-key")
-                .ok()
-                .flatten()
-                .cloned()
-                .ok_or("pass --ssh-key <operator public key file>")?,
+    crate::node::host::target(
+        crate::node::host::Endpoint {
+            address: &node.address,
+            port: node.ssh_port,
+            user: &node.ssh_user,
+            host_key: &node.host_key,
         },
-    })
+        &crate::node::host::Login::from_args(args),
+    )
 }
 fn facts(session: &Session) -> Result<(crate::chains::eth::rpc::Facts, Architecture), String> {
     let facts = crate::chains::eth::rpc::facts(session)?;

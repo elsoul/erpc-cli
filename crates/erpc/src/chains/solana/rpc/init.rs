@@ -26,12 +26,13 @@ use erpc_ssh::{Identity, RemoteCommand, Session, Target};
 use serde_json::json;
 
 use crate::account::commands::Outcome;
-use crate::chains::arc::rpc::{Login, allow_list, facts, gb};
+use crate::chains::arc::rpc::{facts, gb};
 use crate::chains::solana::rpc::{RunVars, memory_warning, open, refusals, run_play};
 use crate::cli::error::CliError;
 use crate::node::common::{
     Say, agent_socket, check_ubuntu, go_ahead, host_key, public_key_line, save_vault,
 };
+use crate::node::host::{Login, allow_list};
 
 /// What `erpc r --chain solana init` was asked to do.
 #[derive(Debug, Clone, Default)]

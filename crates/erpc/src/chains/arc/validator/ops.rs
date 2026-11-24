@@ -99,11 +99,8 @@ pub(crate) fn open(network: &str, vault: Option<&str>, say: &Say) -> Result<Open
         nodes,
     })
 }
-pub(crate) fn login(sub: &ArgMatches) -> rpc::Login {
-    rpc::Login {
-        ssh_key: path(sub, "ssh-key"),
-        ssh_agent: path(sub, "ssh-agent"),
-    }
+pub(crate) fn login(sub: &ArgMatches) -> crate::node::host::Login {
+    crate::node::host::Login::from_args(sub)
 }
 fn find(opened: &Opened, name: &str) -> Result<ArcValidatorNode, String> {
     opened
@@ -428,10 +425,12 @@ pub(crate) fn update_policy(node: &mut ArcValidatorNode, sub: &ArgMatches) -> Re
         node.host.sentry_peers = values;
     }
     if let Some(values) = list(sub, "management-allow") {
-        node.host.management_allow = rpc::allow_list("--management-allow", &values, false)?;
+        node.host.management_allow =
+            crate::node::host::allow_list("--management-allow", &values, false)?;
     }
     if let Some(values) = list(sub, "monitoring-allow") {
-        node.host.monitoring_allow = rpc::allow_list("--monitoring-allow", &values, false)?;
+        node.host.monitoring_allow =
+            crate::node::host::allow_list("--monitoring-allow", &values, false)?;
     }
     Ok(())
 }

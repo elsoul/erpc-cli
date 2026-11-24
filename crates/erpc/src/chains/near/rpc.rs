@@ -15,7 +15,7 @@ use erpc_chain::inventory::{
 use erpc_chain_near::network::{self, Network};
 use erpc_ops::bundle::{Built, Bundle};
 use erpc_ssh::{
-    HostKey, Identity, RemoteCommand, Session, Target,
+    RemoteCommand, Session, Target,
     near::{Action, Contract},
 };
 use secrecy::ExposeSecret as _;
@@ -137,7 +137,7 @@ fn ranges(args: &ArgMatches, name: &str, old: &[String]) -> Result<Vec<String>, 
         .ok()
         .flatten()
         .map_or_else(|| old.to_vec(), |v| v.cloned().collect());
-    crate::chains::arc::rpc::allow_list(name, &values, false)
+    crate::node::host::allow_list(name, &values, false)
 }
 fn policy(node: &NearRpc) -> Result<String, String> {
     let bytes = serde_json::to_vec(&(
@@ -160,7 +160,7 @@ fn variables(node: &NearRpc, network: Network, facts: &Facts) -> Result<Value, S
     if node.platform != facts.machine {
         return Err("NEAR host architecture changed".into());
     }
-    let mut v4 = crate::chains::arc::rpc::allow_list("management", &node.management_allow, false)?;
+    let mut v4 = crate::node::host::allow_list("management", &node.management_allow, false)?;
     let mut v6 = Vec::new();
     match facts.controller_ip()? {
         std::net::IpAddr::V4(ip) => {
@@ -170,8 +170,8 @@ fn variables(node: &NearRpc, network: Network, facts: &Facts) -> Result<Value, S
         }
         std::net::IpAddr::V6(ip) => v6.push(ip.to_string()),
     }
-    let rpc = crate::chains::arc::rpc::allow_list("RPC", &node.rpc_allow, false)?;
-    let metrics = crate::chains::arc::rpc::allow_list("metrics", &node.metrics_allow, false)?;
+    let rpc = crate::node::host::allow_list("RPC", &node.rpc_allow, false)?;
+    let metrics = crate::node::host::allow_list("metrics", &node.metrics_allow, false)?;
     let (config, genesis) = erpc_core::endpoints::near_artifacts(network.name, network.commit)
         .ok_or("unsupported NEAR artifact network")?;
     Ok(
@@ -585,27 +585,15 @@ fn owner(node: &NearRpc) -> Result<&str, String> {
         .ok_or_else(|| "invalid NEAR inventory owner".into())
 }
 fn target(node: &NearRpc, args: &ArgMatches) -> Result<Target, String> {
-    let public_key = args
-        .try_get_one::<std::path::PathBuf>("ssh-key")
-        .ok()
-        .flatten()
-        .ok_or("pass --ssh-key with the operator public key file")?
-        .clone();
-    Ok(Target {
-        host: node.address.clone(),
-        port: node.ssh_port,
-        user: node.ssh_user.clone(),
-        host_key: HostKey::parse(&node.host_key).map_err(|e| e.to_string())?,
-        identity: Identity::Agent {
-            socket: common::agent_socket(
-                args.try_get_one::<std::path::PathBuf>("ssh-agent")
-                    .ok()
-                    .flatten()
-                    .map(std::path::PathBuf::as_path),
-            )?,
-            public_key,
+    crate::node::host::target(
+        crate::node::host::Endpoint {
+            address: &node.address,
+            port: node.ssh_port,
+            user: &node.ssh_user,
+            host_key: &node.host_key,
         },
-    })
+        &crate::node::host::Login::from_args(args),
+    )
 }
 fn add_templates(dir: &include_dir::Dir<'_>, bundle: &mut Bundle) -> Result<(), String> {
     for file in dir.files() {

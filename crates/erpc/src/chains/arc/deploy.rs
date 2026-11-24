@@ -26,11 +26,11 @@ use serde_json::{Map, Value, json};
 use crate::account::commands::Outcome;
 use crate::chains::arc::ops::{CAUGHT_UP_BLOCKS, Status, read_status};
 use crate::chains::arc::rpc::{
-    Facts, KindFlags, Login, Opened, RunVars, allow_list, facts, find, open, run_play, target,
-    with_kind,
+    Facts, KindFlags, Opened, RunVars, facts, find, open, run_play, target, with_kind,
 };
 use crate::cli::error::CliError;
 use crate::node::common::{Say, go_ahead};
+use crate::node::host::{Login, allow_list};
 
 /// What a change to a node was asked to do.
 #[derive(Debug, Clone, Default)]
@@ -309,7 +309,7 @@ pub fn deploy(args: &Args, json_out: bool) -> Outcome {
             list_or_nobody(&r.node.monitoring_allow)
         ));
         if let Some(warning) =
-            crate::chains::arc::rpc::lockout_warning(&r.node.management_allow, &r.facts)
+            crate::node::host::lockout_warning(&r.node.management_allow, &r.facts.controller)
         {
             say.line(&warning);
         }
@@ -437,7 +437,7 @@ pub fn update_config(args: &Args, json_out: bool) -> Outcome {
             }
         ));
         if let Some(warning) =
-            crate::chains::arc::rpc::lockout_warning(&next.management_allow, &r.facts)
+            crate::node::host::lockout_warning(&next.management_allow, &r.facts.controller)
         {
             say.line(&warning);
         }

@@ -15,11 +15,12 @@ use std::net::IpAddr;
 use erpc_auth::store::one_password::OpCli;
 use erpc_chain::inventory::{SolanaRpc, Store};
 use erpc_chain_solana::rpc;
-use erpc_ssh::{HostKey, Identity, RemoteCommand, Session, Target};
+use erpc_ssh::{RemoteCommand, Session, Target};
 use serde_json::{Map, Value, json};
 
-use crate::chains::arc::rpc::{Facts, Login};
-use crate::node::common::{Say, agent_socket, op_runner, store, vault_for};
+use crate::chains::arc::rpc::Facts;
+use crate::node::common::{Say, op_runner, store, vault_for};
+use crate::node::host::Login;
 
 /// The chain, as the inventory names it.
 pub(crate) const CHAIN: &str = "solana";
@@ -94,20 +95,15 @@ pub(crate) fn target(node: &SolanaRpc, login: &Login) -> Result<Target, String> 
 
 /// As [`target`], logging in as `user`.
 pub(crate) fn target_as(node: &SolanaRpc, user: &str, login: &Login) -> Result<Target, String> {
-    let ssh_key = login
-        .ssh_key
-        .clone()
-        .ok_or("pass --ssh-key <path to the .pub of the key that logs in>")?;
-    Ok(Target {
-        host: node.address.clone(),
-        port: node.ssh_port,
-        user: user.to_owned(),
-        host_key: HostKey::parse(&node.host_key).map_err(|e| e.to_string())?,
-        identity: Identity::Agent {
-            socket: agent_socket(login.ssh_agent.as_deref())?,
-            public_key: ssh_key,
+    crate::node::host::target(
+        crate::node::host::Endpoint {
+            address: &node.address,
+            port: node.ssh_port,
+            user,
+            host_key: &node.host_key,
         },
-    })
+        login,
+    )
 }
 
 /// What stops a Solana RPC node on this host, if anything.
@@ -144,7 +140,7 @@ pub(crate) fn memory_warning(facts: &Facts, rpc_type: &str) -> Option<String> {
 
 /// A warning when SSH would be admitted from erpc's present address alone.
 pub(crate) fn lockout_warning(node: &SolanaRpc, facts: &Facts) -> Option<String> {
-    crate::chains::arc::rpc::lockout_warning(&node.management_allow, facts)
+    crate::node::host::lockout_warning(&node.management_allow, &facts.controller)
 }
 
 /// What a run on the node is told about it.

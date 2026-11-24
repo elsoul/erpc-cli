@@ -16,9 +16,7 @@ use erpc_chain_avax::{
     status,
 };
 use erpc_core::chain::Role;
-use erpc_ssh::{
-    HostKey, Identity, RemoteCommand, Session, Target, arc::Action, avax::IdentityAction,
-};
+use erpc_ssh::{RemoteCommand, Session, Target, arc::Action, avax::IdentityAction};
 use secrecy::{ExposeSecret, SecretString};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -88,26 +86,15 @@ fn flag(sub: &ArgMatches, id: &str) -> bool {
         .unwrap_or(false)
 }
 fn target(node: &AvaxNode, sub: &ArgMatches) -> Result<Target, String> {
-    Ok(Target {
-        host: node.address.clone(),
-        port: node.ssh_port,
-        user: node.ssh_user.clone(),
-        host_key: HostKey::parse(&node.host_key).map_err(|e| e.to_string())?,
-        identity: Identity::Agent {
-            socket: common::agent_socket(
-                sub.try_get_one::<PathBuf>("ssh-agent")
-                    .ok()
-                    .flatten()
-                    .map(PathBuf::as_path),
-            )?,
-            public_key: sub
-                .try_get_one::<PathBuf>("ssh-key")
-                .ok()
-                .flatten()
-                .cloned()
-                .ok_or("pass --ssh-key <public key file>")?,
+    crate::node::host::target(
+        crate::node::host::Endpoint {
+            address: &node.address,
+            port: node.ssh_port,
+            user: &node.ssh_user,
+            host_key: &node.host_key,
         },
-    })
+        &crate::node::host::Login::from_args(sub),
+    )
 }
 fn checked_output(session: &Session, cmd: &RemoteCommand) -> Result<Value, String> {
     let out = session.run(cmd, None).map_err(|e| e.to_string())?;
@@ -134,14 +121,11 @@ fn allow_lists(node: &mut AvaxNode, sub: &ArgMatches) -> Result<(), String> {
         ("monitoring-allow", false, &mut node.monitoring_allow),
     ] {
         if let Some(items) = sub.try_get_many::<String>(name).ok().flatten() {
-            *list = crate::chains::arc::rpc::allow_list(
-                name,
-                &items.cloned().collect::<Vec<_>>(),
-                public,
-            )?;
+            *list =
+                crate::node::host::allow_list(name, &items.cloned().collect::<Vec<_>>(), public)?;
         }
         // Revalidate values read from inventory, too.
-        *list = crate::chains::arc::rpc::allow_list(name, list, public)?;
+        *list = crate::node::host::allow_list(name, list, public)?;
     }
     Ok(())
 }
