@@ -2637,14 +2637,24 @@ mod tests {
             "worker/udp_line_tests.rs",
             "worker/user_api_stub.rs",
         ];
-        for entry in std::fs::read_dir(src.join("worker")).expect("src/worker") {
-            let entry = entry.expect("entry");
-            let name = format!("worker/{}", entry.file_name().to_string_lossy());
-            if entry.path().extension().is_some_and(|e| e == "rs") {
-                assert!(
-                    scanned.contains(&name.as_str()) || unscanned.contains(&name.as_str()),
-                    "{name} is not scanned for hints"
-                );
+        for name in unscanned {
+            assert!(src.join(name).is_file(), "{name} is listed but not there");
+        }
+        // Every file under worker/, a submodule's own directory included.
+        let mut dirs = vec![src.join("worker")];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir).expect("a directory under src/worker") {
+                let path = entry.expect("entry").path();
+                if path.is_dir() {
+                    dirs.push(path);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    let name = path.strip_prefix(&src).expect("under src");
+                    let name = name.to_string_lossy().replace('\\', "/");
+                    assert!(
+                        scanned.contains(&name.as_str()) || unscanned.contains(&name.as_str()),
+                        "{name} is not scanned for hints"
+                    );
+                }
             }
         }
         // The worker's sources lived here before worker/; one added here
