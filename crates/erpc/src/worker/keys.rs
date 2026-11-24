@@ -114,7 +114,7 @@ pub(crate) fn import(
     let wipe = wipe
         || (!json
             && crate::account::session::has_terminal()
-            && crate::node_common::confirm(&t!(
+            && crate::node::common::confirm(&t!(
                 "worker_keys.import.wipe_question",
                 file = file.display()
             ))
@@ -788,7 +788,7 @@ pub(crate) async fn send(
                 t!("worker_keys.send.needs_terminal"),
             ));
         }
-        crate::node_common::go_ahead(false, &t!("worker_keys.send.refused"))?;
+        crate::node::common::go_ahead(false, &t!("worker_keys.send.refused"))?;
         let message = transfer_message(&from_bytes, &to_bytes, &blockhash, lamports);
         let signature = keypair.sign(&message);
         let mut tx = Vec::with_capacity(1 + 64 + message.len());

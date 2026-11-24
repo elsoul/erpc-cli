@@ -40,7 +40,7 @@ use zeroize::Zeroizing;
 
 use crate::account::commands::Outcome;
 use crate::cli::error::CliError;
-use crate::node_common::go_ahead;
+use crate::node::common::go_ahead;
 use crate::storage::backup::{self, Account};
 use crate::storage::restic::{self, Credentials};
 use crate::worker::remote::{ctl, ctl_ok, done, failed, open, reach, target};

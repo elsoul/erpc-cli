@@ -16,8 +16,8 @@ use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use crate::account::commands::Outcome;
-use crate::node_common::{Say, op_runner, store, vault_for};
-use crate::{arc_rpc, arc_validator_host as host};
+use crate::node::common::{Say, op_runner, store, vault_for};
+use crate::{chains::arc::rpc, chains::arc::validator::host};
 
 pub(crate) const HISTORY_REQUIRED: &str = "Production Arc activation remains unavailable: the official Remote signing protocol receives opaque proposal hashes without public evidence of durable same-height/round anti-equivocation. Obtain Circle's qualified signing-history/recovery contract; PublicKey TLS verification or institutional approval alone does not authorize signing";
 
@@ -99,8 +99,8 @@ pub(crate) fn open(network: &str, vault: Option<&str>, say: &Say) -> Result<Open
         nodes,
     })
 }
-pub(crate) fn login(sub: &ArgMatches) -> arc_rpc::Login {
-    arc_rpc::Login {
+pub(crate) fn login(sub: &ArgMatches) -> rpc::Login {
+    rpc::Login {
         ssh_key: path(sub, "ssh-key"),
         ssh_agent: path(sub, "ssh-agent"),
     }
@@ -157,7 +157,7 @@ pub(crate) fn run(verb: &str, sub: &ArgMatches, network: Option<&str>, json_out:
     }
     let say = Say { quiet: json_out };
     let operation = if verb == "init" {
-        crate::arc_validator_init::run(sub, network, &say)
+        crate::chains::arc::validator::init::run(sub, network, &say)
     } else {
         operate(verb, sub, network, &say)
     };
@@ -294,10 +294,10 @@ fn operate(verb: &str, sub: &ArgMatches, network: &str, say: &Say) -> Result<Val
     ]
     .contains(&verb)
     {
-        crate::node_common::go_ahead(flag(sub, "yes"), "no Arc validator host change was made")
+        crate::node::common::go_ahead(flag(sub, "yes"), "no Arc validator host change was made")
             .map_err(|error| error.to_string())?;
     }
-    let target = arc_rpc::target(&node.host, &login(sub))?;
+    let target = rpc::target(&node.host, &login(sub))?;
     let session =
         Session::open(&target).map_err(|_| "could not open the original pinned Arc host")?;
     match verb {
@@ -327,7 +327,7 @@ fn operate(verb: &str, sub: &ArgMatches, network: &str, say: &Say) -> Result<Val
             recover(verb, sub, network, &opened, &session, &node)
         }
         "deploy" | "update" | "update-config" => {
-            let facts = arc_rpc::facts(&session)?;
+            let facts = rpc::facts(&session)?;
             if !facts.refusals().is_empty() {
                 return Err(format!(
                     "Arc host preflight refused: {}",
@@ -428,17 +428,17 @@ pub(crate) fn update_policy(node: &mut ArcValidatorNode, sub: &ArgMatches) -> Re
         node.host.sentry_peers = values;
     }
     if let Some(values) = list(sub, "management-allow") {
-        node.host.management_allow = arc_rpc::allow_list("--management-allow", &values, false)?;
+        node.host.management_allow = rpc::allow_list("--management-allow", &values, false)?;
     }
     if let Some(values) = list(sub, "monitoring-allow") {
-        node.host.monitoring_allow = arc_rpc::allow_list("--monitoring-allow", &values, false)?;
+        node.host.monitoring_allow = rpc::allow_list("--monitoring-allow", &values, false)?;
     }
     Ok(())
 }
 pub(crate) fn pin(
     node: &mut ArcValidatorNode,
     sub: &ArgMatches,
-    facts: &arc_rpc::Facts,
+    facts: &rpc::Facts,
 ) -> Result<(), String> {
     let snapshot = erpc_chain_arc::releases::snapshot();
     let release = erpc_chain_arc::releases::choose(
@@ -498,7 +498,7 @@ fn deploy(
     target: &Target,
     node: &ArcValidatorNode,
     network: &str,
-    facts: &arc_rpc::Facts,
+    facts: &rpc::Facts,
     say: &Say,
 ) -> Result<Value, String> {
     deliver(opened, session, node, network, false)?;
@@ -516,7 +516,7 @@ fn deploy(
         node,
         network,
         "authorize",
-        json!({"intent":intent,"target":crate::arc_authority::source(&node.host,facts)?,"policy":host::policy(node,facts)?}),
+        json!({"intent":intent,"target":crate::chains::arc::authority::source(&node.host,facts)?,"policy":host::policy(node,facts)?}),
     )?;
     let extra = serde_json::Map::from_iter([("arc_validator_intent".into(), json!(intent))]);
     let inventory = host::inventory(node, network, facts, extra)?;

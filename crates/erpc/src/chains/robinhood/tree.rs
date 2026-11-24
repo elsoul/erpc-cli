@@ -5,7 +5,7 @@ use clap::{Arg, ArgAction, Command, value_parser};
 use erpc_core::chain::Verb;
 
 pub(crate) const EXTRA: &[Verb] = &[
-    crate::robinhood_admission::REGISTRATION,
+    crate::chains::robinhood::admission::REGISTRATION,
     Verb {
         name: "prepare-registration",
         about: "Observe finalized protocol requirements and prepare unsigned external funding/wrap/allowance data",

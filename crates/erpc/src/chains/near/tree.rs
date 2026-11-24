@@ -176,7 +176,7 @@ mod tests {
     use erpc_core::chain::{Chain, Role};
     #[test]
     fn chain_network_and_mutation_inputs_are_closed() {
-        let command = crate::tree::command(Role::Rpc, Chain::Near);
+        let command = crate::node::tree::command(Role::Rpc, Chain::Near);
         command.clone().debug_assert();
         assert!(
             command
@@ -203,7 +203,7 @@ mod tests {
 
     #[test]
     fn validator_exposes_all_operations_and_external_registration_without_submission() {
-        let command = crate::tree::command(Role::Validator, Chain::Near);
+        let command = crate::node::tree::command(Role::Validator, Chain::Near);
         command.clone().debug_assert();
         for verb in [
             "init",
@@ -254,7 +254,7 @@ mod tests {
         ] {
             assert!(command.clone().try_get_matches_from(args).is_err());
         }
-        let rpc = crate::tree::command(Role::Rpc, Chain::Near);
+        let rpc = crate::node::tree::command(Role::Rpc, Chain::Near);
         assert!(
             rpc.try_get_matches_from(["rpc", "registration", "--action", "prepare"])
                 .is_err()
@@ -263,7 +263,7 @@ mod tests {
 
     #[test]
     fn all_seven_registration_steps_enforce_amount_boundaries_before_store_or_host_access() {
-        let command = crate::tree::command(Role::Validator, Chain::Near);
+        let command = crate::node::tree::command(Role::Validator, Chain::Near);
         for step in [
             "create-pool",
             "stake",
@@ -327,7 +327,7 @@ mod tests {
     #[test]
     fn restore_key_has_mutating_production_guards_while_observations_stay_read_only() {
         use erpc_core::chain::{Source, guard_mainnet};
-        let command = crate::tree::command(Role::Validator, Chain::Near);
+        let command = crate::node::tree::command(Role::Validator, Chain::Near);
         for action in ["restore-key", "status", "validate", "prepare"] {
             let mut args = vec!["validator", "registration", "--action", action];
             if action == "prepare" {

@@ -14,8 +14,8 @@ use crate::account::commands::Outcome;
 
 /// The inventory of one network, read with the `op` this machine has.
 fn inventory(network: &str, vault: &str) -> Result<Inventory, String> {
-    let runner = crate::node_common::op_runner()?;
-    crate::node_common::store(&runner, vault, "solana", network)?
+    let runner = crate::node::common::op_runner()?;
+    crate::node::common::store(&runner, vault, "solana", network)?
         .load()
         .map_err(|e| e.to_string())
 }

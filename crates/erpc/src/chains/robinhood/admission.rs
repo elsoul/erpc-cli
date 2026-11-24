@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Public admission preparation on an existing owned Robinhood RPC host.
-use crate::{account::commands::Outcome, node_common, robinhood_admission_input as input};
+use crate::{
+    account::commands::Outcome, chains::robinhood::admission_input as input, node::common,
+};
 use clap::{Arg, ArgMatches, Command, value_parser};
 use erpc_core::chain::Verb;
 use serde::Deserialize;
@@ -213,12 +215,13 @@ fn observe(args: &ArgMatches, network: &str, json_out: bool) -> Result<Value, St
     let (action, validator, intent) = public_input(args, network)?;
     let qualified = erpc_chain_nitro::network::Network::parse("robinhood", network)
         .ok_or("unsupported Robinhood network")?;
-    let (node, target, session, scope) = crate::nitro_rpc::admission_session(qualified, args)?;
+    let (node, target, session, scope) =
+        crate::chains::nitro::rpc::admission_session(qualified, args)?;
     let request = json!({"schema":1,"action":action,"rpc_node":scope,"validator_address":validator,"intent":intent});
     let (built, helpers) = bundle(&node.name, &request)?;
-    let say = node_common::Say { quiet: json_out };
+    let say = common::Say { quiet: json_out };
     let run = erpc_ops::run::start(&session, &built, PLAY).map_err(|e| e.to_string())?;
-    let result = node_common::follow(
+    let result = common::follow(
         &target,
         &run,
         "Repeat the read-only admission request; no node or signing authority was changed",

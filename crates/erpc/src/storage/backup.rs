@@ -1108,7 +1108,7 @@ async fn restore(json: bool, wanted: &str, how: &Restore) -> Done {
             crate::storage::clean(&snapshot.time),
             target.display(),
         ));
-        crate::node_common::go_ahead(how.yes, "nothing was restored")?;
+        crate::node::common::go_ahead(how.yes, "nothing was restored")?;
     } else if target.exists() {
         return Err(Failure(
             CliError::new(Code::Failed, format!("{} exists already", target.display()))
@@ -1209,7 +1209,7 @@ async fn prune(
             "Forget {name}'s snapshots beyond the last {daily} daily, {weekly} weekly and \
              {monthly} monthly ones, and delete the data only they held."
         ));
-        crate::node_common::go_ahead(yes, "nothing was pruned")?;
+        crate::node::common::go_ahead(yes, "nothing was pruned")?;
     }
     let mut command = restic::command(&program, &admin);
     command.args([

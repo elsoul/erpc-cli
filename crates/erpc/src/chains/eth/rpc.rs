@@ -4,7 +4,7 @@
 //! What the `erpc r --chain eth` verbs share: the network's vault and RPC
 //! nodes, reaching a node, its facts, the variables and bundle of a run,
 //! running a play to its end, and the firewall confirmation. The allow-list
-//! check is Arc's ([`crate::arc_rpc::allow_list`]).
+//! check is Arc's ([`crate::chains::arc::rpc::allow_list`]).
 
 use std::net::IpAddr;
 use std::path::PathBuf;
@@ -18,7 +18,7 @@ use erpc_ops::bundle::{Built, Bundle};
 use erpc_ssh::{HostKey, Identity, RemoteCommand, Session, Target};
 use serde_json::{Map, Value, json};
 
-use crate::node_common::{Say, agent_socket, op_runner, store, vault_for};
+use crate::node::common::{Say, agent_socket, op_runner, store, vault_for};
 
 /// The chain, as the inventory names it.
 pub(crate) const CHAIN: &str = "eth";
@@ -326,7 +326,7 @@ impl RunVars<'_> {
                 );
                 set(
                     "eth_authority_request",
-                    crate::eth_authority::request(
+                    crate::chains::eth::authority::request(
                         self.node,
                         self.network.name,
                         "prepare",
@@ -392,8 +392,8 @@ pub(crate) fn run_play(
 ) -> Result<String, String> {
     let mut inventory = vars.inventory_json()?;
     if [erpc_chain_eth::plays::DEPLOY, erpc_chain_eth::plays::UPDATE].contains(&play) {
-        let source = crate::eth_authority::source(vars.node)?;
-        let observed = crate::eth_authority::invoke(
+        let source = crate::chains::eth::authority::source(vars.node)?;
+        let observed = crate::chains::eth::authority::invoke(
             session,
             vars.node,
             vars.network.name,
@@ -407,8 +407,9 @@ pub(crate) fn run_play(
         } else {
             "deploy"
         };
-        let intent = crate::eth_authority::deployment_intent(&observed, &source, operation)?;
-        crate::eth_authority::invoke(
+        let intent =
+            crate::chains::eth::authority::deployment_intent(&observed, &source, operation)?;
+        crate::chains::eth::authority::invoke(
             session,
             vars.node,
             vars.network.name,
@@ -425,7 +426,7 @@ pub(crate) fn run_play(
         let preparation = bundle(&inventory)?;
         let prepared = erpc_ops::run::start(session, &preparation, erpc_chain_eth::plays::FIREWALL)
             .map_err(|e| e.to_string())?;
-        let result = crate::node_common::follow(
+        let result = crate::node::common::follow(
             target,
             &prepared,
             "Retry deployment to prepare the firewall again",
@@ -435,7 +436,7 @@ pub(crate) fn run_play(
             return Err("firewall preparation failed; deployment was not started".into());
         }
         let fresh = Session::open(target).map_err(|e| e.to_string())?;
-        crate::eth_authority::invoke(
+        crate::chains::eth::authority::invoke(
             &fresh,
             vars.node,
             vars.network.name,
@@ -452,7 +453,7 @@ pub(crate) fn run_play(
         run.as_str(),
         vars.node.name
     ));
-    let result = crate::node_common::follow(target, &run, again, say)?;
+    let result = crate::node::common::follow(target, &run, again, say)?;
     if result.ok() {
         Ok(run.as_str().to_owned())
     } else {

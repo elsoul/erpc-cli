@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Original core-cell identity, concealed backup and same-host recovery.
 use crate::{
-    kaia_owned::{self, Node},
-    kaia_rpc, node_common,
+    chains::kaia::owned::{self, Node},
+    chains::kaia::rpc,
+    node::common,
 };
 use clap::ArgMatches;
 use erpc_auth::store::one_password::OpCli;
@@ -172,21 +173,20 @@ pub(crate) fn finish(
         return Err("core-cell custody requires validator role".into());
     };
     let kind = cell.node_kind.clone();
-    let request =
-        SecretString::from(kaia_rpc::request(node, network, "custody-create")?.to_string());
+    let request = SecretString::from(rpc::request(node, network, "custody-create")?.to_string());
     let capsule = Capsule::parse(
         private_request(session, &request)?,
-        kaia_rpc::owner(node)?,
+        rpc::owner(node)?,
         network.name(),
         &kind,
     )?;
     bind(node, &capsule)?;
-    kaia_owned::save(store, node).map_err(|e| e.to_string())?;
-    let reference = crate::kaia_backup::ensure(
-        &node_common::op_runner()?,
+    owned::save(store, node).map_err(|e| e.to_string())?;
+    let reference = crate::chains::kaia::backup::ensure(
+        &common::op_runner()?,
         vault,
         network.name(),
-        kaia_rpc::owner(node)?,
+        rpc::owner(node)?,
         capsule.secret(),
     )?;
     let Node::Validator(cell) = node else {
@@ -196,8 +196,8 @@ pub(crate) fn finish(
         return Err("original concealed backup reference differs".into());
     }
     cell.backup_ref = reference.to_string();
-    kaia_owned::save(store, node).map_err(|e| e.to_string())?;
-    let mut request = kaia_rpc::request(node, network, "custody-confirm")?;
+    owned::save(store, node).map_err(|e| e.to_string())?;
+    let mut request = rpc::request(node, network, "custody-confirm")?;
     request["backup_digest"] = json!(capsule.digest());
     request["public"] =
         serde_json::to_value(capsule.public()).map_err(|_| "cannot encode public identity")?;
@@ -216,13 +216,14 @@ pub(crate) fn restore(session: &Session, node: &Node, network: Network) -> Resul
     };
     let reference =
         OpRef::parse(&cell.backup_ref).map_err(|_| "original concealed backup is unavailable")?;
-    let raw = crate::rollup_credentials::read_concealed(&node_common::op_runner()?, &reference)?;
-    let capsule = Capsule::parse(raw, kaia_rpc::owner(node)?, network.name(), &cell.node_kind)?;
+    let raw =
+        crate::chains::rollup::credentials::read_concealed(&common::op_runner()?, &reference)?;
+    let capsule = Capsule::parse(raw, rpc::owner(node)?, network.name(), &cell.node_kind)?;
     let mut checked = node.clone();
     bind(&mut checked, &capsule)?;
     let input = SecretString::from(
         serde_json::to_string(&Recovery {
-            public: kaia_rpc::request(node, network, "custody-restore")?,
+            public: rpc::request(node, network, "custody-restore")?,
             material: capsule.secret().expose_secret(),
         })
         .map_err(|_| "cannot encode concealed recovery")?,

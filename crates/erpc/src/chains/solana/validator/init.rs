@@ -27,7 +27,7 @@ use serde_json::json;
 
 use crate::account::commands::Outcome;
 use crate::cli::error::CliError;
-use crate::node_common::{
+use crate::node::common::{
     Say, agent_socket, check_ubuntu, host_key, op_runner, public_key_line, save_vault, store,
     vault_for,
 };
@@ -395,7 +395,7 @@ fn store_items(
         Plan::New { host_name } => {
             let parse = |s: &Option<String>| {
                 s.as_deref()
-                    .map(crate::validator_keys::parse_source)
+                    .map(crate::chains::solana::validator::keys::parse_source)
                     .transpose()
             };
             let (identity_src, vote_src, authority_src) = (
@@ -403,27 +403,27 @@ fn store_items(
                 parse(&args.vote_account)?,
                 parse(&args.authority)?,
             );
-            let reach = crate::validator_keys::Reach {
+            let reach = crate::chains::solana::validator::keys::Reach {
                 ssh_key: args.ssh_key.as_deref(),
                 ssh_agent: args.ssh_agent.as_deref(),
                 source_fingerprint: args.source_fingerprint.as_deref(),
                 inventory,
             };
-            let keys = crate::validator_keys::KeyVault {
+            let keys = crate::chains::solana::validator::keys::KeyVault {
                 runner,
                 vault,
                 network: &args.network,
                 name: &args.name,
             };
             let stored = match &identity_src {
-                None | Some(crate::validator_keys::Source::New) => {
+                None | Some(crate::chains::solana::validator::keys::Source::New) => {
                     let s = identity_for(runner, vault, args, say)?;
-                    crate::validator_keys::Obtained {
+                    crate::chains::solana::validator::keys::Obtained {
                         pubkey: s.pubkey,
                         reference: s.reference,
                     }
                 }
-                Some(source) => crate::validator_keys::obtain(
+                Some(source) => crate::chains::solana::validator::keys::obtain(
                     source,
                     identity::KeyRole::Identity,
                     &keys,
@@ -432,7 +432,7 @@ fn store_items(
                 )?,
             };
             let (version, commit) = pin.ok_or("no release was pinned")?;
-            let validator = crate::validator_keys::fill(
+            let validator = crate::chains::solana::validator::keys::fill(
                 Validator {
                     name: args.name.clone(),
                     identity_account: stored.pubkey,
@@ -498,7 +498,7 @@ fn go_ahead(plan: &Plan, args: &Args, say: &Say) -> Result<(), CliError> {
         args.name,
         args.network,
     ));
-    crate::node_common::go_ahead(args.yes, "nothing was written")
+    crate::node::common::go_ahead(args.yes, "nothing was written")
 }
 
 /// How to reach the server: the confirmed host key, the operator's key in

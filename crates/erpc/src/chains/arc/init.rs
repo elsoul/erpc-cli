@@ -22,11 +22,11 @@ use erpc_ssh::{Identity, Session, Target};
 use serde_json::json;
 
 use crate::account::commands::Outcome;
-use crate::arc_rpc::{
+use crate::chains::arc::rpc::{
     Facts, KindFlags, Login, RunVars, allow_list, facts, gb, open, run_play, with_kind,
 };
 use crate::cli::error::CliError;
-use crate::node_common::{Say, agent_socket, check_ubuntu, go_ahead, host_key, save_vault};
+use crate::node::common::{Say, agent_socket, check_ubuntu, go_ahead, host_key, save_vault};
 
 /// What `erpc r --chain arc init` was asked to do.
 #[derive(Debug, Clone, Default)]
@@ -60,7 +60,7 @@ pub struct Args {
     /// Do not ask before writing.
     pub yes: bool,
     /// Explicit historical original-account adoption; never inferred from live NSS.
-    pub migration: crate::arc_migration::Inputs,
+    pub migration: crate::chains::arc::migration::Inputs,
 }
 
 /// What a finished init reports.
@@ -362,12 +362,18 @@ async fn init(args: &Args, say: &Say) -> Result<Done, CliError> {
     if kind.debug_api {
         say.line("rpc        debug and trace too: keep --rpc-allow to your own proxies");
     }
-    if let Some(warning) = crate::arc_rpc::lockout_warning(&management, &facts) {
+    if let Some(warning) = crate::chains::arc::rpc::lockout_warning(&management, &facts) {
         say.line(&warning);
     }
     go_ahead(args.yes, "nothing was written")?;
 
-    crate::arc_authority::preflight(&session, &target, existing.as_ref(), &opened.network, say)?;
+    crate::chains::arc::authority::preflight(
+        &session,
+        &target,
+        existing.as_ref(),
+        &opened.network,
+        say,
+    )?;
     let wanted = RpcNode {
         name: args.name.clone(),
         address: address.clone(),
@@ -395,7 +401,7 @@ async fn init(args: &Args, say: &Say) -> Result<Done, CliError> {
         &wanted.archive_sha256,
         facts.platform()?,
     )?;
-    let node = crate::arc_custody::provision(
+    let node = crate::chains::arc::custody::provision(
         &opened.store,
         &opened.runner,
         &opened.vault,
@@ -453,10 +459,10 @@ fn migrate(args: &Args, json_out: bool, say: &Say) -> Outcome {
         {
             return Err("Arc authority migration retains the original inventory host, source, policy and history profile".into());
         }
-        let proof = crate::arc_migration::evidence(&args.migration)?;
+        let proof = crate::chains::arc::migration::evidence(&args.migration)?;
         let opened = open(&args.network, args.vault.as_deref(), say)?;
-        let node = crate::arc_rpc::find(&opened.nodes, &args.name, &args.network)?.clone();
-        let target = crate::arc_rpc::target(&node, &args.login)?;
+        let node = crate::chains::arc::rpc::find(&opened.nodes, &args.name, &args.network)?.clone();
+        let target = crate::chains::arc::rpc::target(&node, &args.login)?;
         let session = Session::open(&target).map_err(|e| e.to_string())?;
         check_ubuntu(&session)?;
         let facts = facts(&session)?;
@@ -466,8 +472,8 @@ fn migrate(args: &Args, json_out: bool, say: &Say) -> Outcome {
         say.line("migration  qualify original account/source evidence, preserve keys and data, and leave supported legacy services retired");
         go_ahead(args.yes, "nothing was changed")?;
         let mut extra = serde_json::Map::new();
-        extra.insert("arc_migration_request".into(), crate::arc_authority::request(&node,&opened.network,"migration-check",json!({
-            "target":crate::arc_authority::source(&node,&facts)?,"policy":crate::arc_authority::policy(&node,&facts)?,
+        extra.insert("arc_migration_request".into(), crate::chains::arc::authority::request(&node,&opened.network,"migration-check",json!({
+            "target":crate::chains::arc::authority::source(&node,&facts)?,"policy":crate::chains::arc::authority::policy(&node,&facts)?,
             "evidence":proof,"helpers":erpc_chain_arc::authority::helper_hash()?
         }))?);
         let run = run_play(

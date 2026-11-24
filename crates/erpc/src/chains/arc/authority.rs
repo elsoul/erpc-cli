@@ -141,7 +141,10 @@ pub(crate) fn import_key(
     Ok(())
 }
 
-pub(crate) fn source(node: &RpcNode, facts: &crate::arc_rpc::Facts) -> Result<Value, String> {
+pub(crate) fn source(
+    node: &RpcNode,
+    facts: &crate::chains::arc::rpc::Facts,
+) -> Result<Value, String> {
     let version =
         erpc_chain_arc::releases::read(&node.version).ok_or("invalid Arc source version")?;
     if version.pre.is_some()
@@ -161,7 +164,10 @@ pub(crate) fn source(node: &RpcNode, facts: &crate::arc_rpc::Facts) -> Result<Va
     )
 }
 
-pub(crate) fn policy(node: &RpcNode, facts: &crate::arc_rpc::Facts) -> Result<Value, String> {
+pub(crate) fn policy(
+    node: &RpcNode,
+    facts: &crate::chains::arc::rpc::Facts,
+) -> Result<Value, String> {
     if facts.ssh_port == 0 {
         return Err("observed SSH destination port is missing".into());
     }
@@ -177,7 +183,7 @@ pub(crate) fn preflight(
     target: &erpc_ssh::Target,
     existing: Option<&RpcNode>,
     network: &Network,
-    say: &crate::node_common::Say,
+    say: &crate::node::common::Say,
 ) -> Result<(), String> {
     let mut request = json!({"schema":erpc_chain_arc::authority::SCHEMA,"action":"preflight"});
     if let Some(node) = existing {
@@ -187,10 +193,10 @@ pub(crate) fn preflight(
         "ansible_connection":"local","arc_authority_loader":erpc_chain_arc::authority::carried_loader()?,
         "arc_preflight_request":request
     }}}}).to_string();
-    let bundle = crate::arc_rpc::bundle(&inventory)?;
+    let bundle = crate::chains::arc::rpc::bundle(&inventory)?;
     let run = erpc_ops::run::start(session, &bundle, "ansible/arc-rpc/preflight.yml")
         .map_err(|e| e.to_string())?;
-    let result = crate::node_common::follow(
+    let result = crate::node::common::follow(
         target,
         &run,
         "Repeat init to requalify the original Arc host",

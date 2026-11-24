@@ -24,13 +24,13 @@ use erpc_ssh::Session;
 use serde_json::{Map, Value, json};
 
 use crate::account::commands::Outcome;
-use crate::arc_ops::{CAUGHT_UP_BLOCKS, Status, read_status};
-use crate::arc_rpc::{
+use crate::chains::arc::ops::{CAUGHT_UP_BLOCKS, Status, read_status};
+use crate::chains::arc::rpc::{
     Facts, KindFlags, Login, Opened, RunVars, allow_list, facts, find, open, run_play, target,
     with_kind,
 };
 use crate::cli::error::CliError;
-use crate::node_common::{Say, go_ahead};
+use crate::node::common::{Say, go_ahead};
 
 /// What a change to a node was asked to do.
 #[derive(Debug, Clone, Default)]
@@ -136,7 +136,13 @@ fn put_key(r: &Reached, node: &RpcNode, say: &Say, restore: bool) -> Result<(), 
         item: node.id.as_deref().ok_or("original Arc item is missing")?,
     };
     let consensus = key::read(&r.opened.runner, &owner, &stored).map_err(|e| e.to_string())?;
-    crate::arc_authority::import_key(&r.session, node, &r.opened.network, &consensus, restore)?;
+    crate::chains::arc::authority::import_key(
+        &r.session,
+        node,
+        &r.opened.network,
+        &consensus,
+        restore,
+    )?;
     say.line("key        original encrypted identity verified");
     Ok(())
 }
@@ -302,12 +308,14 @@ pub fn deploy(args: &Args, json_out: bool) -> Outcome {
             list_or_nobody(&r.node.rpc_allow),
             list_or_nobody(&r.node.monitoring_allow)
         ));
-        if let Some(warning) = crate::arc_rpc::lockout_warning(&r.node.management_allow, &r.facts) {
+        if let Some(warning) =
+            crate::chains::arc::rpc::lockout_warning(&r.node.management_allow, &r.facts)
+        {
             say.line(&warning);
         }
         go_ahead(args.yes, "nothing was changed")?;
         if args.reset_bootstrap {
-            let observed = crate::arc_authority::invoke(
+            let observed = crate::chains::arc::authority::invoke(
                 &r.session,
                 &r.node,
                 &r.opened.network,
@@ -318,7 +326,7 @@ pub fn deploy(args: &Args, json_out: bool) -> Outcome {
                 .get("bootstrap_intent")
                 .and_then(Value::as_str)
                 .ok_or("no incomplete original Arc bootstrap is recorded")?;
-            crate::arc_authority::invoke(
+            crate::chains::arc::authority::invoke(
                 &r.session,
                 &r.node,
                 &r.opened.network,
@@ -428,11 +436,13 @@ pub fn update_config(args: &Args, json_out: bool) -> Outcome {
                 changes.join("; ")
             }
         ));
-        if let Some(warning) = crate::arc_rpc::lockout_warning(&next.management_allow, &r.facts) {
+        if let Some(warning) =
+            crate::chains::arc::rpc::lockout_warning(&next.management_allow, &r.facts)
+        {
             say.line(&warning);
         }
         go_ahead(args.yes, "nothing was changed")?;
-        let (node, run) = crate::arc_custody::configure(
+        let (node, run) = crate::chains::arc::custody::configure(
             &r.opened.store,
             &r.node,
             &next,
@@ -693,7 +703,7 @@ pub fn destroy(args: &Args, json_out: bool) -> Outcome {
         let session = Session::open(&target(&node, &args.login)?).map_err(|e| e.to_string())?;
         say.line("plan       stop and durably retire original Arc services; preserve identity, data and filtering");
         go_ahead(args.yes, "nothing was changed")?;
-        crate::arc_authority::invoke(
+        crate::chains::arc::authority::invoke(
             &session,
             &node,
             &opened.network,
@@ -737,7 +747,7 @@ mod tests {
             commit: "ab09dbfd9553a7ad48f9c134ec5e808c36512c74".into(),
             ..Default::default()
         };
-        let missing = crate::arc_ops::Status::default();
+        let missing = crate::chains::arc::ops::Status::default();
         for operation in ["deploy", "update-config", "update"] {
             assert!(matches!(
                 super::observed_done(
@@ -756,7 +766,7 @@ mod tests {
     use erpc_chain::inventory::RpcNode;
 
     use super::{Args, KindFlags, failed_update, with_lists};
-    use crate::arc_ops::Status;
+    use crate::chains::arc::ops::Status;
 
     #[test]
     fn a_failed_update_does_not_invent_an_automatic_database_rollback() {

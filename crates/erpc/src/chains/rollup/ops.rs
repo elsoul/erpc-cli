@@ -4,8 +4,8 @@
 //! Qualified follower lifecycle over scoped inventory, pinned SSH and confirmed policy.
 use crate::{
     account::commands::Outcome,
-    node_common::{self, Say},
-    rollup_bundle as bundle,
+    chains::rollup::bundle,
+    node::common::{self, Say},
 };
 use clap::ArgMatches;
 use erpc_auth::store::one_password::OpCli;
@@ -36,14 +36,14 @@ fn flag(args: &ArgMatches, key: &str) -> bool {
         .unwrap_or(false)
 }
 fn store(profile: Profile, args: &ArgMatches) -> Result<(Store<OpCli>, String), String> {
-    let vault = node_common::vault_for(
+    let vault = common::vault_for(
         profile.network,
         one(args, "vault"),
         "initialize this follower with --vault <vault>",
     )?;
     Ok((
-        node_common::store(
-            &node_common::op_runner()?,
+        common::store(
+            &common::op_runner()?,
             &vault,
             profile.family.name(),
             profile.network,
@@ -90,7 +90,7 @@ fn target(node: &RollupRpc, args: &ArgMatches) -> Result<Target, String> {
         user: node.ssh_user.clone(),
         host_key: HostKey::parse(&node.host_key).map_err(|e| e.to_string())?,
         identity: Identity::Agent {
-            socket: node_common::agent_socket(
+            socket: common::agent_socket(
                 args.try_get_one::<std::path::PathBuf>("ssh-agent")
                     .ok()
                     .flatten()
@@ -105,8 +105,8 @@ fn target(node: &RollupRpc, args: &ArgMatches) -> Result<Target, String> {
         },
     })
 }
-fn facts(session: &Session) -> Result<(crate::eth_rpc::Facts, Architecture), String> {
-    let facts = crate::eth_rpc::facts(session)?;
+fn facts(session: &Session) -> Result<(crate::chains::eth::rpc::Facts, Architecture), String> {
+    let facts = crate::chains::eth::rpc::facts(session)?;
     if !["ubuntu 24.04", "ubuntu 26.04"].contains(&facts.os.as_str())
         || !facts.sudo
         || facts.mem_kb < 63_000_000
@@ -162,7 +162,7 @@ fn follow(
     say: &Say,
 ) -> Result<RunId, String> {
     let run = erpc_ops::run::start(session, built, play).map_err(|e| e.to_string())?;
-    let result = node_common::follow(
+    let result = common::follow(
         target,
         &run,
         "Resume the stored follower target with deploy; bootstrap uses start to resume",
@@ -179,7 +179,7 @@ fn follow(
 fn firewall(
     node: &RollupRpc,
     profile: Profile,
-    facts: &crate::eth_rpc::Facts,
+    facts: &crate::chains::eth::rpc::Facts,
     session: &Session,
     target: &Target,
     say: &Say,
@@ -209,7 +209,7 @@ fn provision_upstreams(
 ) -> Result<(), String> {
     let reference =
         OpRef::parse(&node.upstream_ref).map_err(|_| "invalid concealed upstream reference")?;
-    let credential = crate::rollup_credentials::read(&node_common::op_runner()?, &reference)?;
+    let credential = crate::chains::rollup::credentials::read(&common::op_runner()?, &reference)?;
     let public = json!({"contract": bundle::contract(node)?, "action":"upstreams", "intent":intent, "firewall":{"run":receipt.0.as_str(),"bundle":receipt.1}}).to_string();
     let header = public
         .strip_suffix('}')
@@ -251,7 +251,7 @@ async fn init(profile: Profile, args: &ArgMatches, say: &Say) -> Result<Value, S
     } else {
         let address = one(args, "host").ok_or("new follower requires --host")?;
         let port = args.get_one::<u16>("port").copied().unwrap_or(22);
-        let key = node_common::host_key(address, port, None, one(args, "fingerprint"), say)?;
+        let key = common::host_key(address, port, None, one(args, "fingerprint"), say)?;
         RollupRpc {
             name: name.into(),
             address: address.into(),
@@ -299,12 +299,11 @@ async fn init(profile: Profile, args: &ArgMatches, say: &Say) -> Result<Value, S
         node.bootstrap =
             serde_json::to_value(&prepared.pin).map_err(|_| "cannot encode bootstrap pin")?;
     }
-    node_common::go_ahead(flag(args, "yes"), "no follower host changed")
-        .map_err(|e| e.to_string())?;
+    common::go_ahead(flag(args, "yes"), "no follower host changed").map_err(|e| e.to_string())?;
     if node.id.is_none() {
         node = store.add_rollup_rpc(&node).map_err(|e| e.to_string())?;
     }
-    node_common::save_vault(profile.network, &vault)?;
+    common::save_vault(profile.network, &vault)?;
     let built = bundle::build(&node, profile, &facts, None, None, None)?;
     let run = follow(&session, &target, &built, "ansible/op/init.yml", say)?;
     node.last_run = run.as_str().into();
@@ -410,7 +409,7 @@ async fn deploy(
         if before["bootstrap_done"] == true {
             return Err("completed databases cannot be reset by bootstrap recovery".into());
         }
-        node_common::go_ahead(
+        common::go_ahead(
             flag(args, "yes"),
             "incomplete bootstrap data was not quarantined",
         )
@@ -429,7 +428,7 @@ async fn deploy(
         if verb != "deploy" {
             return Err("resume the current bootstrap with start/deploy before changing clients or settings".into());
         }
-        node_common::go_ahead(flag(args, "yes"), "bootstrap was not resumed")
+        common::go_ahead(flag(args, "yes"), "bootstrap was not resumed")
             .map_err(|e| e.to_string())?;
         return control(&session, node, "start");
     }
@@ -447,7 +446,7 @@ async fn deploy(
         &facts,
         prepared.as_ref().is_some_and(|p| p.manifest.is_some()),
     )?;
-    node_common::go_ahead(flag(args, "yes"), "no follower configuration changed")
+    common::go_ahead(flag(args, "yes"), "no follower configuration changed")
         .map_err(|e| e.to_string())?;
     wanted.last_result = format!("{verb} pending; desired pair may not be installed yet");
     *node = store
@@ -531,7 +530,7 @@ async fn operation(
         return Ok(json!({"logs":"complete"}));
     }
     if ["start", "stop", "restart", "destroy"].contains(&verb) {
-        node_common::go_ahead(flag(args, "yes"), "no follower service changed")
+        common::go_ahead(flag(args, "yes"), "no follower service changed")
             .map_err(|e| e.to_string())?;
         let result = control(&session, &node, verb)?;
         node.last_result = format!("{verb} ok; data retained");
@@ -546,7 +545,7 @@ pub(crate) fn report_status(
     json_out: bool,
     output: &mut dyn FnMut(&str),
 ) -> Outcome {
-    crate::node_report::status(result, "/readiness/ready", json_out, output)
+    crate::node::report::status(result, "/readiness/ready", json_out, output)
 }
 
 pub(crate) async fn run(

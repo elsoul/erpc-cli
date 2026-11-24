@@ -182,7 +182,7 @@ pub(crate) fn read(
     let raw = input(clients)?;
     value["opened_sources"] = opened_sources(&raw)?;
     value["records"]["opened_sources"] = json!(format!("{:x}", Sha256::digest(&raw)));
-    value["contract"] = json!(crate::eth_authority::contract(node, network)?);
+    value["contract"] = json!(crate::chains::eth::authority::contract(node, network)?);
     Ok(value)
 }
 

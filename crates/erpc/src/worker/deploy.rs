@@ -107,7 +107,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::account::commands::Outcome;
 use crate::cli::error::{CliError, Code};
-use crate::node_common::{Say, go_ahead};
+use crate::node::common::{Say, go_ahead};
 use crate::worker::remote::{ctl, ctl_ok, failed, open, unlock_request};
 use crate::worker::vps::{self, Api, LineRecord, LineTarget, Server, StartRecord, Stays};
 use crate::worker::{App, EnvRecord, load_env};
@@ -1721,7 +1721,7 @@ async fn server(
     if let Some(host) = &at.host {
         let port = at.port.unwrap_or(22);
         let host_key =
-            crate::node_common::host_key(host, port, None, at.fingerprint.as_deref(), say)
+            crate::node::common::host_key(host, port, None, at.fingerprint.as_deref(), say)
                 .map_err(failed)?;
         let (_, identity) = crate::ai::vps_access::login_key().map_err(failed)?;
         return Ok(found(
@@ -1891,7 +1891,7 @@ async fn drop_ended_vps(
     let seen = vps::on_account(&api, &resource, say).await;
     let asking = Asking {
         can_ask: vps::can_ask(say.quiet, crate::account::session::has_terminal()),
-        ask: |question: &str| crate::node_common::confirm(question).map_err(failed),
+        ask: |question: &str| crate::node::common::confirm(question).map_err(failed),
     };
     let save = |without: &Env| kept.save(without, None);
     record_without_missing(env, &seen, scope, asking, save, say)
@@ -2999,7 +2999,7 @@ mod tests {
             ))
             .expect("valid")
         };
-        let say = crate::node_common::Say { quiet: true };
+        let say = crate::node::common::Say { quiet: true };
         let me = Some("198.51.100.7".parse().expect("an address"));
         // The deploy's firewall step, and then its end: what it has said
         // so far and has still to say, and what it reports besides the WAF.
@@ -4163,7 +4163,7 @@ mod tests {
             _ => (200, json!({ "success": true, "data": [] })),
         })
         .await;
-        let quiet = crate::node_common::Say { quiet: true };
+        let quiet = crate::node::common::Say { quiet: true };
         let (_dir, path) = app_on_disk();
         let record = super::EnvRecord {
             path: &path,
@@ -4258,7 +4258,7 @@ mod tests {
             _ => (200, json!({ "success": true, "data": [] })),
         })
         .await;
-        let quiet = crate::node_common::Say { quiet: true };
+        let quiet = crate::node::common::Say { quiet: true };
         let (_dir, path) = app_on_disk();
         let record = super::EnvRecord {
             path: &path,
@@ -4706,7 +4706,7 @@ mod tests {
             _ => (200, json!({ "success": true, "data": [] })),
         })
         .await;
-        let quiet = crate::node_common::Say { quiet: true };
+        let quiet = crate::node::common::Say { quiet: true };
         let (_dir, path) = app_on_disk();
         let record = super::EnvRecord {
             path: &path,
@@ -4852,7 +4852,7 @@ mod tests {
             _ => (200, json!({ "success": true, "data": [] })),
         })
         .await;
-        let quiet = crate::node_common::Say { quiet: true };
+        let quiet = crate::node::common::Say { quiet: true };
         let (_dir, path) = app_on_disk();
         let record = super::EnvRecord {
             path: &path,
@@ -4922,7 +4922,7 @@ mod tests {
             _ => (200, json!({ "success": true, "data": [] })),
         })
         .await;
-        let quiet = crate::node_common::Say { quiet: true };
+        let quiet = crate::node::common::Say { quiet: true };
         let (_dir, path) = app_on_disk();
         let record = super::EnvRecord {
             path: &path,
@@ -5082,7 +5082,7 @@ mod tests {
     #[tokio::test]
     async fn the_sources_on_record_follow_what_user_api_lists_and_stay_when_it_cannot_be_read() {
         use crate::worker::vps::stub::{Request, Stub};
-        let quiet = crate::node_common::Say { quiet: true };
+        let quiet = crate::node::common::Say { quiet: true };
         let (_dir, path) = app_on_disk();
         let record = super::EnvRecord {
             path: &path,
@@ -5164,7 +5164,7 @@ mod tests {
             _ => (200, json!({ "success": true, "data": [] })),
         })
         .await;
-        let quiet = crate::node_common::Say { quiet: true };
+        let quiet = crate::node::common::Say { quiet: true };
         let (_dir, path) = app_on_disk();
         let record = super::EnvRecord {
             path: &path,
@@ -5421,7 +5421,7 @@ mod tests {
         let missing = OnAccount::Missing {
             account: "Example Account".to_owned(),
         };
-        let quiet = crate::node_common::Say { quiet: true };
+        let quiet = crate::node::common::Say { quiet: true };
         let saved = RefCell::new(Vec::new());
         let save = |env: &Env| {
             saved.borrow_mut().push(env.clone());

@@ -227,15 +227,15 @@ fn one(sub: &ArgMatches, id: &str) -> Option<String> {
 /// `status`, `logs`, `start`, `stop` and `restart`.
 fn ops(
     verb: &str,
-    args: &crate::eth_ops::Args,
+    args: &crate::chains::eth::ops::Args,
     sub: &ArgMatches,
     yes: bool,
     json: bool,
 ) -> Outcome {
     let layer = one(sub, "layer").unwrap_or_else(|| "both".to_owned());
     match verb {
-        "status" => crate::eth_ops::status(args, json),
-        "logs" => crate::eth_ops::logs(
+        "status" => crate::chains::eth::ops::status(args, json),
+        "logs" => crate::chains::eth::ops::logs(
             args,
             &layer,
             sub.get_one::<u32>("lines").copied().unwrap_or(100),
@@ -248,7 +248,7 @@ fn ops(
                 "stop" => Action::Stop,
                 _ => Action::Restart,
             };
-            crate::eth_ops::service(args, action, &layer, yes, json)
+            crate::chains::eth::ops::service(args, action, &layer, yes, json)
         }
     }
 }
@@ -257,10 +257,10 @@ fn init_request(
     sub: &ArgMatches,
     network: &str,
     name: &str,
-    login: crate::eth_rpc::Login,
+    login: crate::chains::eth::rpc::Login,
     yes: bool,
-) -> crate::eth_init::Args {
-    crate::eth_init::Args {
+) -> crate::chains::eth::init::Args {
+    crate::chains::eth::init::Args {
         network: network.to_owned(),
         name: name.to_owned(),
         host: one(sub, "host"),
@@ -298,7 +298,7 @@ pub(crate) async fn run(
     name: Option<&str>,
     json: bool,
 ) -> Outcome {
-    let login = crate::eth_rpc::Login {
+    let login = crate::chains::eth::rpc::Login {
         ssh_key: sub
             .try_get_one::<std::path::PathBuf>("ssh-key")
             .ok()
@@ -317,7 +317,7 @@ pub(crate) async fn run(
         .copied()
         .unwrap_or(false);
     if verb.name == "list" {
-        return crate::eth_ops::list(network, json);
+        return crate::chains::eth::ops::list(network, json);
     }
     let (Some(network), Some(name)) = (network, name) else {
         return Outcome::Usage(format!(
@@ -328,10 +328,10 @@ pub(crate) async fn run(
     match verb.name {
         "init" => {
             let args = init_request(sub, network, name, login, yes);
-            crate::eth_init::run(args, json).await
+            crate::chains::eth::init::run(args, json).await
         }
         "status" | "logs" | "start" | "stop" | "restart" => {
-            let args = crate::eth_ops::Args {
+            let args = crate::chains::eth::ops::Args {
                 network: network.to_owned(),
                 name: name.to_owned(),
                 login,
@@ -339,7 +339,7 @@ pub(crate) async fn run(
             ops(verb.name, &args, sub, yes, json)
         }
         _ => {
-            let args = crate::eth_deploy::Args {
+            let args = crate::chains::eth::deploy::Args {
                 network: network.to_owned(),
                 name: name.to_owned(),
                 login,
@@ -370,11 +370,11 @@ pub(crate) async fn run(
                     .cloned(),
             };
             match verb.name {
-                "deploy" => crate::eth_deploy::deploy(&args, json),
-                "update-config" => crate::eth_deploy::update_config(&args, json),
-                "update" => crate::eth_deploy::update(&args, json).await,
-                "plan" => crate::eth_deploy::plan(&args, json).await,
-                "destroy" => crate::eth_deploy::destroy(&args, json),
+                "deploy" => crate::chains::eth::deploy::deploy(&args, json),
+                "update-config" => crate::chains::eth::deploy::update_config(&args, json),
+                "update" => crate::chains::eth::deploy::update(&args, json).await,
+                "plan" => crate::chains::eth::deploy::plan(&args, json).await,
+                "destroy" => crate::chains::eth::deploy::destroy(&args, json),
                 other => Outcome::Usage(format!("`erpc r --chain eth {other}` is not a verb")),
             }
         }
@@ -387,7 +387,7 @@ mod tests {
 
     #[test]
     fn legacy_migration_requires_explicit_historical_source_records() {
-        let tree = crate::tree::command(Role::Rpc, Chain::Eth);
+        let tree = crate::node::tree::command(Role::Rpc, Chain::Eth);
         let mut args = vec![
             "rpc",
             "init",
@@ -413,7 +413,7 @@ mod tests {
     }
     #[test]
     fn volume_upgrade_is_an_explicit_deploy_only_recovery_action() {
-        let tree = crate::tree::command(Role::Rpc, Chain::Eth);
+        let tree = crate::node::tree::command(Role::Rpc, Chain::Eth);
         let parsed = tree
             .clone()
             .try_get_matches_from([
@@ -460,7 +460,7 @@ mod tests {
 
     #[test]
     fn every_verb_is_there_with_its_flags() {
-        let tree = crate::tree::command(Role::Rpc, Chain::Eth);
+        let tree = crate::node::tree::command(Role::Rpc, Chain::Eth);
         let init = tree
             .clone()
             .try_get_matches_from([

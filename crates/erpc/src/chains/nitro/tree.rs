@@ -68,7 +68,7 @@ mod tests {
     #[test]
     fn nitro_network_and_command_boundaries_are_explicit() {
         for chain in [Chain::Arbitrum, Chain::Robinhood] {
-            let tree = crate::tree::command(Role::Rpc, chain);
+            let tree = crate::node::tree::command(Role::Rpc, chain);
             tree.clone().debug_assert();
             assert!(
                 tree.clone()
@@ -86,7 +86,7 @@ mod tests {
             );
         }
         assert!(
-            crate::tree::command(Role::Rpc, Chain::Arbitrum)
+            crate::node::tree::command(Role::Rpc, Chain::Arbitrum)
                 .try_get_matches_from([
                     "rpc",
                     "init",
@@ -98,7 +98,7 @@ mod tests {
                 .is_ok()
         );
         assert!(
-            crate::tree::command(Role::Rpc, Chain::Robinhood)
+            crate::node::tree::command(Role::Rpc, Chain::Robinhood)
                 .try_get_matches_from(["rpc", "init", "-n", "sepolia"])
                 .is_err()
         );

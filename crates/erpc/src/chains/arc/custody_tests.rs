@@ -775,13 +775,13 @@ fn actual_configuration_orchestrator_delivers_and_renders_the_saved_public_versi
         |node| {
             assert_eq!(observed.borrow().as_slice(), [node.item_version]);
             let network = erpc_chain_arc::network::get("testnet").unwrap();
-            let facts = crate::arc_rpc::Facts {
+            let facts = crate::chains::arc::rpc::Facts {
                 machine: "x86_64".into(),
                 controller: "192.0.2.1".into(),
                 ssh_port: 22,
-                ..crate::arc_rpc::Facts::default()
+                ..crate::chains::arc::rpc::Facts::default()
             };
-            let vars = crate::arc_rpc::RunVars {
+            let vars = crate::chains::arc::rpc::RunVars {
                 node,
                 network: &network,
                 facts: &facts,

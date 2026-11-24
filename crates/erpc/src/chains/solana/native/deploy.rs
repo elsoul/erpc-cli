@@ -3,9 +3,9 @@
 
 //! Resume the original build, confirm ingress, then enter one fenced cutover.
 use crate::{
+    chains::solana::native as node,
     cli::error::CliError,
-    node_common::{self, Say},
-    solana_native as node,
+    node::common::{self, Say},
 };
 use clap::ArgMatches;
 use erpc_auth::store::one_password::OpCli;
@@ -163,7 +163,7 @@ impl Remote<'_> {
             .run(&RemoteCommand::SolanaNative(Command::Facts), None)
             .map_err(|_| "cannot inspect the current native SSH connection")?;
         let text = std::str::from_utf8(&result.stdout).map_err(|_| "invalid native SSH facts")?;
-        let facts = crate::eth_rpc::Facts::parse(text);
+        let facts = crate::chains::eth::rpc::Facts::parse(text);
         let controller: std::net::IpAddr = facts
             .controller
             .parse()
@@ -196,7 +196,7 @@ impl Driver for Remote<'_> {
         let bundle = node::request_bundle(self.node, &body)?;
         let run = erpc_ops::run::start(self.session, &bundle, "ansible/solana-native/firewall.yml")
             .map_err(|e| e.to_string())?;
-        let result = node_common::follow(
+        let result = common::follow(
             self.target,
             &run,
             "Resume the same native deployment after inspecting its firewall run",
@@ -240,7 +240,7 @@ impl Driver for Remote<'_> {
         let reference = erpc_secret::OpRef::parse(reference)
             .map_err(|_| "invalid native identity reference")?;
         let secret =
-            crate::rollup_credentials::read_concealed(&node_common::op_runner()?, &reference)?;
+            crate::chains::rollup::credentials::read_concealed(&common::op_runner()?, &reference)?;
         let header = self
             .body(
                 "import-identity",
@@ -320,7 +320,7 @@ fn recover_cutover(
     )?;
     let run = erpc_ops::run::start(session, &built, "ansible/solana-native/recover.yml")
         .map_err(|e| e.to_string())?;
-    let result = node_common::follow(
+    let result = common::follow(
         target,
         &run,
         "Repeat recovery with the same original cutover intent",

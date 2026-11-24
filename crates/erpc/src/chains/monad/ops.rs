@@ -3,7 +3,7 @@
 //! Native Monad orchestration with exact ownership and external financial signing.
 use crate::{
     account::commands::Outcome,
-    node_common::{self, Say},
+    node::common::{self, Say},
 };
 use clap::ArgMatches;
 use erpc_auth::store::one_password::OpCli;
@@ -42,13 +42,13 @@ fn pin() -> Result<Value, String> {
     )
 }
 fn open(network: &str, args: &ArgMatches) -> Result<(Store<OpCli>, String), String> {
-    let vault = node_common::vault_for(
+    let vault = common::vault_for(
         network,
         one(args, "vault"),
         "initialize with --vault <network vault>",
     )?;
     Ok((
-        node_common::store(&node_common::op_runner()?, &vault, "monad", network)?,
+        common::store(&common::op_runner()?, &vault, "monad", network)?,
         vault,
     ))
 }
@@ -59,7 +59,7 @@ fn target(node: &MonadNode, args: &ArgMatches) -> Result<Target, String> {
         user: node.ssh_user.clone(),
         host_key: HostKey::parse(&node.host_key).map_err(|e| e.to_string())?,
         identity: Identity::Agent {
-            socket: node_common::agent_socket(
+            socket: common::agent_socket(
                 args.try_get_one::<PathBuf>("ssh-agent")
                     .ok()
                     .flatten()
@@ -99,8 +99,8 @@ fn settings(node: &mut MonadNode, args: &ArgMatches) -> Result<(), String> {
     }
     Ok(())
 }
-fn facts(session: &Session) -> Result<crate::eth_rpc::Facts, String> {
-    let f = crate::eth_rpc::facts(session)?;
+fn facts(session: &Session) -> Result<crate::chains::eth::rpc::Facts, String> {
+    let f = crate::chains::eth::rpc::facts(session)?;
     if f.os != "ubuntu 24.04"
         || f.machine != "x86_64"
         || !f.sudo
@@ -114,7 +114,7 @@ fn facts(session: &Session) -> Result<crate::eth_rpc::Facts, String> {
 }
 fn inventory(
     node: &MonadNode,
-    f: &crate::eth_rpc::Facts,
+    f: &crate::chains::eth::rpc::Facts,
     intent: &str,
     initial: bool,
     initialize_device: bool,
@@ -194,7 +194,7 @@ fn play(
         _ => return Err("unknown Monad phase".into()),
     };
     let run = erpc_ops::run::start(session, &built, entry).map_err(|e| e.to_string())?;
-    let result = node_common::follow(
+    let result = common::follow(
         target,
         &run,
         "Retry the same target to recover; raw device initialization never repeats automatically",
@@ -229,7 +229,8 @@ struct NativeBundle {
 fn material(node: &MonadNode) -> Result<SecretString, String> {
     let reference =
         OpRef::parse(&node.keys_ref).map_err(|_| "invalid original native key reference")?;
-    let secret = crate::rollup_credentials::read_concealed(&node_common::op_runner()?, &reference)?;
+    let secret =
+        crate::chains::rollup::credentials::read_concealed(&common::op_runner()?, &reference)?;
     if secret.expose_secret().len() > 32768 {
         return Err("native identity bundle exceeds 32 KiB".into());
     }
@@ -366,7 +367,7 @@ fn init(network: &str, role: &str, args: &ArgMatches, say: &Say) -> Result<Value
     OpRef::parse(&node.keys_ref).map_err(|_| "use an identifier-only concealed key reference")?;
     settings(&mut node, args)?;
     erpc_ssh::config::check_host(&node.address).map_err(|e| e.to_string())?;
-    let key = node_common::host_key(
+    let key = common::host_key(
         &node.address,
         node.ssh_port,
         existing.as_ref().map(|n| n.host_key.as_str()),
@@ -386,7 +387,7 @@ fn init(network: &str, role: &str, args: &ArgMatches, say: &Say) -> Result<Value
         )?;
     let f = facts(&session)?;
     say.line("Reserve the dedicated Monad host and specified raw partition, install the authenticated native package and persistent permissions. Initializing TrieDB requires a separate deploy --initialize-device.");
-    node_common::go_ahead(flag(args, "yes"), "Monad host unchanged").map_err(|e| e.to_string())?;
+    common::go_ahead(flag(args, "yes"), "Monad host unchanged").map_err(|e| e.to_string())?;
     // Check the selected concealed bundle's public labels locally before any
     // immutable reservation. No native private material is sent during init.
     drop(material(&node)?);
@@ -405,7 +406,7 @@ fn init(network: &str, role: &str, args: &ArgMatches, say: &Say) -> Result<Value
     node.last_run = run.as_str().into();
     node.last_result = "initialized; device not initialized".into();
     store.update_monad_node(&node).map_err(|e| e.to_string())?;
-    node_common::save_vault(network, &vault)?;
+    common::save_vault(network, &vault)?;
     Ok(
         json!({"name":node.name,"network":network,"role":role,"state":"initialized","version":node.version,"raw_device_written":false}),
     )
@@ -512,7 +513,7 @@ fn operation(
         }
         return intent.review();
     }
-    node_common::go_ahead(flag(args, "yes"), "Monad host unchanged").map_err(|e| e.to_string())?;
+    common::go_ahead(flag(args, "yes"), "Monad host unchanged").map_err(|e| e.to_string())?;
     if verb == "recover-data-filesystem" {
         let vars = recovery_inventory(
             &node.name,

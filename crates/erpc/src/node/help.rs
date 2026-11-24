@@ -69,7 +69,7 @@ fn width() -> usize {
 /// `role`'s tree on `chain` as its help shows it: clap's headings in the
 /// operator's language, and after the help, where a command's options are.
 pub(crate) fn tree(role: Role, chain: Chain) -> Command {
-    let command = crate::tree::command(role, chain);
+    let command = crate::node::tree::command(role, chain);
     let next = t!("node_help.chain.next", role, chain);
     let after = match command.get_after_help() {
         Some(said) => format!("{said}\n\n{next}"),
@@ -108,7 +108,7 @@ impl Asked {
             .iter()
             .copied()
             .filter(|c| {
-                crate::tree::command(role, *c)
+                crate::node::tree::command(role, *c)
                     .find_subcommand(word)
                     .is_some()
             })

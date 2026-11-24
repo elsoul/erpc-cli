@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 
 use super::stub::{Request, Stub};
 use super::{LineTarget, Pace, UDP_FAMILIES};
-use crate::node_common::Say;
+use crate::node::common::Say;
 
 const STANDARD_MY: &str = "/v3/udp-forwarding/my";
 const PREMIUM_MY: &str = "/v3/udp-forwarding-premium/my";

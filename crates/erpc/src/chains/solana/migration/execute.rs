@@ -4,10 +4,10 @@
 //! Explicit public Solv retirement/copy orchestration with a durable original intent.
 use crate::{
     account::commands::Outcome,
+    chains::solana::migration as planning,
+    chains::solana::native::{self as solana_native, one},
     cli::error::CliError,
-    node_common::{self, Say},
-    solana_migration as planning,
-    solana_native::{self, one},
+    node::common::{self, Say},
 };
 use clap::ArgMatches;
 use erpc_auth::store::one_password::OpCli;
@@ -159,7 +159,7 @@ impl Live<'_> {
         self.original()?;
         let built = solana_native::request_bundle(&self.pending.node, value)?;
         let run = erpc_ops::run::start(&self.session, &built, PLAY).map_err(|e| e.to_string())?;
-        let result = node_common::follow(
+        let result = common::follow(
             &self.target,
             &run,
             "Use migration status or resume for this original intent; retain original data and keys",
@@ -222,18 +222,18 @@ fn open(args: &ArgMatches) -> Result<Store<OpCli>, String> {
     if !matches!(network, "mainnet" | "testnet") {
         return Err("migration requires mainnet or testnet".into());
     }
-    let vault = node_common::vault_for(
+    let vault = common::vault_for(
         network,
         one(args, "vault"),
         "pass the original network inventory vault",
     )?;
-    node_common::store(&node_common::op_runner()?, &vault, "solana", network)
+    common::store(&common::op_runner()?, &vault, "solana", network)
 }
 fn candidate(
     args: &ArgMatches,
     rpc: bool,
     store: &Store<OpCli>,
-    settings: &crate::solana_migration_settings::Approved,
+    settings: &crate::chains::solana::migration::settings::Approved,
     host_identity: &Value,
     commission: &Value,
 ) -> Result<Pending, String> {
@@ -324,7 +324,7 @@ fn execute(action: &str, args: &ArgMatches, rpc: bool, json_out: bool) -> Result
             return Err("an original migration is already reserved; use migration resume with its saved scope".into());
         }
         let observed = planning::inspect_custody(args, rpc)?;
-        let settings = crate::solana_migration_settings::inspect(
+        let settings = crate::chains::solana::migration::settings::inspect(
             &observed,
             rpc,
             one(args, "network").ok_or("migration requires --network")?,

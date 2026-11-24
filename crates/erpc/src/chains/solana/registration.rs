@@ -79,9 +79,9 @@ pub(crate) async fn run(sub: &ArgMatches, json_out: bool) -> Outcome {
 }
 
 async fn run_inner(sub: &ArgMatches, network: &str, name: &str) -> Result<Value, String> {
-    let vault = crate::node_common::vault_for(network, None, "initialize a validator first")?;
-    let runner = crate::node_common::op_runner()?;
-    let store = crate::node_common::store(&runner, &vault, "solana", network)?;
+    let vault = crate::node::common::vault_for(network, None, "initialize a validator first")?;
+    let runner = crate::node::common::op_runner()?;
+    let store = crate::node::common::store(&runner, &vault, "solana", network)?;
     let validator = store
         .public_solana_validator(name)
         .map_err(|error| error.to_string())?;

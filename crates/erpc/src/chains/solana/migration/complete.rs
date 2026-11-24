@@ -20,13 +20,13 @@ impl Live<'_> {
     fn original_registered_identity(&self) -> Result<(), String> {
         self.original()?;
         if let Some(identity) = &self.pending.registered_identity {
-            let op = node_common::op_runner()?;
+            let op = common::op_runner()?;
             identity
                 .verify(&op)
                 .map_err(|_| "original registered identity reference changed")?;
             let reference = erpc_secret::OpRef::parse(&identity.reference)
                 .map_err(|_| "invalid original registered identity reference")?;
-            let raw = crate::rollup_credentials::read_concealed(&op, &reference)?;
+            let raw = crate::chains::rollup::credentials::read_concealed(&op, &reference)?;
             let _verified = original_key(raw.expose_secret(), &identity.public)?;
             identity
                 .verify(&op)

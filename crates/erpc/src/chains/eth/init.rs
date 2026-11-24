@@ -25,10 +25,10 @@ use erpc_ssh::{Identity, Session, Target};
 use serde_json::json;
 
 use crate::account::commands::Outcome;
-use crate::arc_rpc::{allow_list, gb};
+use crate::chains::arc::rpc::{allow_list, gb};
+use crate::chains::eth::rpc::{Facts, Login, RunVars, facts, open, rpc_type, run_play};
 use crate::cli::error::CliError;
-use crate::eth_rpc::{Facts, Login, RunVars, facts, open, rpc_type, run_play};
-use crate::node_common::{
+use crate::node::common::{
     FreeDisk, Say, agent_socket, check_ubuntu, free_disks, go_ahead, host_key, save_vault,
 };
 
@@ -185,8 +185,8 @@ fn migrate(args: &Args, json_out: bool) -> Outcome {
         )?;
         let clients = args.original_client_record.as_deref().ok_or("--migrate-authority requires --original-client-record from independently retained highest-opened source records")?;
         let opened = open(&args.network, args.vault.as_deref(), &say)?;
-        let node = crate::eth_rpc::find(&opened.nodes, &args.name, &args.network)?.clone();
-        let proof = crate::eth_authority_evidence::read(
+        let node = crate::chains::eth::rpc::find(&opened.nodes, &args.name, &args.network)?.clone();
+        let proof = crate::chains::eth::authority_evidence::read(
             &node,
             &args.network,
             passwd,
@@ -194,7 +194,7 @@ fn migrate(args: &Args, json_out: bool) -> Outcome {
             machine,
             clients,
         )?;
-        let target = crate::eth_rpc::target(&node, &args.login)?;
+        let target = crate::chains::eth::rpc::target(&node, &args.login)?;
         let session = Session::open(&target).map_err(|e| e.to_string())?;
         let facts = facts(&session)?;
         say.line("migration  independently retained original account records will be checked against this pinned host; existing native writers must already be stopped; original units/data/JWT remain retained");
@@ -202,7 +202,7 @@ fn migrate(args: &Args, json_out: bool) -> Outcome {
         let mut extra = serde_json::Map::new();
         extra.insert(
             "eth_authority_request".into(),
-            crate::eth_authority::request(
+            crate::chains::eth::authority::request(
                 &node,
                 &args.network,
                 "migrate",
@@ -491,7 +491,7 @@ async fn init(args: &Args, say: &Say) -> Result<Done, CliError> {
              today, growing; keep --rpc-allow to your own proxies",
         );
     }
-    if let Some(warning) = crate::eth_rpc::lockout_warning(&management, &facts) {
+    if let Some(warning) = crate::chains::eth::rpc::lockout_warning(&management, &facts) {
         say.line(&warning);
     }
     go_ahead(args.yes, "nothing was written")?;

@@ -3,11 +3,11 @@
 
 //! Dedicated BSC RPC nodes with fixed network/retention and official snapshot bootstrap.
 
-use crate::bsc_owned::{self, Node};
+use crate::chains::bsc::owned::{self, Node};
 use crate::{
     account::commands::Outcome,
-    eth_rpc::Facts,
-    node_common::{self, Say},
+    chains::eth::rpc::Facts,
+    node::common::{self, Say},
 };
 use clap::ArgMatches;
 use erpc_auth::store::one_password::OpCli;
@@ -88,7 +88,7 @@ fn target(node: &Node, args: &ArgMatches) -> Result<Target, String> {
         user: node.ssh_user.clone(),
         host_key: HostKey::parse(&node.host_key).map_err(|e| e.to_string())?,
         identity: Identity::Agent {
-            socket: node_common::agent_socket(
+            socket: common::agent_socket(
                 args.try_get_one::<std::path::PathBuf>("ssh-agent")
                     .ok()
                     .flatten()
@@ -131,19 +131,19 @@ fn host_check(facts: &Facts, validator: bool, network: Network) -> Result<&'stat
     }
 }
 fn open(network: Network, args: &ArgMatches) -> Result<(Store<OpCli>, String), String> {
-    let vault = node_common::vault_for(
+    let vault = common::vault_for(
         network.name(),
         one(args, "vault"),
         "erpc r --chain bsc init --network <network> --vault <vault>",
     )?;
     Ok((
-        node_common::store(&node_common::op_runner()?, &vault, "bsc", network.name())?,
+        common::store(&common::op_runner()?, &vault, "bsc", network.name())?,
         vault,
     ))
 }
 fn find(store: &Store<OpCli>, args: &ArgMatches, validator: bool) -> Result<Node, String> {
     let name = one(args, "name").ok_or("BSC operation requires --name")?;
-    bsc_owned::list(store, validator)
+    owned::list(store, validator)
         .map_err(|e| e.to_string())?
         .into_iter()
         .find(|n| n.name == name)
@@ -155,7 +155,7 @@ fn management(args: &ArgMatches, old: &[String]) -> Result<Vec<String>, String> 
         .ok()
         .flatten()
         .map_or_else(|| old.to_vec(), |v| v.cloned().collect());
-    crate::arc_rpc::allow_list("management", &values, false)
+    crate::chains::arc::rpc::allow_list("management", &values, false)
 }
 fn helper_sha() -> Result<String, String> {
     let mut hash = Sha256::new();
@@ -185,7 +185,7 @@ fn variables(node: &Node, network: Network, facts: &Facts) -> Result<Value, Stri
     if facts.ssh_port == 0 {
         return Err("cannot establish the host SSH listener port".into());
     }
-    let mut v4 = crate::arc_rpc::allow_list("management", &node.management_allow, false)?;
+    let mut v4 = crate::chains::arc::rpc::allow_list("management", &node.management_allow, false)?;
     let mut v6 = Vec::new();
     match facts.controller_ip()? {
         std::net::IpAddr::V4(ip) => {
@@ -249,7 +249,7 @@ fn play(
 ) -> Result<String, String> {
     let built = bundle(inventory)?;
     let run = erpc_ops::run::start(session, &built, play).map_err(|e| e.to_string())?;
-    let result = node_common::follow(
+    let result = common::follow(
         target,
         &run,
         "Resume BSC deployment using its stored owner and release",
@@ -276,7 +276,7 @@ fn deploy(
     let preparation = bundle(inventory)?;
     let prepared = erpc_ops::run::start(session, &preparation, "node/firewall.yml")
         .map_err(|e| e.to_string())?;
-    let result = node_common::follow(target, &prepared, "Retry BSC firewall preparation", say)?;
+    let result = common::follow(target, &prepared, "Retry BSC firewall preparation", say)?;
     if !result.ok() {
         return Err("BSC firewall preparation failed; deployment did not start".into());
     }
@@ -303,7 +303,7 @@ fn init(network: Network, args: &ArgMatches, say: &Say, validator: bool) -> Resu
     let (store, vault) = open(network, args)?;
     let name = one(args, "name").ok_or("init requires --name")?;
     erpc_chain::inventory::check_name(name).map_err(|e| e.to_string())?;
-    let existing = bsc_owned::list(&store, validator)
+    let existing = owned::list(&store, validator)
         .map_err(|e| e.to_string())?
         .into_iter()
         .find(|n| n.name == name);
@@ -326,7 +326,7 @@ fn init(network: Network, args: &ArgMatches, say: &Say, validator: bool) -> Resu
             .ok_or("invalid BSC storage mode")?;
         let host = one(args, "host").ok_or("new node requires --host")?;
         let port = args.get_one::<u16>("port").copied().unwrap_or(22);
-        let host_key = node_common::host_key(host, port, None, one(args, "fingerprint"), say)?;
+        let host_key = common::host_key(host, port, None, one(args, "fingerprint"), say)?;
         let common = BscRpc {
             name: name.into(),
             address: host.into(),
@@ -366,23 +366,23 @@ fn init(network: Network, args: &ArgMatches, say: &Say, validator: bool) -> Resu
     network.qualify(&node.version)?;
     let target = target(&node, args)?;
     let session = Session::open(&target).map_err(|e| e.to_string())?;
-    let facts = crate::eth_rpc::facts(&session)?;
+    let facts = crate::chains::eth::rpc::facts(&session)?;
     let platform = host_check(&facts, node.is_validator(), network)?;
     if node.id.is_some() && node.platform != platform {
         return Err("stored BSC platform differs from host".into());
     }
     node.platform = platform.into();
-    node_common::go_ahead(yes(args), "no BSC host changed").map_err(|e| e.to_string())?;
+    common::go_ahead(yes(args), "no BSC host changed").map_err(|e| e.to_string())?;
     if node.id.is_none() {
-        node = bsc_owned::add(&store, &node).map_err(|e| e.to_string())?;
+        node = owned::add(&store, &node).map_err(|e| e.to_string())?;
     }
     let vars = variables(&node, network, &facts)?;
     let inventory = json!({"all":{"hosts":{node.name.clone():vars}}}).to_string();
     node.last_run = play(&session, &target, &inventory, "node/prepare.yml", say)?;
     let status = control(&session, &node, network, "status")?;
     node.last_result = "prepared; deploy required".into();
-    bsc_owned::save(&store, &mut node).map_err(|e| e.to_string())?;
-    node_common::save_vault(network.name(), &vault)?;
+    owned::save(&store, &mut node).map_err(|e| e.to_string())?;
+    common::save_vault(network.name(), &vault)?;
     Ok(json!({"name":node.name,"family":"bsc","network":network.name(),"state":status["phase"]}))
 }
 fn authorize_deploy(session: &Session, node: &Node, network: Network) -> Result<String, String> {
@@ -434,7 +434,7 @@ fn plan(node: &Node, network: Network, args: &ArgMatches) -> Result<Value, Strin
     if one(args, "change") == Some("register") {
         let target = target(node, args)?;
         let session = Session::open(&target).map_err(|e| e.to_string())?;
-        return crate::bsc_signer::registration(&session, node, network);
+        return crate::chains::bsc::signer::registration(&session, node, network);
     }
     let wanted = one(args, "version").unwrap_or(&node.version);
     network.qualify(wanted)?;
@@ -468,7 +468,7 @@ fn operation(
     }
     let (store, vault) = open(network, args)?;
     if verb == "list" {
-        let nodes = bsc_owned::list(&store, validator)
+        let nodes = owned::list(&store, validator)
             .map_err(|e| e.to_string())?
             .iter()
             .map(Node::public)
@@ -495,17 +495,16 @@ fn operation(
         .copied()
         .unwrap_or(false)
     {
-        node_common::go_ahead(yes(args), "no signer material changed")
-            .map_err(|e| e.to_string())?;
-        return crate::bsc_signer::restore(&session, &node, network);
+        common::go_ahead(yes(args), "no signer material changed").map_err(|e| e.to_string())?;
+        return crate::chains::bsc::signer::restore(&session, &node, network);
     }
     if before["phase"] == "installing" && !["deploy", "stop", "destroy"].contains(&verb) {
         return Err("resume deploy at the stored target before another operation".into());
     }
-    node_common::go_ahead(yes(args), "no BSC host changed").map_err(|e| e.to_string())?;
+    common::go_ahead(yes(args), "no BSC host changed").map_err(|e| e.to_string())?;
     match verb {
         "deploy" | "update" | "update-config" => {
-            let facts = crate::eth_rpc::facts(&session)?;
+            let facts = crate::chains::eth::rpc::facts(&session)?;
             host_check(&facts, node.is_validator(), network)?;
             if verb == "update" {
                 let wanted = one(args, "version").ok_or("update requires --version")?;
@@ -528,7 +527,7 @@ fn operation(
                     .into();
             }
             node.management_allow = management(args, &node.management_allow)?;
-            bsc_owned::save(&store, &mut node).map_err(|e| e.to_string())?;
+            owned::save(&store, &mut node).map_err(|e| e.to_string())?;
             let mut vars = variables(&node, network, &facts)?;
             let intent = authorize_deploy(&session, &node, network)?;
             vars["bsc_request"]["intent"] = json!(intent);
@@ -539,13 +538,13 @@ fn operation(
             play(&session, &target, &inventory, "node/prepare.yml", say)?;
             node.last_run = deploy(&session, &target, &node, network, &inventory, say)?;
             node.last_result = format!("{verb} complete; synchronization observed separately");
-            bsc_owned::save(&store, &mut node).map_err(|e| e.to_string())?;
-            crate::bsc_signer::finish(&session, &mut node, network, &store, &vault)
+            owned::save(&store, &mut node).map_err(|e| e.to_string())?;
+            crate::chains::bsc::signer::finish(&session, &mut node, network, &store, &vault)
         }
         "start" | "stop" | "restart" | "destroy" => {
             let result = control(&session, &node, network, verb)?;
             node.last_result = format!("{verb} complete; data retained");
-            bsc_owned::save(&store, &mut node).map_err(|e| e.to_string())?;
+            owned::save(&store, &mut node).map_err(|e| e.to_string())?;
             Ok(result)
         }
         _ => Err("unsupported BSC operation".into()),
@@ -556,7 +555,7 @@ pub(crate) fn report_status(
     json_out: bool,
     output: &mut dyn FnMut(&str),
 ) -> Outcome {
-    crate::node_report::status(result, "/ready", json_out, output)
+    crate::node::report::status(result, "/ready", json_out, output)
 }
 
 pub(crate) fn run_role(
@@ -602,7 +601,7 @@ mod tests {
                 (Network::Mainnet, "1.7.8", "1.8.2"),
                 (Network::Chapel, "1.8.1", "1.8.1"),
             ] {
-                let matches = crate::tree::command(role, Chain::Bsc)
+                let matches = crate::node::tree::command(role, Chain::Bsc)
                     .try_get_matches_from([
                         "node",
                         "plan",

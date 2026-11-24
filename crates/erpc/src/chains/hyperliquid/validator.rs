@@ -3,8 +3,8 @@
 //! Dedicated consensus custody, follower activation and external unsigned plans.
 use crate::{
     account::commands::Outcome,
-    hyperliquid_ops as rpc,
-    node_common::{self, Say},
+    chains::hyperliquid::ops as rpc,
+    node::common::{self, Say},
 };
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use erpc_chain::inventory::{
@@ -103,7 +103,7 @@ fn request(node: &ValidatorNode, action: &str, intent: &str) -> Result<Value, St
 }
 fn inventory(
     node: &ValidatorNode,
-    facts: &crate::eth_rpc::Facts,
+    facts: &crate::chains::eth::rpc::Facts,
     intent: &str,
 ) -> Result<String, String> {
     let mut value: Value = serde_json::from_str(&rpc::inventory(&node.host, facts, intent)?)
@@ -122,7 +122,8 @@ fn settings(node: &mut ValidatorNode, args: &ArgMatches) -> Result<(), String> {
 fn material(reference: &str) -> Result<HotMaterial, String> {
     let reference = OpRef::parse(reference)
         .map_err(|_| "identifier-only concealed hot-key reference required")?;
-    let value = crate::rollup_credentials::read_concealed(&node_common::op_runner()?, &reference)?;
+    let value =
+        crate::chains::rollup::credentials::read_concealed(&common::op_runner()?, &reference)?;
     HotMaterial::parse(value).map_err(str::to_owned)
 }
 #[derive(Serialize)]
@@ -287,7 +288,7 @@ fn init(network: Network, args: &ArgMatches, say: &Say) -> Result<Value, String>
     node.host.contract.validate()?;
     settings(&mut node, args)?;
     erpc_ssh::config::check_host(&node.host.address).map_err(|e| e.to_string())?;
-    node.host.host_key = node_common::host_key(
+    node.host.host_key = common::host_key(
         &node.host.address,
         node.host.ssh_port,
         previous.as_ref().map(|n| n.host.host_key.as_str()),
@@ -298,7 +299,7 @@ fn init(network: Network, args: &ArgMatches, say: &Say) -> Result<Value, String>
     let target = rpc::target(&node.host, args)?;
     let session = Session::open(&target).map_err(|e| e.to_string())?;
     let facts = validator_facts(&session)?;
-    node_common::go_ahead(
+    common::go_ahead(
         rpc::flag(args, "yes"),
         "Hyperliquid validator host unchanged",
     )
@@ -324,12 +325,12 @@ fn init(network: Network, args: &ArgMatches, say: &Say) -> Result<Value, String>
     store
         .update_hyperliquid_validator(&node)
         .map_err(|e| e.to_string())?;
-    node_common::save_vault(network.name(), &vault)?;
+    common::save_vault(network.name(), &vault)?;
     Ok(
         json!({"name":name,"role":"validator","network":network.name(),"mode":"follower","started":false,"custody":imported}),
     )
 }
-fn validator_facts(session: &Session) -> Result<crate::eth_rpc::Facts, String> {
+fn validator_facts(session: &Session) -> Result<crate::chains::eth::rpc::Facts, String> {
     let facts = rpc::facts(session)?;
     if facts.cpus < 32 {
         return Err(
@@ -510,7 +511,7 @@ fn operation(
             &json!({"action":"status","contract":node.host.contract}),
         );
     }
-    node_common::go_ahead(
+    common::go_ahead(
         rpc::flag(args, "yes"),
         "Hyperliquid validator host unchanged",
     )
@@ -688,7 +689,7 @@ mod tests {
     #[test]
     fn all_twelve_verbs_are_typed_and_custody_mutations_have_no_read_only_route() {
         for verb in COMMON_VERBS {
-            let matches = crate::tree::command(Role::Validator, Chain::Hyperliquid)
+            let matches = crate::node::tree::command(Role::Validator, Chain::Hyperliquid)
                 .try_get_matches_from(["v", "--network", "testnet", verb.name])
                 .unwrap();
             if !["list", "plan"].contains(&verb.name) {
@@ -707,7 +708,7 @@ mod tests {
                 ("--activate-validator", verb.name == "deploy"),
             ] {
                 assert_eq!(
-                    crate::tree::command(Role::Validator, Chain::Hyperliquid)
+                    crate::node::tree::command(Role::Validator, Chain::Hyperliquid)
                         .try_get_matches_from(["v", verb.name, flag])
                         .is_ok(),
                     allowed
@@ -740,7 +741,7 @@ mod tests {
         for role in [Role::Rpc, Role::Validator] {
             for verb in COMMON_VERBS {
                 assert_eq!(
-                    crate::tree::command(role, Chain::Hyperliquid)
+                    crate::node::tree::command(role, Chain::Hyperliquid)
                         .try_get_matches_from([
                             "node",
                             verb.name,
@@ -754,7 +755,7 @@ mod tests {
         }
         for conflict in ["--restore-key", "--recover-preparation"] {
             assert!(
-                crate::tree::command(Role::Validator, Chain::Hyperliquid)
+                crate::node::tree::command(Role::Validator, Chain::Hyperliquid)
                     .try_get_matches_from([
                         "node",
                         "update-config",
@@ -799,7 +800,7 @@ mod tests {
                     "public fixture description",
                 ]);
             }
-            let matches = crate::tree::command(Role::Validator, Chain::Hyperliquid)
+            let matches = crate::node::tree::command(Role::Validator, Chain::Hyperliquid)
                 .try_get_matches_from(argv)
                 .unwrap();
             let result = unsigned_plan(&node, matches.subcommand_matches("plan").unwrap()).unwrap();
@@ -813,7 +814,7 @@ mod tests {
                     node.host.contract.validator.as_ref().unwrap().signer
                 );
             }
-            let missing = crate::tree::command(Role::Validator, Chain::Hyperliquid)
+            let missing = crate::node::tree::command(Role::Validator, Chain::Hyperliquid)
                 .try_get_matches_from(["v", "plan", "--step", step])
                 .unwrap();
             assert_eq!(
@@ -822,7 +823,7 @@ mod tests {
             );
         }
         for amount in ["0", "-1", "1e9", "01", "18446744073709551616"] {
-            let matches = crate::tree::command(Role::Validator, Chain::Hyperliquid)
+            let matches = crate::node::tree::command(Role::Validator, Chain::Hyperliquid)
                 .try_get_matches_from([
                     "v",
                     "plan",
@@ -851,7 +852,7 @@ mod tests {
             vec!["v", "plan", "--amount-wei", "1"],
             vec!["v", "plan", "--step", "jail", "--amount-wei", "1"],
         ] {
-            let matches = crate::tree::command(Role::Validator, Chain::Hyperliquid)
+            let matches = crate::node::tree::command(Role::Validator, Chain::Hyperliquid)
                 .try_get_matches_from(values)
                 .unwrap();
             assert!(matches!(
@@ -869,7 +870,7 @@ mod tests {
     #[test]
     fn public_inventory_binds_native_mode_and_never_carries_concealed_reference() {
         let mut node = fixture();
-        let facts = crate::eth_rpc::Facts {
+        let facts = crate::chains::eth::rpc::Facts {
             controller: "192.0.2.20".into(),
             ssh_port: 22,
             ..Default::default()
@@ -884,7 +885,7 @@ mod tests {
             assert_eq!(request["contract"]["role"], "validator");
             assert_eq!(value["all"]["hosts"]["fixture"]["hyperliquid_ssh_port"], 22);
         }
-        let matches = crate::tree::command(Role::Validator, Chain::Hyperliquid)
+        let matches = crate::node::tree::command(Role::Validator, Chain::Hyperliquid)
             .try_get_matches_from(["v", "update-config", "--rpc-allow", "192.0.2.20"])
             .unwrap();
         assert!(

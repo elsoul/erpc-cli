@@ -4,7 +4,7 @@
 //! Avalanche lifecycle with pinned host/identity, in-memory custody and external staking.
 use crate::{
     cli::error::CliError,
-    node_common::{self, Say},
+    node::common::{self, Say},
 };
 use clap::ArgMatches;
 use erpc_auth::store::one_password::OpCli;
@@ -94,7 +94,7 @@ fn target(node: &AvaxNode, sub: &ArgMatches) -> Result<Target, String> {
         user: node.ssh_user.clone(),
         host_key: HostKey::parse(&node.host_key).map_err(|e| e.to_string())?,
         identity: Identity::Agent {
-            socket: node_common::agent_socket(
+            socket: common::agent_socket(
                 sub.try_get_one::<PathBuf>("ssh-agent")
                     .ok()
                     .flatten()
@@ -134,15 +134,19 @@ fn allow_lists(node: &mut AvaxNode, sub: &ArgMatches) -> Result<(), String> {
         ("monitoring-allow", false, &mut node.monitoring_allow),
     ] {
         if let Some(items) = sub.try_get_many::<String>(name).ok().flatten() {
-            *list = crate::arc_rpc::allow_list(name, &items.cloned().collect::<Vec<_>>(), public)?;
+            *list = crate::chains::arc::rpc::allow_list(
+                name,
+                &items.cloned().collect::<Vec<_>>(),
+                public,
+            )?;
         }
         // Revalidate values read from inventory, too.
-        *list = crate::arc_rpc::allow_list(name, list, public)?;
+        *list = crate::chains::arc::rpc::allow_list(name, list, public)?;
     }
     Ok(())
 }
-fn facts(session: &Session) -> Result<crate::eth_rpc::Facts, String> {
-    let f = crate::eth_rpc::facts(session)?;
+fn facts(session: &Session) -> Result<crate::chains::eth::rpc::Facts, String> {
+    let f = crate::chains::eth::rpc::facts(session)?;
     if !f.os.starts_with("ubuntu 24.") && !f.os.starts_with("ubuntu 26.") {
         return Err("Avalanche backend requires Ubuntu 24.04 or 26.04".into());
     }
@@ -153,7 +157,7 @@ fn facts(session: &Session) -> Result<crate::eth_rpc::Facts, String> {
 }
 fn vars(
     node: &AvaxNode,
-    f: &crate::eth_rpc::Facts,
+    f: &crate::chains::eth::rpc::Facts,
     phase: &str,
     purge: bool,
 ) -> Result<Value, String> {
@@ -201,7 +205,7 @@ fn run_play(
         .map_err(|e| e.to_string())?;
     let built = bundle.finish().map_err(|e| e.to_string())?;
     let run = erpc_ops::run::start(session, &built, path).map_err(|e| e.to_string())?;
-    let result = node_common::follow(
+    let result = common::follow(
         target,
         &run,
         "Retry the same desired operation; identity and data are retained",
@@ -219,7 +223,7 @@ fn play(
     session: &Session,
     target: &Target,
     node: &AvaxNode,
-    f: &crate::eth_rpc::Facts,
+    f: &crate::chains::eth::rpc::Facts,
     phase: &str,
     purge: bool,
     say: &Say,
@@ -329,13 +333,13 @@ pub(crate) async fn run(
     let net = Network::parse(network.ok_or("pass --network mainnet or fuji")?)
         .ok_or("unsupported Avalanche network")?;
     let say = Say { quiet: json_out };
-    let vault = node_common::vault_for(
+    let vault = common::vault_for(
         net.name(),
         one(sub, "vault").as_deref(),
         "erpc r --chain avax init --network fuji --vault <vault>",
     )?;
-    let runner = node_common::op_runner()?;
-    let store = node_common::store(&runner, &vault, "avax", net.name())?;
+    let runner = common::op_runner()?;
+    let store = common::store(&runner, &vault, "avax", net.name())?;
     let nodes = store.avax_nodes().map_err(|e| e.to_string())?;
     let validator = role == Role::Validator;
     if verb == "list" {
@@ -383,7 +387,7 @@ pub(crate) async fn run(
             return Err("no pinned identity to restore".into());
         }
         say.line("Restore the pinned identity on this host only; AvalancheGo must already be stopped. Existing different identity files will not be overwritten.");
-        node_common::go_ahead(flag(sub, "yes"), "identity was not restored")?;
+        common::go_ahead(flag(sub, "yes"), "identity was not restored")?;
         let secret = store
             .avax_identity_backup(&node)
             .map_err(|_| "identity backup unavailable")?;
@@ -416,7 +420,7 @@ pub(crate) async fn run(
                 ""
             }
         ));
-        node_common::go_ahead(flag(sub, "yes"), "nothing changed")?;
+        common::go_ahead(flag(sub, "yes"), "nothing changed")?;
         let inventory = json!({"all":{"hosts":{node.name.clone():{
             "ansible_connection":"local","avax_owner":contract(&node)?.owner_label().ok_or("missing inventory owner")?,"avax_network":node.network,"avax_type":node.rpc_type,
             "avax_validator":node.validator,"avax_purge_data":flag(sub,"purge-data")
@@ -463,14 +467,14 @@ pub(crate) async fn run(
     }
     if verb == "identity-backup" {
         identity(&session, &mut node, &s)?;
-        node_common::go_ahead(flag(sub, "yes"), "identity not backed up")?;
+        common::go_ahead(flag(sub, "yes"), "identity not backed up")?;
         node = store.update_avax_node(&node).map_err(|e| e.to_string())?;
         backup(&session, &store, &node)?;
         return Ok(json!({"status":"identity backed up and read back","node_id":node.node_id}));
     }
     if ["start", "stop", "restart"].contains(&verb) {
         say.line(&format!("{verb} AvalancheGo and its gateway on {} ({}); validator state: {}. Interrupting an active validator can reduce rewards.",node.name,net.name(),status::validator_state(&s,&node.node_id,None,0)));
-        node_common::go_ahead(flag(sub, "yes"), "services unchanged")?;
+        common::go_ahead(flag(sub, "yes"), "services unchanged")?;
         let action = match verb {
             "start" => Action::Start,
             "stop" => Action::Stop,
@@ -523,7 +527,7 @@ pub(crate) async fn run(
     if node.management_allow.is_empty() {
         say.line("SSH will be admitted only from the current controller; use a stable --management-allow range before its address changes.");
     }
-    node_common::go_ahead(flag(sub, "yes"), "nothing changed")?;
+    common::go_ahead(flag(sub, "yes"), "nothing changed")?;
     let phase = if verb == "update-config" {
         "config"
     } else {
@@ -599,7 +603,7 @@ async fn init(
         return Err("pass an unused --host for the new node".into());
     }
     erpc_ssh::config::check_host(&node.address).map_err(|e| e.to_string())?;
-    let seen = node_common::host_key(
+    let seen = common::host_key(
         &node.address,
         node.ssh_port,
         existing.map(|n| n.host_key.as_str()),
@@ -610,7 +614,7 @@ async fn init(
     let target = target(&node, sub)?;
     let session = Session::open(&target).map_err(|e| e.to_string())?;
     verify_contract(&session, &node, true)?;
-    node_common::check_ubuntu(&session)?;
+    common::check_ubuntu(&session)?;
     let f = facts(&session)?;
     let arch = match f.machine.as_str() {
         "x86_64" => "amd64",
@@ -637,14 +641,14 @@ async fn init(
     } else {
         say.line("Avalanche init reserves its original unprivileged account and persistent directories. Mount local NVMe at /var/lib/avalanchego; no disk will be formatted. Deploy generates the identity once and backs it up to 1Password.");
     }
-    node_common::go_ahead(flag(sub, "yes"), "nothing changed")?;
+    common::go_ahead(flag(sub, "yes"), "nothing changed")?;
     node = if existing.is_none() {
         store.add_avax_node(&node)
     } else {
         store.update_avax_node(&node)
     }
     .map_err(|e| e.to_string())?;
-    node_common::save_vault(net.name(), vault)?;
+    common::save_vault(net.name(), vault)?;
     node.last_run = play(
         &session,
         &target,
@@ -802,10 +806,10 @@ mod regression_tests {
             ssh_port: 2222,
             ..AvaxNode::default()
         };
-        let mut facts = crate::eth_rpc::Facts {
+        let mut facts = crate::chains::eth::rpc::Facts {
             controller: "192.0.2.1".into(),
             ssh_port: 22,
-            ..crate::eth_rpc::Facts::default()
+            ..crate::chains::eth::rpc::Facts::default()
         };
         let inventory = vars(&node, &facts, "deploy", false).unwrap();
         let value = &inventory["all"]["hosts"]["fixture"];

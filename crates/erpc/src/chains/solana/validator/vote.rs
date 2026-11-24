@@ -20,8 +20,8 @@ use erpc_chain_solana::vote::{self, CREATE_LAMPORTS, VoteAccount};
 use serde_json::json;
 
 use crate::account::commands::Outcome;
-use crate::node_common::{Say, confirm};
-use crate::validator_init::open_vault;
+use crate::chains::solana::validator::init::open_vault;
+use crate::node::common::{Say, confirm};
 
 /// What `erpc v vote-account` was asked about.
 #[derive(Debug, Clone)]

@@ -4,9 +4,9 @@
 //! TRON lifecycle with immutable ownership and external owner signing.
 use crate::{
     account::commands::Outcome,
+    chains::eth::rpc::{Facts, Login},
     cli::error::CliError,
-    eth_rpc::{Facts, Login},
-    node_common::{self, Say},
+    node::common::{self, Say},
 };
 use erpc_chain::inventory::tron::TronNode;
 use erpc_chain_tron::{
@@ -134,7 +134,7 @@ fn target(node: &TronNode, login: &Login) -> Result<Target, String> {
         user: node.ssh_user.clone(),
         host_key: HostKey::parse(&node.host_key).map_err(|e| e.to_string())?,
         identity: Identity::Agent {
-            socket: node_common::agent_socket(login.ssh_agent.as_deref())?,
+            socket: common::agent_socket(login.ssh_agent.as_deref())?,
             public_key: login
                 .ssh_key
                 .clone()
@@ -180,7 +180,7 @@ fn allow_lists(node: &mut TronNode, args: &Args) -> Result<(), String> {
         ),
     ] {
         if let Some(values) = input {
-            *output = crate::arc_rpc::allow_list(flag, values, false)?;
+            *output = crate::chains::arc::rpc::allow_list(flag, values, false)?;
         }
     }
     if node.role == "validator" && !node.rpc_allow.is_empty() {
@@ -230,7 +230,7 @@ fn variables(
         ("stored management ranges", &node.management_allow),
         ("stored metrics ranges", &node.monitoring_allow),
     ] {
-        crate::arc_rpc::allow_list(name, list, false)?;
+        crate::chains::arc::rpc::allow_list(name, list, false)?;
     }
     if node.role == "validator" && !node.rpc_allow.is_empty() {
         return Err("SR APIs must remain private".into());
@@ -283,7 +283,7 @@ fn play(
     let run = erpc_ops::run::start(session, &built, &format!("ansible/tron/{phase}.yml"))
         .map_err(|e| e.to_string())?;
     say.line(&format!("run        {} ({phase})", run.as_str()));
-    let result = node_common::follow(
+    let result = common::follow(
         target,
         &run,
         "Inspect this run before retrying; ownership and original identity are retained",
@@ -311,7 +311,7 @@ fn credential(
 ) -> Result<SecretString, String> {
     let reference = erpc_secret::OpRef::parse(raw)
         .map_err(|_| "invalid identifier-only TRON credential reference")?;
-    let value = crate::rollup_credentials::read_concealed(runner, &reference)?;
+    let value = crate::chains::rollup::credentials::read_concealed(runner, &reference)?;
     if value.expose_secret().len() > maximum {
         return Err("TRON concealed credential exceeds its size limit".into());
     }
@@ -336,7 +336,7 @@ fn import_identity(
     {
         return Ok(());
     }
-    let runner = node_common::op_runner()?;
+    let runner = common::op_runner()?;
     let encrypted = credential(&runner, &node.credential_references[0], 16384)?;
     // Inspect only the encrypted document's declared public address before
     // reading its password or transferring anything to the host.
@@ -383,12 +383,12 @@ fn observation(
 fn execute(verb: &str, args: &Args, say: &Say) -> Result<Value, CliError> {
     let net = network::get(&args.network)
         .ok_or("TRON supports Mainnet and Nile; Shasta is closed to independent nodes")?;
-    let vault = node_common::vault_for(
+    let vault = common::vault_for(
         &args.network,
         args.vault.as_deref(),
         "erpc r/v --chain tron init --vault <vault ID>",
     )?;
-    let store = node_common::store(&node_common::op_runner()?, &vault, "tron", net.name)?;
+    let store = common::store(&common::op_runner()?, &vault, "tron", net.name)?;
     let role = if args.validator {
         "validator"
     } else {
@@ -427,7 +427,7 @@ fn execute(verb: &str, args: &Args, say: &Say) -> Result<Value, CliError> {
             initialize_identity(&mut node, existing.is_some(), args)?;
         }
         allow_lists(&mut node, args)?;
-        node.host_key = node_common::host_key(
+        node.host_key = common::host_key(
             &node.address,
             node.ssh_port,
             existing.map(|n| n.host_key.as_str()),
@@ -453,7 +453,7 @@ fn execute(verb: &str, args: &Args, say: &Say) -> Result<Value, CliError> {
             &node.archive_sha256,
         )?;
         say.line("plan       prepare Ubuntu/JDK and immutable ownership; no disk formatting or node signing");
-        node_common::go_ahead(args.yes, "TRON init was not started")?;
+        common::go_ahead(args.yes, "TRON init was not started")?;
         node = if existing.is_none() {
             store.add_tron_node(&node)
         } else {
@@ -462,7 +462,7 @@ fn execute(verb: &str, args: &Args, say: &Say) -> Result<Value, CliError> {
         .map_err(|e| e.to_string())?;
         // Reserve the unique inventory item before constructing any remote ownership.
         let inventory = variables(&node, net, &facts, intent)?;
-        node_common::save_vault(net.name, &vault)?;
+        common::save_vault(net.name, &vault)?;
         node.last_run = play(&session, &target, &inventory, "init", say)?
             .0
             .as_str()
@@ -519,7 +519,7 @@ fn execute(verb: &str, args: &Args, say: &Say) -> Result<Value, CliError> {
     if node.last_result.is_empty() {
         return Err("init has not completed; retry init first".into());
     }
-    node_common::go_ahead(args.yes, "TRON operation was not started")?;
+    common::go_ahead(args.yes, "TRON operation was not started")?;
     if ["stop", "destroy"].contains(&verb) {
         if verb == "stop"
             && let Ok(result) = observation(&session, Action::Stop, &node, net)

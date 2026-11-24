@@ -42,50 +42,58 @@ mod tests {
             (
                 "Bitcoin",
                 "/readiness/ready",
-                crate::bitcoin_rpc::report_status,
+                crate::chains::bitcoin::rpc::report_status,
             ),
             (
                 "OP/Base/Soneium",
                 "/readiness/ready",
-                crate::rollup_ops::report_status,
+                crate::chains::rollup::ops::report_status,
             ),
             (
                 "Arbitrum/Robinhood RPC",
                 "/ready",
-                crate::nitro_rpc::report_status,
+                crate::chains::nitro::rpc::report_status,
             ),
             ("Solana RPC", "/rpc_ready", |r, j, o| {
-                crate::solana_native::report_status(true, r, j, o)
+                crate::chains::solana::native::report_status(true, r, j, o)
             }),
             ("Solana validator", "/validator_ready", |r, j, o| {
-                crate::solana_native::report_status(false, r, j, o)
+                crate::chains::solana::native::report_status(false, r, j, o)
             }),
-            ("bsc RPC/validator", "/ready", crate::bsc_rpc::report_status),
+            (
+                "bsc RPC/validator",
+                "/ready",
+                crate::chains::bsc::rpc::report_status,
+            ),
             (
                 "near RPC/validator",
                 "/ready",
-                crate::near_rpc::report_status,
+                crate::chains::near::rpc::report_status,
             ),
             (
                 "hyperliquid AQA",
                 "/publisher_service_ready",
-                crate::hyperliquid_aqa::report_status,
+                crate::chains::hyperliquid::aqa::report_status,
             ),
-            ("kaia EN/CN", "/ready", crate::kaia_rpc::report_status),
+            (
+                "kaia EN/CN",
+                "/ready",
+                crate::chains::kaia::rpc::report_status,
+            ),
             (
                 "polygon fullnode/validator",
                 "/ready",
-                crate::polygon_rpc::report_status,
+                crate::chains::polygon::rpc::report_status,
             ),
             (
                 "arbitrum validator",
                 "/validator_ready",
-                crate::arbitrum_validator::report_status,
+                crate::chains::arbitrum::validator::report_status,
             ),
             (
                 "robinhood-validator",
                 "/validator_ready",
-                crate::robinhood_validator::report_status,
+                crate::chains::robinhood::validator::report_status,
             ),
         ]
     }

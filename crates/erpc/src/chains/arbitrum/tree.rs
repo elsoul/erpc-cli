@@ -105,7 +105,7 @@ mod tests {
 
     #[test]
     fn explicit_activation_and_retention_arguments_are_role_scoped() {
-        let tree = crate::tree::command(Role::Validator, Chain::Arbitrum);
+        let tree = crate::node::tree::command(Role::Validator, Chain::Arbitrum);
         tree.clone().debug_assert();
         assert!(
             tree.clone()
@@ -129,7 +129,7 @@ mod tests {
                 .is_err()
         );
         assert!(
-            crate::tree::command(Role::Rpc, Chain::Arbitrum)
+            crate::node::tree::command(Role::Rpc, Chain::Arbitrum)
                 .try_get_matches_from(["rpc", "deploy", "--activate-signer"])
                 .is_err()
         );
@@ -160,7 +160,7 @@ mod tests {
             ]
             .map(String::from);
             assert!(matches!(
-                crate::tree::run(Role::Validator, &args, true).await,
+                crate::node::tree::run(Role::Validator, &args, true).await,
                 crate::account::commands::Outcome::Usage(_)
             ));
         }
