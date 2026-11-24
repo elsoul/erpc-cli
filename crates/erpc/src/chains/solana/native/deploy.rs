@@ -239,8 +239,7 @@ impl Driver for Remote<'_> {
         };
         let reference = erpc_secret::OpRef::parse(reference)
             .map_err(|_| "invalid native identity reference")?;
-        let secret =
-            crate::chains::rollup::credentials::read_concealed(&common::op_runner()?, &reference)?;
+        let secret = crate::node::credentials::read_concealed(&common::op_runner()?, &reference)?;
         let header = self
             .body(
                 "import-identity",

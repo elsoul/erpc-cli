@@ -265,8 +265,7 @@ fn import_validator(
         .ok_or("validator metadata is missing")?;
     let reference = erpc_secret::OpRef::parse(&validator.key_ref)
         .map_err(|_| "invalid consensus key reference")?;
-    let secret =
-        crate::chains::rollup::credentials::read_concealed(&common::op_runner()?, &reference)?;
+    let secret = crate::node::credentials::read_concealed(&common::op_runner()?, &reference)?;
     erpc_chain_near::validator::validate_key(
         &secret,
         &reservation.validator_account,

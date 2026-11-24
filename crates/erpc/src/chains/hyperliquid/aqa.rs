@@ -286,7 +286,7 @@ fn play(
 fn material(reference: &str) -> Result<AgentMaterial, String> {
     let reference = OpRef::parse(reference)
         .map_err(|_| "identifier-only concealed agent reference required")?;
-    AgentMaterial::parse(crate::chains::rollup::credentials::read_concealed(
+    AgentMaterial::parse(crate::node::credentials::read_concealed(
         &common::op_runner()?,
         &reference,
     )?)

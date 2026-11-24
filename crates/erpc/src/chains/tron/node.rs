@@ -308,7 +308,7 @@ fn credential(
 ) -> Result<SecretString, String> {
     let reference = erpc_secret::OpRef::parse(raw)
         .map_err(|_| "invalid identifier-only TRON credential reference")?;
-    let value = crate::chains::rollup::credentials::read_concealed(runner, &reference)?;
+    let value = crate::node::credentials::read_concealed(runner, &reference)?;
     if value.expose_secret().len() > maximum {
         return Err("TRON concealed credential exceeds its size limit".into());
     }

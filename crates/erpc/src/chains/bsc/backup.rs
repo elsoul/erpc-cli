@@ -112,7 +112,7 @@ pub(crate) fn ensure(
             .map_err(|_| "cannot establish created backup identity; retry the same owner")?
     };
     let reference = reference(&vault.id, &item.id)?;
-    let back = crate::chains::rollup::credentials::read_concealed(op, &reference)?;
+    let back = crate::node::credentials::read_concealed(op, &reference)?;
     if back.expose_secret() != backup.expose_secret() {
         return Err("stored custody backup differs from this owner; nothing overwritten".into());
     }

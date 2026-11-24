@@ -218,8 +218,7 @@ struct NativeBundle {
 fn material(node: &MonadNode) -> Result<SecretString, String> {
     let reference =
         OpRef::parse(&node.keys_ref).map_err(|_| "invalid original native key reference")?;
-    let secret =
-        crate::chains::rollup::credentials::read_concealed(&common::op_runner()?, &reference)?;
+    let secret = crate::node::credentials::read_concealed(&common::op_runner()?, &reference)?;
     if secret.expose_secret().len() > 32768 {
         return Err("native identity bundle exceeds 32 KiB".into());
     }

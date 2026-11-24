@@ -308,7 +308,7 @@ fn stage_upstreams(
         return Err("original parent recovery authorization differs".into());
     }
     // Read provider material only after the original host has durably stopped.
-    let upstream = crate::chains::rollup::credentials::read(
+    let upstream = crate::node::credentials::read_l1_upstream(
         &common::op_runner()?,
         &OpRef::parse(&node.upstreams_ref).map_err(|_| "invalid original parent reference")?,
     )?;

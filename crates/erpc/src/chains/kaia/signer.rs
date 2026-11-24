@@ -216,8 +216,7 @@ pub(crate) fn restore(session: &Session, node: &Node, network: Network) -> Resul
     };
     let reference =
         OpRef::parse(&cell.backup_ref).map_err(|_| "original concealed backup is unavailable")?;
-    let raw =
-        crate::chains::rollup::credentials::read_concealed(&common::op_runner()?, &reference)?;
+    let raw = crate::node::credentials::read_concealed(&common::op_runner()?, &reference)?;
     let capsule = Capsule::parse(raw, rpc::owner(node)?, network.name(), &cell.node_kind)?;
     let mut checked = node.clone();
     bind(&mut checked, &capsule)?;

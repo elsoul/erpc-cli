@@ -146,8 +146,7 @@ pub(crate) fn restore(session: &Session, node: &Node, network: Network) -> Resul
     };
     let reference = OpRef::parse(&signer.backup_ref)
         .map_err(|_| "this owner has no valid concealed backup reference")?;
-    let backup =
-        crate::chains::rollup::credentials::read_concealed(&common::op_runner()?, &reference)?;
+    let backup = crate::node::credentials::read_concealed(&common::op_runner()?, &reference)?;
     let input = SecretString::from(
         serde_json::to_string(&Recovery {
             public: rpc::request(node, network, "restore-custody")?,

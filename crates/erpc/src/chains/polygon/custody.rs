@@ -175,7 +175,7 @@ fn read(op: &impl OpRunner, binding: &Binding<'_>, item: &Listed) -> Result<Orig
     let reference = format!("op://{}/{}/signer_secret", item.vault.id, item.id);
     let parsed =
         OpRef::parse(&reference).map_err(|_| "invalid original Polygon signer reference")?;
-    let secret = crate::chains::rollup::credentials::read_concealed(op, &parsed)?;
+    let secret = crate::node::credentials::read_concealed(op, &parsed)?;
     let key = EvmKey::from_hex(secret.expose_secret())
         .map_err(|_| "original Polygon signer material is invalid")?;
     if key.address().to_string().to_lowercase() != binding.address.to_lowercase() {
