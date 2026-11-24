@@ -1,7 +1,9 @@
 # SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
 # SPDX-License-Identifier: Apache-2.0
 #
-# Commits that only move or rename code, for `git blame` to look through.
+# Commits that move or rename code, and change only the paths that follow
+# from it (imports, #[path], include_str!, tests that name files), for
+# `git blame` to look through.
 # GitHub's blame view reads this file by itself; locally, run once:
 #
 #   git config blame.ignoreRevsFile .git-blame-ignore-revs
@@ -22,3 +24,7 @@ da52886138fee69c70d07aee8e20fc7bc03258d4
 e68ec066718ef40680bd06f084a298a5d2aae712
 # refactor(erpc): import the moved modules by their new paths (#77)
 84ac0dfd2bf8f2672ddab5bb6fdaa82eaf904a7a
+# refactor(erpc): move the chain modules into chains/ and the node tree into node/ (#79)
+9169317ab72ae1ecedbc911add77308f84f131d6
+# refactor(erpc): import the chain and node modules by their new paths (#80)
+cfbd3323c4259ca9853b273b4bcbebfcbd3f8f35
