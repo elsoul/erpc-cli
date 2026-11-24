@@ -24,9 +24,9 @@ use erpc_chain_eth::releases::{self, Client};
 use erpc_ssh::{Identity, Session, Target};
 use serde_json::json;
 
+use crate::account::commands::Outcome;
 use crate::arc_rpc::{allow_list, gb};
-use crate::commands::Outcome;
-use crate::error::CliError;
+use crate::cli::error::CliError;
 use crate::eth_rpc::{Facts, Login, RunVars, facts, open, rpc_type, run_play};
 use crate::node_common::{
     FreeDisk, Say, agent_socket, check_ubuntu, free_disks, go_ahead, host_key, save_vault,

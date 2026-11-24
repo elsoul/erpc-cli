@@ -13,9 +13,9 @@ use serde_json::{Value, json};
 use tokio::time::{interval, timeout};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
 
-use crate::commands::Outcome;
-use crate::rpc_call::{Network, client, network_error, operator_url};
-use crate::webhook::{Hook, Registry};
+use crate::account::commands::Outcome;
+use crate::rpc::call::{Network, client, network_error, operator_url};
+use crate::rpc::webhook::{Hook, Registry};
 
 type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 

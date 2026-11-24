@@ -330,7 +330,7 @@ mod tests {
     use erpc_core::i18n::Lang;
 
     use super::{Decided, Picker};
-    use crate::i18n::speaking;
+    use crate::cli::i18n::speaking;
 
     fn question(multiple: bool) -> Question {
         Question {

@@ -24,9 +24,9 @@ use erpc_chain_solana::rpc::{self, Client, RpcType};
 use erpc_ssh::{Session, Target};
 use serde_json::{Map, Value, json};
 
+use crate::account::commands::Outcome;
 use crate::arc_rpc::{Facts, Login, allow_list, facts};
-use crate::commands::Outcome;
-use crate::error::CliError;
+use crate::cli::error::CliError;
 use crate::node_common::{Say, check_ubuntu, free_disks, go_ahead, public_key_line};
 use crate::solana_rpc::{
     Opened, RunVars, Status, find_ready, list_or_nobody, lockout_warning, memory_warning, open,

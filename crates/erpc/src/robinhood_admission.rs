@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Public admission preparation on an existing owned Robinhood RPC host.
-use crate::{commands::Outcome, node_common, robinhood_admission_input as input};
+use crate::{account::commands::Outcome, node_common, robinhood_admission_input as input};
 use clap::{Arg, ArgMatches, Command, value_parser};
 use erpc_core::chain::Verb;
 use serde::Deserialize;

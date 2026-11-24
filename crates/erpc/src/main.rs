@@ -120,48 +120,7 @@ mod validator_keys;
 mod validator_vote;
 mod worker;
 
-// Temporary: the old paths of the modules that moved into `cli/`, so the
-// move changes no imports. Each goes when its users import from `cli::`.
-pub(crate) use cli::{browser, echo, error, i18n, interrupt, long_commands, prompt, tui, ui};
-
-// Temporary, as above, for the modules that moved into `account/`.
-pub(crate) use account::{
-    account_secret, commands, config, credit_wallet, doctor, keyless, session,
-};
-
-// Temporary, as above, for the modules that moved into `rpc/`.
-pub(crate) use rpc::call as rpc_call;
-pub(crate) use rpc::{webhook, webhook_delivery};
-
-// Temporary, as above, for the modules that moved into `ai/`.
-#[cfg(test)]
-pub(crate) use ai::skill_check;
-pub(crate) use ai::{conversations, memory, skills, vps_access};
-
-// Temporary, as above, for the modules that moved into `storage/`.
-pub(crate) use storage::crypt as storage_crypt;
-pub(crate) use storage::key as storage_key;
-pub(crate) use storage::{backup, backup_schedule, restic};
-
-// Temporary, as above, for the modules that moved into `worker/`.
-pub(crate) use worker::backup as worker_backup;
-pub(crate) use worker::bench as worker_bench;
-pub(crate) use worker::build as worker_build;
-pub(crate) use worker::charges as worker_charges;
-pub(crate) use worker::deploy as worker_deploy;
-pub(crate) use worker::elf;
-pub(crate) use worker::firewall as worker_firewall;
-pub(crate) use worker::import as worker_import;
-pub(crate) use worker::inventory as worker_inventory;
-pub(crate) use worker::keys as worker_keys;
-pub(crate) use worker::keystore as worker_keystore;
-pub(crate) use worker::remote as worker_remote;
-pub(crate) use worker::run as worker_run;
-pub(crate) use worker::secrets as worker_secrets;
-pub(crate) use worker::vps as worker_vps;
-pub(crate) use worker::waf as worker_waf;
-
-/// Exit statuses outside a failure's own ([`error::Code::exit`]).
+/// Exit statuses outside a failure's own ([`cli::error::Code::exit`]).
 mod exit {
     /// The command did what was asked.
     pub const OK: u8 = 0;
@@ -207,7 +166,7 @@ enum StoreChoice {
     File,
 }
 
-impl From<ConfigAction> for commands::ConfigRequest {
+impl From<ConfigAction> for account::commands::ConfigRequest {
     fn from(action: ConfigAction) -> Self {
         match action {
             ConfigAction::Get { key } => Self::Get(key),
@@ -280,7 +239,7 @@ enum Command {
     /// Manage local RPC subscriptions and deliver events to an HTTP callback.
     Webhook {
         #[command(subcommand)]
-        action: webhook::Action,
+        action: rpc::webhook::Action,
     },
     /// Generate a shell completion script on stdout.
     Completions {
@@ -354,7 +313,7 @@ enum Command {
     /// Back this machine up to ERPC Global Storage with restic, encrypted.
     Backup {
         #[command(subcommand)]
-        action: backup::Action,
+        action: storage::backup::Action,
     },
     /// Read and write ~/.erpc/config.toml (public settings only).
     Config {
@@ -373,7 +332,7 @@ enum Command {
 enum RpcAction {
     /// Send one JSON-RPC request to a shared, custom or x402 endpoint.
     #[command(arg(rpc_help_arg()))]
-    Call(rpc_call::Call),
+    Call(rpc::call::Call),
     /// List the networks with ERPC shared and x402 RPC.
     #[command(arg(rpc_help_arg()))]
     ListNetworks,
@@ -475,7 +434,7 @@ enum SkillsAction {
     Install {
         /// Also write them where this agent reads skills. Repeat for more.
         #[arg(long, value_enum)]
-        agent: Vec<skills::Agent>,
+        agent: Vec<ai::skills::Agent>,
     },
 }
 
@@ -518,7 +477,7 @@ pub fn store_for(
     use erpc_auth::store::one_password::{Mode, OnePassword, OpCli};
     match kind {
         StoreKind::File => {
-            let dir = session::state_dir().map_err(|reason| StoreError::Unavailable {
+            let dir = account::session::state_dir().map_err(|reason| StoreError::Unavailable {
                 kind: StoreKind::File,
                 reason,
             })?;
@@ -550,7 +509,7 @@ pub fn store_for(
                 runner,
                 mode,
                 vault,
-                session::host_label(),
+                account::session::host_label(),
             )))
         }
     }
@@ -559,11 +518,11 @@ pub fn store_for(
 /// Wipes Solana signer files an erpc stopped part way left behind (one
 /// killed with SIGKILL, or by a power cut), and says so.
 fn sweep_signers() {
-    let Ok(state) = session::state_dir() else {
+    let Ok(state) = account::session::state_dir() else {
         return;
     };
     for dir in erpc_chain_solana::cli::sweep(&state) {
-        interrupt::say(&format!(
+        cli::interrupt::say(&format!(
             "erpc: wiped signer key files an earlier erpc left behind ({})",
             dir.display()
         ));
@@ -577,7 +536,7 @@ fn sweep_signers() {
 const STACK: usize = 8 * 1024 * 1024;
 
 fn main() -> ExitCode {
-    interrupt::install();
+    cli::interrupt::install();
     sweep_signers();
     let worker = std::thread::Builder::new()
         .name("erpc".to_owned())
@@ -588,14 +547,14 @@ fn main() -> ExitCode {
         // A panic has printed itself already.
         Ok(Err(_)) => ExitCode::from(exit::FAILURE),
         Ok(Ok(Err(e))) | Err(e) => {
-            interrupt::say(&format!("error: could not start: {e}"));
+            cli::interrupt::say(&format!("error: could not start: {e}"));
             ExitCode::from(exit::FAILURE)
         }
     };
     // Output that did not arrive is a command that did not do what it was
     // asked, whatever it returned.
     if let Some(e) = LOST_OUTPUT.get() {
-        interrupt::say(&format!("error: could not write the output: {e}"));
+        cli::interrupt::say(&format!("error: could not write the output: {e}"));
         return ExitCode::from(exit::FAILURE);
     }
     code
@@ -611,8 +570,8 @@ fn main() -> ExitCode {
 /// The one thing waited for is a session rotation under way: its old
 /// refresh token is already spent, so leaving before the new one is saved
 /// or parked would sign the account out. From then on no rotation starts.
-/// Ctrl-C during that wait goes to [`interrupt`], which parks the session
-/// rather than wait for a store that does not answer.
+/// Ctrl-C during that wait goes to [`cli::interrupt`], which parks the
+/// session rather than wait for a store that does not answer.
 fn run_to_end<F: std::future::Future>(work: F) -> std::io::Result<F::Output> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -620,7 +579,7 @@ fn run_to_end<F: std::future::Future>(work: F) -> std::io::Result<F::Output> {
     let output = runtime.block_on(work);
     let leaving = erpc_auth::session::Leaving::start();
     if leaving.rotating() {
-        interrupt::say("erpc: saving the refreshed session before leaving");
+        cli::interrupt::say("erpc: saving the refreshed session before leaving");
         runtime.block_on(leaving.settled());
     }
     runtime.shutdown_background();
@@ -628,9 +587,9 @@ fn run_to_end<F: std::future::Future>(work: F) -> std::io::Result<F::Output> {
 }
 
 async fn run() -> ExitCode {
-    let lang = i18n::choose();
+    let lang = cli::i18n::choose();
     let command = <Cli as clap::CommandFactory>::command().styles(cli::ui::help_styles());
-    let parsed = i18n::localized(command, lang)
+    let parsed = cli::i18n::localized(command, lang)
         .try_get_matches()
         .and_then(|mut m| <Cli as clap::FromArgMatches>::from_arg_matches_mut(&mut m));
     let cli = match parsed {
@@ -646,17 +605,17 @@ async fn run() -> ExitCode {
                 .unwrap_or_default()
                 .trim_start_matches("error: ")
                 .to_owned();
-            return finish(commands::Outcome::Usage(message));
+            return finish(account::commands::Outcome::Usage(message));
         }
         Err(e)
-            if i18n::wraps_itself(lang)
+            if cli::i18n::wraps_itself(lang)
                 && matches!(
                     e.kind(),
                     clap::error::ErrorKind::DisplayHelp
                         | clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
                 ) =>
         {
-            i18n::print_help(&e)
+            cli::i18n::print_help(&e)
         }
         Err(e) => e.exit(),
     };
@@ -675,11 +634,15 @@ async fn dispatch(cli: Cli) -> ExitCode {
             store,
             vault,
             no_browser,
-        } => commands::login(cli.json, store.map(Into::into), vault, no_browser).await,
-        Command::Logout { store } => commands::logout(cli.json, store.map(Into::into)).await,
-        Command::Whoami { store } => commands::whoami(cli.json, store.map(Into::into)).await,
-        Command::Doctor { store } => commands::doctor(cli.json, store.map(Into::into)),
-        Command::Signup { no_browser } => commands::signup(cli.json, no_browser),
+        } => account::commands::login(cli.json, store.map(Into::into), vault, no_browser).await,
+        Command::Logout { store } => {
+            account::commands::logout(cli.json, store.map(Into::into)).await
+        }
+        Command::Whoami { store } => {
+            account::commands::whoami(cli.json, store.map(Into::into)).await
+        }
+        Command::Doctor { store } => account::commands::doctor(cli.json, store.map(Into::into)),
+        Command::Signup { no_browser } => account::commands::signup(cli.json, no_browser),
         Command::Ai {
             message,
             continue_last,
@@ -705,18 +668,18 @@ async fn dispatch(cli: Cli) -> ExitCode {
         Command::Rpc {
             action: Some(RpcAction::Call(call)),
             ..
-        } => rpc_call::run(&call, cli.json).await,
+        } => rpc::call::run(&call, cli.json).await,
         Command::Rpc {
             action: Some(RpcAction::ListNetworks),
             ..
-        } => rpc_call::output(
+        } => rpc::call::output(
             &serde_json::json!(["solana-mainnet", "ethereum-mainnet"]),
             cli.json,
         ),
         Command::Rpc { action: None, args } => {
             tree::run(erpc_core::chain::Role::Rpc, &args, cli.json).await
         }
-        Command::Webhook { action } => webhook::run(action, cli.json).await,
+        Command::Webhook { action } => rpc::webhook::run(action, cli.json).await,
         Command::Completions { shell } => {
             let mut buffer = Vec::new();
             clap_complete::generate(
@@ -725,27 +688,27 @@ async fn dispatch(cli: Cli) -> ExitCode {
                 "erpc",
                 &mut buffer,
             );
-            commands::Outcome::Done(String::from_utf8_lossy(&buffer).into_owned())
+            account::commands::Outcome::Done(String::from_utf8_lossy(&buffer).into_owned())
         }
         Command::Node { args } => tree::run(erpc_core::chain::Role::Node, &args, cli.json).await,
         Command::Worker { action } => worker::run(cli.json, *action).await,
-        Command::Config { action } => commands::config(cli.json, action.into()),
+        Command::Config { action } => account::commands::config(cli.json, action.into()),
         Command::Storage { action } => storage::run(cli.json, action).await,
-        Command::Backup { action } => backup::run(cli.json, action).await,
+        Command::Backup { action } => storage::backup::run(cli.json, action).await,
         Command::Memory { action } => match action {
-            MemoryAction::List => memory::list(cli.json),
-            MemoryAction::Forget { id } => memory::forget(cli.json, id),
-            MemoryAction::Clear => memory::clear(cli.json),
+            MemoryAction::List => ai::memory::list(cli.json),
+            MemoryAction::Forget { id } => ai::memory::forget(cli.json, id),
+            MemoryAction::Clear => ai::memory::clear(cli.json),
         },
         Command::Wallet { action } => match action {
             WalletAction::Create { vault, no_ai } => {
-                credit_wallet::create_command(cli.json, vault.as_deref(), !no_ai)
+                account::credit_wallet::create_command(cli.json, vault.as_deref(), !no_ai)
             }
-            WalletAction::Show => credit_wallet::show_command(cli.json),
+            WalletAction::Show => account::credit_wallet::show_command(cli.json),
         },
         Command::Skills { action } => match action {
-            SkillsAction::List => skills::list(cli.json),
-            SkillsAction::Install { agent } => skills::install(cli.json, &agent),
+            SkillsAction::List => ai::skills::list(cli.json),
+            SkillsAction::Install { agent } => ai::skills::install(cli.json, &agent),
         },
         Command::Version => {
             version(cli.json);
@@ -756,7 +719,7 @@ async fn dispatch(cli: Cli) -> ExitCode {
     let code = finish(outcome);
     // After the command's own output, so it does not read as part of it.
     if !cli.json && !skills_command {
-        skills::notice_once();
+        ai::skills::notice_once();
     }
     code
 }
@@ -770,7 +733,7 @@ fn version(json: bool) {
     let agents: Vec<(&str, String)> = ["x86_64", "aarch64"]
         .into_iter()
         .filter_map(|m| {
-            let bytes = worker_deploy::embedded_agent(m)?;
+            let bytes = worker::deploy::embedded_agent(m)?;
             let hex =
                 sha2::Sha256::digest(bytes)
                     .iter()
@@ -803,7 +766,7 @@ fn version(json: bool) {
 /// can be consumed one stdout line at a time.
 pub fn print_json(body: &serde_json::Value) {
     if let Err(e) = emit_json_record(body, print_line) {
-        interrupt::say(&format!("could not render JSON: {e}"));
+        cli::interrupt::say(&format!("could not render JSON: {e}"));
     }
 }
 
@@ -822,7 +785,7 @@ static LOST_OUTPUT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 ///
 /// `println!` panics when it cannot write -- a full disk, a closed pipe, a
 /// closed terminal -- and a release build aborts on a panic. A session
-/// rotation still waiting for the issuer would go with it. [`interrupt::say`]
+/// rotation still waiting for the issuer would go with it. [`cli::interrupt::say`]
 /// is the same for stderr, where nothing is noted: there is nowhere left to
 /// report it.
 pub fn print_line(line: &str) {
@@ -834,22 +797,22 @@ pub fn print_line(line: &str) {
 
 /// Prints an outcome and turns it into an exit status: the one place a
 /// failure is shown, so every command shows it the same way
-/// ([`error::CliError`]). With `--json` a failure is a JSON object on
+/// ([`cli::error::CliError`]). With `--json` a failure is a JSON object on
 /// standard output; otherwise it is `error:` and `hint:` lines on standard
 /// error. An empty message means the command printed its own report.
-fn finish(outcome: commands::Outcome) -> ExitCode {
+fn finish(outcome: account::commands::Outcome) -> ExitCode {
     match outcome {
-        commands::Outcome::Done(message) => {
+        account::commands::Outcome::Done(message) => {
             if !message.is_empty() {
                 print_line(&message);
             }
             ExitCode::from(exit::OK)
         }
-        commands::Outcome::Problems(report) => {
+        account::commands::Outcome::Problems(report) => {
             if !report.is_empty() {
                 print_line(&report);
             }
-            ExitCode::from(error::Code::ProblemsFound.exit())
+            ExitCode::from(cli::error::Code::ProblemsFound.exit())
         }
         failure => {
             let Some(failure) = failure.error() else {
@@ -858,10 +821,10 @@ fn finish(outcome: commands::Outcome) -> ExitCode {
             if !failure.message.is_empty() {
                 if json_mode() {
                     print_json(&failure.json());
-                } else if ui::stderr_drawn() {
-                    interrupt::say(&failure.drawn());
+                } else if cli::ui::stderr_drawn() {
+                    cli::interrupt::say(&failure.drawn());
                 } else {
-                    interrupt::say(&failure.text());
+                    cli::interrupt::say(&failure.text());
                 }
             }
             ExitCode::from(failure.code.exit())
@@ -913,8 +876,8 @@ mod tests {
             serde_json::json!({"log": {"message": "line one\nline two\r\n\t\"quoted\"\\path", "nested": [1, {"ok": true}]}}),
             serde_json::json!({"ok": true, "action": "logs", "result": {"lines": 1}}),
         ];
-        records.extend(super::error::Code::ALL.into_iter().map(|code| {
-            super::error::CliError::new(code, "operation failed\nwith details")
+        records.extend(super::cli::error::Code::ALL.into_iter().map(|code| {
+            super::cli::error::CliError::new(code, "operation failed\nwith details")
                 .hint("retry\nafter inspection")
                 .json()
         }));
@@ -1027,7 +990,7 @@ mod tests {
             held: Mutex::new(session("OLD")),
         });
         let issuer = SlowIssuer::default();
-        let key = CredKey::new(crate::session::LOGIN_AUDIENCE, "alice");
+        let key = CredKey::new(crate::account::session::LOGIN_AUDIENCE, "alice");
         run_to_end(async {
             let mut asking =
                 std::pin::pin!(current_session(&issuer, &store, &key, dir.path(), 2_000));

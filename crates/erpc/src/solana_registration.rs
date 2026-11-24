@@ -4,7 +4,7 @@
 //! Public Solana registration observations and external-signing intent.
 //! Reads public inventory fields only; never reads signer references or submits.
 
-use crate::commands::Outcome;
+use crate::account::commands::Outcome;
 use clap::{Arg, ArgMatches, Command, value_parser};
 use erpc_chain_solana::validator_observer::{self, Observation};
 use erpc_chain_solana::validator_profile::Registration;

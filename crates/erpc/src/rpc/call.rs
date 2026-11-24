@@ -14,7 +14,7 @@ use reqwest::{Client, Response, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::commands::Outcome;
+use crate::account::commands::Outcome;
 
 #[derive(Clone, Copy, Serialize, Deserialize, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
@@ -47,10 +47,10 @@ impl Network {
     }
 
     pub(crate) async fn account_url(self, websocket: bool) -> Result<Url, Outcome> {
-        let api = crate::worker_vps::Api::open()
+        let api = crate::worker::vps::Api::open()
             .await
             .map_err(Outcome::from)?;
-        let key = crate::worker_vps::shared_api_key(&api)
+        let key = crate::worker::vps::shared_api_key(&api)
             .await
             .map_err(Outcome::from)?;
         self.shared_url(&key, websocket)
@@ -137,7 +137,11 @@ pub(crate) fn client() -> Result<Client, Outcome> {
 }
 
 pub(crate) fn network_error(e: reqwest::Error) -> Outcome {
-    crate::error::CliError::new(crate::error::Code::Network, e.without_url().to_string()).into()
+    crate::cli::error::CliError::new(
+        crate::cli::error::Code::Network,
+        e.without_url().to_string(),
+    )
+    .into()
 }
 
 pub(crate) fn output(value: &Value, json: bool) -> Outcome {
@@ -183,10 +187,10 @@ async fn execute(call: &Call, json: bool) -> Result<Value, Outcome> {
         call,
         &url,
         &body,
-        crate::session::has_terminal(),
+        crate::account::session::has_terminal(),
         json,
         confirm_payment,
-        || crate::credit_wallet::read_wallet_key(false),
+        || crate::account::credit_wallet::read_wallet_key(false),
     )
     .await
 }
@@ -261,7 +265,7 @@ async fn send_request(
             .header("Payment-Signature", proof)
             .send()
             .await
-            .map_err(|e| crate::error::CliError::new(crate::error::Code::Network, format!(
+            .map_err(|e| crate::cli::error::CliError::new(crate::cli::error::Code::Network, format!(
                 "Payment was submitted but the RPC response was lost ({}). Check the wallet before paying again.",
                 e.without_url()
             )))?;
@@ -291,8 +295,8 @@ async fn rpc_response(response: Response) -> Result<Value, Outcome> {
         ));
     }
     if let Some(error) = reply.get("error") {
-        return Err(crate::error::CliError::new(
-            crate::error::Code::Failed,
+        return Err(crate::cli::error::CliError::new(
+            crate::cli::error::Code::Failed,
             format!(
                 "RPC error {}: {}",
                 error["code"],

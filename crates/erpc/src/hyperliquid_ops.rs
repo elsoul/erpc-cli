@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! RPC ownership and shared public supervisor orchestration.
 use crate::{
-    commands::Outcome,
+    account::commands::Outcome,
     node_common::{self, Say},
 };
 use clap::ArgMatches;

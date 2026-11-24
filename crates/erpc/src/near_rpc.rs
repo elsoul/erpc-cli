@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Dedicated NEAR follower lifecycle with persistent original identity.
 use crate::{
-    commands::Outcome,
+    account::commands::Outcome,
     eth_rpc::Facts,
     node_common::{self, Say},
 };

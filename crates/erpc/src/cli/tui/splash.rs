@@ -1008,7 +1008,7 @@ mod tests {
     use ratatui::backend::TestBackend;
 
     use super::{END, LOGO, Sky, Status, Words, draw};
-    use crate::tui::Look;
+    use crate::cli::tui::Look;
 
     const WORDS: Words<'static> = Words {
         tagline: "Building the Financial Internet for the Agentic Era.",
@@ -1081,7 +1081,7 @@ mod tests {
 
     #[test]
     fn the_splash_draws_in_chinese_and_russian() {
-        use crate::i18n::speaking;
+        use crate::cli::i18n::speaking;
         use erpc_core::i18n::Lang;
         for lang in [Lang::Zh, Lang::Ru] {
             let (tagline, connecting, signed_in) = speaking(lang, || {

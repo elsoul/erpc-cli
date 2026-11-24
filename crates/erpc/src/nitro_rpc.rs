@@ -4,7 +4,7 @@
 //! Dedicated Arbitrum/Robinhood followers, with concealed parent-chain transport.
 
 use crate::{
-    commands::Outcome,
+    account::commands::Outcome,
     eth_rpc::Facts,
     node_common::{self, Say},
 };

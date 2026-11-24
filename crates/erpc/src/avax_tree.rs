@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Avalanche command surface: node/rpc aliases and explicit validator intent.
-use crate::commands::Outcome;
+use crate::account::commands::Outcome;
 use clap::{Arg, ArgAction, ArgMatches, Command, value_parser};
 use erpc_core::chain::{Role, Verb};
 

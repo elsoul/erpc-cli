@@ -444,7 +444,7 @@ mod tests {
     /// block; a fenced line that ends in a backslash goes on in the next.
     fn lines_of(text: &str) -> Vec<Vec<String>> {
         let joined = text.replace("\r\n", "\n").replace("\\\n", " ");
-        crate::skill_check::spans(&joined)
+        crate::ai::skill_check::spans(&joined)
             .iter()
             .filter_map(|span| argv_of(span))
             .collect()

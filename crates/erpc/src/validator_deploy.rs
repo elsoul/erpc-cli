@@ -18,7 +18,7 @@ use erpc_chain_solana::{plays, regions, versions};
 use erpc_ssh::{HostKey, Identity, RemoteCommand, Session, Target};
 use serde_json::json;
 
-use crate::commands::Outcome;
+use crate::account::commands::Outcome;
 use crate::node_common::{
     FreeDisk, Say, agent_socket, check_ubuntu, confirm, free_disks, public_key_line,
 };
@@ -350,7 +350,8 @@ fn refresh_jito(
         &host.jito.measured_at,
     )
     .ok_or("the host's region is no longer in the table; run `erpc v init` for a new host")?;
-    let agreed = yes || (crate::session::has_terminal() && confirm("Use the table's endpoints?")?);
+    let agreed =
+        yes || (crate::account::session::has_terminal() && confirm("Use the table's endpoints?")?);
     if !agreed {
         return Err("nothing was run: the host's Jito endpoints are out of date".to_owned());
     }
@@ -413,7 +414,7 @@ fn voting_ready(network: &str, validator: &Validator, say: &Say) -> Result<bool,
         return Ok(false);
     };
     let cli = erpc_chain_solana::cli::SolanaCli::find().map_err(|e| e.to_string())?;
-    let dir = crate::session::state_dir()?;
+    let dir = crate::account::session::state_dir()?;
     let account = erpc_chain_solana::vote::read(&cli, url, &validator.vote_account, &dir)
         .map_err(|e| e.to_string())?;
     let decision = voting_decision(account.as_ref(), validator)?;
@@ -569,7 +570,7 @@ fn run(args: &Args, say: &Say) -> Result<(Host, String, Status), String> {
         say.line(&format!("disks      {line}"));
     }
     if !args.yes {
-        if !crate::session::has_terminal() {
+        if !crate::account::session::has_terminal() {
             return Err("nothing was run: pass --yes to go ahead without a terminal".to_owned());
         }
         if !confirm("Deploy?")? {

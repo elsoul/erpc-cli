@@ -21,11 +21,11 @@ use erpc_chain_arc::{key, plays, releases};
 use erpc_ssh::{Identity, Session, Target};
 use serde_json::json;
 
+use crate::account::commands::Outcome;
 use crate::arc_rpc::{
     Facts, KindFlags, Login, RunVars, allow_list, facts, gb, open, run_play, with_kind,
 };
-use crate::commands::Outcome;
-use crate::error::CliError;
+use crate::cli::error::CliError;
 use crate::node_common::{Say, agent_socket, check_ubuntu, go_ahead, host_key, save_vault};
 
 /// What `erpc r --chain arc init` was asked to do.

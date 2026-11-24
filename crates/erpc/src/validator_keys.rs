@@ -27,7 +27,7 @@ use erpc_ssh::{HostKey, Identity, KeyFilePath, RemoteCommand, Session, Target};
 use serde_json::json;
 use zeroize::Zeroizing;
 
-use crate::commands::Outcome;
+use crate::account::commands::Outcome;
 use crate::node_common::{Say, agent_socket, confirm};
 use crate::validator_init::open_vault;
 
@@ -496,7 +496,7 @@ fn keys(args: &Args, say: &Say) -> Result<Validator, String> {
         describe(authority.as_ref(), &validator.authority_account)
     ));
     if !args.yes {
-        if !crate::session::has_terminal() {
+        if !crate::account::session::has_terminal() {
             return Err(
                 "nothing was written: pass --yes to go ahead without a terminal".to_owned(),
             );

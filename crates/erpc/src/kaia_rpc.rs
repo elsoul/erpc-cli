@@ -4,7 +4,7 @@
 //! Dedicated Kaia RPC nodes with fixed network/retention and official snapshot bootstrap.
 
 use crate::{
-    commands::Outcome,
+    account::commands::Outcome,
     eth_rpc::Facts,
     kaia_owned::{self, Node},
     node_common::{self, Say},

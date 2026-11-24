@@ -21,8 +21,8 @@ use erpc_auth::credential::CredKey;
 use erpc_auth::{AuthClient, session as auth_session};
 use secrecy::SecretString;
 
-use crate::commands::Outcome;
-use crate::session;
+use crate::account::commands::Outcome;
+use crate::account::session;
 
 /// A current access token from the store `erpc login` chose.
 ///
@@ -40,10 +40,10 @@ pub(crate) struct StoreAccess {
 impl StoreAccess {
     pub(crate) fn open(client: AuthClient) -> Result<Self, Outcome> {
         let path = session::config_path().map_err(Outcome::Failed)?;
-        let config = crate::config::load(&path).map_err(Outcome::Failed)?;
+        let config = crate::account::config::load(&path).map_err(Outcome::Failed)?;
         let selection = session::plan_store(None, config.credential_store);
         let store = crate::store_for(selection.kind, config.credential_vault.as_deref())
-            .map_err(|e| Outcome::from(crate::error::classify(&e)))?;
+            .map_err(|e| Outcome::from(crate::cli::error::classify(&e)))?;
         Ok(Self {
             client,
             store,
@@ -56,7 +56,7 @@ impl StoreAccess {
 
 impl Access for StoreAccess {
     async fn access_token(&self) -> Result<SecretString, String> {
-        let now = crate::commands::now();
+        let now = crate::account::commands::now();
         if let Ok(cached) = self.cached.lock()
             && let Some(credential) = cached.as_ref()
             && !credential.needs_refresh(now)
@@ -107,7 +107,7 @@ pub async fn run(
 ) -> Outcome {
     let client = match AuthClient::new() {
         Ok(client) => client,
-        Err(e) => return crate::error::classify(&e).into(),
+        Err(e) => return crate::cli::error::classify(&e).into(),
     };
     let access = match StoreAccess::open(client.clone()) {
         Ok(access) => access,
@@ -116,7 +116,7 @@ pub async fn run(
     let mut system = erpc_ai::prompt::system(&crate::command_reference());
     // What is remembered goes last, so the blocks before it stay cached
     // when it changes.
-    if let Some(remembered) = crate::memory::store().ok().and_then(|m| m.prompt()) {
+    if let Some(remembered) = crate::ai::memory::store().ok().and_then(|m| m.prompt()) {
         system.push(remembered);
     }
 
@@ -162,7 +162,7 @@ pub async fn run(
         // `-c` continues.
         let continuing = matches!(start, Start::Latest);
         let mut record = match saved_conversation(start) {
-            Ok(None) if continuing => match crate::conversations::Record::new() {
+            Ok(None) if continuing => match crate::ai::conversations::Record::new() {
                 Ok(record) => Some(record),
                 Err(e) => return Outcome::Failed(e),
             },
@@ -172,7 +172,7 @@ pub async fn run(
                     return Outcome::Failed(t!("ai.conversation_broken", id = saved.id, error = e));
                 }
                 session.set_archived(saved.archived.clone());
-                match crate::conversations::Record::continuing(&saved) {
+                match crate::ai::conversations::Record::continuing(&saved) {
                     Ok(record) => Some(record),
                     Err(e) => return Outcome::Failed(e),
                 }
@@ -207,13 +207,13 @@ pub async fn run(
             Err(e) => return Outcome::Failed(e),
         },
     };
-    let look = crate::tui::Look::detect();
+    let look = crate::cli::tui::Look::detect();
     let mut terminal = ratatui::init();
     // ratatui's panic hook restores the terminal and reports a failure to do
     // so with `eprintln!`, which panics once the terminal is gone. A panic in a
     // panic hook aborts before the hooks behind it run, so the park goes in
     // front again.
-    crate::interrupt::park_first_on_panic();
+    crate::cli::interrupt::park_first_on_panic();
     let outcome = console(&mut terminal, look, access, client, system, saved, size).await;
     // Not `ratatui::restore`, which reports its own failure with
     // `eprintln!`. Once the terminal has closed that panics, a release build
@@ -224,13 +224,13 @@ pub async fn run(
 
 /// The saved conversation `start` names: none for a new one, or when
 /// there is no latest one yet. Not for picking one from a list.
-fn saved_conversation(start: Start) -> Result<Option<crate::conversations::Saved>, String> {
+fn saved_conversation(start: Start) -> Result<Option<crate::ai::conversations::Saved>, String> {
     match start {
         Start::Fresh | Start::Resume(None) => Ok(None),
-        Start::Resume(Some(id)) => crate::conversations::load(&id).map(Some),
-        Start::Latest => crate::conversations::list()?
+        Start::Resume(Some(id)) => crate::ai::conversations::load(&id).map(Some),
+        Start::Latest => crate::ai::conversations::list()?
             .first()
-            .map(|latest| crate::conversations::load(&latest.id))
+            .map(|latest| crate::ai::conversations::load(&latest.id))
             .transpose(),
     }
 }
@@ -239,10 +239,10 @@ fn saved_conversation(start: Start) -> Result<Option<crate::conversations::Saved
 /// there is one, and logging in to the user's VPSs with their key.
 fn equipped(session: Session<StoreAccess>) -> Session<StoreAccess> {
     let session = session
-        .with_wallet(Box::new(crate::credit_wallet::ConfigWallet))
-        .with_servers(Box::new(crate::vps_access::SshServers))
-        .with_shell(crate::long_commands::assistants_shell());
-    match crate::memory::store() {
+        .with_wallet(Box::new(crate::account::credit_wallet::ConfigWallet))
+        .with_servers(Box::new(crate::ai::vps_access::SshServers))
+        .with_shell(crate::cli::long_commands::assistants_shell());
+    match crate::ai::memory::store() {
         Ok(memory) => session.with_memory(memory),
         Err(_) => session,
     }
@@ -267,8 +267,8 @@ impl Default for LocalBrowser {
 
 impl erpc_ai::dashboard::Browser for LocalBrowser {
     fn open(&self, url: &str) -> Result<(), String> {
-        crate::browser::decide(false, self.var).map_err(|why| why.to_string())?;
-        crate::browser::open(url)
+        crate::cli::browser::decide(false, self.var).map_err(|why| why.to_string())?;
+        crate::cli::browser::open(url)
     }
 }
 
@@ -294,13 +294,13 @@ impl erpc_ai::confirm::Confirm for TerminalConfirm {
     ) -> core::pin::Pin<Box<dyn Future<Output = bool> + 'a>> {
         // At a terminal the answer is picked, the cursor on stop; typed
         // only where the answer comes on a pipe.
-        if crate::session::has_terminal() {
+        if crate::account::session::has_terminal() {
             let text = ask.text();
             let rows = [t!("tui.picker.yes"), t!("tui.picker.no")];
             return Box::pin(async move {
                 tokio::task::spawn_blocking(move || {
                     eprintln!();
-                    crate::prompt::pick(&text, &rows, Some(1)) == Ok(0)
+                    crate::cli::prompt::pick(&text, &rows, Some(1)) == Ok(0)
                 })
                 .await
                 .unwrap_or(false)
@@ -400,14 +400,14 @@ fn picked(line: &str, count: usize, multiple: bool) -> Option<erpc_ai::confirm::
 /// The splash while signing in, then the console, on one full screen.
 async fn console(
     terminal: &mut ratatui::DefaultTerminal,
-    look: crate::tui::Look,
+    look: crate::cli::tui::Look,
     access: StoreAccess,
     client: AuthClient,
     system: Vec<String>,
-    saved: Option<crate::conversations::Saved>,
+    saved: Option<crate::ai::conversations::Saved>,
     size: Option<erpc_api::ai::Size>,
 ) -> Outcome {
-    use crate::tui::splash::{self, Played, Words};
+    use crate::cli::tui::splash::{self, Played, Words};
 
     let (tagline, connecting, signed_in) = (
         t!("ai.splash.tagline"),
@@ -437,14 +437,16 @@ async fn console(
     let config_path = session::config_path().ok();
     let config = config_path
         .as_deref()
-        .and_then(|p| crate::config::load(p).ok())
+        .and_then(|p| crate::account::config::load(p).ok())
         .unwrap_or_default();
-    let intro = crate::tui::chat::Intro {
+    let intro = crate::cli::tui::chat::Intro {
         account,
         store: store_name(session::plan_store(None, config.credential_store).kind),
-        chain: config_path
-            .as_deref()
-            .and_then(|p| crate::config::get(p, "default_chain").ok().flatten()),
+        chain: config_path.as_deref().and_then(|p| {
+            crate::account::config::get(p, "default_chain")
+                .ok()
+                .flatten()
+        }),
         plan: usage.as_ref().map(plan_line),
     };
     // The console is at a terminal, with someone to see a browser open.
@@ -457,15 +459,15 @@ async fn console(
                 return Outcome::Failed(t!("ai.conversation_broken", id = saved.id, error = e));
             }
             session.set_archived(saved.archived.clone());
-            crate::conversations::Record::continuing(saved)
+            crate::ai::conversations::Record::continuing(saved)
         }
-        None => crate::conversations::Record::new(),
+        None => crate::ai::conversations::Record::new(),
     };
     let mut record = match record {
         Ok(record) => record,
         Err(e) => return Outcome::Failed(e),
     };
-    match crate::tui::chat::run(terminal, session, look, intro, &mut record).await {
+    match crate::cli::tui::chat::run(terminal, session, look, intro, &mut record).await {
         Ok(()) if record.saved() => Outcome::Done(t!("ai.to_continue", id = record.id())),
         Ok(()) => Outcome::Done(String::new()),
         Err(e) => Outcome::Failed(t!("ai.console_stopped", error = e)),
@@ -480,19 +482,19 @@ fn store_name(kind: erpc_auth::StoreKind) -> String {
         StoreKind::OnePasswordServiceAccount => t!("ai.store.service_account"),
         // erpc-auth names the keyring in English or Japanese.
         StoreKind::OsKeychain => {
-            erpc_auth::store::keychain::describe(crate::i18n::lang()).to_owned()
+            erpc_auth::store::keychain::describe(crate::cli::i18n::lang()).to_owned()
         }
         StoreKind::File => t!("ai.store.file"),
     }
 }
 
 /// Lists saved conversations and asks which to continue.
-fn pick_conversation() -> Result<crate::conversations::Saved, Outcome> {
-    let all = crate::conversations::list().map_err(Outcome::Failed)?;
+fn pick_conversation() -> Result<crate::ai::conversations::Saved, Outcome> {
+    let all = crate::ai::conversations::list().map_err(Outcome::Failed)?;
     if all.is_empty() {
         return Err(Outcome::Failed(t!("conversations.none_yet")));
     }
-    let now = crate::commands::now();
+    let now = crate::account::commands::now();
     let options: Vec<String> = all
         .iter()
         .take(30)
@@ -505,12 +507,12 @@ fn pick_conversation() -> Result<crate::conversations::Saved, Outcome> {
             )
         })
         .collect();
-    let chosen =
-        crate::prompt::pick(&t!("conversations.which"), &options, None).map_err(Outcome::Failed)?;
+    let chosen = crate::cli::prompt::pick(&t!("conversations.which"), &options, None)
+        .map_err(Outcome::Failed)?;
     let summary = all
         .get(chosen)
         .ok_or_else(|| Outcome::Failed(t!("conversations.nothing_chosen")))?;
-    crate::conversations::load(&summary.id).map_err(Outcome::Failed)
+    crate::ai::conversations::load(&summary.id).map_err(Outcome::Failed)
 }
 
 /// `text` padded with spaces to `columns`, a wide character taking two.
@@ -597,7 +599,7 @@ async fn once(session: &mut Session<StoreAccess>, json: bool, text: &str) -> Out
     // starts on one of its own.
     let mut line_ended = true;
     let turn = session
-        .send(text, crate::interrupt::ctrl_c(), &mut |event| {
+        .send(text, crate::cli::interrupt::ctrl_c(), &mut |event| {
             if json {
                 events.push(event);
                 return;
@@ -616,7 +618,10 @@ async fn once(session: &mut Session<StoreAccess>, json: bool, text: &str) -> Out
                     }
                     match erpc_ai::commands::shown_input(&args).filter(|_| name == "run_command") {
                         Some(command) => eprintln!("$ {command}"),
-                        None => eprintln!("{}…", erpc_ai::tools::label(&name, crate::i18n::lang())),
+                        None => eprintln!(
+                            "{}…",
+                            erpc_ai::tools::label(&name, crate::cli::i18n::lang())
+                        ),
                     }
                 }
                 // The link erpc built, when no browser opened, besides
@@ -664,8 +669,8 @@ mod tests {
     use secrecy::SecretString;
 
     use super::{StoreAccess, plan_line, tokens};
-    use crate::session;
-    use crate::tui::splash::{self, Played, Status};
+    use crate::account::session;
+    use crate::cli::tui::splash::{self, Played, Status};
 
     #[test]
     fn over_ssh_the_dashboard_is_not_opened_on_this_machine() {
@@ -726,7 +731,7 @@ mod tests {
 
     #[test]
     fn a_plan_reads_as_its_name_and_what_is_left() {
-        use crate::i18n::speaking;
+        use crate::cli::i18n::speaking;
         use erpc_core::i18n::Lang;
         assert_eq!(
             plan_line(&usage("developer", 3_150_000.0, false)),
@@ -752,7 +757,7 @@ mod tests {
 
     #[test]
     fn ages_and_yeses_read_in_every_language() {
-        use crate::i18n::speaking;
+        use crate::cli::i18n::speaking;
         use erpc_core::i18n::Lang;
         assert_eq!(super::age(30), "just now");
         assert_eq!(super::age(5 * 60), "5m ago");
@@ -793,7 +798,7 @@ mod tests {
             Ok(Some(Credential {
                 access_token: SecretString::from("acc.SLOW.s"),
                 refresh_token: SecretString::from("ref.SLOW.s"),
-                expires_at: crate::commands::now() + 3600,
+                expires_at: crate::account::commands::now() + 3600,
             }))
         }
         fn save(&self, _key: &CredKey, _cred: &Credential) -> Result<(), StoreError> {

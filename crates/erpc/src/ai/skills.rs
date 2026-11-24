@@ -18,8 +18,8 @@
 
 use std::path::PathBuf;
 
-use crate::commands::Outcome;
-use crate::session;
+use crate::account::commands::Outcome;
+use crate::account::session;
 
 /// An agent whose skills directory erpc can write to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -160,7 +160,7 @@ fn sync_command(places: &[(String, Vec<String>)]) -> String {
 }
 
 /// What `erpc doctor` says about the skills on this machine.
-pub(crate) fn finding() -> Option<crate::doctor::Finding> {
+pub(crate) fn finding() -> Option<crate::account::doctor::Finding> {
     let behind = behind();
     if behind.is_empty() {
         return None;
@@ -169,7 +169,7 @@ pub(crate) fn finding() -> Option<crate::doctor::Finding> {
         .iter()
         .map(|(place, names)| format!("{place} ({})", names.join(", ")))
         .collect();
-    Some(crate::doctor::Finding::warn(
+    Some(crate::account::doctor::Finding::warn(
         "Skills",
         format!(
             "older than this erpc in {}; run `{}`",
@@ -197,7 +197,7 @@ pub(crate) fn notice_once() {
     if behind.is_empty() {
         return;
     }
-    crate::interrupt::say(&format!(
+    crate::cli::interrupt::say(&format!(
         "note: the skills on this machine are older than this erpc; `{}` updates them",
         sync_command(&behind)
     ));

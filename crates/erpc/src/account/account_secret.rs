@@ -114,14 +114,21 @@ impl Slot {
 
     #[cfg(target_os = "macos")]
     fn keychain_read(&self) -> Result<Option<String>, String> {
-        erpc_auth::store::security_cli::read(self.service, &crate::session::local_account())
+        erpc_auth::store::security_cli::read(
+            self.service,
+            &crate::account::session::local_account(),
+        )
     }
 
     #[cfg(target_os = "macos")]
     fn keychain_write(&self, value: &str) -> Result<(), String> {
         // Add only: a second writer racing the first must not replace a
         // key that files or backups were already sealed with.
-        erpc_auth::store::security_cli::add(self.service, &crate::session::local_account(), value)
+        erpc_auth::store::security_cli::add(
+            self.service,
+            &crate::account::session::local_account(),
+            value,
+        )
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -144,7 +151,7 @@ impl Slot {
     }
 
     fn file_path(&self) -> Result<std::path::PathBuf, String> {
-        crate::session::beside_config(self.file)
+        crate::account::session::beside_config(self.file)
     }
 
     fn file_read(&self) -> Result<Option<String>, String> {
@@ -158,9 +165,9 @@ impl Slot {
 
 /// The store `erpc login` chose, and the 1Password vault it uses.
 fn chosen() -> Result<(StoreKind, Option<String>), String> {
-    let path = crate::session::config_path()?;
-    let config = crate::config::load(&path)?;
-    let selection = crate::session::plan_store(None, config.credential_store);
+    let path = crate::account::session::config_path()?;
+    let config = crate::account::config::load(&path)?;
+    let selection = crate::account::session::plan_store(None, config.credential_store);
     Ok((selection.kind, config.credential_vault))
 }
 

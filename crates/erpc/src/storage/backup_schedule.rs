@@ -19,8 +19,8 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use crate::commands::Outcome;
-use crate::error::{CliError, Code};
+use crate::account::commands::Outcome;
+use crate::cli::error::{CliError, Code};
 
 /// How often a scheduled backup runs.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, clap::ValueEnum)]
@@ -272,7 +272,7 @@ fn launchd_path() -> Result<PathBuf, String> {
 }
 
 fn log_path() -> Result<PathBuf, String> {
-    Ok(crate::session::state_dir()?.join("backup.log"))
+    Ok(crate::account::session::state_dir()?.join("backup.log"))
 }
 
 /// Installs, replaces or removes the schedule. Says what it did.
@@ -320,10 +320,10 @@ fn root_only(program: &Path) -> Result<(), String> {
 /// pinned restic and this machine's credentials. A user who could change
 /// any of them could choose what root runs, or with which credentials.
 fn root_paths(plan: &Plan) -> Result<Vec<PathBuf>, String> {
-    let config = crate::session::beside_config("")?;
+    let config = crate::account::session::beside_config("")?;
     Ok(vec![
         plan.program.clone(),
-        crate::restic::program_path()?,
+        crate::storage::restic::program_path()?,
         config.join("backup.env"),
     ])
 }
@@ -447,15 +447,15 @@ fn installed() -> Option<String> {
 
 /// Where the last run's result is kept.
 fn last_path() -> Result<PathBuf, String> {
-    Ok(crate::session::state_dir()?.join("backup-last.json"))
+    Ok(crate::account::session::state_dir()?.join("backup-last.json"))
 }
 
 /// Keeps what a run did, for `erpc backup status`. A failure to keep it is
 /// not the backup's failure, so it is only said.
 pub fn record(host: &str, code: i32) {
-    let value = json!({ "host": host, "at": crate::commands::now(), "exit": code });
+    let value = json!({ "host": host, "at": crate::account::commands::now(), "exit": code });
     if let Err(e) = last_path().and_then(|p| put(&p, &value.to_string())) {
-        crate::interrupt::say(&format!("(the result of this run was not kept: {e})"));
+        crate::cli::interrupt::say(&format!("(the result of this run was not kept: {e})"));
     }
 }
 
@@ -556,7 +556,7 @@ mod tests {
         }
         let paths = root_paths(&plan(Every::Daily, &[])).expect("paths");
         assert_eq!(paths[0], PathBuf::from("/usr/local/bin/erpc"));
-        assert!(paths[1].ends_with(format!("bin/restic-{}", crate::restic::VERSION)));
+        assert!(paths[1].ends_with(format!("bin/restic-{}", crate::storage::restic::VERSION)));
         assert!(paths[2].ends_with("backup.env"));
     }
 

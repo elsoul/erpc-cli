@@ -9,7 +9,7 @@ use clap::{Arg, ArgAction, ArgMatches, Command, value_parser};
 use erpc_core::chain::Verb;
 use erpc_ssh::arc::Action;
 
-use crate::commands::Outcome;
+use crate::account::commands::Outcome;
 
 /// What each verb does on an Ethereum RPC node, for `--help`.
 fn about(verb: &Verb) -> &'static str {

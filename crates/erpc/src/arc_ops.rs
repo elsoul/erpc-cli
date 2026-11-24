@@ -11,9 +11,9 @@ use erpc_ssh::arc::{Action, Layer};
 use erpc_ssh::{RemoteCommand, Session, Stream};
 use serde_json::{Value, json};
 
+use crate::account::commands::Outcome;
 use crate::arc_rpc::{Login, find, open, target};
-use crate::commands::Outcome;
-use crate::error::CliError;
+use crate::cli::error::CliError;
 use crate::node_common::{Say, go_ahead};
 
 /// The networks Arc has, in the order they are listed.
@@ -37,10 +37,11 @@ pub struct Args {
 /// vault.
 pub fn list(network: Option<&str>, json_out: bool) -> Outcome {
     let say = Say { quiet: true };
-    let keyless = match crate::keyless::path().and_then(|p| crate::keyless::load(&p)) {
-        Ok(k) => k,
-        Err(e) => return Outcome::Failed(e),
-    };
+    let keyless =
+        match crate::account::keyless::path().and_then(|p| crate::account::keyless::load(&p)) {
+            Ok(k) => k,
+            Err(e) => return Outcome::Failed(e),
+        };
     let networks: Vec<&str> = NETWORKS
         .into_iter()
         .filter(|n| network.is_none_or(|w| w == *n))
@@ -618,7 +619,7 @@ pub fn logs(args: &Args, layer: &str, lines: u32, follow: bool, json_out: bool) 
                     .map_err(|e| e.to_string())
             },
             crate::print_line,
-            crate::interrupt::say,
+            crate::cli::interrupt::say,
         )
     })();
     match result {
@@ -869,12 +870,15 @@ mod tests {
                         },
                     );
                     assert_eq!(
-                        matches!(outcome, crate::commands::Outcome::Done(_)),
+                        matches!(outcome, crate::account::commands::Outcome::Done(_)),
                         expected == Some(true),
                         "{name}"
                     );
                     if expected != Some(true) {
-                        assert!(matches!(outcome, crate::commands::Outcome::Problems(_)));
+                        assert!(matches!(
+                            outcome,
+                            crate::account::commands::Outcome::Problems(_)
+                        ));
                     }
                     if json_out {
                         assert_eq!(records.len(), 1);
@@ -902,8 +906,8 @@ mod tests {
                         }
                     } else {
                         assert!(records.is_empty());
-                        let (crate::commands::Outcome::Done(message)
-                        | crate::commands::Outcome::Problems(message)) = outcome
+                        let (crate::account::commands::Outcome::Done(message)
+                        | crate::account::commands::Outcome::Problems(message)) = outcome
                         else {
                             unreachable!()
                         };

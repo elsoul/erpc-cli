@@ -4,7 +4,7 @@
 //! Dedicated Ethereum signer ownership, deployment and lifecycle.
 
 use crate::{
-    commands::Outcome,
+    account::commands::Outcome,
     eth_rpc::{Facts, Login},
     node_common::{self, Say},
 };

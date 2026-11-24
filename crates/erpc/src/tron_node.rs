@@ -3,8 +3,8 @@
 
 //! TRON lifecycle with immutable ownership and external owner signing.
 use crate::{
-    commands::Outcome,
-    error::CliError,
+    account::commands::Outcome,
+    cli::error::CliError,
     eth_rpc::{Facts, Login},
     node_common::{self, Say},
 };

@@ -53,7 +53,7 @@ use erpc_worker::manifest::{Env, Line, LineKind, Resource, ResourceKind, Start};
 use secrecy::SecretString;
 use serde_json::{Value, json};
 
-use crate::error::{CliError, Code};
+use crate::cli::error::{CliError, Code};
 use crate::node_common::Say;
 
 /// The regions a VPS can be started in.
@@ -219,7 +219,7 @@ impl Api {
         if self.stub.is_some() {
             return None;
         }
-        self.end_answerer(crate::session::has_terminal())
+        self.end_answerer(crate::account::session::has_terminal())
             .map(|who| self.by(who))
     }
 
@@ -245,9 +245,13 @@ impl Api {
         if self.stub.is_some() {
             return Err(nobody(Asked::Start, self.yes));
         }
-        answerer(Asked::Start, self.yes, crate::session::has_terminal())
-            .map(|who| self.by(who))
-            .ok_or_else(|| nobody(Asked::Start, self.yes))
+        answerer(
+            Asked::Start,
+            self.yes,
+            crate::account::session::has_terminal(),
+        )
+        .map(|who| self.by(who))
+        .ok_or_else(|| nobody(Asked::Start, self.yes))
     }
 
     /// Who answers a start now: `--yes`, the person at the terminal, or
@@ -257,7 +261,11 @@ impl Api {
         if self.stub.is_some() {
             return answerer(Asked::Start, self.yes, false);
         }
-        answerer(Asked::Start, self.yes, crate::session::has_terminal())
+        answerer(
+            Asked::Start,
+            self.yes,
+            crate::account::session::has_terminal(),
+        )
     }
 
     /// Who answers the first login to a server: `--yes`, else the person
@@ -268,9 +276,13 @@ impl Api {
     /// With neither, what the login is and what to do about it: it starts
     /// nothing and has no price, and is not refused as a start is.
     fn confirm_login(&self) -> Result<&dyn Confirm, CliError> {
-        answerer(Asked::Login, self.yes, crate::session::has_terminal())
-            .map(|who| self.by(who))
-            .ok_or_else(|| nobody(Asked::Login, self.yes))
+        answerer(
+            Asked::Login,
+            self.yes,
+            crate::account::session::has_terminal(),
+        )
+        .map(|who| self.by(who))
+        .ok_or_else(|| nobody(Asked::Login, self.yes))
     }
 
     /// What user-api answers at `url`, one of the account's own reads.
@@ -829,7 +841,7 @@ async fn asked_at(base: &str, wait: Duration, key: zeroize::Zeroizing<String>) -
         return verdict(None);
     };
     url.query_pairs_mut().append_pair("api-key", &key);
-    let Ok(client) = crate::rpc_call::client() else {
+    let Ok(client) = crate::rpc::call::client() else {
         return verdict(None);
     };
     let sent = client
@@ -1077,7 +1089,7 @@ pub(crate) async fn existing(api: &Api, id: i64, hourly: bool) -> Result<Server,
                             && r["userProductId"].as_i64() == Some(id)
                     })
             });
-    let servers = crate::vps_access::SshServers;
+    let servers = crate::ai::vps_access::SshServers;
     // The login is asked only of a server erpc has not made key-only yet;
     // for one it has, nobody need be there to answer.
     let confirm = if servers.secured(id, &ip) {
@@ -1097,7 +1109,7 @@ pub(crate) async fn existing(api: &Api, id: i64, hourly: bool) -> Result<Server,
     if secured["done"] != json!(true) {
         return Err(failed(t!("worker_vps.vps.not_key_only", id)));
     }
-    let target = crate::vps_access::pinned_target(&ip).map_err(failed)?;
+    let target = crate::ai::vps_access::pinned_target(&ip).map_err(failed)?;
     Ok(Server {
         target,
         resource: Resource {
@@ -2550,8 +2562,12 @@ pub(crate) async fn wait_line(
     // can take a while with nothing else to show; its message carries what
     // would otherwise be said in lines, which a spinner's redraws would
     // break. The caller says what came of the wait.
-    let spinner = (!say.quiet && crate::ui::stderr_drawn()).then(|| {
-        crate::prompt::Spinner::start(&t!("worker_vps.line.waiting_for", kind = kind.label(), id))
+    let spinner = (!say.quiet && crate::cli::ui::stderr_drawn()).then(|| {
+        crate::cli::prompt::Spinner::start(&t!(
+            "worker_vps.line.waiting_for",
+            kind = kind.label(),
+            id
+        ))
     });
     let tell = |text: String| match &spinner {
         Some(spinner) => spinner.set_message(&text),
@@ -3483,8 +3499,8 @@ mod tests {
     async fn an_account_whose_keys_are_all_refused_or_that_has_none_is_an_error() {
         use super::fake::Scripted;
         use super::{Verdict, keys_tried, shared_api_key};
-        use crate::error::{CliError, Code};
-        crate::ui::force_drawn(false);
+        use crate::cli::error::{CliError, Code};
+        crate::cli::ui::force_drawn(false);
         // Every key refused: each was tried, once.
         let refused = || {
             Scripted::account(&json!({
@@ -3528,7 +3544,7 @@ mod tests {
             erpc_core::i18n::Lang::Zh,
             erpc_core::i18n::Lang::Ru,
         ] {
-            let there = crate::i18n::speaking(lang, || {
+            let there = crate::cli::i18n::speaking(lang, || {
                 super::keys_refused(3).hint(t!("worker_vps.keys_refused_hint"))
             });
             assert_ne!(there.message, e.message, "{lang:?}");
@@ -3555,7 +3571,7 @@ mod tests {
     #[test]
     fn a_start_is_answered_by_yes_or_by_the_person_and_refused_without_either() {
         use super::{Answerer, Asked, answerer, nobody};
-        use crate::error::Code;
+        use crate::cli::error::Code;
         // --yes answers it, at a terminal or not: a person who passed it is
         // not asked again, and a script or an agent can start what it names.
         for asked in [Asked::Start, Asked::Login] {
@@ -3652,7 +3668,7 @@ mod tests {
     #[test]
     fn a_first_login_nobody_can_answer_is_not_refused_as_a_start() {
         use super::{Asked, nobody};
-        use crate::error::Code;
+        use crate::cli::error::Code;
         let start = nobody(Asked::Start, Some(false));
         let login = nobody(Asked::Login, Some(false));
         assert_eq!(login.code, Code::NeedsTerminal);
@@ -5018,7 +5034,7 @@ mod tests {
             "gRPC line 100002 did not become active in 3 minutes (it is pending)"
         );
         for lang in [Lang::Ja, Lang::Ru] {
-            let said = crate::i18n::speaking(lang, say);
+            let said = crate::cli::i18n::speaking(lang, say);
             assert_ne!(said, english);
             assert!(!said.contains('{'), "{said}");
             assert!(
@@ -5027,7 +5043,7 @@ mod tests {
             );
         }
         // Russian says three minutes as a few.
-        assert!(crate::i18n::speaking(Lang::Ru, say).contains("3 минуты"));
+        assert!(crate::cli::i18n::speaking(Lang::Ru, say).contains("3 минуты"));
     }
 
     /// One look finds a VPS on record there when the account lists it, at

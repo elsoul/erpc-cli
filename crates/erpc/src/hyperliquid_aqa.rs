@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Separate AQA host lifecycle. External approval stays with the selected master.
 use crate::{
-    commands::Outcome,
+    account::commands::Outcome,
     hyperliquid_ops as shared,
     node_common::{self, Say},
 };

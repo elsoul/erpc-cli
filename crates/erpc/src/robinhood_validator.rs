@@ -3,7 +3,7 @@
 
 //! Original Robinhood Defensive assertion-validator CLI orchestration.
 use crate::{
-    commands::Outcome,
+    account::commands::Outcome,
     node_common::{self, Say},
     robinhood_bundle as bundle, robinhood_custody as custody,
 };

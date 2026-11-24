@@ -3,7 +3,7 @@
 
 //! Qualified follower lifecycle over scoped inventory, pinned SSH and confirmed policy.
 use crate::{
-    commands::Outcome,
+    account::commands::Outcome,
     node_common::{self, Say},
     rollup_bundle as bundle,
 };

@@ -121,9 +121,9 @@ pub(crate) fn choose() -> Lang {
             .map(str::to_owned)
             .or_else(|| (a == "--lang").then(|| args.get(i + 1).cloned()).flatten())
     });
-    let configured = crate::session::config_path()
+    let configured = crate::account::session::config_path()
         .ok()
-        .and_then(|p| crate::config::get(&p, "locale").ok().flatten());
+        .and_then(|p| crate::account::config::get(&p, "locale").ok().flatten());
     let lang = erpc_core::i18n::resolve(flag.as_deref(), configured.as_deref(), |name| {
         std::env::var(name).ok()
     });

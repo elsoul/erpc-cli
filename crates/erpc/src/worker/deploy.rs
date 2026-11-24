@@ -12,7 +12,7 @@
 //! 1. erpc.toml is checked: every setting the app requires is set, and the
 //!    secret gate lets this process read the trading key.
 //! 2. The server: the one `[env.<name>]` names, an ERPC VPS of the account,
-//!    a new hourly one ([`crate::worker_vps`]), or `--host`, chosen and
+//!    a new hourly one ([`crate::worker::vps`]), or `--host`, chosen and
 //!    agreed to now. Its host key is pinned here, or, for a VPS bought or
 //!    taken up, once it is up and the build is done (step 3), before
 //!    anything connects to it. A VPS bought here
@@ -21,15 +21,15 @@
 //!    up and `delete --release-server` ends it. Its start's request is on
 //!    record from before it is sent (`[env.<name>.starting]`), so a start
 //!    that gets no answer is sent again with the same key by the next
-//!    deploy, and never with a new one ([`worker_vps::StartRecord`]).
-//! 3. The app is built for the server ([`crate::worker_build`]), while a
+//!    deploy, and never with a new one ([`vps::StartRecord`]).
+//! 3. The app is built for the server ([`crate::worker::build`]), while a
 //!    VPS bought or taken up gets ready. A build that fails leaves such a
 //!    VPS on record, charged, for the next deploy.
 //! 4. The agent is installed when its digest differs, its unit written,
 //!    and the agent started when it does not run (it starts locked: it has
 //!    no key). One that runs is left running, whatever was replaced: it
 //!    holds the key, and steps 5 to 7 can fail.
-//! 5. The firewall ([`crate::worker_firewall`]): SSH only from
+//! 5. The firewall ([`crate::worker::firewall`]): SSH only from
 //!    `firewall.ssh_allow` and the address this deploy comes from, every
 //!    other inbound connection dropped but for `run.port` from
 //!    `firewall.app_allow`, and the port of a UDP Forwarding line on
@@ -45,7 +45,7 @@
 //!    installed, the opening in force stays as it is until step 10,
 //!    unless erpc.toml only narrows it, which is applied here with the
 //!    limit on new connections that is in force
-//!    ([`crate::worker_firewall::decide`]). So a deploy that fails
+//!    ([`crate::worker::firewall::decide`]). So a deploy that fails
 //!    between here and step 10, and a `--prepare`, leave the old rules
 //!    with the audience and the limit they had, never a wider one. The
 //!    UDP port is not the WAF's to hold: it is opened as the line's
@@ -69,13 +69,13 @@
 //!    nothing.
 //! 9. The release is activated: the agent restarts the app from it and
 //!    reports it healthy, or the server goes back to the release before.
-//! 10. The WAF ([`crate::worker_waf`]), for an app with `[waf]`: its
+//! 10. The WAF ([`crate::worker::waf`]), for an app with `[waf]`: its
 //!     config goes to the agent, which writes it, starts the proxy (or
 //!     restarts one whose files changed, or that is not a process of the
 //!     agent installed) and answers once it listens, and only then is the
 //!     WAF's port made what erpc.toml asks, its limit on new connections
 //!     included, wherever step 5 left it otherwise
-//!     ([`crate::worker_firewall::open_as_asked`]). A WAF that does not
+//!     ([`crate::worker::firewall::open_as_asked`]). A WAF that does not
 //!     come up fails the deploy with why, the release still running, the
 //!     firewall as step 5 left it and the WAF from before, if there was
 //!     one, back with its own rules. An app without `[waf]` has a WAF an
@@ -105,22 +105,22 @@ use erpc_worker::server::Launch;
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 
-use crate::commands::Outcome;
-use crate::error::{CliError, Code};
+use crate::account::commands::Outcome;
+use crate::cli::error::{CliError, Code};
 use crate::node_common::{Say, go_ahead};
+use crate::worker::remote::{ctl, ctl_ok, failed, open, unlock_request};
+use crate::worker::vps::{self, Api, LineRecord, LineTarget, Server, StartRecord, Stays};
 use crate::worker::{App, EnvRecord, load_env};
-use crate::worker_remote::{ctl, ctl_ok, failed, open, unlock_request};
-use crate::worker_vps::{self, Api, LineRecord, LineTarget, Server, StartRecord, Stays};
 
 /// A `t!` message said in `lang` rather than the run's language: what a
 /// command also puts in its `--json` output is English there, for the
 /// scripts that read it. `said_in!(lang, t!("area.key", name))`.
 macro_rules! said_in {
     ($lang:expr, t!($key:literal $(, $name:ident $(= $value:expr)?)* $(,)?)) => {
-        $crate::i18n::CATALOG.text(
+        $crate::cli::i18n::CATALOG.text(
             $lang,
             $key,
-            &[$((stringify!($name), &$crate::i18n::arg!($name $(= $value)?) as &dyn ::std::fmt::Display)),*],
+            &[$((stringify!($name), &$crate::cli::i18n::arg!($name $(= $value)?) as &dyn ::std::fmt::Display)),*],
         )
     };
 }
@@ -144,7 +144,7 @@ pub(crate) struct Where {
     /// The data lines asked for, each at a plan (`None`: the cheapest).
     pub(crate) lines: Vec<(LineKind, Option<String>)>,
     /// The UDP port a UDP Forwarding line sends to (`None`: the port of
-    /// the line on record, else [`worker_vps::DEFAULT_UDP_PORT`]).
+    /// the line on record, else [`vps::DEFAULT_UDP_PORT`]).
     pub(crate) udp_port: Option<u16>,
     /// The region a UDP Forwarding line sends from (`None`: the server's).
     pub(crate) udp_region: Option<String>,
@@ -384,7 +384,7 @@ fn activation_failed(answer: &Value, release: &str, scope: &str) -> CliError {
     } else {
         t!("worker_deploy.failed.no_earlier")
     };
-    let hint = crate::worker_remote::port_hint(&why)
+    let hint = crate::worker::remote::port_hint(&why)
         .unwrap_or_else(|| t!("worker_deploy.failed.logs", scope));
     failed(t!("worker_deploy.failed.release", release, why, back)).hint(hint)
 }
@@ -485,7 +485,7 @@ fn agent_binary(triple: &str) -> Result<Agent, CliError> {
     };
     let sha256 = hex(&Sha256::digest(&bytes));
     if source == AgentSource::Named && carried.is_some_and(|c| c != bytes.as_slice()) {
-        crate::interrupt::say(&format!(
+        crate::cli::interrupt::say(&format!(
             "warning: {}",
             t!("worker_deploy.agent.named", sha256)
         ));
@@ -551,8 +551,8 @@ fn new_inventory(at: &Where) -> Result<Option<Inventory>, CliError> {
     if at.inline {
         return Ok(None);
     }
-    match crate::worker_secrets::choose(None, at.vault.as_deref()) {
-        Ok(crate::worker_secrets::Store::OnePassword { vault }) => Ok(Some(Inventory { vault })),
+    match crate::worker::secrets::choose(None, at.vault.as_deref()) {
+        Ok(crate::worker::secrets::Store::OnePassword { vault }) => Ok(Some(Inventory { vault })),
         // --vault given, and not usable: said, not passed over.
         Err(e) if at.vault.is_some() => Err(CliError::new(Code::Usage, e)),
         _ => Ok(None),
@@ -561,7 +561,7 @@ fn new_inventory(at: &Where) -> Result<Option<Inventory>, CliError> {
 
 /// The server a line of `kind` is for: its address; for a UDP Forwarding
 /// line, the port the shreds are sent to (`--udp-port`, else the port of
-/// the line on record, else [`worker_vps::DEFAULT_UDP_PORT`]) and the
+/// the line on record, else [`vps::DEFAULT_UDP_PORT`]) and the
 /// region they are sent from (`--udp-region`, else the server's); for the
 /// others, the server's region.
 fn line_target(
@@ -582,14 +582,10 @@ fn line_target(
     let on_record = lines
         .iter()
         .find(|l| l.kind == LineKind::Udp)
-        .and_then(worker_vps::udp_port);
+        .and_then(vps::udp_port);
     LineTarget {
         ip,
-        udp_port: Some(
-            at.udp_port
-                .or(on_record)
-                .unwrap_or(worker_vps::DEFAULT_UDP_PORT),
-        ),
+        udp_port: Some(at.udp_port.or(on_record).unwrap_or(vps::DEFAULT_UDP_PORT)),
         region: at.udp_region.clone().or(region),
     }
 }
@@ -633,19 +629,19 @@ fn udp_region_before(at: &Where, env: &Env) -> Result<Option<String>, CliError> 
     }
     let on_record = env.resource.as_ref().and_then(|r| r.region.clone());
     if env.host.is_some() {
-        return on_record.map(Some).ok_or_else(worker_vps::udp_no_region);
+        return on_record.map(Some).ok_or_else(vps::udp_no_region);
     }
     if pending_vps(Some(env)).is_some() {
         return Ok(on_record);
     }
     if at.host.is_some() {
-        return Err(worker_vps::udp_no_region());
+        return Err(vps::udp_no_region());
     }
     if at.new_vps {
         let region = at
             .region
             .clone()
-            .unwrap_or_else(|| worker_vps::nearest_region().to_owned());
+            .unwrap_or_else(|| vps::nearest_region().to_owned());
         return Ok(Some(region));
     }
     Ok(None)
@@ -667,7 +663,7 @@ fn udp_host_before<'a>(at: &'a Where, env: &'a Env) -> Option<Ipv4Addr> {
 /// What the UDP step would be refused for, asked before the server and the
 /// other lines are bought (refused after them, they would be left charged):
 /// the port, the server's address where it is known, the region, and what
-/// user-api says of the plan and the product's lines ([`worker_vps::udp_ready`]),
+/// user-api says of the plan and the product's lines ([`vps::udp_ready`]),
 /// through the session `open` gives. Nothing when no UDP line is asked for,
 /// and no session is opened then.
 async fn udp_before_buying<O, F>(
@@ -692,8 +688,8 @@ where
         .find(|l| l.kind == LineKind::Udp && !at.forget_lines.contains(&l.id));
     let port = at
         .udp_port
-        .or_else(|| on_record.and_then(worker_vps::udp_port))
-        .unwrap_or(worker_vps::DEFAULT_UDP_PORT);
+        .or_else(|| on_record.and_then(vps::udp_port))
+        .unwrap_or(vps::DEFAULT_UDP_PORT);
     let ports = Ports {
         ssh: at.port.or(env.ssh_port).unwrap_or(22),
         run: run_port,
@@ -705,7 +701,7 @@ where
     }
     let region = udp_region_before(at, env)?;
     let api = open().await?;
-    let check = worker_vps::UdpCheck {
+    let check = vps::UdpCheck {
         plan: plan.as_deref(),
         on_record: on_record.map(|l| l.id.as_str()),
         pending: env.starting.contains_key(&StartOf::Udp),
@@ -713,7 +709,7 @@ where
         nothing_bought: true,
         scope,
     };
-    worker_vps::udp_ready(&api, &check).await
+    vps::udp_ready(&api, &check).await
 }
 
 /// The ports of the server a UDP Forwarding line's port is checked
@@ -798,7 +794,7 @@ async fn end_started(
     let Some(line) = env.lines.iter().find(|l| l.kind == kind).cloned() else {
         return e;
     };
-    let ended = match worker_vps::end_line(api, &line, say).await {
+    let ended = match vps::end_line(api, &line, say).await {
         Ok(_) => {
             env.lines.retain(|l| l.kind != kind);
             let _ = record.save(env, None);
@@ -808,7 +804,7 @@ async fn end_started(
         }
         // Refused for good: deploying again would not point it either, so it
         // is not among what the next deploy carries on with.
-        Err(_) if worker_vps::is_refused_for_good(&e) => {
+        Err(_) if vps::is_refused_for_good(&e) => {
             let kept = line_name(kind, id);
             on_record.borrow_mut().retain(|w| *w != kept);
             Ended::KeptRefused
@@ -858,14 +854,14 @@ enum AfterWait {
 /// Decides [`AfterWait`], in this order: a cancelled UDP Forwarding line
 /// first, since one this deploy started is no longer one to end.
 fn after_wait(kind: LineKind, id: &str, new: bool, e: CliError, scope: &str) -> AfterWait {
-    if kind == LineKind::Udp && worker_vps::is_udp_cancelled(&e, id) {
+    if kind == LineKind::Udp && vps::is_udp_cancelled(&e, id) {
         return AfterWait::Cancelled(e);
     }
     if new && kind != LineKind::Unlimited {
         return AfterWait::EndStarted(e);
     }
     // Refused for good: waiting again does not help; ending it does.
-    if kind == LineKind::Udp && worker_vps::is_refused_for_good(&e) {
+    if kind == LineKind::Udp && vps::is_refused_for_good(&e) {
         return AfterWait::Said(and_hint(
             e,
             t!("worker_deploy.line.udp_end_alone", id, scope),
@@ -898,9 +894,9 @@ async fn udp_before_lines(
     };
     udp_public(ip)?;
     let target = line_target(LineKind::Udp, at, ip, region, &env.lines);
-    let (port, udp_region) = worker_vps::udp_target(&target)?;
+    let (port, udp_region) = vps::udp_target(&target)?;
     udp_port_free(port, ports)?;
-    let check = worker_vps::UdpCheck {
+    let check = vps::UdpCheck {
         plan,
         on_record: env
             .lines
@@ -912,7 +908,7 @@ async fn udp_before_lines(
         nothing_bought,
         scope,
     };
-    worker_vps::udp_ready(api, &check).await
+    vps::udp_ready(api, &check).await
 }
 
 /// The data lines asked for: one `env` names and the account still has
@@ -982,9 +978,8 @@ async fn lines_with(
                     on_record,
                     scope,
                 };
-                let id = worker_vps::start_line(api, kind, &target, plan, scope, say, &mut start)
-                    .await?;
-                match worker_vps::first_sight(api, kind, &id, true, scope).await {
+                let id = vps::start_line(api, kind, &target, plan, scope, say, &mut start).await?;
+                match vps::first_sight(api, kind, &id, true, scope).await {
                     Ok(line) => keep(env, line, record)?,
                     // Started and charged, and user-api does not show it:
                     // offered to be ended, as one that never becomes active
@@ -1001,7 +996,7 @@ async fn lines_with(
         if kind == LineKind::Unlimited {
             say.line(&t!("worker_deploy.line.unlimited_slow"));
         }
-        match worker_vps::wait_line(api, kind, &id, &target, hourly, say).await {
+        match vps::wait_line(api, kind, &id, &target, hourly, say).await {
             Ok(line) => {
                 let endpoint = &line.endpoint;
                 say.line(&t!("worker_deploy.line.active", id, endpoint));
@@ -1075,8 +1070,8 @@ async fn line_next(
     // status list says only whether it is set up yet.
     let next = match &known {
         Some(line) => {
-            let listed = worker_vps::line_row(api, kind, &line.id).await?.is_some();
-            let charged = worker_vps::is_charged(&worker_vps::charged(api).await?, line);
+            let listed = vps::line_row(api, kind, &line.id).await?.is_some();
+            let charged = vps::is_charged(&vps::charged(api).await?, line);
             LineNext::of(
                 kind,
                 Some((line.hourly, line.is_pending())),
@@ -1161,7 +1156,7 @@ impl LineNext {
         if matches!(kind, LineKind::Udp) && pending && listed {
             return Self::TakeUp;
         }
-        if worker_vps::is_gone((hourly, pending), listed, charged) {
+        if vps::is_gone((hourly, pending), listed, charged) {
             return Self::Forget;
         }
         match (hourly, listed, charged) {
@@ -1212,7 +1207,7 @@ where
     };
     let (id, kept) = (line.id.clone(), sources_said(&line.sources));
     let read = match session().await {
-        Ok(api) => worker_vps::udp_sources_now(&api, &id).await,
+        Ok(api) => vps::udp_sources_now(&api, &id).await,
         Err(e) => Err(e),
     };
     match read {
@@ -1272,8 +1267,8 @@ fn others_udp(target: &Target, id: &UnitId, say: &Say) -> Vec<(String, u16)> {
 /// (no session, or user-api did not answer).
 async fn pending_udp_charged(line: &Line) -> Option<bool> {
     let api = Api::open().await.ok()?;
-    let charged = worker_vps::charged(&api).await.ok()?;
-    Some(worker_vps::is_charged(&charged, line))
+    let charged = vps::charged(&api).await.ok()?;
+    Some(vps::is_charged(&charged, line))
 }
 
 /// What the deploy's summary says of UDP Forwarding line `line`, in
@@ -1290,7 +1285,7 @@ fn udp_line_said(
     scope: &str,
 ) -> String {
     let name = line_name_in(lang, line.kind, &line.id);
-    let Some(port) = worker_vps::udp_port(line) else {
+    let Some(port) = vps::udp_port(line) else {
         return match charged {
             Some(true) => said_in!(
                 lang,
@@ -1402,7 +1397,7 @@ fn clear_hint(lang: Lang, of: StartOf, env: &Env, env_name: &str) -> String {
 /// on no record, nothing is sent again: it is looked up, taken up or
 /// ended, and the request then removed by hand.
 fn stays_hint(why: Stays, of: StartOf, env: &Env, env_name: &str, scope: &str) -> String {
-    let remove = remove_said(crate::i18n::lang(), of, env, env_name);
+    let remove = remove_said(crate::cli::i18n::lang(), of, env, env_name);
     let server = of == StartOf::Server;
     // `status` reaches the environment's server: with none on record yet
     // there is only the dashboard to look at.
@@ -1468,7 +1463,7 @@ impl StartRecord for ServerStart<'_> {
     }
 
     fn other_hint(&self) -> String {
-        let lang = crate::i18n::lang();
+        let lang = crate::cli::i18n::lang();
         clear_hint(lang, StartOf::Server, &self.env, self.record.env)
     }
 }
@@ -1511,7 +1506,7 @@ impl StartRecord for LineStart<'_> {
     }
 
     fn other_hint(&self) -> String {
-        let lang = crate::i18n::lang();
+        let lang = crate::cli::i18n::lang();
         clear_hint(lang, StartOf::line(self.kind), self.env, self.record.env)
     }
 }
@@ -1556,7 +1551,7 @@ fn starts_left_said(
 ) -> Vec<String> {
     left.iter()
         .map(|(of, start)| {
-            let what = worker_vps::purchase_name(start);
+            let what = vps::purchase_name(start);
             let clear = clear_hint(lang, *of, env, env_name);
             said_in!(lang, t!("worker_deploy.start.left", what, clear))
         })
@@ -1565,7 +1560,7 @@ fn starts_left_said(
 
 /// A data line as it is named to the operator: `gRPC line 100002`.
 fn line_name(kind: LineKind, id: &str) -> String {
-    line_name_in(crate::i18n::lang(), kind, id)
+    line_name_in(crate::cli::i18n::lang(), kind, id)
 }
 
 /// [`line_name`] in `lang`.
@@ -1596,7 +1591,7 @@ impl Waiting {
     async fn wait(&self, say: &Say) -> Result<(), CliError> {
         match self {
             Self::Ready(_) => Ok(()),
-            Self::Vps(api, resource) => worker_vps::wait(api, resource, say).await,
+            Self::Vps(api, resource) => vps::wait(api, resource, say).await,
         }
     }
 
@@ -1605,7 +1600,7 @@ impl Waiting {
     async fn secured(self) -> Result<Server, CliError> {
         match self {
             Self::Ready(server) => Ok(server),
-            Self::Vps(api, resource) => worker_vps::secure(&api, &resource).await,
+            Self::Vps(api, resource) => vps::secure(&api, &resource).await,
         }
     }
 
@@ -1638,7 +1633,7 @@ async fn buy(
     say: &Say,
 ) -> Result<Waiting, CliError> {
     let (region, plan) = (at.region.as_deref(), at.plan.as_deref());
-    let resource = worker_vps::buy(&api, region, plan, scope, say, &mut start).await?;
+    let resource = vps::buy(&api, region, plan, scope, say, &mut start).await?;
     let ServerStart {
         env: mut base,
         record: kept,
@@ -1701,7 +1696,7 @@ async fn server(
         bought,
     };
     if let Some(env) = m.env.get(env_name).filter(|e| e.host.is_some()) {
-        let target = crate::worker_remote::target(app, env)?;
+        let target = crate::worker::remote::target(app, env)?;
         let resource = env.resource.clone().unwrap_or(Resource {
             kind: erpc_worker::manifest::ResourceKind::Vps,
             id: String::new(),
@@ -1728,7 +1723,7 @@ async fn server(
         let host_key =
             crate::node_common::host_key(host, port, None, at.fingerprint.as_deref(), say)
                 .map_err(failed)?;
-        let (_, identity) = crate::vps_access::login_key().map_err(failed)?;
+        let (_, identity) = crate::ai::vps_access::login_key().map_err(failed)?;
         return Ok(found(
             Waiting::Ready(Server {
                 target: Target {
@@ -1752,7 +1747,7 @@ async fn server(
     let api = Api::open().await?.accepting(at.starts.accepted());
     if let Some(id) = at.vps {
         return Ok(found(
-            Waiting::Ready(worker_vps::existing(&api, id, false).await?),
+            Waiting::Ready(vps::existing(&api, id, false).await?),
             true,
             false,
         ));
@@ -1767,25 +1762,25 @@ async fn server(
         let server = buy(api, at, start(), on_record, scope, say).await?;
         return Ok(found(server, true, true));
     }
-    if !crate::session::has_terminal() {
+    if !crate::account::session::has_terminal() {
         return Err(CliError::new(
             Code::NeedsTerminal,
             t!("worker_deploy.server.no_terminal", env = env_name),
         )
         .hint(t!("worker_deploy.server.no_terminal_hint")));
     }
-    let running = worker_vps::running(&api).await?;
+    let running = vps::running(&api).await?;
     let mut options: Vec<String> = running
         .iter()
         .map(|(id, ip, region, plan)| format!("VPS {id}  {ip}  {region}  {plan}"))
         .collect();
-    let region = worker_vps::nearest_region();
+    let region = vps::nearest_region();
     options.push(t!("worker_deploy.server.new_vps", region));
     let question = t!("worker_deploy.server.which");
-    let i = crate::prompt::pick(&question, &options, None).map_err(failed)?;
+    let i = crate::cli::prompt::pick(&question, &options, None).map_err(failed)?;
     if let Some((id, ..)) = running.get(i) {
         Ok(found(
-            Waiting::Ready(worker_vps::existing(&api, *id, false).await?),
+            Waiting::Ready(vps::existing(&api, *id, false).await?),
             true,
             false,
         ))
@@ -1821,7 +1816,7 @@ async fn udp_region_for_new_vps(api: &Api, at: &Where, nearest: &str) -> Result<
     match at.lines.iter().find(|(kind, _)| *kind == LineKind::Udp) {
         Some((_, plan)) if at.udp_region.is_none() => {
             let region = at.region.as_deref().unwrap_or(nearest);
-            worker_vps::udp_region_ready(api, plan.as_deref(), region).await
+            vps::udp_region_ready(api, plan.as_deref(), region).await
         }
         _ => Ok(()),
     }
@@ -1873,7 +1868,7 @@ fn on_record_said(
 
 /// Takes off the record (`kept`) a VPS an earlier deploy bought and never
 /// reached that is missing from the account signed in to
-/// ([`worker_vps::on_account`]), once the person at the terminal says so:
+/// ([`vps::on_account`]), once the person at the terminal says so:
 /// it has ended outside erpc (in the dashboard, or by support), or it is
 /// another account's, which only they can tell. Then this
 /// deploy goes on as for an environment with no server, asking for one as
@@ -1893,9 +1888,9 @@ async fn drop_ended_vps(
     let Ok(api) = Api::open().await else {
         return Ok(());
     };
-    let seen = worker_vps::on_account(&api, &resource, say).await;
+    let seen = vps::on_account(&api, &resource, say).await;
     let asking = Asking {
-        can_ask: worker_vps::can_ask(say.quiet, crate::session::has_terminal()),
+        can_ask: vps::can_ask(say.quiet, crate::account::session::has_terminal()),
         ask: |question: &str| crate::node_common::confirm(question).map_err(failed),
     };
     let save = |without: &Env| kept.save(without, None);
@@ -1913,7 +1908,7 @@ struct Asking<A> {
 /// ([`without_missing_vps`]); otherwise nothing is written.
 fn record_without_missing(
     env: &mut Env,
-    seen: &worker_vps::OnAccount,
+    seen: &vps::OnAccount,
     scope: &str,
     asking: Asking<impl FnOnce(&str) -> Result<bool, CliError>>,
     save: impl FnOnce(&Env) -> Result<(), String>,
@@ -1936,7 +1931,7 @@ fn record_without_missing(
 /// the record stays as it is.
 fn without_missing_vps(
     env: &Env,
-    seen: &worker_vps::OnAccount,
+    seen: &vps::OnAccount,
     scope: &str,
     can_ask: bool,
     ask: impl FnOnce(&str) -> Result<bool, CliError>,
@@ -1958,7 +1953,7 @@ fn without_missing_vps(
 /// nobody to ask, or a no, the deploy stops with the way to take it off
 /// the record by hand.
 fn forget_missing(
-    seen: &worker_vps::OnAccount,
+    seen: &vps::OnAccount,
     id: &str,
     scope: &str,
     can_ask: bool,
@@ -2029,7 +2024,11 @@ pub(crate) async fn deploy(json: bool, app: &App, at: &Where, yes: bool) -> Outc
     let say = Say { quiet: json };
     let on_record = RefCell::new(Vec::new());
     // The summary is English in `--json` output, which scripts read.
-    let lang = if json { Lang::En } else { crate::i18n::lang() };
+    let lang = if json {
+        Lang::En
+    } else {
+        crate::cli::i18n::lang()
+    };
     let result = run(&say, lang, app, at, yes, &on_record).await;
     let scope = app.scope();
     // A failure once a server is on record says what is charged, and how
@@ -2052,7 +2051,7 @@ pub(crate) async fn deploy(json: bool, app: &App, at: &Where, yes: bool) -> Outc
                 crate::print_json(&report);
                 Outcome::Done(String::new())
             } else {
-                Outcome::Done(crate::ui::decorate(
+                Outcome::Done(crate::cli::ui::decorate(
                     report["text"].as_str().unwrap_or_default(),
                     "🚀",
                 ))
@@ -2074,7 +2073,7 @@ pub(crate) async fn deploy(json: bool, app: &App, at: &Where, yes: bool) -> Outc
 /// the entries are there, asks for no passphrase, and is not stopped by a
 /// keystore that is locked.
 fn app_ready(app: &App, at: &Where) -> Result<(PathBuf, Manifest), CliError> {
-    app_ready_in(crate::worker_secrets::context(), app, at)
+    app_ready_in(crate::worker::secrets::context(), app, at)
 }
 
 /// [`app_ready`], for a process in `context` as the secret gate reads it:
@@ -2121,12 +2120,12 @@ fn app_ready_in(
     // The key is read at step 8, which a --prepare never reaches: asked
     // for here, before anything is bought, only when it will be.
     if m.wallet.is_some() && !at.upto.prepares() {
-        crate::worker_secrets::gate(context).map_err(failed)?;
+        crate::worker::secrets::gate(context).map_err(failed)?;
     }
     if at.upto.prepares() {
-        crate::worker_secrets::kept_for(&m).map_err(failed)?;
+        crate::worker::secrets::kept_for(&m).map_err(failed)?;
     } else {
-        crate::worker_secrets::ready_for(&m).map_err(failed)?;
+        crate::worker::secrets::ready_for(&m).map_err(failed)?;
     }
     Ok((path, m))
 }
@@ -2135,7 +2134,7 @@ fn app_ready_in(
 /// its directory, absolute, as the index keeps it (`.` for an erpc.toml
 /// named with no directory, whose parent is the empty path).
 fn index_root(path: &Path) -> PathBuf {
-    let root = crate::worker_build::app_root(path);
+    let root = crate::worker::build::app_root(path);
     std::fs::canonicalize(&root).unwrap_or(root)
 }
 
@@ -2178,9 +2177,9 @@ where
     // A build that fails after a VPS was bought leaves it charged; so does
     // a Rust too old for the app, which only a probe that asks `rustc`
     // finds.
-    let root = crate::worker_build::app_root(&path);
+    let root = crate::worker::build::app_root(&path);
     let mut lacking =
-        crate::worker_build::missing_tools(&m, &root, crate::worker_build::Probe::Toolchain);
+        crate::worker::build::missing_tools(&m, &root, crate::worker::build::Probe::Toolchain);
     if let Err(no_key) = login() {
         lacking.push((no_key, String::new()));
     }
@@ -2255,7 +2254,7 @@ async fn run(
         app,
         at,
         &scope,
-        || crate::vps_access::login_key().map(drop),
+        || crate::ai::vps_access::login_key().map(drop),
         async |env: &mut Env, kept: &EnvRecord<'_>| drop_ended_vps(env, kept, &scope, say).await,
         || async { Ok(Api::open().await?.accepting(at.starts.accepted())) },
     )
@@ -2285,7 +2284,7 @@ async fn run(
         env_before
     };
     for said in starts_left_said(
-        crate::i18n::lang(),
+        crate::cli::i18n::lang(),
         &starts_left(&env_before, &asked_lines),
         &env_before,
         &app.env,
@@ -2301,7 +2300,7 @@ async fn run(
     let building = {
         let (m, path, quiet) = (m.clone(), path.clone(), say.quiet);
         tokio::task::spawn_blocking(move || {
-            crate::worker_build::for_servers(&m, &path, &Say { quiet })
+            crate::worker::build::for_servers(&m, &path, &Say { quiet })
         })
     };
     let (built, up) = tokio::join!(building, server.wait(say));
@@ -2323,7 +2322,7 @@ async fn run(
     let (name, worker, rel) = (&m.name, id.as_str(), release.as_str());
     say.line(&t!("worker_deploy.plan", name, release = rel, to, worker));
     let session = open(&server.target)?;
-    let controller = crate::worker_firewall::controller(&session);
+    let controller = crate::worker::firewall::controller(&session);
 
     // 4. The agent and its unit.
     let staged_agent = format!("{UPLOADS}/agent/erpc-worker-agent");
@@ -2391,17 +2390,17 @@ async fn run(
     // to those it was open to, with the limit on new connections it had),
     // and applied at step 10, which is handed what this step did, whole.
     // The UDP Forwarding line's port is opened as its record says.
-    let ask = crate::worker_firewall::Ask {
+    let ask = crate::worker::firewall::Ask {
         udp_any_source: at.udp_any_source,
         scope: &scope,
     };
-    let firewall = crate::worker_firewall::Remote {
+    let firewall = crate::worker::firewall::Remote {
         session: &session,
         target: &server.target,
         id: &id,
     };
     let mut synced =
-        crate::worker_firewall::sync(&firewall, &m, &app.env, &env_before, controller, ask, say)?;
+        crate::worker::firewall::sync(&firewall, &m, &app.env, &env_before, controller, ask, say)?;
     let ssh_allow = synced.ssh_allow().to_vec();
 
     // erpc.toml names the server from here on, whatever fails later: the
@@ -2423,7 +2422,7 @@ async fn run(
     };
     let saved = kept.save(&env, None);
     let root = index_root(&path);
-    let _ = crate::session::beside_config(erpc_worker::index::FILE_NAME)
+    let _ = crate::account::session::beside_config(erpc_worker::index::FILE_NAME)
         .and_then(|p| erpc_worker::index::update(&p, |i| Ok(((), i.remember(&m.name, &root)?))));
 
     // 6. The data lines, now that the server's address is known and on
@@ -2468,11 +2467,11 @@ async fn run(
     // port lets in, and is on record before the next kind is tried. When
     // both fail, the lines error is the one to report.
     // The WAF's port stays as step 5 left it: only the UDP port changes.
-    if let Err(e) = crate::worker_firewall::reopen(
+    if let Err(e) = crate::worker::firewall::reopen(
         &firewall,
         &mut synced,
-        crate::worker_firewall::udp_opening(&env, at.udp_any_source),
-        &crate::worker_firewall::say_udp(&env, ask),
+        crate::worker::firewall::udp_opening(&env, at.udp_any_source),
+        &crate::worker::firewall::say_udp(&env, ask),
         say,
     ) {
         if lined.is_ok() {
@@ -2524,7 +2523,7 @@ async fn run(
         &format!("{dir}/{}", erpc_worker::server::LAUNCH_FILE),
         &launch_json,
     )?;
-    let root = crate::worker_build::app_root(&path);
+    let root = crate::worker::build::app_root(&path);
     for file in &built.release.files {
         let bytes = std::fs::read(root.join(&file.path)).map_err(|e| {
             let path = &file.path;
@@ -2547,7 +2546,7 @@ async fn run(
         &scope,
         || unlock_request(&m),
         || {
-            crate::worker_remote::positions_warning(&m, app, say);
+            crate::worker::remote::positions_warning(&m, app, say);
             say.line(&t!("worker_deploy.agent.restarting"));
         },
         |verb, stdin| ctl_ok(&session, &id, verb, stdin),
@@ -2582,7 +2581,7 @@ async fn run(
             text.push(said_in!(lang, t!("worker_deploy.done.agent_kept", scope)));
         }
         // The WAF is put in place with the app, by the deploy that starts it.
-        text.extend(crate::worker_waf::prepared(lang, &m));
+        text.extend(crate::worker::waf::prepared(lang, &m));
         if let Err(error) = &saved {
             text.push(format!(
                 "warning: {}",
@@ -2631,7 +2630,7 @@ async fn run(
 
     // 9. Activation, which restarts an app already running there.
     if !restarted {
-        crate::worker_remote::positions_warning(&m, app, say);
+        crate::worker::remote::positions_warning(&m, app, say);
     }
     say.line(&t!("worker_deploy.starting"));
     let answer =
@@ -2667,7 +2666,7 @@ async fn run(
     let saved = match (&saved, &env.inventory) {
         (Ok(()), Some(_)) => kept.save(
             &env,
-            Some(&crate::worker_inventory::deployed(release.as_str())),
+            Some(&crate::worker::inventory::deployed(release.as_str())),
         ),
         _ => saved,
     };
@@ -2724,8 +2723,8 @@ async fn run(
     // 10. The WAF, now that the app answers behind it; then its port as
     // erpc.toml asks, wherever the firewall step left it otherwise.
     ended(
-        &crate::worker_waf::Deploy {
-            server: &crate::worker_firewall::Remote {
+        &crate::worker::waf::Deploy {
+            server: &crate::worker::firewall::Remote {
                 session: &session,
                 target: &server.target,
                 id: &id,
@@ -2742,7 +2741,7 @@ async fn run(
 }
 
 /// How a deploy that started the app ends: its step 10, the WAF and then
-/// its port as erpc.toml asks ([`crate::worker_waf::Deploy::settle`],
+/// its port as erpc.toml asks ([`crate::worker::waf::Deploy::settle`],
 /// handed `synced`, what the firewall step did), and its report. `said`
 /// is what the deploy says before the WAF's lines and after them, and
 /// `report` what it reports besides the WAF; the WAF's part of both is
@@ -2753,9 +2752,9 @@ async fn run(
 /// When the last step fails: the WAF did not come up, or the server did
 /// not take the opening. There is no report then, and the deploy fails.
 fn ended(
-    waf: &crate::worker_waf::Deploy<'_>,
+    waf: &crate::worker::waf::Deploy<'_>,
     (m, env_name, release): (&Manifest, &str, &str),
-    synced: &crate::worker_firewall::Synced,
+    synced: &crate::worker::firewall::Synced,
     said: (Vec<String>, Vec<String>),
     mut report: Value,
 ) -> Result<Value, CliError> {
@@ -2797,12 +2796,12 @@ mod tests {
     #[test]
     fn a_prepare_looks_for_what_the_keystore_holds_and_only_a_deploy_opens_it() {
         use super::{Upto, Where, app_ready};
-        use crate::worker_keystore::fake::{FakeDesk, PASSPHRASE, set_up};
-        use crate::worker_secrets::Store;
+        use crate::worker::keystore::fake::{FakeDesk, PASSPHRASE, set_up};
+        use crate::worker::secrets::Store;
         let desk = FakeDesk::typing(&[PASSPHRASE, PASSPHRASE]);
         let _keystore = set_up(&desk);
         let token = zeroize::Zeroizing::new("tok-1".to_owned());
-        let kept = crate::worker_secrets::put(
+        let kept = crate::worker::secrets::put(
             &Store::Keystore { by_default: false },
             "bot",
             "X_TOKEN",
@@ -2871,7 +2870,7 @@ mod tests {
     #[test]
     fn a_deploy_names_a_missing_secret_with_the_flag_that_gives_its_value() {
         use super::{Where, app_ready_in};
-        use crate::i18n::speaking;
+        use crate::cli::i18n::speaking;
         use erpc_core::i18n::Lang;
         use erpc_secret::gate::Context;
         let home = tempfile::tempdir().expect("a directory");
@@ -2932,14 +2931,14 @@ mod tests {
     #[test]
     fn a_prepare_does_not_ask_whether_the_key_may_be_read_and_a_deploy_does() {
         use super::{Upto, Where, app_ready_in};
-        use crate::worker_keystore::fake::{FakeDesk, PASSPHRASE, set_up};
-        use crate::worker_secrets::Store;
+        use crate::worker::keystore::fake::{FakeDesk, PASSPHRASE, set_up};
+        use crate::worker::secrets::Store;
         use erpc_secret::gate::Context;
         let desk = FakeDesk::typing(&[PASSPHRASE, PASSPHRASE]);
         let _keystore = set_up(&desk);
         let key = erpc_chain_solana::identity::Keypair::generate().expect("random");
         let store = Store::Keystore { by_default: false };
-        let kept = crate::worker_secrets::put_key(&store, "bot", &key).expect("kept");
+        let kept = crate::worker::secrets::put_key(&store, "bot", &key).expect("kept");
         let home = tempfile::tempdir().expect("a directory");
         let text = format!(
             "name = \"bot\"\nchain = \"solana\"\n[wallet]\nsource = \"{kept}\"\npubkey = \"{}\"\n",
@@ -2988,7 +2987,7 @@ mod tests {
 
     #[test]
     fn a_deploy_ends_with_its_waf_applied_its_port_opened_and_both_in_its_report() {
-        use crate::worker_firewall::recorded::Recorded;
+        use crate::worker::firewall::recorded::Recorded;
         use erpc_core::i18n::Lang;
         use erpc_worker::manifest::Manifest;
         use serde_json::{Value, json};
@@ -3005,18 +3004,18 @@ mod tests {
         // The deploy's firewall step, and then its end: what it has said
         // so far and has still to say, and what it reports besides the WAF.
         let end = |m: &Manifest, server: &Recorded| {
-            let synced = crate::worker_firewall::sync(
+            let synced = crate::worker::firewall::sync(
                 server,
                 m,
                 "default",
                 &m.env["default"],
                 me,
-                crate::worker_firewall::Ask::from_record(""),
+                crate::worker::firewall::Ask::from_record(""),
                 &say,
             )
             .expect("the firewall step");
             let step_5 = server.asked();
-            let waf = crate::worker_waf::Deploy {
+            let waf = crate::worker::waf::Deploy {
                 server,
                 scope: " --env default",
                 lang: Lang::En,
@@ -3336,7 +3335,7 @@ mod tests {
 
     #[test]
     fn a_release_refused_for_its_port_says_what_stayed_and_what_to_change() {
-        use crate::i18n::speaking;
+        use crate::cli::i18n::speaking;
         use erpc_core::i18n::Lang;
         use erpc_worker::server::port_taken;
         use serde_json::{Value, json};
@@ -4046,7 +4045,7 @@ mod tests {
         };
         assert_eq!(
             region(&nearest, &none).expect("new").as_deref(),
-            Some(crate::worker_vps::nearest_region())
+            Some(crate::worker::vps::nearest_region())
         );
         // A server of one's own: no region erpc knows.
         let own = super::Where {
@@ -4152,7 +4151,7 @@ mod tests {
     /// gRPC line's start, which the catalogue offers a plan for.
     #[tokio::test]
     async fn no_line_is_started_when_the_udp_line_would_be_refused() {
-        use crate::worker_vps::stub::{Request, Stub};
+        use crate::worker::vps::stub::{Request, Stub};
         let stub = Stub::serve(|request: &Request| match request.path.as_str() {
             "/v3/billing/hourly-catalog" => (
                 200,
@@ -4226,7 +4225,7 @@ mod tests {
     /// waited for again; its own hint says what is left to do.
     #[tokio::test]
     async fn a_line_cancelled_while_it_is_waited_for_is_not_called_charged() {
-        use crate::worker_vps::stub::{Request, Stub};
+        use crate::worker::vps::stub::{Request, Stub};
         // Active through the checks before the lines; cancelled once the
         // credit snapshot, which only the line step reads, has been read.
         let mut snapshot_read = false;
@@ -4320,7 +4319,7 @@ mod tests {
     /// for.
     #[tokio::test]
     async fn a_udp_line_is_refused_before_anything_is_bought() {
-        use crate::worker_vps::stub::{Request, Stub};
+        use crate::worker::vps::stub::{Request, Stub};
         let offers = |udp: bool| {
             let families = if udp {
                 json!([{ "family": "udp-forwarding",
@@ -4396,7 +4395,7 @@ mod tests {
     /// An app on disk that this machine builds with no tool at all: its
     /// `build.prebuilt` binary is one the servers run.
     fn app_built() -> (tempfile::TempDir, super::App) {
-        use crate::elf::fixture::{GLIBC_X86_64, X86_64, linked};
+        use crate::worker::elf::fixture::{GLIBC_X86_64, X86_64, linked};
         let dir = tempfile::tempdir().expect("a directory");
         std::fs::create_dir(dir.path().join("dist")).expect("dist");
         let binary = linked(X86_64, GLIBC_X86_64, b"\0GLIBC_2.17\0");
@@ -4432,7 +4431,7 @@ mod tests {
         at: &super::Where,
         login: Result<(), String>,
         api: Option<super::Api>,
-    ) -> Result<super::Ready, crate::error::CliError> {
+    ) -> Result<super::Ready, crate::cli::error::CliError> {
         let open = move || async move {
             match api {
                 Some(api) => Ok(api),
@@ -4467,7 +4466,7 @@ mod tests {
     /// the session. A deploy without a UDP line asks user-api nothing.
     #[tokio::test]
     async fn a_deploy_is_refused_before_anything_is_bought() {
-        use crate::worker_vps::stub::{Request, Stub};
+        use crate::worker::vps::stub::{Request, Stub};
         let (_dir, app) = app_built();
         let ready = before_buying(&app, &kept_inline(), Ok(()), None)
             .await
@@ -4567,7 +4566,7 @@ mod tests {
         };
         let stays = async |_: &mut super::Env, _: &crate::worker::EnvRecord<'_>| Ok(());
         let at = kept_inline();
-        let stopped = |e: crate::error::CliError| {
+        let stopped = |e: crate::cli::error::CliError| {
             assert!(e.message.contains("200002"), "{}", e.message);
             let hint = e.hint.unwrap_or_default();
             for command in [
@@ -4695,7 +4694,7 @@ mod tests {
     /// send from, the line's refusal comes, and nothing is started.
     #[tokio::test]
     async fn a_vps_picked_at_the_terminal_is_checked_for_its_udp_line_first() {
-        use crate::worker_vps::stub::{Request, Stub};
+        use crate::worker::vps::stub::{Request, Stub};
         let stub = Stub::serve(|request: &Request| match request.path.as_str() {
             "/v3/billing/hourly-catalog" => (
                 200,
@@ -4822,7 +4821,7 @@ mod tests {
     /// for again, but ended, and the hint says how to end it alone.
     #[tokio::test]
     async fn a_line_refused_for_good_is_not_waited_for_again() {
-        use crate::worker_vps::stub::{Request, Stub};
+        use crate::worker::vps::stub::{Request, Stub};
         let stub = Stub::serve(|request: &Request| match request.path.as_str() {
             "/v3/billing/hourly-catalog" => (
                 200,
@@ -4912,7 +4911,7 @@ mod tests {
     /// to end it, and not among what the next deploy carries on with.
     #[tokio::test]
     async fn a_started_line_refused_for_good_is_said_how_to_end() {
-        use crate::worker_vps::stub::{Request, Stub};
+        use crate::worker::vps::stub::{Request, Stub};
         let stub = Stub::serve(|request: &Request| match request.path.as_str() {
             "/v3/user/credit-snapshot" => (
                 200,
@@ -4967,9 +4966,9 @@ mod tests {
         // A line cancelled while it was waited for is told apart: nothing
         // is said of waiting for it again.
         let cancelled = super::failed(t!("worker_vps.line.udp_cancelled", id = "7"));
-        assert!(crate::worker_vps::is_udp_cancelled(&cancelled, "7"));
-        assert!(!crate::worker_vps::is_udp_cancelled(&cancelled, "8"));
-        assert!(!crate::worker_vps::is_udp_cancelled(
+        assert!(crate::worker::vps::is_udp_cancelled(&cancelled, "7"));
+        assert!(!crate::worker::vps::is_udp_cancelled(&cancelled, "8"));
+        assert!(!crate::worker::vps::is_udp_cancelled(
             &super::failed("x"),
             "7"
         ));
@@ -5082,7 +5081,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_sources_on_record_follow_what_user_api_lists_and_stay_when_it_cannot_be_read() {
-        use crate::worker_vps::stub::{Request, Stub};
+        use crate::worker::vps::stub::{Request, Stub};
         let quiet = crate::node_common::Say { quiet: true };
         let (_dir, path) = app_on_disk();
         let record = super::EnvRecord {
@@ -5150,7 +5149,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_line_started_and_then_not_seen_is_offered_to_be_ended() {
-        use crate::worker_vps::stub::{Request, Stub};
+        use crate::worker::vps::stub::{Request, Stub};
         // The step after the start failed. Ending the line is the
         // person's to confirm, and a stubbed session has no one to ask:
         // the offer is made, nothing is ended, and the hint says how to
@@ -5242,7 +5241,7 @@ mod tests {
 
     #[test]
     fn what_deploy_says_is_said_in_the_language_of_the_run_and_json_in_english() {
-        use crate::i18n::speaking;
+        use crate::cli::i18n::speaking;
         use erpc_core::i18n::Lang;
         let english = super::line_name(LineKind::Grpc, "100002");
         assert_eq!(english, "gRPC line 100002");
@@ -5287,8 +5286,8 @@ mod tests {
     #[test]
     fn a_vps_missing_from_the_account_leaves_the_record_only_on_the_persons_yes() {
         use super::forget_missing;
-        use crate::error::Code;
-        use crate::worker_vps::OnAccount;
+        use crate::cli::error::Code;
+        use crate::worker::vps::OnAccount;
         use std::cell::RefCell;
 
         let missing = OnAccount::Missing {
@@ -5349,8 +5348,8 @@ mod tests {
     #[test]
     fn the_record_loses_a_vps_only_when_it_is_missing_and_the_person_says_so() {
         use super::without_missing_vps;
-        use crate::worker_vps::OnAccount;
-        use crate::worker_vps::can_ask;
+        use crate::worker::vps::OnAccount;
+        use crate::worker::vps::can_ask;
         use erpc_worker::manifest::{Env, Resource, ResourceKind};
 
         let pending = Env {
@@ -5369,8 +5368,9 @@ mod tests {
         let missing = OnAccount::Missing {
             account: "Example Account".to_owned(),
         };
-        let never =
-            |_: &str| -> Result<bool, crate::error::CliError> { panic!("nobody is to be asked") };
+        let never = |_: &str| -> Result<bool, crate::cli::error::CliError> {
+            panic!("nobody is to be asked")
+        };
         for seen in [OnAccount::There, OnAccount::Unknown] {
             assert_eq!(
                 without_missing_vps(&pending, &seen, "", true, never).expect("kept"),
@@ -5405,7 +5405,7 @@ mod tests {
     #[test]
     fn the_record_without_the_vps_is_written_and_used_only_after_a_yes() {
         use super::{Asking, record_without_missing};
-        use crate::worker_vps::OnAccount;
+        use crate::worker::vps::OnAccount;
         use erpc_worker::manifest::{Env, Resource, ResourceKind};
         use std::cell::RefCell;
 

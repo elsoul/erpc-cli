@@ -22,8 +22,8 @@ use erpc_worker::release::{self, Release, Shipped, Source};
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
 
-use crate::commands::Outcome;
-use crate::error::{CliError, Code};
+use crate::account::commands::Outcome;
+use crate::cli::error::{CliError, Code};
 use crate::node_common::Say;
 use crate::worker::{Dir, load};
 
@@ -121,7 +121,7 @@ pub(crate) fn build(json: bool, dir: &Dir) -> Outcome {
         Some(s) => commit(s),
         None => t!("worker_build.not_from_git"),
     };
-    let drawn = crate::ui::Report::new().done(built_line).fields([
+    let drawn = crate::cli::ui::Report::new().done(built_line).fields([
         (t!("worker_build.field.binary"), binary.to_string()),
         (t!("worker_build.field.target"), target),
         (t!("worker_build.field.size"), size),
@@ -453,8 +453,8 @@ fn first_lacking(lacking: Vec<(String, String)>) -> CliError {
 }
 
 /// Why a file is not a program, in the words of the run.
-fn said(why: crate::elf::NotAProgram) -> String {
-    use crate::elf::NotAProgram;
+fn said(why: crate::worker::elf::NotAProgram) -> String {
+    use crate::worker::elf::NotAProgram;
     match why {
         NotAProgram::MacOs => t!("worker_build.elf.macos"),
         NotAProgram::Windows => t!("worker_build.elf.windows"),
@@ -471,15 +471,15 @@ fn said(why: crate::elf::NotAProgram) -> String {
 
 /// Checks that `bytes`, the binary at `binary`, are a program for
 /// `target`'s machine and C library: what the servers can run.
-fn fit(bytes: &[u8], binary: &Path, target: Target) -> Result<crate::elf::Elf, CliError> {
-    use crate::elf::Libc;
+fn fit(bytes: &[u8], binary: &Path, target: Target) -> Result<crate::worker::elf::Elf, CliError> {
+    use crate::worker::elf::Libc;
     let path = binary.display();
-    let elf = crate::elf::inspect(bytes).map_err(|why| {
+    let elf = crate::worker::elf::inspect(bytes).map_err(|why| {
         let refused = failed(t!("worker_build.not_for_servers", path, why = said(why)));
         // A static program built to load anywhere is told from a library
         // by a flag its linker writes. One without it reads as a library,
         // though it runs: the way out is said.
-        if why == crate::elf::NotAProgram::SharedLibrary {
+        if why == crate::worker::elf::NotAProgram::SharedLibrary {
             refused.hint(t!("worker_build.elf.shared_library_hint"))
         } else {
             refused
@@ -526,7 +526,7 @@ fn prebuilt_read(
     m: &Manifest,
     root: &Path,
     path: &str,
-) -> Result<(PathBuf, crate::elf::Elf, Vec<u8>), CliError> {
+) -> Result<(PathBuf, crate::worker::elf::Elf, Vec<u8>), CliError> {
     use std::io::Read as _;
     let binary = root.join(path);
     let not_there = || {
@@ -581,7 +581,7 @@ fn prebuilt(
     root: &Path,
     path: &str,
     say: &Say,
-) -> Result<(PathBuf, crate::elf::Elf, Vec<u8>), CliError> {
+) -> Result<(PathBuf, crate::worker::elf::Elf, Vec<u8>), CliError> {
     let read = prebuilt_read(m, root, path)?;
     say.line(&match read.1.glibc() {
         Some(glibc) => t!("worker_build.prebuilt_glibc", path, glibc),
@@ -929,7 +929,7 @@ mod tests {
         let root = std::env::current_dir().expect("a directory");
         let m = Manifest::parse("name = \"bot\"\nchain = \"solana\"\n").expect("a manifest");
         let found: Vec<String> =
-            crate::i18n::speaking(erpc_core::i18n::Lang::En, || match probe.as_str() {
+            crate::cli::i18n::speaking(erpc_core::i18n::Lang::En, || match probe.as_str() {
                 "look" => super::missing_tools(&m, &root, super::Probe::Look)
                     .into_iter()
                     .map(|(what, _)| what)
@@ -1163,7 +1163,7 @@ mod tests {
             Ok(super::Way::Prebuilt("dist/bot".to_owned()))
         );
         let lacking = || {
-            crate::i18n::speaking(erpc_core::i18n::Lang::En, || {
+            crate::cli::i18n::speaking(erpc_core::i18n::Lang::En, || {
                 super::missing_tools(&m, dir.path(), super::Probe::Look)
             })
         };
@@ -1197,7 +1197,7 @@ mod tests {
             assert_eq!(said.len(), 1, "{said:?}");
             assert!(said[0].0.contains("cannot run on a server"), "{said:?}");
             assert!(said[0].0.contains(why), "{said:?}");
-            let built = crate::i18n::speaking(erpc_core::i18n::Lang::En, || {
+            let built = crate::cli::i18n::speaking(erpc_core::i18n::Lang::En, || {
                 super::prebuilt_read(&m, dir.path(), "dist/bot").expect_err("refused")
             });
             assert_eq!(built.message, said[0].0, "the build's own words");
@@ -1256,7 +1256,7 @@ mod tests {
     /// deploy to upload.
     #[test]
     fn a_prebuilt_binary_is_read_once_for_the_check_the_hash_and_the_upload() {
-        use crate::elf::fixture::{GLIBC_X86_64, X86_64, linked};
+        use crate::worker::elf::fixture::{GLIBC_X86_64, X86_64, linked};
         use sha2::{Digest as _, Sha256};
         let dir = tempfile::tempdir().expect("a temporary directory");
         std::fs::create_dir(dir.path().join("dist")).expect("dist");
@@ -1281,11 +1281,11 @@ mod tests {
 
     #[test]
     fn a_prebuilt_binary_is_shipped_only_when_the_servers_can_run_it() {
-        use crate::elf::fixture::{AARCH64, GLIBC_X86_64, X86_64, elf, linked};
+        use crate::worker::elf::fixture::{AARCH64, GLIBC_X86_64, X86_64, elf, linked};
         use erpc_worker::manifest::Target;
         let path = std::path::Path::new("dist/bot");
         let fit = |bytes: &[u8], target| {
-            crate::i18n::speaking(erpc_core::i18n::Lang::En, || {
+            crate::cli::i18n::speaking(erpc_core::i18n::Lang::En, || {
                 super::fit(bytes, path, target)
             })
         };
@@ -1527,7 +1527,7 @@ mod tests {
 
     #[test]
     fn a_build_says_where_its_output_is_or_why_it_is_not() {
-        crate::i18n::speaking(erpc_core::i18n::Lang::En, || {
+        crate::cli::i18n::speaking(erpc_core::i18n::Lang::En, || {
             let log = std::path::Path::new("/app/target/erpc-build.log");
             assert_eq!(
                 super::failure_hint(true, log).as_deref(),
@@ -1562,7 +1562,7 @@ mod tests {
 
     #[test]
     fn what_build_says_is_said_in_the_language_of_the_run() {
-        use crate::i18n::speaking;
+        use crate::cli::i18n::speaking;
         use erpc_core::i18n::Lang;
         let english = t!("worker_build.built", app = "bot", id = "r1");
         assert_eq!(english, "Built bot release r1");

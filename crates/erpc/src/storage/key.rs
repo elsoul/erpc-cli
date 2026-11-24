@@ -17,8 +17,8 @@
 
 use erpc_auth::store::StoreKind;
 
-use crate::account_secret::Slot;
-use crate::storage_crypt::MasterKey;
+use crate::account::account_secret::Slot;
+use crate::storage::crypt::MasterKey;
 
 /// Where the key is kept.
 pub const SLOT: Slot = Slot {

@@ -34,8 +34,8 @@ use unicode_width::UnicodeWidthChar as _;
 use super::markdown::Markdown;
 use super::picker::{Picker, Said};
 use super::{Look, mark};
-use crate::commands::Outcome;
-use crate::conversations::Record;
+use crate::account::commands::Outcome;
+use crate::ai::conversations::Record;
 #[cfg(feature = "node-check-pilot")]
 use crate::node_check;
 
@@ -746,7 +746,7 @@ impl App {
                 self.note(Tone::Warn, text);
             }
             SessionEvent::ToolUseStart { name, args, .. } => {
-                let label = erpc_ai::tools::label(&name, crate::i18n::lang());
+                let label = erpc_ai::tools::label(&name, crate::cli::i18n::lang());
                 match args.get("fact").and_then(serde_json::Value::as_str) {
                     Some(fact) if name == "remember" => {
                         self.note(Tone::Info, format!("{label}: {fact}"));
@@ -1630,7 +1630,7 @@ mod tests {
     use ratatui::text::{Line, Span};
 
     use super::{Action, App, Asking, Intro, input_rows, wrap};
-    use crate::tui::Look;
+    use crate::cli::tui::Look;
 
     fn app() -> App {
         App::new(
@@ -1801,7 +1801,7 @@ mod tests {
         app.node_check_result(Some(Ok(report)), &mut checking);
         assert!(checking.is_none());
         app.node_check_result(
-            Some(Err(crate::commands::Outcome::Failed(t!(
+            Some(Err(crate::account::commands::Outcome::Failed(t!(
                 "node_check.request_failed"
             )))),
             &mut checking,
@@ -2105,7 +2105,7 @@ mod tests {
 
     #[test]
     fn the_console_speaks_chinese_and_russian() {
-        use crate::i18n::speaking;
+        use crate::cli::i18n::speaking;
         use erpc_core::i18n::Lang;
         for (lang, user, ask_title) in [
             (Lang::Zh, "用户", "按小时启动 VPS？"),

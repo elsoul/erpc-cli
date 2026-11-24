@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! TRON query nodes and elected SRs, with external owner signing.
-use crate::commands::Outcome;
+use crate::account::commands::Outcome;
 use clap::{Arg, ArgAction, ArgMatches, Command, value_parser};
 use erpc_core::chain::Verb;
 

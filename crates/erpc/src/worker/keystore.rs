@@ -23,7 +23,7 @@
 //! argument, never an environment variable, never standard input that is
 //! not a terminal. The terminal's echo stays off from the first prompt
 //! until the last attempt has been checked, so an attempt typed ahead while
-//! one is checked is not shown ([`crate::echo`]).
+//! one is checked is not shown ([`crate::cli::echo`]).
 
 use std::path::PathBuf;
 
@@ -36,9 +36,9 @@ use erpc_auth::store::keystore::{
 use serde_json::json;
 use zeroize::Zeroizing;
 
-use crate::commands::Outcome;
-use crate::error::{CliError, Code};
-use crate::ui::Report;
+use crate::account::commands::Outcome;
+use crate::cli::error::{CliError, Code};
+use crate::cli::ui::Report;
 
 /// How many times a passphrase is asked for before the command gives up.
 const TRIES: usize = 3;
@@ -130,11 +130,11 @@ struct Here;
 #[cfg(not(test))]
 impl Desk for Here {
     fn terminal(&self) -> bool {
-        crate::session::has_terminal()
+        crate::account::session::has_terminal()
     }
 
     fn hush(&self) -> Hush {
-        Hush::holding(crate::echo::off())
+        Hush::holding(crate::cli::echo::off())
     }
 
     fn ask(&self, prompt: &str) -> Result<Zeroizing<String>, String> {
@@ -151,7 +151,7 @@ impl Desk for Here {
             .next()
             .map_or_else(Report::new, |first| Report::new().info(first));
         let report = lines.fold(report, Report::detail);
-        crate::interrupt::say(&report.render(crate::ui::stderr_drawn()));
+        crate::cli::interrupt::say(&report.render(crate::cli::ui::stderr_drawn()));
     }
 
     fn keeps(&self) -> bool {
@@ -184,7 +184,7 @@ impl Desk for Here {
 /// Where this machine's keystore is.
 #[cfg(not(test))]
 fn dir() -> Result<PathBuf, String> {
-    crate::session::beside_config("keystore")
+    crate::account::session::beside_config("keystore")
 }
 
 #[cfg(test)]
@@ -214,7 +214,7 @@ fn with<T>(f: impl FnOnce(&Keystore, &dyn Desk) -> Result<T, String>) -> Result<
 
 /// The keystore's directory, as a person reads it.
 fn place(store: &Keystore) -> String {
-    crate::ui::tidy(store.dir())
+    crate::cli::ui::tidy(store.dir())
 }
 
 /// A keystore failure in the operator's language.
@@ -778,8 +778,8 @@ mod tests {
 
     use super::fake::{FakeDesk, PASSPHRASE, set_up, store};
     use super::{Desk as _, Make, lock_at, master, unlock_at};
-    use crate::commands::Outcome;
-    use crate::error::Code;
+    use crate::account::commands::Outcome;
+    use crate::cli::error::Code;
 
     const SERVICE: &str = "erpc-worker";
 
@@ -790,7 +790,7 @@ mod tests {
         }
     }
 
-    fn refused(outcome: Outcome) -> crate::error::CliError {
+    fn refused(outcome: Outcome) -> crate::cli::error::CliError {
         outcome.error().expect("a failure")
     }
 
@@ -1021,7 +1021,7 @@ mod tests {
 
     #[test]
     fn unlock_asks_keeps_and_says_until_when() {
-        crate::ui::force_drawn(false);
+        crate::cli::ui::force_drawn(false);
         let desk = FakeDesk::typing(&[PASSPHRASE, PASSPHRASE]);
         let (_home, store) = set_up(&desk);
         // No keystore yet: nothing to unlock, and none is made.
@@ -1103,7 +1103,7 @@ mod tests {
 
     #[test]
     fn lock_drops_the_unlock_and_the_next_read_asks() {
-        crate::ui::force_drawn(false);
+        crate::cli::ui::force_drawn(false);
         let desk = FakeDesk::typing(&[PASSPHRASE, PASSPHRASE]);
         let (_home, store) = set_up(&desk);
         // No keystore: nothing to lock, and not a failure.
@@ -1154,7 +1154,7 @@ mod tests {
     #[test]
     fn lock_drops_the_unlocks_of_other_keystores_too() {
         const OTHERS: &str = "Unlocks kept for other erpc keystores were dropped as well";
-        crate::ui::force_drawn(false);
+        crate::cli::ui::force_drawn(false);
         let desk = FakeDesk::typing(&[PASSPHRASE, PASSPHRASE]);
         let (_home, here) = set_up(&desk);
         super::write(SERVICE, "bot.API_TOKEN", Kind::Secret, "s3cret-value", true).expect("kept");
@@ -1354,7 +1354,7 @@ mod tests {
         for said in [&as_secret as &dyn Fn() -> String, &as_key, &spelled] {
             let english = said();
             for lang in [Lang::Ja, Lang::Zh, Lang::Ru] {
-                let text = crate::i18n::speaking(lang, said);
+                let text = crate::cli::i18n::speaking(lang, said);
                 assert_ne!(text, english, "{lang:?}");
                 assert!(text.contains("erpc-worker/bot."), "{text}");
                 assert!(!text.contains('{'), "{text}");
@@ -1396,14 +1396,14 @@ mod tests {
             "{english}"
         );
         for lang in [Lang::Ja, Lang::Zh, Lang::Ru] {
-            let said = crate::i18n::speaking(lang, read);
+            let said = crate::cli::i18n::speaking(lang, read);
             assert_ne!(said, english, "{lang:?}");
             assert!(said.contains("erpc-worker/bot.OTHER"), "{said}");
             assert!(!said.contains('{'), "{said}");
         }
         // The time an unlock lasts is counted in each language's own way.
         let spans = |lang| {
-            crate::i18n::speaking(lang, || {
+            crate::cli::i18n::speaking(lang, || {
                 [60, 3_600, 7_200, 86_400, 259_200, 432_000, 90_000]
                     .map(super::span)
                     .join(" | ")

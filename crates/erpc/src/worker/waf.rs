@@ -15,7 +15,7 @@
 //! agent's `waf-apply` is handed the config, writes it with the proxy's
 //! unit, and answers when the proxy listens. Only then is its port made
 //! what erpc.toml asks in the server's firewall, wherever the firewall
-//! step left it otherwise: [`crate::worker_firewall::sync`] keeps the port
+//! step left it otherwise: [`crate::worker::firewall::sync`] keeps the port
 //! closed while no WAF listens there, and no wider than it is, with the
 //! limit on new connections it has, while the WAF there runs rules that
 //! are not erpc.toml's ([`rules`]). `erpc worker api` and the health check
@@ -29,11 +29,11 @@ use erpc_worker::server::Opening;
 use erpc_worker::waf::WafConfig;
 use serde_json::{Value, json};
 
-use crate::error::CliError;
+use crate::cli::error::CliError;
 use crate::node_common::Say;
-use crate::worker_deploy::said_in;
-use crate::worker_firewall::{Server, Synced};
-use crate::worker_remote::failed;
+use crate::worker::deploy::said_in;
+use crate::worker::firewall::{Server, Synced};
+use crate::worker::remote::failed;
 
 /// The rules the proxy counts what it blocked by, as its stats name them
 /// ([`erpc_worker::waf::Blocked`]). They are said as they are in every
@@ -328,7 +328,7 @@ impl Deploy<'_> {
     /// for, and only once the agent has answered that it listens is the
     /// firewall made what erpc.toml asks, where `synced`, what this
     /// deploy's firewall step did, left it otherwise
-    /// ([`crate::worker_firewall::open_as_asked`]): an opening it held (no
+    /// ([`crate::worker::firewall::open_as_asked`]): an opening it held (no
     /// WAF listened on the port, or the one that did ran other rules), or
     /// one it narrowed with the limit on new connections then in force.
     /// Where the opening in force is erpc.toml's already, the firewall is
@@ -373,7 +373,7 @@ impl Deploy<'_> {
         // the first deploy with a WAF, one that moved its port, one that
         // changed its rules and widened who is let in, or one that
         // changed its rules and the firewall's limit on new connections.
-        let opening = crate::worker_firewall::open_as_asked(self.server, synced, self.say)?;
+        let opening = crate::worker::firewall::open_as_asked(self.server, synced, self.say)?;
         let open_to: &[Cidr] = opening.as_ref().map_or(&[], |o| &o.allow);
         Ok(Settled {
             json: json!({
@@ -1006,7 +1006,7 @@ mod tests {
         let mut by_agent = waf.clone();
         by_agent["binary"] = "other".into();
         for lang in [Lang::Ja, Lang::Zh, Lang::Ru] {
-            let (said, of_agent) = crate::i18n::speaking(lang, || {
+            let (said, of_agent) = crate::cli::i18n::speaking(lang, || {
                 (
                     super::out_of_step(&app(WAF), "default", &before, SCOPE).expect("a line"),
                     super::out_of_step(&app(WAF), "default", &by_agent, SCOPE).expect("a line"),
@@ -1069,7 +1069,7 @@ mod tests {
         }
         // In every language, each in its own words.
         for lang in [Lang::Ja, Lang::Zh, Lang::Ru] {
-            let lines = crate::i18n::speaking(lang, || {
+            let lines = crate::cli::i18n::speaking(lang, || {
                 [
                     restarted("other_binary"),
                     restarted("older_than_config"),
@@ -1124,7 +1124,7 @@ mod tests {
                 "перезапуска WAF",
             ),
         ] {
-            for line in crate::i18n::speaking(lang, said) {
+            for line in crate::cli::i18n::speaking(lang, said) {
                 assert!(line.contains(ended) && line.contains(restart), "{line}");
                 assert!(!line.contains("a deploy that was writing"), "{line}");
             }
@@ -1141,7 +1141,7 @@ mod tests {
             let pattern = format!("/a{c}b");
             if erpc_worker::waf::path_pattern(&pattern).is_ok() {
                 assert_eq!(
-                    crate::worker_remote::shown(&pattern),
+                    crate::worker::remote::shown(&pattern),
                     pattern,
                     "U+{:04X}",
                     u32::from(c)
@@ -1154,7 +1154,7 @@ mod tests {
         waf["config"] = serde_json::to_value(&config).expect("json");
         let sent =
             serde_json::to_vec(&serde_json::json!({ "ok": true, "waf": waf })).expect("json");
-        let answer = crate::worker_remote::answer(&sent).expect("an answer");
+        let answer = crate::worker::remote::answer(&sent).expect("an answer");
         assert_eq!(super::rules(&answer["waf"], &config), super::Rules::Asked);
     }
 
@@ -1297,7 +1297,7 @@ mod tests {
         assert_eq!(super::rules_named(&tightened, "default", &none), none);
         // In every language, with the command as it is typed.
         for lang in [Lang::Ja, Lang::Zh, Lang::Ru] {
-            let said = crate::i18n::speaking(lang, || {
+            let said = crate::cli::i18n::speaking(lang, || {
                 [
                     super::out_of_step(&tightened, "default", &waf, SCOPE).expect("a line"),
                     super::out_of_step(&app(WAF), "default", &unsaid, SCOPE).expect("a line"),
@@ -1335,26 +1335,26 @@ mod tests {
 
     /// What a deploy asks of `server` about the firewall and the WAF, in
     /// order: at its firewall step, before the release
-    /// ([`crate::worker_firewall::sync`]), and then at its last step,
+    /// ([`crate::worker::firewall::sync`]), and then at its last step,
     /// once the release runs ([`super::Deploy::settle`]), which is handed
     /// what the firewall step did; and what the last step answered.
     fn deploy(
         m: &Manifest,
-        server: &crate::worker_firewall::recorded::Recorded,
+        server: &crate::worker::firewall::recorded::Recorded,
     ) -> (
         Vec<String>,
         Vec<String>,
-        Result<super::Settled, crate::error::CliError>,
+        Result<super::Settled, crate::cli::error::CliError>,
     ) {
         let say = crate::node_common::Say { quiet: true };
         let me = Some("198.51.100.7".parse().expect("an address"));
-        let synced = crate::worker_firewall::sync(
+        let synced = crate::worker::firewall::sync(
             server,
             m,
             "default",
             &m.env["default"],
             me,
-            crate::worker_firewall::Ask::from_record(""),
+            crate::worker::firewall::Ask::from_record(""),
             &say,
         )
         .expect("the firewall step");
@@ -1371,7 +1371,7 @@ mod tests {
 
     #[test]
     fn a_deploy_opens_the_held_port_only_after_waf_apply_has_answered_ok() {
-        use crate::worker_firewall::recorded::{Recorded, running};
+        use crate::worker::firewall::recorded::{Recorded, running};
         use erpc_worker::server::Opening;
         let m = deployed(WAF, EVERYONE);
         let config = m.waf_config("default").expect("a config");
@@ -1479,7 +1479,7 @@ mod tests {
 
     #[test]
     fn a_deploy_fails_when_the_server_does_not_take_one_of_its_last_steps() {
-        use crate::worker_firewall::recorded::Recorded;
+        use crate::worker::firewall::recorded::Recorded;
         let m = deployed(WAF, EVERYONE);
         let first = || Recorded::with(&serde_json::Value::Null, "bot-default", None);
         let (waf_apply, open) = (
@@ -1518,13 +1518,13 @@ mod tests {
             let mut server = first();
             server.fails = vec![fails];
             let me = Some("198.51.100.7".parse().expect("an address"));
-            let synced = crate::worker_firewall::sync(
+            let synced = crate::worker::firewall::sync(
                 &server,
                 &m,
                 "default",
                 &m.env["default"],
                 me,
-                crate::worker_firewall::Ask::from_record(""),
+                crate::worker::firewall::Ask::from_record(""),
                 &say,
             );
             assert_eq!(
@@ -1538,7 +1538,7 @@ mod tests {
     #[test]
     fn a_deploy_says_each_thing_it_does_about_the_waf_and_its_port() {
         use crate::node_common::heard;
-        use crate::worker_firewall::recorded::{Recorded, running};
+        use crate::worker::firewall::recorded::{Recorded, running};
         use erpc_worker::server::Opening;
         let m = deployed(WAF, EVERYONE);
         let config = m.waf_config("default").expect("a config");
@@ -1609,7 +1609,7 @@ mod tests {
 
     #[test]
     fn a_deploy_that_installed_a_newer_agent_widens_the_port_only_once_the_proxy_was_restarted() {
-        use crate::worker_firewall::recorded::{Recorded, running};
+        use crate::worker::firewall::recorded::{Recorded, running};
         use erpc_worker::server::Opening;
         // erpc.toml asks for everyone. The server has the very config
         // erpc.toml makes and the port open to one address; the deploy's
@@ -1705,7 +1705,7 @@ mod tests {
 
     #[test]
     fn a_deploy_restarts_a_proxy_started_before_its_config_and_only_then_widens_the_port() {
-        use crate::worker_firewall::recorded::{Recorded, running};
+        use crate::worker::firewall::recorded::{Recorded, running};
         use erpc_worker::server::Opening;
         // A deploy before this one ended between writing the WAF's config
         // and restarting the proxy: the file on the server is the config
@@ -1767,7 +1767,7 @@ mod tests {
 
     #[test]
     fn a_deploy_reaches_waf_apply_where_the_servers_config_does_not_read() {
-        use crate::worker_firewall::recorded::{Recorded, running};
+        use crate::worker::firewall::recorded::{Recorded, running};
         use erpc_worker::server::Opening;
         // The WAF on the server runs, and its config does not read there
         // (the agent installed does not take the file): the agent reports
@@ -1834,7 +1834,7 @@ mod tests {
 
     #[test]
     fn a_deploy_leaves_the_firewall_with_the_limit_on_new_connections_erpc_toml_gives() {
-        use crate::worker_firewall::recorded::{Recorded, running};
+        use crate::worker::firewall::recorded::{Recorded, running};
         use erpc_worker::server::Opening;
         // What the last deploy left on the server: its rules, and the port
         // open to one address, with a limit on new connections or without.
@@ -1944,7 +1944,7 @@ mod tests {
 
     #[test]
     fn a_deploy_without_waf_removes_the_one_an_earlier_deploy_left() {
-        use crate::worker_firewall::recorded::Recorded;
+        use crate::worker::firewall::recorded::Recorded;
         // The app's own port, opened as erpc.toml asks at the firewall
         // step, is not touched again.
         let plain = deployed("", ONE);
@@ -2148,7 +2148,7 @@ mod tests {
         assert_eq!(super::prepared(Lang::En, &app("")), None);
         // Under --json the summary is English whatever the run speaks.
         let japanese =
-            crate::i18n::speaking(Lang::Ja, || super::summary(Lang::En, &config, None, SCOPE));
+            crate::cli::i18n::speaking(Lang::Ja, || super::summary(Lang::En, &config, None, SCOPE));
         assert_eq!(japanese, super::summary(Lang::En, &config, None, SCOPE));
     }
 
@@ -2157,7 +2157,7 @@ mod tests {
         let waf = serving();
         let english = super::said(&waf, SCOPE).expect("a line");
         for lang in [Lang::Ja, Lang::Zh, Lang::Ru] {
-            let (said, blocked, absent) = crate::i18n::speaking(lang, || {
+            let (said, blocked, absent) = crate::cli::i18n::speaking(lang, || {
                 (
                     super::said(&waf, SCOPE).expect("a line"),
                     super::blocked_by_rule(&waf).expect("a line"),
@@ -2183,7 +2183,7 @@ mod tests {
         let m = app("[waf]\nport = 8080\n");
         let english = super::described(&m).expect("a WAF");
         for lang in [Lang::Ja, Lang::Zh, Lang::Ru] {
-            let said = crate::i18n::speaking(lang, || super::described(&m).expect("a WAF"));
+            let said = crate::cli::i18n::speaking(lang, || super::described(&m).expect("a WAF"));
             for (line, english) in said.iter().zip(&english) {
                 assert_ne!(line, english);
                 assert!(!line.contains('{'), "{line}");

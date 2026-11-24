@@ -22,14 +22,14 @@ use erpc_wallet::evm::{Address, EvmKey};
 use serde_json::{Value, json};
 use zeroize::{Zeroize as _, Zeroizing};
 
-use crate::commands::Outcome;
+use crate::account::commands::Outcome;
 
 /// The title of the 1Password item a new wallet is kept in.
 const ITEM_TITLE: &str = "ERPC credit wallet (Base)";
 
 fn setting(key: &str) -> Option<String> {
-    let path = crate::session::config_path().ok()?;
-    crate::config::get(&path, key).ok().flatten()
+    let path = crate::account::session::config_path().ok()?;
+    crate::account::config::get(&path, key).ok().flatten()
 }
 
 /// The wallet as the config names it now: read on every use, so a wallet
@@ -234,10 +234,10 @@ pub(crate) fn adopt(found: &FoundWallet, allow_ai: bool) -> Result<Address, Stri
 }
 
 fn point_config(reference: &str, address: Address, allow_ai: bool) -> Result<(), String> {
-    let path = crate::session::config_path()?;
-    crate::config::set(&path, "credit_wallet", reference)?;
-    crate::config::set(&path, "credit_wallet_address", &address.to_string())?;
-    crate::config::set(
+    let path = crate::account::session::config_path()?;
+    crate::account::config::set(&path, "credit_wallet", reference)?;
+    crate::account::config::set(&path, "credit_wallet_address", &address.to_string())?;
+    crate::account::config::set(
         &path,
         "credit_wallet_ai",
         if allow_ai { "on" } else { "off" },

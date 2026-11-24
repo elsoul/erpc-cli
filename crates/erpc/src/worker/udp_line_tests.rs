@@ -55,7 +55,7 @@ impl super::StartRecord for Kept {
 }
 
 impl super::LineRecord for Kept {
-    fn named(&mut self, id: &str) -> Result<(), crate::error::CliError> {
+    fn named(&mut self, id: &str) -> Result<(), crate::cli::error::CliError> {
         self.start = None;
         self.named.push(id.to_owned());
         Ok(())

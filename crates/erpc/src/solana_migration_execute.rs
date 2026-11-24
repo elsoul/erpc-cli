@@ -3,8 +3,8 @@
 
 //! Explicit public Solv retirement/copy orchestration with a durable original intent.
 use crate::{
-    commands::Outcome,
-    error::CliError,
+    account::commands::Outcome,
+    cli::error::CliError,
     node_common::{self, Say},
     solana_migration as planning,
     solana_native::{self, one},

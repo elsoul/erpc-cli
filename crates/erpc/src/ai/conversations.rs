@@ -87,7 +87,7 @@ impl Record {
         Self {
             dir,
             id,
-            created: crate::commands::now(),
+            created: crate::account::commands::now(),
             saved: false,
             title: None,
         }
@@ -144,7 +144,7 @@ impl Record {
             id: self.id.clone(),
             title,
             created: self.created,
-            updated: crate::commands::now(),
+            updated: crate::account::commands::now(),
             settled,
             messages: messages.to_vec(),
             archived: archived.to_vec(),
@@ -167,7 +167,7 @@ impl Record {
 ///
 /// Returns a message when there is no home directory.
 pub fn dir() -> Result<PathBuf, String> {
-    crate::session::beside_config("conversations")
+    crate::account::session::beside_config("conversations")
 }
 
 /// Reads one saved conversation.

@@ -16,12 +16,12 @@ use erpc_worker::manifest::{Env, Line, Manifest, Resource};
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
-use crate::commands::Outcome;
-use crate::error::{CliError, Code};
+use crate::account::commands::Outcome;
+use crate::cli::error::{CliError, Code};
 use crate::node_common::{Say, go_ahead};
+use crate::worker::secrets;
+use crate::worker::vps::OnAccount;
 use crate::worker::{App, load_env};
-use crate::worker_secrets;
-use crate::worker_vps::OnAccount;
 
 pub(crate) fn failed(message: impl Into<String>) -> CliError {
     CliError::new(Code::Failed, message)
@@ -51,7 +51,7 @@ pub(crate) fn target(app: &App, env: &Env) -> Result<Target, CliError> {
         .as_deref()
         .ok_or_else(|| failed(t!("worker_remote.target.no_host_key", env = env_name)))
         .and_then(|k| HostKey::parse(k).map_err(|e| failed(e.to_string())))?;
-    let (_, identity) = crate::vps_access::login_key().map_err(failed)?;
+    let (_, identity) = crate::ai::vps_access::login_key().map_err(failed)?;
     Ok(Target {
         host,
         port: env.ssh_port(),
@@ -182,15 +182,15 @@ pub(crate) fn unlock_request(m: &Manifest) -> Result<Zeroizing<Vec<u8>>, CliErro
     use core::fmt::Write as _;
     let mut secrets: Vec<(String, Zeroizing<String>)> = Vec::new();
     for (name, reference) in &m.secrets {
-        let value = worker_secrets::read(reference).map_err(failed)?;
+        let value = secrets::read(reference).map_err(failed)?;
         let quoted = json_string(&value);
         let name = serde_json::to_string(name).map_err(|e| failed(e.to_string()))?;
         secrets.push((name, quoted));
     }
     let keypair = match &m.wallet {
-        Some(wallet) => Some(
-            worker_secrets::read_key(&wallet.source, wallet.pubkey.as_deref()).map_err(failed)?,
-        ),
+        Some(wallet) => {
+            Some(secrets::read_key(&wallet.source, wallet.pubkey.as_deref()).map_err(failed)?)
+        }
         None => None,
     };
     // Every byte is at most "255," for the key, and the rest is known.
@@ -274,9 +274,9 @@ pub(crate) fn done(json: bool, answer: &Value, text: String) -> Outcome {
         let state = answer["status"]["state"]
             .as_str()
             .or_else(|| answer["agent"]["state"].as_str());
-        let mark = state.map_or("✅", crate::ui::state_mark);
-        Outcome::Done(if crate::ui::stdout_drawn() {
-            crate::ui::decorate(&text, mark)
+        let mark = state.map_or("✅", crate::cli::ui::state_mark);
+        Outcome::Done(if crate::cli::ui::stdout_drawn() {
+            crate::cli::ui::decorate(&text, mark)
         } else {
             text
         })
@@ -369,7 +369,7 @@ fn still_charged_line(env: &Env, scope: &str) -> Option<String> {
 /// else what is on record, which is all erpc knows then.
 fn hourly_said(
     env: Option<&Env>,
-    priced: Option<&crate::worker_charges::Charges>,
+    priced: Option<&crate::worker::charges::Charges>,
     scope: &str,
 ) -> Option<String> {
     match priced {
@@ -424,7 +424,7 @@ async fn status_from(
     // What each of them costs now is the account's to say; without
     // it (not signed in, user-api away), what is on record.
     let priced = match env {
-        Some(env) => crate::worker_charges::read(env).await,
+        Some(env) => crate::worker::charges::read(env).await,
         None => None,
     };
     if let Some(priced) = &priced {
@@ -440,9 +440,9 @@ async fn status_from(
 /// releases it has; then its WAF, as the agent reports it (`waf` in the
 /// answer, which `--json` carries as it is), where it listens, since when
 /// and what it has counted, and whether the rules it runs are erpc.toml's
-/// ([`crate::worker_waf::status_lines`]); then `charged`, what it is
+/// ([`crate::worker::waf::status_lines`]); then `charged`, what it is
 /// charged for by the hour. The answer gets `waf_rules` for `--json`
-/// ([`crate::worker_waf::rules_named`]).
+/// ([`crate::worker::waf::rules_named`]).
 fn status_said(
     m: &Manifest,
     env_name: &str,
@@ -473,11 +473,11 @@ fn status_said(
             previous = answer["previous"].as_str().map_or_else(none, str::to_owned)
         ),
     );
-    for line in crate::worker_waf::status_lines(m, env_name, &answer["waf"], scope) {
+    for line in crate::worker::waf::status_lines(m, env_name, &answer["waf"], scope) {
         text.push_str("\n  ");
         text.push_str(&line);
     }
-    answer["waf_rules"] = crate::worker_waf::rules_named(m, env_name, &answer["waf"]);
+    answer["waf_rules"] = crate::worker::waf::rules_named(m, env_name, &answer["waf"]);
     if let Some(charged) = charged {
         text.push_str("\n  ");
         text.push_str(&charged);
@@ -586,7 +586,7 @@ pub(crate) fn api(app: &App, method: &str, path: &str, data: Option<&str>) -> Ou
         let token = m
             .secrets
             .get("API_TOKEN")
-            .map(|token| worker_secrets::read(token).map_err(failed))
+            .map(|token| secrets::read(token).map_err(failed))
             .transpose()?;
         // The URL is put together on its own, the host and port first: the
         // endpoint gate reads a host only where a port or a path ends it.
@@ -863,7 +863,7 @@ pub(crate) async fn delete(json: bool, app: &App, ask: &DeleteAsk) -> Outcome {
         Ok(id) => id,
         Err(e) => return failed(e).into(),
     };
-    let forgotten = match crate::worker_deploy::take_lines(&mut env, &ask.forget_lines) {
+    let forgotten = match crate::worker::deploy::take_lines(&mut env, &ask.forget_lines) {
         Ok(lines) => lines,
         Err(e) => return e.into(),
     };
@@ -898,10 +898,10 @@ pub(crate) async fn delete(json: bool, app: &App, ask: &DeleteAsk) -> Outcome {
     // A start that got no answer is named by this record alone, and goes
     // with it: said before the yes, since it may have gone through.
     for start in env.starting.values() {
-        let what = crate::worker_vps::purchase_name(start);
+        let what = crate::worker::vps::purchase_name(start);
         say.line(&t!("worker_remote.delete.start_unanswered", what));
     }
-    let asking = crate::worker_vps::can_ask(json, crate::session::has_terminal());
+    let asking = crate::worker::vps::can_ask(json, crate::account::session::has_terminal());
     // The server leaves the record unended only as the person agreed.
     let agreed_missing = match agreed(
         missing.zip(env.resource.as_ref()),
@@ -955,7 +955,7 @@ pub(crate) async fn delete(json: bool, app: &App, ask: &DeleteAsk) -> Outcome {
     let host_key = env.host_key.as_deref().and_then(|k| HostKey::parse(k).ok());
     let (backup, backup_problem) = if env.backup.is_some() || host_key.is_some() {
         let keys = env.backup.clone();
-        let forgotten = crate::worker_backup::forget(&id, host_key.as_ref(), keys.as_ref()).await;
+        let forgotten = crate::worker::backup::forget(&id, host_key.as_ref(), keys.as_ref()).await;
         backup_forgotten(&mut env, forgotten)
     } else {
         (Vec::new(), None)
@@ -987,7 +987,7 @@ pub(crate) async fn delete(json: bool, app: &App, ask: &DeleteAsk) -> Outcome {
             env: &app.env,
         };
         let (e, kept) = partly_released(&record, &env, &released, &removal, &problems, &again);
-        if kept && let Some(said) = crate::worker_deploy::say_forgotten(&forgotten) {
+        if kept && let Some(said) = crate::worker::deploy::say_forgotten(&forgotten) {
             say.line(&said);
         }
         let left = kept.then(|| left_over(&env, &released, &removal));
@@ -1036,8 +1036,8 @@ pub(crate) async fn delete(json: bool, app: &App, ask: &DeleteAsk) -> Outcome {
         let hourly =
             server_left_running(&env, false).is_some() || env.lines.iter().any(|l| l.hourly);
         let charged = if hourly {
-            match crate::worker_vps::Api::open().await {
-                Ok(api) => crate::worker_vps::charged(&api).await.ok(),
+            match crate::worker::vps::Api::open().await {
+                Ok(api) => crate::worker::vps::charged(&api).await.ok(),
                 Err(_) => None,
             }
         } else {
@@ -1047,7 +1047,7 @@ pub(crate) async fn delete(json: bool, app: &App, ask: &DeleteAsk) -> Outcome {
     }
     match rewritten {
         Ok(()) => {
-            if let Some(said) = crate::worker_deploy::say_forgotten(&forgotten) {
+            if let Some(said) = crate::worker::deploy::say_forgotten(&forgotten) {
                 text.push('\n');
                 text.push_str(&said);
             }
@@ -1436,12 +1436,12 @@ fn listed_on_this_machine(
         dir,
         (m, env_name),
         &index.workers,
-        &crate::worker_inventory::read,
+        &crate::worker::inventory::read,
     ))
 }
 
 /// What reads environment `env` of app `app` from its item in `vault`, as
-/// [`crate::worker_inventory::read`] does.
+/// [`crate::worker::inventory::read`] does.
 type ItemReader<'a> = &'a dyn Fn(&str, &str, &str) -> Result<Option<Env>, String>;
 
 /// The other environments of `m` and of the apps in `entries` besides the
@@ -1577,7 +1577,7 @@ fn say_still_charged(text: &mut String, env: &Env, charged: Option<&[(String, i6
             .lines
             .iter()
             .filter(|l| l.hourly == hourly)
-            .filter(|l| !hourly || charged.is_none_or(|c| crate::worker_vps::is_charged(c, l)))
+            .filter(|l| !hourly || charged.is_none_or(|c| crate::worker::vps::is_charged(c, l)))
             .map(|l| l.id.as_str())
             .collect();
         if !ids.is_empty() {
@@ -1699,7 +1699,7 @@ enum LineEnd {
 /// What a release does with `line`, given whether user-api lists it and
 /// what the account is charged for (`None` where that could not be read:
 /// then it tries to end it). It is dropped only when it is gone by the rule
-/// deploy goes by too ([`crate::worker_vps::is_gone`]): a line just started
+/// deploy goes by too ([`crate::worker::vps::is_gone`]): a line just started
 /// is ended, and stays on record if that fails.
 fn line_end(line: &Line, listed: Option<bool>, charged: Option<&[(String, i64)]>) -> LineEnd {
     if !line.hourly {
@@ -1707,10 +1707,10 @@ fn line_end(line: &Line, listed: Option<bool>, charged: Option<&[(String, i64)]>
     }
     match (listed, charged) {
         (Some(listed), Some(charged))
-            if crate::worker_vps::is_gone(
+            if crate::worker::vps::is_gone(
                 (true, line.is_pending()),
                 listed,
-                crate::worker_vps::is_charged(charged, line),
+                crate::worker::vps::is_charged(charged, line),
             ) =>
         {
             LineEnd::Drop
@@ -1731,14 +1731,14 @@ fn asks_account(env: &Env, release_server: bool, forget: bool) -> Option<&Resour
 }
 
 /// What the account signed in to says of the server [`asks_account`]
-/// names ([`crate::worker_vps::on_account`]). Without a session it is not
+/// names ([`crate::worker::vps::on_account`]). Without a session it is not
 /// known: the end is tried as before, and says why it failed.
 async fn account_view(env: &Env, release_server: bool, forget: bool, say: &Say) -> OnAccount {
     let Some(resource) = asks_account(env, release_server, forget) else {
         return OnAccount::Unknown;
     };
-    match crate::worker_vps::Api::open().await {
-        Ok(api) => crate::worker_vps::on_account(&api, resource, say).await,
+    match crate::worker::vps::Api::open().await {
+        Ok(api) => crate::worker::vps::on_account(&api, resource, say).await,
         Err(_) => OnAccount::Unknown,
     }
 }
@@ -1757,7 +1757,7 @@ fn ends_server(env: &Env) -> bool {
 /// server charged. With `--yes` (`yes`) each end is said and done; without
 /// it, each is asked at a terminal.
 async fn release(env: &Env, say: &Say, server: ServerEnd<'_>, yes: bool) -> Released {
-    release_through(env, say, server, yes, crate::worker_vps::Api::open).await
+    release_through(env, say, server, yes, crate::worker::vps::Api::open).await
 }
 
 /// [`release`], with the lines ended through the session `open` gives,
@@ -1774,7 +1774,7 @@ async fn release_through<O, F>(
 ) -> Released
 where
     O: FnOnce() -> F,
-    F: core::future::Future<Output = Result<crate::worker_vps::Api, CliError>>,
+    F: core::future::Future<Output = Result<crate::worker::vps::Api, CliError>>,
 {
     let mut out = Released::default();
     if !env.lines.is_empty() {
@@ -1782,13 +1782,13 @@ where
             Ok(api) => {
                 // What the account is charged for: a line on record that is
                 // not among it has nothing to end.
-                let charged = crate::worker_vps::charged(&api).await.ok();
+                let charged = crate::worker::vps::charged(&api).await.ok();
                 for line in &env.lines {
                     let label = format!("{} line {}", line.kind.label(), line.id);
                     // Whether it is listed matters only for one not charged.
                     let listed = match &charged {
-                        Some(c) if !crate::worker_vps::is_charged(c, line) => {
-                            crate::worker_vps::line_row(&api, line.kind, &line.id)
+                        Some(c) if !crate::worker::vps::is_charged(c, line) => {
+                            crate::worker::vps::line_row(&api, line.kind, &line.id)
                                 .await
                                 .ok()
                                 .map(|row| row.is_some())
@@ -1807,7 +1807,7 @@ where
                         }
                         LineEnd::End => {}
                     }
-                    match crate::worker_vps::end_line(&api, line, say).await {
+                    match crate::worker::vps::end_line(&api, line, say).await {
                         Ok(answer) => out.lines.push(answer),
                         Err(e) => {
                             out.failed.push(format!(
@@ -1841,7 +1841,7 @@ where
                     account: account.to_owned(),
                 });
             }
-            ServerEnd::End => match crate::worker_vps::end(env, say, yes).await {
+            ServerEnd::End => match crate::worker::vps::end(env, say, yes).await {
                 Ok(answer) => out.server = Some(answer),
                 Err(e) => out
                     .failed
@@ -1921,7 +1921,7 @@ fn retry_hint(env: &Env, released: &Released, removal: &Removal, again: &Again<'
     );
     if env.backup.is_some() {
         hint.push_str(&t!("worker_remote.retry.backup"));
-        hint.push_str(&crate::worker_backup::stuck(again.env));
+        hint.push_str(&crate::worker::backup::stuck(again.env));
     }
     if ends_server(env) && !released.server_off() {
         hint.push_str(&t!("worker_remote.retry.server"));
@@ -2604,7 +2604,7 @@ mod tests {
         use serde_json::json;
         let env = env();
         // With the account's list: a price for what is on it.
-        let priced = crate::worker_charges::from_snapshot(
+        let priced = crate::worker::charges::from_snapshot(
             &env,
             &json!({ "message": {
                 "balance": { "balanceCents": 900 },
@@ -2668,7 +2668,7 @@ mod tests {
             (Lang::Zh, "这不会终止", "继续运行"),
             (Lang::Ru, "при этом не завершаются", "продолжают работать"),
         ] {
-            let (said, items) = crate::i18n::speaking(lang, || {
+            let (said, items) = crate::cli::i18n::speaking(lang, || {
                 (
                     delete_prompt(&env(), &id, "prod", false, (false, None)),
                     hourly_items(&env()),
@@ -2950,13 +2950,14 @@ mod tests {
         let said = || delete_prompt(&env(), &id, "prod", true, (false, None));
         let english = said();
         for lang in [Lang::Ja, Lang::Ru] {
-            let text = crate::i18n::speaking(lang, said);
+            let text = crate::cli::i18n::speaking(lang, said);
             assert_ne!(text, english);
             assert!(!text.contains('{'), "{text}");
         }
         // Russian counts in three forms.
-        let restarts =
-            |n: u64| crate::i18n::speaking(Lang::Ru, || tn!("worker_remote.describe.restarts", n));
+        let restarts = |n: u64| {
+            crate::cli::i18n::speaking(Lang::Ru, || tn!("worker_remote.describe.restarts", n))
+        };
         assert_eq!(restarts(1), "1 перезапуск");
         assert_eq!(restarts(3), "3 перезапуска");
         assert_eq!(restarts(5), "5 перезапусков");
@@ -3036,7 +3037,7 @@ mod tests {
     #[test]
     fn a_delete_halts_on_yes_only_when_it_would_end_a_shared_server() {
         use super::{Listed, shared_server_stop};
-        use crate::error::{CliError, Code};
+        use crate::cli::error::{CliError, Code};
         let shared = || {
             Ok(vec![Listed {
                 name: "sniper --env prod".to_owned(),
@@ -3226,7 +3227,7 @@ mod tests {
     #[tokio::test]
     async fn a_udp_line_of_a_missing_server_is_ended_not_left_charged() {
         use super::{Say, ServerEnd, release_through};
-        use crate::worker_vps::stub::{Request, Stub};
+        use crate::worker::vps::stub::{Request, Stub};
         let stub = Stub::serve(|request: &Request| match request.path.as_str() {
             "/v3/user/credit-snapshot" => (
                 200,
@@ -3389,7 +3390,7 @@ mod tests {
     #[test]
     fn a_missing_server_leaves_the_record_only_on_a_persons_yes() {
         use super::agreed;
-        use crate::error::Code;
+        use crate::cli::error::Code;
         use std::cell::{Cell, RefCell};
 
         let server = env().resource.expect("a server");

@@ -206,7 +206,7 @@ mod tests {
     use ratatui::text::Span;
 
     use super::{ART, ORANGE, PIXEL, QUADRANTS, TOP, WIDTH, color, nearest_256, rows, shade};
-    use crate::tui::Look;
+    use crate::cli::tui::Look;
 
     const LOOK: Look = Look {
         color: true,

@@ -23,13 +23,13 @@ use erpc_chain_arc::{key, plays, releases};
 use erpc_ssh::Session;
 use serde_json::{Map, Value, json};
 
+use crate::account::commands::Outcome;
 use crate::arc_ops::{CAUGHT_UP_BLOCKS, Status, read_status};
 use crate::arc_rpc::{
     Facts, KindFlags, Login, Opened, RunVars, allow_list, facts, find, open, run_play, target,
     with_kind,
 };
-use crate::commands::Outcome;
-use crate::error::CliError;
+use crate::cli::error::CliError;
 use crate::node_common::{Say, go_ahead};
 
 /// What a change to a node was asked to do.
@@ -748,7 +748,7 @@ mod tests {
                     false,
                     serde_json::json!({})
                 ),
-                crate::commands::Outcome::Problems(_)
+                crate::account::commands::Outcome::Problems(_)
             ));
         }
     }
