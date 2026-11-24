@@ -26,11 +26,12 @@ use serde_json::json;
 
 use crate::account::commands::Outcome;
 use crate::chains::arc::rpc::gb;
-use crate::chains::eth::rpc::{Facts, RunVars, facts, open, rpc_type, run_play};
+use crate::chains::eth::rpc::{RunVars, open, platform, refusals, rpc_type, run_play};
 use crate::cli::error::CliError;
 use crate::node::common::{
     FreeDisk, Say, check_ubuntu, free_disks, go_ahead, host_key, save_vault,
 };
+use crate::node::host::{Facts, facts};
 use crate::node::host::{Login, allow_list};
 
 /// What `erpc r --chain eth init` was asked to do.
@@ -316,7 +317,7 @@ pub(crate) async fn pin(
     facts: &Facts,
     say: &Say,
 ) -> Result<Pin, String> {
-    let platform = facts.platform()?;
+    let platform = platform(facts)?;
     let github = releases::Github::new().map_err(|e| e.to_string())?;
     let (release, source) = releases::pin(&github, client, wanted, platform)
         .await
@@ -423,7 +424,7 @@ async fn init(args: &Args, say: &Say) -> Result<Done, CliError> {
         facts.cpus,
         gb(facts.mem_kb)
     ));
-    let refusals = facts.refusals();
+    let refusals = refusals(&facts);
     if !refusals.is_empty() {
         return Err(format!(
             "this server cannot run an Ethereum node: {}. Nothing was changed",

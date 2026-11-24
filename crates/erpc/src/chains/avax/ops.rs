@@ -129,8 +129,8 @@ fn allow_lists(node: &mut AvaxNode, sub: &ArgMatches) -> Result<(), String> {
     }
     Ok(())
 }
-fn facts(session: &Session) -> Result<crate::chains::eth::rpc::Facts, String> {
-    let f = crate::chains::eth::rpc::facts(session)?;
+fn facts(session: &Session) -> Result<crate::node::host::Facts, String> {
+    let f = crate::node::host::facts(session)?;
     if !f.os.starts_with("ubuntu 24.") && !f.os.starts_with("ubuntu 26.") {
         return Err("Avalanche backend requires Ubuntu 24.04 or 26.04".into());
     }
@@ -141,7 +141,7 @@ fn facts(session: &Session) -> Result<crate::chains::eth::rpc::Facts, String> {
 }
 fn vars(
     node: &AvaxNode,
-    f: &crate::chains::eth::rpc::Facts,
+    f: &crate::node::host::Facts,
     phase: &str,
     purge: bool,
 ) -> Result<Value, String> {
@@ -207,7 +207,7 @@ fn play(
     session: &Session,
     target: &Target,
     node: &AvaxNode,
-    f: &crate::chains::eth::rpc::Facts,
+    f: &crate::node::host::Facts,
     phase: &str,
     purge: bool,
     say: &Say,
@@ -790,10 +790,10 @@ mod regression_tests {
             ssh_port: 2222,
             ..AvaxNode::default()
         };
-        let mut facts = crate::chains::eth::rpc::Facts {
+        let mut facts = crate::node::host::Facts {
             controller: "192.0.2.1".into(),
             ssh_port: 22,
-            ..crate::chains::eth::rpc::Facts::default()
+            ..crate::node::host::Facts::default()
         };
         let inventory = vars(&node, &facts, "deploy", false).unwrap();
         let value = &inventory["all"]["hosts"]["fixture"];

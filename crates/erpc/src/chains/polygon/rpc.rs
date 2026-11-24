@@ -4,8 +4,8 @@
 //! Owned Bor/Heimdall RPC lifecycle; parent credentials are carried only on stdin.
 use crate::{
     account::commands::Outcome,
-    chains::eth::rpc::Facts,
     node::common::{self, Say},
+    node::host::Facts,
 };
 use clap::ArgMatches;
 use erpc_auth::store::one_password::{OpCli, OpRunner};

@@ -5,8 +5,8 @@
 
 use crate::{
     account::commands::Outcome,
-    chains::eth::rpc::Facts,
     node::common::{self, Say},
+    node::host::Facts,
 };
 use clap::ArgMatches;
 use erpc_auth::store::one_password::{OpCli, OpRunner};
@@ -395,7 +395,7 @@ fn init(network: Network, args: &ArgMatches, say: &Say) -> Result<Value, String>
     let secret = credential(&common::op_runner()?, &node.upstreams_ref)?;
     let target = target(&node, args)?;
     let session = Session::open(&target).map_err(|e| e.to_string())?;
-    let facts = crate::chains::eth::rpc::facts(&session)?;
+    let facts = crate::node::host::facts(&session)?;
     let platform = host_check(&facts)?;
     if node.id.is_some() && Platform::parse(&node.platform) != Some(platform) {
         return Err("stored Nitro platform differs from host".into());
@@ -519,7 +519,7 @@ fn operation(verb: &str, network: Network, args: &ArgMatches, say: &Say) -> Resu
     if before["phase"] == "installing" && verb != "deploy" {
         return Err("resume deploy at the stored target before another operation".into());
     }
-    let facts = crate::chains::eth::rpc::facts(&session)?;
+    let facts = crate::node::host::facts(&session)?;
     host_check(&facts)?;
     common::go_ahead(yes(args), "no Nitro host changed").map_err(|e| e.to_string())?;
     match verb {

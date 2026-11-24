@@ -383,7 +383,7 @@ fn original(
     }
     Ok(value)
 }
-fn host_check(facts: &crate::chains::eth::rpc::Facts) -> Result<(), String> {
+fn host_check(facts: &crate::node::host::Facts) -> Result<(), String> {
     if facts.os != "ubuntu 24.04"
         || facts.machine != "x86_64"
         || !facts.sudo
@@ -430,7 +430,7 @@ fn initialize(args: &ArgMatches, say: &Say) -> Result<Value, String> {
     };
     let target = target(address, user, port, &key, args)?;
     let session = Session::open(&target).map_err(|e| e.to_string())?;
-    host_check(&crate::chains::eth::rpc::facts(&session)?)?;
+    host_check(&crate::node::host::facts(&session)?)?;
     // A retry can have durable public custody before remote init exists. It
     // keeps that original contract and lets init verify/recover partial host
     // authority; only a new reservation uses the fresh empty-host preflight.
@@ -584,7 +584,7 @@ fn deploy(
     vault: &str,
     say: &Say,
 ) -> Result<String, String> {
-    let facts = crate::chains::eth::rpc::facts(session)?;
+    let facts = crate::node::host::facts(session)?;
     host_check(&facts)?;
     let token = intent()?;
     let inventory = bundle::deploy_inventory(node, &facts, &token)?;

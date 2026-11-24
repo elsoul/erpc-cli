@@ -14,11 +14,11 @@ use erpc_chain_eth::kind::RpcType;
 use erpc_chain_eth::network::Network;
 use erpc_chain_eth::releases::{self, Client, Platform};
 use erpc_ops::bundle::{Built, Bundle};
-use erpc_ssh::{RemoteCommand, Session, Target};
+use erpc_ssh::{Session, Target};
 use serde_json::{Map, Value, json};
 
 use crate::node::common::{Say, op_runner, store, vault_for};
-use crate::node::host::Login;
+use crate::node::host::{Facts, Login};
 
 /// The chain, as the inventory names it.
 pub(crate) const CHAIN: &str = "eth";
@@ -81,114 +81,54 @@ pub(crate) fn target(node: &EthRpc, login: &Login) -> Result<Target, String> {
     )
 }
 
-/// A host's facts, from [`RemoteCommand::EthFacts`].
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct Facts {
-    pub(crate) os: String,
-    pub(crate) machine: String,
-    pub(crate) mem_kb: u64,
-    pub(crate) cpus: u32,
-    /// How many of AVX2, BMI2, FMA and MOVBE the processor has.
-    pub(crate) x86_64_v3: u32,
-    pub(crate) root_free_kb: u64,
-    pub(crate) data_free_kb: Option<u64>,
-    pub(crate) controller: String,
-    pub(crate) ssh_port: u16,
-    pub(crate) sudo: bool,
+/// The release platform, from the host's machine.
+pub(crate) fn platform(facts: &Facts) -> Result<Platform, String> {
+    Platform::from_uname(&facts.machine).ok_or_else(|| {
+        format!(
+            "the server is {}; Reth and Lighthouse are released for x86_64 and aarch64",
+            facts.machine
+        )
+    })
 }
 
-impl Facts {
-    pub(crate) fn parse(text: &str) -> Self {
-        let mut f = Self::default();
-        for line in text.lines() {
-            let Some((key, value)) = line.split_once('=') else {
-                continue;
-            };
-            let value = value.trim();
-            match key {
-                "os" => value.clone_into(&mut f.os),
-                "machine" => value.clone_into(&mut f.machine),
-                "mem_kb" => f.mem_kb = value.parse().unwrap_or(0),
-                "cpus" => f.cpus = value.parse().unwrap_or(0),
-                "x86_64_v3" => f.x86_64_v3 = value.parse().unwrap_or(0),
-                "root_free_kb" => f.root_free_kb = value.parse().unwrap_or(0),
-                "data_free_kb" => f.data_free_kb = value.parse().ok(),
-                "controller" => value.clone_into(&mut f.controller),
-                "ssh_port" => f.ssh_port = value.parse().unwrap_or(0),
-                "sudo" => f.sudo = value == "yes",
-                _ => {}
-            }
-        }
-        f
-    }
-
-    /// The release platform, from the machine.
-    pub(crate) fn platform(&self) -> Result<Platform, String> {
-        Platform::from_uname(&self.machine).ok_or_else(|| {
-            format!(
-                "the server is {}; Reth and Lighthouse are released for x86_64 and aarch64",
-                self.machine
-            )
-        })
-    }
-
-    /// Ubuntu at or above 24.04, which Reth's glibc 2.38 needs.
-    fn ubuntu_ok(&self) -> bool {
-        let Some(version) = self.os.strip_prefix("ubuntu ") else {
-            return false;
-        };
-        let mut parts = version.split('.').map(|p| p.parse::<u32>().unwrap_or(0));
-        let (major, minor) = (parts.next().unwrap_or(0), parts.next().unwrap_or(0));
-        (major, minor) >= (24, 4)
-    }
-
-    /// What stops an Ethereum node here, if anything.
-    pub(crate) fn refusals(&self) -> Vec<String> {
-        let mut out = Vec::new();
-        if !self.sudo {
-            out.push("the login user cannot run sudo without a password".to_owned());
-        }
-        if !self.ubuntu_ok() {
-            out.push(format!(
-                "the server runs {:?}; Reth's release needs glibc 2.38, which Ubuntu has from 24.04",
-                self.os
-            ));
-        }
-        if self.mem_kb < MIN_MEMORY_KB {
-            out.push(format!(
-                "{} GB of memory; a Reth and Lighthouse node wants 32 GB",
-                self.mem_kb / 1_000_000
-            ));
-        }
-        if self.machine == "x86_64" && self.x86_64_v3 < 4 {
-            out.push(
-                "the processor lacks AVX2, BMI2, FMA or MOVBE; Reth's x86_64 release is built for x86-64-v3"
-                    .to_owned(),
-            );
-        }
-        if let Err(e) = self.platform() {
-            out.push(e);
-        }
-        out
-    }
-
-    /// The controller's address, as the node sees erpc's connection.
-    pub(crate) fn controller_ip(&self) -> Result<IpAddr, String> {
-        self.controller.parse().map_err(|_| {
-            format!(
-                "could not read the address erpc connects from ({:?}); the firewall needs it",
-                self.controller
-            )
-        })
-    }
+/// Ubuntu at or above 24.04, which Reth's glibc 2.38 needs.
+fn ubuntu_ok(facts: &Facts) -> bool {
+    let Some(version) = facts.os.strip_prefix("ubuntu ") else {
+        return false;
+    };
+    let mut parts = version.split('.').map(|p| p.parse::<u32>().unwrap_or(0));
+    let (major, minor) = (parts.next().unwrap_or(0), parts.next().unwrap_or(0));
+    (major, minor) >= (24, 4)
 }
 
-/// Reads the host's facts.
-pub(crate) fn facts(session: &Session) -> Result<Facts, String> {
-    let out = session
-        .run(&RemoteCommand::EthFacts, None)
-        .map_err(|e| e.to_string())?;
-    Ok(Facts::parse(&String::from_utf8_lossy(&out.stdout)))
+/// What stops an Ethereum node on this host, if anything.
+pub(crate) fn refusals(facts: &Facts) -> Vec<String> {
+    let mut out = Vec::new();
+    if !facts.sudo {
+        out.push("the login user cannot run sudo without a password".to_owned());
+    }
+    if !ubuntu_ok(facts) {
+        out.push(format!(
+            "the server runs {:?}; Reth's release needs glibc 2.38, which Ubuntu has from 24.04",
+            facts.os
+        ));
+    }
+    if facts.mem_kb < MIN_MEMORY_KB {
+        out.push(format!(
+            "{} GB of memory; a Reth and Lighthouse node wants 32 GB",
+            facts.mem_kb / 1_000_000
+        ));
+    }
+    if facts.machine == "x86_64" && facts.x86_64_v3 < 4 {
+        out.push(
+            "the processor lacks AVX2, BMI2, FMA or MOVBE; Reth's x86_64 release is built for x86-64-v3"
+                .to_owned(),
+        );
+    }
+    if let Err(e) = platform(facts) {
+        out.push(e);
+    }
+    out
 }
 
 /// The type a node is given: `--type`, else what is stored, else `full`;
@@ -244,7 +184,7 @@ pub(crate) struct RunVars<'a> {
 impl RunVars<'_> {
     /// The host variables.
     pub(crate) fn host_vars(&self) -> Result<Map<String, Value>, String> {
-        let platform = self.facts.platform()?;
+        let platform = platform(self.facts)?;
         let controller = self.facts.controller_ip()?;
         if self.facts.ssh_port == 0 {
             return Err("the server-observed SSH destination port is missing; refuse an unconfirmed ingress policy".into());
@@ -452,7 +392,7 @@ mod tests {
 
     use erpc_chain_eth::kind::RpcType;
 
-    use super::{Facts, RunVars, rpc_type};
+    use super::{Facts, RunVars, refusals, rpc_type};
 
     pub(crate) fn facts() -> Facts {
         Facts::parse(
@@ -506,25 +446,25 @@ mod tests {
     #[test]
     fn the_facts_read_and_an_unfit_host_is_refused() {
         let f = facts();
-        assert!(f.refusals().is_empty(), "{:?}", f.refusals());
+        assert!(refusals(&f).is_empty(), "{:?}", refusals(&f));
         let jammy = Facts {
             os: "ubuntu 22.04".to_owned(),
             ..f.clone()
         };
-        assert_eq!(jammy.refusals().len(), 1);
+        assert_eq!(refusals(&jammy).len(), 1);
         let old_cpu = Facts {
             x86_64_v3: 2,
             mem_kb: 16_000_000,
             sudo: false,
             ..f.clone()
         };
-        assert_eq!(old_cpu.refusals().len(), 3);
+        assert_eq!(refusals(&old_cpu).len(), 3);
         let arm = Facts {
             machine: "aarch64".to_owned(),
             x86_64_v3: 0,
             ..f
         };
-        assert!(arm.refusals().is_empty());
+        assert!(refusals(&arm).is_empty());
     }
 
     #[test]

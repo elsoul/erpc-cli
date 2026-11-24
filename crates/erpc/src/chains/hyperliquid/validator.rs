@@ -103,7 +103,7 @@ fn request(node: &ValidatorNode, action: &str, intent: &str) -> Result<Value, St
 }
 fn inventory(
     node: &ValidatorNode,
-    facts: &crate::chains::eth::rpc::Facts,
+    facts: &crate::node::host::Facts,
     intent: &str,
 ) -> Result<String, String> {
     let mut value: Value = serde_json::from_str(&rpc::inventory(&node.host, facts, intent)?)
@@ -330,7 +330,7 @@ fn init(network: Network, args: &ArgMatches, say: &Say) -> Result<Value, String>
         json!({"name":name,"role":"validator","network":network.name(),"mode":"follower","started":false,"custody":imported}),
     )
 }
-fn validator_facts(session: &Session) -> Result<crate::chains::eth::rpc::Facts, String> {
+fn validator_facts(session: &Session) -> Result<crate::node::host::Facts, String> {
     let facts = rpc::facts(session)?;
     if facts.cpus < 32 {
         return Err(
@@ -870,7 +870,7 @@ mod tests {
     #[test]
     fn public_inventory_binds_native_mode_and_never_carries_concealed_reference() {
         let mut node = fixture();
-        let facts = crate::chains::eth::rpc::Facts {
+        let facts = crate::node::host::Facts {
             controller: "192.0.2.20".into(),
             ssh_port: 22,
             ..Default::default()

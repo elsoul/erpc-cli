@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Complete immutable source profile and public-only Arbitrum run inventories.
-use crate::chains::eth::rpc::Facts;
+use crate::node::host::Facts;
 use erpc_chain::inventory::arbitrum_validator::Validator;
 use erpc_chain_nitro::validator::{Deployment, helper_files, helpers_digest, request_digest};
 use erpc_ops::bundle::{Built, Bundle};
