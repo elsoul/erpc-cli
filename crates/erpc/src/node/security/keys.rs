@@ -5,15 +5,24 @@
 //! keystores without encryption, secrets in environment files, in running
 //! processes' environments and in shell histories.
 //!
-//! The search walks a fixed list of directories under the root. It never
-//! follows a symbolic link, never leaves the filesystem a directory it
-//! starts from is on (a home under `/home` may be one of its own), skips
-//! the directories chains keep their databases in, reads only regular files
-//! of at most [`FILE_LIMIT`] bytes and the last [`TAIL_LIMIT`] bytes of a
-//! shell history, and stops at its [`BUDGET`]. Contents go into one buffer
-//! that is wiped after every file. What leaves this module for the request
-//! is a kind, a role, a class of place and of access, and a count; the
-//! paths go apart, into [`Places`], for the operator's own screen.
+//! The search walks a fixed list of directories under the root. Each
+//! directory and file is opened relative to its parent's descriptor, so a
+//! directory swapped for a link while the walk runs leads nowhere new. The
+//! walk never follows a symbolic link, never leaves the filesystem a
+//! directory it starts from is on (a home under `/home` may be one of its
+//! own), skips the directories chains keep their databases in, reads only
+//! regular files of at most [`FILE_LIMIT`] bytes and the last
+//! [`TAIL_LIMIT`] bytes of a shell history, and stops at its [`BUDGET`]. On
+//! Linux an entry is first opened as a path only, so no device is opened
+//! and no pipe waited on. The one read outside the walk is the identity
+//! file each running validator was given, read where the validator reads
+//! it, through links and on any filesystem, and only if it is a regular
+//! file.
+//!
+//! Contents go into one buffer that is wiped after every file. What leaves
+//! this module for the request is a kind, a role, a class of place and of
+//! access, and a count; the paths go apart, into [`Places`], for the
+//! operator's own screen.
 
 use std::collections::BTreeMap;
 use std::io::Read;
@@ -33,9 +42,12 @@ pub(super) const BUDGET: Budget = Budget {
 
 /// The largest file read whole.
 const FILE_LIMIT: usize = 64 * 1024;
-/// How much of the end of a shell history, or of a process's environment,
-/// is read.
+/// How much of the end of a shell history is read, and the largest process
+/// environment read (a larger one makes the search partial).
 const TAIL_LIMIT: usize = 1024 * 1024;
+/// How deep below a start the walk goes; deeper makes the search partial.
+/// The walk holds one descriptor per level.
+const MAX_DEPTH: usize = 48;
 /// How many places are kept per group to show.
 const PLACES_SHOWN: usize = 10;
 
@@ -244,7 +256,12 @@ fn place(root: &Path, path: &Path) -> String {
 /// `text` with control and bidirectional formatting characters escaped, so
 /// a file's name cannot rewrite the operator's terminal.
 fn printable(text: &str) -> String {
-    let bidi = |c: char| matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}');
+    let bidi = |c: char| {
+        matches!(
+            c,
+            '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{2028}'..='\u{202e}'
+        )
+    };
     let isolate = |c: char| matches!(c, '\u{2066}'..='\u{2069}');
     text.chars()
         .map(|c| {
@@ -337,18 +354,20 @@ pub(super) fn search(
 #[cfg(unix)]
 mod walk {
     use std::collections::BTreeSet;
-    use std::ffi::OsStr;
-    use std::fs::File;
+    use std::ffi::{CStr, OsStr};
+    use std::fs::{File, Metadata};
+    use std::os::fd::OwnedFd;
     use std::os::unix::ffi::OsStrExt as _;
-    use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
+    use std::os::unix::fs::MetadataExt as _;
     use std::path::{Path, PathBuf};
     use std::time::Instant;
 
     use erpc_api::security_check::{Access, Coverage, KeyKind, KeyLocation, KeyRole, Keys};
+    use rustix::fs::{Dir, FileType, Mode, OFlags};
 
     use super::{
-        Budget, Buffer, CHAIN_DATA, FILE_LIMIT, Found, Places, Reach, SKIPPED_PATHS, Start,
-        TAIL_LIMIT, descend, place,
+        Budget, Buffer, CHAIN_DATA, FILE_LIMIT, Found, MAX_DEPTH, Places, Reach, SKIPPED_PATHS,
+        Start, TAIL_LIMIT, descend, place,
     };
     use crate::node::security::secrets;
 
@@ -356,6 +375,87 @@ mod walk {
     /// loss of view.
     fn gone(error: &std::io::Error) -> bool {
         error.kind() == std::io::ErrorKind::NotFound || error.raw_os_error() == Some(libc::ESRCH)
+    }
+
+    /// An entry of a directory, opened without starting a device's driver.
+    pub(super) enum Opened {
+        Dir(OwnedFd, Metadata),
+        File(File, Metadata),
+        /// A link (when links are not followed), a pipe, a socket or a
+        /// device: never read.
+        Other,
+    }
+
+    /// Opens `name` in the directory `dir` (or a path, with
+    /// [`rustix::fs::CWD`]): a directory to list, or a regular file to read.
+    /// On Linux the entry is first opened as a path only, which opens no
+    /// device and waits on no pipe; only a directory or a regular file is
+    /// then opened for reading, through that same descriptor.
+    #[cfg(target_os = "linux")]
+    pub(super) fn open_entry(
+        dir: impl rustix::fd::AsFd,
+        name: &CStr,
+        follow: bool,
+    ) -> std::io::Result<Opened> {
+        let mut flags = OFlags::PATH | OFlags::CLOEXEC;
+        if !follow {
+            flags |= OFlags::NOFOLLOW;
+        }
+        let path = File::from(rustix::fs::openat(dir, name, flags, Mode::empty())?);
+        let meta = path.metadata()?;
+        // An error from here on is a loss of view, never a file gone.
+        let reopen = |e: std::io::Error| std::io::Error::other(e.to_string());
+        if meta.is_dir() {
+            let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
+            let fd = rustix::fs::openat(&path, c".", flags, Mode::empty())
+                .map_err(|e| reopen(e.into()))?;
+            Ok(Opened::Dir(fd, meta))
+        } else if meta.is_file() {
+            // The descriptor's own link in /proc names this very file.
+            use std::os::fd::AsRawFd as _;
+            let file = File::open(format!("/proc/self/fd/{}", path.as_raw_fd())).map_err(reopen)?;
+            Ok(Opened::File(file, meta))
+        } else {
+            Ok(Opened::Other)
+        }
+    }
+
+    /// Elsewhere there is no path-only open; the check itself runs on Linux
+    /// only, and this serves the tests.
+    #[cfg(not(target_os = "linux"))]
+    pub(super) fn open_entry(
+        dir: impl rustix::fd::AsFd,
+        name: &CStr,
+        follow: bool,
+    ) -> std::io::Result<Opened> {
+        let nofollow = if follow {
+            OFlags::empty()
+        } else {
+            OFlags::NOFOLLOW
+        };
+        let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | nofollow;
+        match rustix::fs::openat(&dir, name, flags, Mode::empty()) {
+            Ok(fd) => {
+                let file = File::from(fd);
+                let meta = file.metadata()?;
+                return Ok(Opened::Dir(file.into(), meta));
+            }
+            Err(rustix::io::Errno::NOTDIR) => {}
+            Err(e) => return Err(e.into()),
+        }
+        let flags = OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOCTTY | OFlags::CLOEXEC | nofollow;
+        let file = File::from(rustix::fs::openat(&dir, name, flags, Mode::empty())?);
+        let meta = file.metadata()?;
+        Ok(if meta.is_file() {
+            Opened::File(file, meta)
+        } else {
+            Opened::Other
+        })
+    }
+
+    /// Whether an error says the entry is a link that was not followed.
+    pub(super) fn link(error: &std::io::Error) -> bool {
+        error.raw_os_error() == Some(libc::ELOOP)
     }
 
     pub(super) struct Search<'a> {
@@ -371,7 +471,9 @@ mod walk {
         found: Found,
     }
 
-    struct Dir {
+    /// A directory being listed.
+    struct Frame {
+        dir: Dir,
         path: PathBuf,
         dev: u64,
         reach: Reach,
@@ -408,23 +510,22 @@ mod walk {
             self.cut
         }
 
-        /// The public keys of the identity files at `paths`. The validator
-        /// reads its identity through any link, and so does this; it does
-        /// not wait on a pipe.
+        /// The public keys of the identity files at `paths`, which running
+        /// validators were given. Unlike the walk, this reads a file where
+        /// the validator does: through links, and on any filesystem. Only a
+        /// regular file is read.
         pub(super) fn identities(&mut self, paths: &[PathBuf]) {
             for path in paths {
-                let opened = std::fs::OpenOptions::new()
-                    .read(true)
-                    .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY)
-                    .open(path);
-                let pubkey = opened.and_then(|mut file| {
-                    if !file.metadata()?.is_file() {
-                        return Ok(None);
-                    }
-                    self.buffer
-                        .read(&mut file, FILE_LIMIT, true, secrets::solana_pubkey)
-                        .map(Option::flatten)
-                });
+                let pubkey = rustix::ffi::CString::new(path.as_os_str().as_bytes())
+                    .map_err(std::io::Error::other)
+                    .and_then(|path| open_entry(rustix::fs::CWD, &path, true))
+                    .and_then(|opened| match opened {
+                        Opened::File(mut file, _) => self
+                            .buffer
+                            .read(&mut file, FILE_LIMIT, true, secrets::solana_pubkey)
+                            .map(Option::flatten),
+                        Opened::Dir(..) | Opened::Other => Ok(None),
+                    });
                 match pubkey {
                     Ok(Some(pubkey)) => {
                         self.identities.insert(pubkey);
@@ -438,7 +539,7 @@ mod walk {
             }
         }
 
-        /// Every listed process's environment.
+        /// Every listed process's environment, read whole up to its limit.
         pub(super) fn environs(&mut self, scan: &crate::node::security::procs::Scan) {
             if !scan.listed {
                 self.partial = true;
@@ -492,106 +593,146 @@ mod walk {
             Some(reach)
         }
 
-        pub(super) fn walk(&mut self, start: &Start) {
+        /// The start directory, opened without following a link.
+        fn open_start(&mut self, start: &Start) -> Option<Frame> {
             let path = self.root.join(start.path);
-            let meta = match std::fs::symlink_metadata(&path) {
-                Ok(meta) => meta,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+            match std::fs::symlink_metadata(&path) {
+                Ok(meta) if meta.is_dir() => {}
+                Ok(meta) => {
+                    // A start that is a link leads where this search does
+                    // not go.
+                    self.partial |= meta.file_type().is_symlink();
+                    return None;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
                 Err(_) => {
                     self.partial = true;
-                    return;
+                    return None;
                 }
-            };
-            if !meta.is_dir() {
-                // A start that is a link leads where this search does not go.
-                self.partial |= meta.file_type().is_symlink();
-                return;
             }
-            let Some(reach) = self.reach_of(start.path) else {
+            let reach = self.reach_of(start.path);
+            let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+            let opened = rustix::fs::open(&path, flags, Mode::empty())
+                .map_err(std::io::Error::from)
+                .and_then(|fd| {
+                    let file = File::from(fd);
+                    let meta = file.metadata()?;
+                    Ok((Dir::new(OwnedFd::from(file))?, meta))
+                });
+            let (Ok((dir, meta)), Some(reach)) = (opened, reach) else {
                 self.partial = true;
-                return;
+                return None;
             };
-            let mut stack = vec![Dir {
+            self.opened += 1;
+            Some(Frame {
+                dir,
                 path,
                 dev: meta.dev(),
                 reach,
                 depth: 0,
-            }];
-            while let Some(dir) = stack.pop() {
-                let entries = match std::fs::read_dir(&dir.path) {
-                    Ok(entries) => entries,
-                    Err(e) => {
-                        self.partial |= !gone(&e);
-                        continue;
-                    }
+            })
+        }
+
+        pub(super) fn walk(&mut self, start: &Start) {
+            let Some(first) = self.open_start(start) else {
+                return;
+            };
+            let mut frames = vec![first];
+            while let Some(frame) = frames.last_mut() {
+                let Some(entry) = frame.dir.read() else {
+                    frames.pop();
+                    continue;
                 };
-                if dir.depth == 0 {
-                    self.opened += 1;
+                let Ok(entry) = entry else {
+                    self.partial = true;
+                    frames.pop();
+                    continue;
+                };
+                let name = entry.file_name();
+                if name == c"." || name == c".." {
+                    continue;
                 }
-                for entry in entries {
-                    if self.spend() {
-                        return;
-                    }
-                    let Ok(entry) = entry else {
-                        self.partial = true;
-                        continue;
-                    };
-                    let Ok(kind) = entry.file_type() else {
-                        self.partial = true;
-                        continue;
-                    };
-                    let child = entry.path();
-                    if kind.is_dir() {
-                        if self.skipped(&child, &entry.file_name()) {
+                if self.spend() {
+                    return;
+                }
+                // Links, pipes, sockets and devices are not opened. An entry
+                // of unknown type is opened as a path to find out.
+                if !matches!(
+                    entry.file_type(),
+                    FileType::RegularFile | FileType::Directory | FileType::Unknown
+                ) {
+                    continue;
+                }
+                let path = frame.path.join(OsStr::from_bytes(name.to_bytes()));
+                if entry.file_type() == FileType::Directory && self.skipped(&path, name) {
+                    continue;
+                }
+                let opened = frame
+                    .dir
+                    .fd()
+                    .map_err(std::io::Error::from)
+                    .and_then(|dir| open_entry(dir, name, false));
+                let child = match opened {
+                    Ok(Opened::Dir(fd, meta)) => {
+                        if self.skipped(&path, name) {
                             continue;
                         }
-                        // `DirEntry::metadata` does not follow links.
-                        let Ok(meta) = entry.metadata() else {
+                        let Some(dev) = descend(start.homes, frame.depth, frame.dev, meta.dev())
+                        else {
+                            continue;
+                        };
+                        if frame.depth + 1 > MAX_DEPTH {
+                            self.partial = true;
+                            continue;
+                        }
+                        let Ok(dir) = Dir::new(fd) else {
                             self.partial = true;
                             continue;
                         };
-                        if let Some(dev) = descend(start.homes, dir.depth, dir.dev, meta.dev()) {
-                            stack.push(Dir {
-                                path: child,
-                                dev,
-                                reach: dir.reach.through(meta.mode()),
-                                depth: dir.depth + 1,
-                            });
+                        Frame {
+                            dir,
+                            path,
+                            dev,
+                            reach: frame.reach.through(meta.mode()),
+                            depth: frame.depth + 1,
                         }
-                    } else if kind.is_file() {
-                        self.file(&child, &entry.file_name(), dir.reach, start.location);
                     }
-                    // Links, sockets, pipes and devices are not opened.
-                }
+                    Ok(Opened::File(file, meta)) => {
+                        let reach = frame.reach;
+                        self.file(&path, name.to_bytes(), file, &meta, reach, start.location);
+                        continue;
+                    }
+                    Ok(Opened::Other) => continue,
+                    Err(e) if gone(&e) || link(&e) => continue,
+                    Err(_) => {
+                        self.partial = true;
+                        continue;
+                    }
+                };
+                frames.push(child);
             }
         }
 
-        fn skipped(&self, path: &Path, name: &OsStr) -> bool {
-            CHAIN_DATA.iter().any(|skip| name == *skip)
+        fn skipped(&self, path: &Path, name: &CStr) -> bool {
+            CHAIN_DATA
+                .iter()
+                .any(|skip| name.to_bytes() == skip.as_bytes())
                 || path
                     .strip_prefix(self.root)
                     .is_ok_and(|inside| SKIPPED_PATHS.iter().any(|skip| inside == Path::new(skip)))
         }
 
-        fn file(&mut self, path: &Path, name: &OsStr, reach: Reach, location: KeyLocation) {
-            let name = name.as_bytes();
+        fn file(
+            &mut self,
+            path: &Path,
+            name: &[u8],
+            mut file: File,
+            meta: &Metadata,
+            reach: Reach,
+            location: KeyLocation,
+        ) {
             let history = is_history(path, name);
-            // A file swapped for a link, a pipe or a device after it was
-            // listed is not followed, waited on or read.
-            let opened = std::fs::OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_NOCTTY)
-                .open(path)
-                .and_then(|file| Ok((file.metadata()?, file)));
-            let (meta, mut file) = match opened {
-                Ok(opened) => opened,
-                Err(e) if gone(&e) || e.raw_os_error() == Some(libc::ELOOP) => return,
-                Err(_) => {
-                    self.partial = true;
-                    return;
-                }
-            };
-            if !meta.is_file() || meta.len() == 0 || (!history && meta.len() > FILE_LIMIT as u64) {
+            if meta.len() == 0 || (!history && meta.len() > FILE_LIMIT as u64) {
                 return;
             }
             let access = reach.access(meta.mode());
@@ -705,7 +846,8 @@ pub(super) mod tests {
 
     use super::super::procs::{Budget, Scan};
     use super::super::secrets::tests::{array_with, hex_key, phrase};
-    use super::{BUDGET, Found, Reach, descend, printable, search};
+    use super::walk::{Opened, link, open_entry};
+    use super::{BUDGET, Found, MAX_DEPTH, Reach, descend, printable, search};
 
     fn write(root: &Path, path: &str, contents: &[u8], mode: u32) {
         let path = root.join(path);
@@ -1075,5 +1217,137 @@ pub(super) mod tests {
             printable("/tmp/\u{1b}[2Jkey\u{202e}txt.json\n"),
             "/tmp/\\u{1b}[2Jkey\\u{202e}txt.json\\u{a}"
         );
+        assert_eq!(printable("a\u{61c}b\u{2028}c"), "a\\u{61c}b\\u{2028}c");
+    }
+
+    #[test]
+    fn an_identity_given_through_a_link_elsewhere_is_still_the_identity() {
+        let root = crate::node::security::fixture("keys-identity-link");
+        let identity = keypair();
+        // The validator was given a link to a key outside every start, as
+        // a setup that switches identities does.
+        write(
+            &root,
+            "mnt/ramdisk/staked.json",
+            identity.to_json().as_bytes(),
+            0o600,
+        );
+        write(
+            &root,
+            "home/sol/backup/staked.json",
+            identity.to_json().as_bytes(),
+            0o600,
+        );
+        symlink(
+            "../../mnt/ramdisk/staked.json",
+            root.join("home/sol/identity.json"),
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+        for (dir, mode) in [("", 0o755), ("home", 0o755), ("home/sol", 0o750)] {
+            chmod(&root.join(dir), mode);
+        }
+        let given = root.join("home/sol/identity.json");
+        let (keys, places) = search(&root, BUDGET, &scan(&[]), &[given]);
+        assert_eq!(
+            groups(&keys),
+            [(
+                KeyKind::SolanaKeypair,
+                KeyRole::ValidatorIdentity,
+                KeyLocation::Home,
+                Access::OwnerOnly,
+                1
+            )]
+        );
+        // The walk itself followed no link: only the copy it reached counts.
+        assert_eq!(
+            places.of(0).map(|shown| shown.paths.clone()),
+            Some(vec!["/home/sol/backup/staked.json".to_owned()])
+        );
+        assert_eq!(keys.coverage(), Coverage::Complete);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn unreadable_identities_directories_and_files_make_the_search_partial() {
+        let root = crate::node::security::fixture("keys-unreadable");
+        chmod(&root, 0o755);
+        write(&root, "etc/hostname", b"node\n", 0o644);
+        let complete = search(&root, BUDGET, &scan(&[]), &[]).0;
+        assert_eq!(complete.coverage(), Coverage::Complete);
+
+        let hidden = root.join("mnt/id.json");
+        write(&root, "mnt/id.json", keypair().to_json().as_bytes(), 0o000);
+        write(&root, "etc/secret.key", hex_key().as_bytes(), 0o000);
+        std::fs::create_dir_all(root.join("etc/private")).unwrap_or_else(|e| panic!("{e}"));
+        chmod(&root.join("etc/private"), 0o000);
+        // The superuser reads through modes; there is nothing to show then.
+        if std::fs::read(&hidden).is_ok() {
+            chmod(&root.join("etc/private"), 0o755);
+            let _ = std::fs::remove_dir_all(&root);
+            return;
+        }
+        let identity = search(&root, BUDGET, &scan(&[]), std::slice::from_ref(&hidden)).0;
+        assert_eq!(identity.coverage(), Coverage::Partial);
+        let unread = |root: &Path| search(root, BUDGET, &scan(&[]), &[]).0.coverage();
+        assert_eq!(unread(&root), Coverage::Partial);
+        chmod(&root.join("etc/private"), 0o755);
+        assert_eq!(unread(&root), Coverage::Partial, "the file alone");
+        chmod(&root.join("etc/secret.key"), 0o644);
+        chmod(&root.join("etc/private"), 0o000);
+        assert_eq!(unread(&root), Coverage::Partial, "the directory alone");
+        chmod(&root.join("etc/private"), 0o755);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_tree_deeper_than_the_walk_goes_is_partial() {
+        let root = crate::node::security::fixture("keys-deep");
+        chmod(&root, 0o755);
+        let deepest = (0..=MAX_DEPTH).fold(root.join("opt"), |path, _| path.join("d"));
+        std::fs::create_dir_all(&deepest).unwrap_or_else(|e| panic!("{e}"));
+        let coverage = |root: &Path| search(root, BUDGET, &scan(&[]), &[]).0.coverage();
+        assert_eq!(coverage(&root), Coverage::Partial);
+        std::fs::remove_dir(&deepest).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(coverage(&root), Coverage::Complete);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn only_directories_and_regular_files_are_opened_to_read() {
+        let path = |p: &Path| {
+            std::ffi::CString::new(p.as_os_str().as_encoded_bytes())
+                .unwrap_or_else(|e| panic!("{e}"))
+        };
+        // A device, even when a link leads to it.
+        let device = open_entry(rustix::fs::CWD, c"/dev/null", true);
+        assert!(matches!(device, Ok(Opened::Other)));
+        let root = crate::node::security::fixture("keys-open");
+        symlink("/dev/null", root.join("null")).unwrap_or_else(|e| panic!("{e}"));
+        let followed = open_entry(rustix::fs::CWD, &path(&root.join("null")), true);
+        assert!(matches!(followed, Ok(Opened::Other)));
+        // A link, when links are not followed.
+        write(&root, "real.json", b"[]", 0o644);
+        symlink("real.json", root.join("link.json")).unwrap_or_else(|e| panic!("{e}"));
+        let link_entry = open_entry(rustix::fs::CWD, &path(&root.join("link.json")), false);
+        assert!(match link_entry {
+            Ok(Opened::Other) => true,
+            Err(e) => link(&e),
+            Ok(_) => false,
+        });
+        let real = open_entry(rustix::fs::CWD, &path(&root.join("real.json")), false);
+        assert!(matches!(real, Ok(Opened::File(..))));
+        // A pipe is neither opened to read nor waited on, where mkfifo exists.
+        let pipe = root.join("pipe");
+        if std::process::Command::new("mkfifo")
+            .arg(&pipe)
+            .status()
+            .is_ok_and(|s| s.success())
+        {
+            assert!(matches!(
+                open_entry(rustix::fs::CWD, &path(&pipe), true),
+                Ok(Opened::Other)
+            ));
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

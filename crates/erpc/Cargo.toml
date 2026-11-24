@@ -85,8 +85,10 @@ erpc-worker = { workspace = true, features = ["templates"] }
 libc.workspace = true
 signal-hook.workspace = true
 # The terminal's echo, held off across the keystore's passphrase prompts
-# (src/cli/echo.rs).
-rustix = { workspace = true, features = ["std", "termios"] }
+# (src/cli/echo.rs), and the security check's key search, which opens each
+# directory and file relative to its parent's descriptor
+# (src/node/security/keys.rs).
+rustix = { workspace = true, features = ["std", "termios", "fs"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # A pseudoterminal, for the test of src/cli/echo.rs.

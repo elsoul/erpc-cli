@@ -135,20 +135,30 @@ any program:
   processes;
 - lines of bash, zsh and fish histories that hold 64 hexadecimal digits in a
   row, 87 or 88 base58 characters in a row (the length of a Solana secret
-  key), or set one of those variables.
+  key), or set one of those variables. A transaction signature, hash or
+  digest of the same length is counted too.
 
-The key search does not follow symbolic links or cross into another
-filesystem, though each directory in `/home` may be one of its own. It
-skips Docker's image layers and every directory named `ledger`,
+The key search opens each directory and file relative to the directory it
+was listed in. It does not follow symbolic links or cross into another
+filesystem, though each directory in `/home` may be one of its own, and it
+reads only directories and regular files: it opens no device and waits on
+no pipe. It skips Docker's image layers and every directory named `ledger`,
 `accounts`, `snapshots`, `rocksdb`, `chaindata`, `geth`, `nodes` or `data`,
 where chains keep their databases, so a key kept in one of those is not
-found. It reads files of up to 64 KiB and the last 1 MiB of a history, and
-stops after 200,000 entries or 20 seconds, reporting the search as partial.
+found. It reads files of up to 64 KiB, the last 1 MiB of a history and
+process environments of up to 1 MiB, goes at most 48 directories deep, and
+stops after 200,000 entries or 20 seconds. Running out of time or entries,
+a deeper tree, a larger environment, or a directory, file, environment or
+identity file it may not read makes it report the search as partial.
+
 A Solana keypair counts as the validator identity when its public key,
 worked out on the server, is that of the identity file a running validator
-was given. Who can read a key is judged from the permission bits of the
-file and of the directories above it, not from access control lists. Each
-file's contents go into one buffer that is wiped after the file is checked.
+was given. That identity file is the one read outside the rules above: it is
+read where the validator reads it, through symbolic links and on any
+filesystem, though only if it is a regular file. Who can read a key is
+judged from the permission bits of the file and of the directories above
+it, not from access control lists. Each file's contents go into one buffer
+that is wiped after the file is checked.
 
 What goes to ERPC is that list in a fixed form: port numbers, address
 classes such as loopback or public, program kinds such as `agave_validator`,
