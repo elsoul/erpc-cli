@@ -389,6 +389,7 @@ jobs:
         run: |
           scripts/tests/check-oss-hygiene.test.sh
           scripts/tests/check-endpoints.test.sh
+          scripts/tests/check-chain-imports.test.sh
           scripts/tests/build-manifest.test.sh
           scripts/tests/release-wiring.test.sh
           scripts/tests/workflow-audit.test.sh
@@ -397,6 +398,8 @@ jobs:
         run: scripts/check-oss-hygiene.sh
       - name: endpoint allowlist (all tracked files)
         run: scripts/check-endpoints.sh
+      - name: chain modules do not import each other
+        run: scripts/check-chain-imports.sh
 
   gates-bash32:
     name: gates under bash 3.2 (macOS)
@@ -416,8 +419,10 @@ jobs:
         run: |
           /bin/bash scripts/check-oss-hygiene.sh
           /bin/bash scripts/check-endpoints.sh
+          /bin/bash scripts/check-chain-imports.sh
           /bin/bash scripts/tests/check-oss-hygiene.test.sh
           /bin/bash scripts/tests/check-endpoints.test.sh
+          /bin/bash scripts/tests/check-chain-imports.test.sh
           /bin/bash scripts/tests/build-manifest.test.sh
           /bin/bash scripts/tests/release-wiring.test.sh
           /bin/bash scripts/tests/workflow-audit.test.sh
