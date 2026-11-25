@@ -155,7 +155,10 @@ app on loopback; `firewall.app_allow` opens the WAF's port, never the app's.
   holds while the WAF is still a process of an agent from before the one installed (after a
   `deploy --prepare` with a newer erpc, say), or was started before its config or its unit on
   the server last changed (one was written there and no deploy has restarted the WAF since):
-  `status` says so, and a deploy restarts it.
+  `status` says so, and a deploy restarts it. Where `status` says instead that a note on the
+  server cannot be removed, another deploy does not end it (one after a change to `[waf]`
+  fails at it, changing nothing): tell the user to remove the path it names, as root on the
+  server.
 - Say what it is not: plain HTTP/1.1 (no TLS, no HTTP/2, no WebSocket), no look inside
   bodies, no authentication; bans and counts are forgotten when it restarts. It holds each
   address to a request rate and a number of connections, and holds 1024 connections in all:

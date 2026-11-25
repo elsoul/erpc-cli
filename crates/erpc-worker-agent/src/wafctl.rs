@@ -45,6 +45,14 @@
 //! taken to have been started from the files as they are, whatever its
 //! start is dated, and the next apply restarts it.
 //!
+//! Only root can put anything at the note's path. Something there that
+//! cannot be removed (a directory, a file made immutable) keeps the proxy
+//! counted as started before its files, so that every apply restarts it
+//! and erpc opens its port no wider outside a deploy: the side that errs
+//! towards holding. That is said, not left to look like an apply that was
+//! ended: by the apply that could not remove it, as `note_error`, and by
+//! `status`, as `note_error` beside `started` ([`Host::stuck`]).
+//!
 //! Where the files are, what systemd is asked and where a process's
 //! binary is looked up is a [`Host`], so that the tests run the same
 //! steps against a directory and a systemd that answers as they say.
@@ -343,6 +351,27 @@ const UNFINISHED: &str = "erpc: a deploy was writing this worker's WAF config or
                           not restarted the WAF from them yet. The next deploy does, and removes \
                           this file.\n";
 
+/// What keeps a note from being removed, by what is at its path: a
+/// directory is not a file to remove, and a file its filesystem calls
+/// immutable or append-only (`chattr +i`, `+a`) is not removed, by root
+/// either, until that is undone. None for anything else. The kernel's
+/// other refusals here (a filesystem mounted read-only, a directory made
+/// immutable or append-only) end an apply before it writes, with their
+/// reason, at the change to the directory's mode.
+fn kept_by(
+    kind: rustix::fs::FileType,
+    attributes: rustix::fs::StatxAttributes,
+) -> Option<&'static str> {
+    use rustix::fs::{FileType, StatxAttributes};
+    if kind == FileType::Directory {
+        Some("is a directory")
+    } else if attributes.intersects(StatxAttributes::IMMUTABLE | StatxAttributes::APPEND) {
+        Some("is immutable or append-only")
+    } else {
+        None
+    }
+}
+
 impl Host<'_> {
     /// Where the note of an apply of worker `id` that has not finished
     /// is: beside its config, in a directory of root's.
@@ -370,10 +399,39 @@ impl Host<'_> {
 
     /// Takes the note away: systemd has read the unit files again and has
     /// been asked to start or restart worker `id`'s proxy, so what runs
-    /// now was started from the files as they are. A note that cannot be
-    /// removed stays, and the next apply restarts the proxy once more.
-    fn settled(&self, id: &str) {
-        let _ = std::fs::remove_file(self.unfinished_path(id));
+    /// now was started from the files as they are.
+    ///
+    /// A note that cannot be removed stays, and this says why: its path
+    /// and the system's reason. Until root removes it, every apply
+    /// restarts the proxy and `status` says `before_config`, naming the
+    /// note where it can tell ([`Host::stuck`]).
+    fn settled(&self, id: &str) -> Option<String> {
+        let path = self.unfinished_path(id);
+        match std::fs::remove_file(&path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                Some(printable(&format!("{}: {e}", path.display()), SAID))
+            }
+            _ => None,
+        }
+    }
+
+    /// Why what is at the note's path for worker `id` cannot be removed,
+    /// as far as that can be told without trying ([`kept_by`]), after the
+    /// path. None when nothing is there, or nothing found stands in the
+    /// way. `status` says it, so that such a note is not taken for one an
+    /// apply that was ended left.
+    fn stuck(&self, id: &str) -> Option<String> {
+        use rustix::fs::{AtFlags, CWD, FileType, StatxFlags};
+        let path = self.unfinished_path(id);
+        let found =
+            rustix::fs::statx(CWD, &path, AtFlags::SYMLINK_NOFOLLOW, StatxFlags::TYPE).ok()?;
+        // A filesystem that does not keep an attribute leaves its bit
+        // clear (`stx_attributes_mask` says which it keeps).
+        let why = kept_by(
+            FileType::from_raw_mode(u32::from(found.stx_mode)),
+            found.stx_attributes,
+        )?;
+        Some(printable(&format!("{}: {why}", path.display()), SAID))
     }
 
     /// Writes worker `id`'s config and unit where they differ from what
@@ -517,6 +575,11 @@ pub(crate) fn config_on_stdin() -> Result<String, String> {
     Ok(text)
 }
 
+/// What an apply that went through did: whether it wrote either file,
+/// what it did with the proxy and why, and why the note could not be
+/// removed, where it could not.
+type Applied = (bool, &'static str, Option<&'static str>, Option<String>);
+
 /// What a worker's WAF was before `waf-apply` changed it.
 struct Before {
     config: Option<String>,
@@ -562,9 +625,20 @@ struct Before {
 /// config or its unit last changed, though this apply changed neither:
 /// an apply before this one wrote the file and did not get to restart
 /// the proxy) or `unknown_start` (when it was started could not be told).
+/// And `note_error`: null, or the note's path and why it could not be
+/// removed ([`Host::settled`]). The apply is `ok` all the same: the proxy
+/// was started from the files as they are, and listens. But the note
+/// stays, so every apply restarts the proxy (`older_than_config`) until
+/// root removes what is there.
 /// When the proxy does not come up the answer says why, in systemd's word
 /// for the unit and the last lines of its journal, and what was there
 /// before is put back ([`put_back`]).
+///
+/// An apply that is to change a file and cannot leave its note first,
+/// because something no apply can remove is where the note goes
+/// ([`Host::stuck`]), writes nothing and fails, with `note_error` beside
+/// `error`: what is there is root's to remove, and another apply meets it
+/// again. Any other failure has `note_error` null.
 pub(crate) fn apply(host: &Host<'_>, id: &str, input: &str) -> Result<Value, String> {
     let config = WafConfig::parse(input.trim())?;
     let stats = server::waf_stats_path(id);
@@ -579,7 +653,9 @@ pub(crate) fn apply(host: &Host<'_>, id: &str, input: &str) -> Result<Value, Str
         config: std::fs::read_to_string(host.config_path(id)).ok(),
         unit: std::fs::read_to_string(host.unit_path(id)).ok(),
     };
-    let applied = (|| -> Result<(bool, &'static str, Option<&'static str>), String> {
+    // Whether it failed at writing the files, the note first.
+    let mut unwritten = false;
+    let applied = (|| -> Result<Applied, String> {
         std::fs::create_dir_all(&host.configs)
             .and_then(|()| {
                 std::fs::set_permissions(&host.configs, std::fs::Permissions::from_mode(0o755))
@@ -590,7 +666,9 @@ pub(crate) fn apply(host: &Host<'_>, id: &str, input: &str) -> Result<Value, Str
         // only bans and counts a restart forgets, so a package run on the
         // server may restart it (the rule that keeps needrestart off is
         // for the worker's own unit, `server::needrestart_conf`).
-        let (config_changed, unit_changed) = host.write(id, &text, &server::waf_unit(id))?;
+        let (config_changed, unit_changed) = host
+            .write(id, &text, &server::waf_unit(id))
+            .inspect_err(|_| unwritten = true)?;
         let changed = config_changed || unit_changed;
         let next = host.next(&unit, id, changed);
         // systemd reads the unit files again before it starts anything
@@ -601,37 +679,44 @@ pub(crate) fn apply(host: &Host<'_>, id: &str, input: &str) -> Result<Value, Str
             host.systemd.run(&["daemon-reload"])?;
         }
         host.systemd.run(&["enable", "--quiet", &unit])?;
-        let (proxy, because) = match next {
-            Next::Leave => ("running", None),
+        let (proxy, because, note) = match next {
+            Next::Leave => ("running", None, None),
             Next::Start => {
                 host.past_the_files(id);
                 host.systemd.run(&["start", &unit])?;
-                host.settled(id);
-                ("started", None)
+                ("started", None, host.settled(id))
             }
             Next::Restart(because) => {
                 host.past_the_files(id);
                 host.systemd.run(&["restart", &unit])?;
-                host.settled(id);
-                ("restarted", Some(because))
+                ("restarted", Some(because), host.settled(id))
             }
         };
         up(host, &unit, config.listen)?;
-        Ok((changed, proxy, because))
+        Ok((changed, proxy, because, note))
     })();
     Ok(match applied {
-        Ok((changed, proxy, because)) => json!({
+        Ok((changed, proxy, because, note)) => json!({
             "ok": true,
             "changed": changed,
             "proxy": proxy,
             "restarted_because": because,
+            "note_error": note,
             "unit": unit,
             "listen": config.listen,
             "upstream": config.upstream,
         }),
         Err(why) => {
+            // Told before anything is put back: a note that keeps the
+            // files from being changed keeps them so for every apply.
+            let note = if unwritten { host.stuck(id) } else { None };
             let left = put_back(host, id, &before);
-            json!({ "ok": false, "error": format!("{why}; {left}"), "unit": unit })
+            json!({
+                "ok": false,
+                "error": format!("{why}; {left}"),
+                "note_error": note,
+                "unit": unit,
+            })
         }
     })
 }
@@ -731,7 +816,9 @@ fn put_back(host: &Host<'_>, id: &str, before: &Before) -> String {
             host.past_the_files(id);
             let restarted = host.systemd.run(&["restart", &unit]);
             if read.is_ok() && restarted.is_ok() {
-                host.settled(id);
+                // The apply has failed and says so. A note that cannot be
+                // removed is said by `status` and by the next apply.
+                let _ = host.settled(id);
             }
             format!(
                 "the config and the unit from before are back, and {unit} is {}",
@@ -762,8 +849,9 @@ pub(crate) fn remove(host: &Host<'_>, id: &str) -> Result<Value, String> {
             .map_err(|e| format!("could not remove {}: {e}", config_path.display()))?;
         removed = true;
     }
-    // Nothing is left for the note to be about.
-    host.settled(id);
+    // Nothing is left for the note to be about. One that cannot be
+    // removed is met, and said, by the next apply.
+    let _ = host.settled(id);
     Ok(json!({ "ok": true, "removed": removed }))
 }
 
@@ -839,6 +927,11 @@ fn counted(path: &std::path::Path) -> Option<Result<WafStats, String>> {
 /// the note it left, until an apply restarts the proxy, whenever the
 /// proxy was started since.
 ///
+/// `note_error` is null, or names something at the note's path that no
+/// apply can remove, and why ([`Host::stuck`]): `started` is
+/// `before_config` while it is there, and stays so after every apply,
+/// until root removes it.
+///
 /// `binary` says whether the proxy that runs is the agent installed
 /// ([`Binary`]): `installed`, `other` or `unknown`. Only with `installed`
 /// is `config` read as the proxy reads it: an earlier agent's proxy may
@@ -851,8 +944,8 @@ fn counted(path: &std::path::Path) -> Option<Result<WafStats, String>> {
 /// otherwise.
 ///
 /// Every string in it is one erpc may show: systemd's word for the state,
-/// addresses, a time, and why the config or the stats do not read as
-/// printable ASCII of a bounded length.
+/// addresses, a time, and why the config or the stats do not read and
+/// why the note stays, as printable ASCII of a bounded length.
 pub(crate) fn status(host: &Host<'_>, id: &str) -> Value {
     let config = std::fs::read_to_string(host.config_path(id)).ok();
     if config.is_none() && !host.unit_path(id).exists() {
@@ -877,6 +970,7 @@ pub(crate) fn status(host: &Host<'_>, id: &str) -> Value {
         "upstream": read.map(|c| c.upstream),
         "config": read,
         "started": started.as_str(),
+        "note_error": host.stuck(id),
         "binary": binary.as_str(),
         "config_error": config.as_ref().err().map(said),
         "stats": counted.as_ref().and_then(|s| s.as_ref().ok()),
@@ -1235,11 +1329,13 @@ mod tests {
         assert_eq!(answer["proxy"], "running", "{answer}");
         assert_eq!(systemd.asked(), [format!("enable --quiet {UNIT}")]);
 
-        // Unchanged, and found stopped: started, not called changed.
+        // Unchanged, and found stopped: started, not called changed. No
+        // note was there to remove, and none is said.
         systemd.state.replace("failed".to_owned());
         let answer = super::apply(&host, ID, &json(&config)).expect("answers");
         assert_eq!(answer["changed"], false, "{answer}");
         assert_eq!(answer["proxy"], "started", "{answer}");
+        assert!(answer["note_error"].is_null(), "{answer}");
         assert_eq!(systemd.asked(), after_reload("start"));
     }
 
@@ -1730,12 +1826,15 @@ mod tests {
         let status = super::status(host, ID);
         assert_eq!(status["started"], "before_config", "{status}");
         assert_eq!(status["binary"], "installed", "{status}");
+        // A note an apply left is a file the next one removes.
+        assert!(status["note_error"].is_null(), "{status}");
         assert!(note.exists(), "the note is there");
         let answer = super::apply(host, ID, &json(config)).expect("answers");
         assert_eq!(answer["ok"], true, "{answer}");
         assert_eq!(answer["changed"], false, "{answer}");
         assert_eq!(answer["proxy"], "restarted", "{answer}");
         assert_eq!(answer["restarted_because"], "older_than_config", "{answer}");
+        assert!(answer["note_error"].is_null(), "{answer}");
         assert_eq!(systemd.asked(), after_reload("restart"));
         assert!(!note.exists(), "the note is gone");
         assert_eq!(super::status(host, ID)["started"], "after_config");
@@ -1898,6 +1997,11 @@ mod tests {
             why.contains("its config and unit are as they were"),
             "{why}"
         );
+        // What keeps it is said as `status` says it, so that erpc can say
+        // who removes it: no apply does.
+        let path = note.display().to_string();
+        assert_eq!(answer["note_error"], format!("{path}: is a directory"));
+        assert!(plain(&answer), "{answer}");
         // Neither file was written, and systemd was asked nothing.
         assert_eq!(
             std::fs::read_to_string(&config_path).expect("config"),
@@ -1907,6 +2011,124 @@ mod tests {
         // Whatever is where the note goes counts as one: the proxy is not
         // taken to have been started from its files.
         assert_eq!(super::status(&host, ID)["started"], "before_config");
+        // An apply that writes nothing gets past it, and one that fails
+        // after that, here at the restart, does not say the note: it is
+        // not what failed.
+        systemd.refuses.set(Some("restart"));
+        let answer = super::apply(&host, ID, &json(&config)).expect("answers");
+        assert_eq!(answer["ok"], false, "{answer}");
+        assert!(answer["note_error"].is_null(), "{answer}");
+        assert!(note.join("kept").is_dir(), "it stays as it was");
+    }
+
+    #[test]
+    fn a_note_that_cannot_be_removed_is_said_by_every_apply_and_by_status() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let systemd = Fake::new();
+        let host = host(&systemd, tmp.path());
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let config = config(&listener);
+        super::apply(&host, ID, &json(&config)).expect("answers");
+        systemd.asked();
+        // Root puts a directory where the note goes, with something in
+        // it: no apply removes that.
+        let note = host.configs.join("bot-default.applying");
+        std::fs::create_dir_all(note.join("kept")).expect("a directory");
+        let path = note.display().to_string();
+        for _ in 0..3 {
+            // `status` names it beside `started`, which stays
+            // `before_config`, so that erpc holds the port meanwhile.
+            let status = super::status(&host, ID);
+            assert_eq!(status["started"], "before_config", "{status}");
+            assert_eq!(status["note_error"], format!("{path}: is a directory"));
+            assert!(plain(&status), "{status}");
+            // Each apply restarts the proxy, is `ok`, and says that the
+            // note stays, with its path and the system's reason.
+            let answer = super::apply(&host, ID, &json(&config)).expect("answers");
+            assert_eq!(answer["ok"], true, "{answer}");
+            assert_eq!(answer["changed"], false, "{answer}");
+            assert_eq!(answer["proxy"], "restarted", "{answer}");
+            assert_eq!(answer["restarted_because"], "older_than_config", "{answer}");
+            let why = answer["note_error"].as_str().expect("said");
+            assert!(why.starts_with(&format!("{path}: ")), "{why}");
+            assert!(why.contains("Is a directory"), "{why}");
+            assert!(plain(&answer), "{answer}");
+            assert_eq!(systemd.asked(), after_reload("restart"));
+            assert!(note.join("kept").is_dir(), "it stays as it was");
+        }
+        // A proxy found stopped is started, and the same is said.
+        systemd.state.replace("failed".to_owned());
+        let answer = super::apply(&host, ID, &json(&config)).expect("answers");
+        assert_eq!(answer["proxy"], "started", "{answer}");
+        assert!(answer["note_error"].is_string(), "{answer}");
+        assert_eq!(systemd.asked(), after_reload("start"));
+        // Once root has removed it, the proxy last restarted counts as
+        // started from its files, and is left running.
+        std::fs::remove_dir_all(&note).expect("removed");
+        let status = super::status(&host, ID);
+        assert_eq!(status["started"], "after_config", "{status}");
+        assert!(status["note_error"].is_null(), "{status}");
+        let answer = super::apply(&host, ID, &json(&config)).expect("answers");
+        assert_eq!(answer["proxy"], "running", "{answer}");
+        assert!(answer["note_error"].is_null(), "{answer}");
+        assert_eq!(systemd.asked(), [format!("enable --quiet {UNIT}")]);
+    }
+
+    #[test]
+    fn what_keeps_a_note_is_a_directory_or_a_file_made_immutable_or_append_only() {
+        use rustix::fs::{FileType, StatxAttributes};
+        let (directory, file) = (FileType::Directory, FileType::RegularFile);
+        let unmarked = StatxAttributes::empty();
+        let immutable = Some("is immutable or append-only");
+        assert_eq!(super::kept_by(directory, unmarked), Some("is a directory"));
+        let both = StatxAttributes::IMMUTABLE;
+        assert_eq!(super::kept_by(directory, both), Some("is a directory"));
+        for kept in [
+            StatxAttributes::IMMUTABLE,
+            StatxAttributes::APPEND,
+            StatxAttributes::APPEND | StatxAttributes::NODUMP,
+        ] {
+            assert_eq!(super::kept_by(file, kept), immutable, "{kept:?}");
+        }
+        for free in [
+            unmarked,
+            StatxAttributes::NODUMP,
+            StatxAttributes::COMPRESSED,
+        ] {
+            assert_eq!(super::kept_by(file, free), None, "{free:?}");
+            assert_eq!(super::kept_by(FileType::Symlink, free), None, "{free:?}");
+        }
+        // On the disk: nothing there, the note an apply leaves, and a
+        // link, to a directory too (taken away as a link), stand in no
+        // apply's way; a directory does.
+        let tmp = tempfile::tempdir().expect("tmp");
+        let systemd = Fake::new();
+        let host = host(&systemd, tmp.path());
+        std::fs::create_dir_all(&host.configs).expect("configs");
+        let note = host.configs.join("bot-default.applying");
+        assert_eq!(host.stuck(ID), None);
+        host.begin(ID).expect("the note");
+        assert_eq!(host.stuck(ID), None);
+        assert_eq!(host.settled(ID), None);
+        assert!(!note.exists(), "removed");
+        std::os::unix::fs::symlink(tmp.path(), &note).expect("a link");
+        assert_eq!(host.stuck(ID), None);
+        assert_eq!(host.settled(ID), None);
+        assert!(
+            std::fs::symlink_metadata(&note).is_err(),
+            "the link is gone"
+        );
+        std::fs::create_dir(&note).expect("a directory");
+        let said = format!("{}: is a directory", note.display());
+        assert_eq!(host.stuck(ID), Some(said));
+        let why = host.settled(ID).expect("not removed");
+        assert!(why.starts_with(&format!("{}: ", note.display())), "{why}");
+        assert!(note.is_dir(), "it stays");
+        // Where the note goes on a server is the path erpc names.
+        assert_eq!(
+            Host::server().unfinished_path(ID),
+            Path::new(&server::waf_note_path(ID))
+        );
     }
 
     #[test]

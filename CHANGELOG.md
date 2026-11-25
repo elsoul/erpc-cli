@@ -18,6 +18,22 @@ whose version has no entry below.
   Security Check command, `erpc ai --security-check`, for eligible ERPC
   rentals.
 
+### Fixed
+
+- Something at the path of the WAF's note
+  (`/etc/erpc/worker-waf/<id>.applying`) that cannot be removed (a
+  directory, a file made immutable or append-only, which only root can
+  put there) was taken for a deploy that had been ended there: every
+  deploy restarted the WAF, `firewall allow` stayed held, and erpc said a
+  deploy "was ended". `erpc worker status`, `firewall list`, a deploy and
+  a held `firewall allow`, `deny` or `sync` now say that the note cannot
+  be removed, with its path, and that root removes it. A deploy that
+  changes `[waf]` fails at it, changing nothing, and says the same
+  instead of asking for another deploy. The port is held as before. In
+  `--json`, `waf_rules` and `held_because` say `note_kept` where they
+  said `before_config`, and the WAF under `waf` and a deploy's `waf` carry
+  `note_error`: the note's path and why it cannot be removed.
+
 ## [0.1.0-rc.7] - 2026-11-18
 
 ### Added

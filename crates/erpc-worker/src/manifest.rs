@@ -3129,6 +3129,25 @@ ssh_allow = ["198.51.100.7", "198.51.100.7/32"]
     }
 
     #[test]
+    fn the_wafs_config_follows_run_port_as_well_as_its_own_table() {
+        // So a deploy after a change to `run.port` alone writes the WAF's
+        // config, as one after a change to `[waf]` does: behind a note no
+        // apply can remove, both fail (the hint of a port held there says so).
+        let m = Manifest::parse(&behind_waf("port = 8080", "")).expect("valid");
+        let moved = Manifest::parse(
+            &behind_waf("port = 8080", "").replace("[run]\nport = 3000", "[run]\nport = 3001"),
+        )
+        .expect("valid");
+        let (before, after) = (
+            m.waf_config("prod").expect("a config"),
+            moved.waf_config("prod").expect("a config"),
+        );
+        assert_eq!(before.upstream, "127.0.0.1:3000".parse().expect("upstream"));
+        assert_eq!(after.upstream, "127.0.0.1:3001".parse().expect("upstream"));
+        assert_ne!(before, after);
+    }
+
+    #[test]
     fn every_waf_key_reaches_the_config_the_proxy_reads() {
         use crate::server::NewConnections;
         use crate::waf::{Ban, Rate};

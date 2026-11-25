@@ -92,6 +92,13 @@ pub(crate) enum Rules {
     /// is now, which it is not known to run under. Not taken for
     /// erpc.toml's.
     BeforeConfig,
+    /// As [`Rules::BeforeConfig`], because of something at the path of
+    /// the note an apply leaves while it writes the WAF's files that no
+    /// apply can remove (the server says `before_config` and names it in
+    /// `note_error`): every deploy restarts the WAF, and it counts as
+    /// started before its files again at once, until root removes that
+    /// path. Not taken for erpc.toml's.
+    NoteKept,
 }
 
 /// How the rules the server's WAF runs stand to `wanted`, the config
@@ -130,7 +137,11 @@ pub(crate) fn rules(waf: &Value, wanted: &WafConfig) -> Rules {
         return Rules::EarlierAgent;
     }
     if started != "after_config" {
-        return Rules::BeforeConfig;
+        return if waf["note_error"].is_string() {
+            Rules::NoteKept
+        } else {
+            Rules::BeforeConfig
+        };
     }
     match serde_json::from_value::<WafConfig>(reported.clone()) {
         Ok(in_force) if in_force == *wanted => Rules::Asked,
@@ -157,6 +168,8 @@ pub(crate) fn out_of_step(m: &Manifest, env: &str, waf: &Value, scope: &str) -> 
         Rules::EarlierAgent if read => Some(t!("worker_waf.status.earlier_agent", scope)),
         Rules::BeforeConfig if read => Some(t!("worker_waf.status.before_config", scope)),
         Rules::Unsaid => Some(t!("worker_waf.status.unsaid_rules", scope)),
+        // A deploy does not end it, so it is said whatever else is.
+        Rules::NoteKept => Some(t!("worker_waf.status.note_kept", error = note_said(waf))),
         Rules::NotRunning
         | Rules::Asked
         | Rules::Other
@@ -182,7 +195,9 @@ pub(crate) fn status_lines(m: &Manifest, env: &str, waf: &Value, scope: &str) ->
 /// for the worker, else `erpc_toml`, `other`, `earlier_agent` (the proxy
 /// does not run the agent installed, or the server could not tell),
 /// `before_config` (the proxy was started before its config or its unit
-/// last changed, or the server could not tell when), `unreported` (an agent
+/// last changed, or the server could not tell when), `note_kept` (counted
+/// so for good, by a note on the server that no apply can remove,
+/// [`Rules::NoteKept`]), `unreported` (an agent
 /// that does not say which config it runs, which agent runs it, or
 /// whether it was started after its config), `not_running`, or
 /// `not_in_erpc_toml` when erpc.toml has no `[waf]` any more.
@@ -199,8 +214,18 @@ pub(crate) fn rules_named(m: &Manifest, env: &str, waf: &Value) -> Value {
         Rules::Other => "other",
         Rules::EarlierAgent => "earlier_agent",
         Rules::BeforeConfig => "before_config",
+        Rules::NoteKept => "note_kept",
         Rules::Unsaid => "unreported",
     })
+}
+
+/// What the server says of a note no apply can remove (`note_error`, in
+/// `status` and in `waf-apply`'s answer): its path and why, on one line
+/// and with nothing a terminal acts on.
+fn note_said(said: &Value) -> String {
+    said["note_error"]
+        .as_str()
+        .map_or_else(String::new, crate::storage::clean)
 }
 
 /// How the worker's WAF is, in one line, from what the agent's `status`
@@ -357,6 +382,20 @@ impl Deploy<'_> {
         self.say
             .line(&t!("worker_waf.deploy.applying", port, upstream));
         let answer = self.server.waf_apply(&config)?;
+        if answer["ok"] != json!(true) && answer["note_error"].is_string() {
+            // The files could not be changed for a note no apply can
+            // remove: said as `status` says it, with who removes it. Not
+            // "deploy again", which meets it again.
+            return Err(failed(t!(
+                "worker_waf.deploy.note_unwritten",
+                release,
+                error = note_said(&answer)
+            ))
+            .hint(t!(
+                "worker_waf.deploy.note_unwritten_hint",
+                scope = self.scope
+            )));
+        }
         if answer["ok"] != json!(true) {
             // The agent's words, with the end of the proxy's journal in
             // them: on one line, and nothing a terminal acts on.
@@ -383,6 +422,7 @@ impl Deploy<'_> {
                 "changed": changed,
                 "proxy": answer["proxy"],
                 "restarted_because": answer["restarted_because"],
+                "note_error": answer["note_error"].as_str(),
                 "open_to": open_to,
                 "new_connections": opening.as_ref().and_then(|o| o.limit),
             }),
@@ -439,8 +479,19 @@ impl Deploy<'_> {
 /// so it runs the two as they are from now on, which it may not have.
 /// Restarted for its agent: it was a proxy of an agent from before
 /// the one installed, or the server could not tell, and its rules are as
-/// they were.
+/// they were. Where the agent could not remove the note it leaves while it
+/// writes the files (`note_error`), that instead, with what to do: every
+/// deploy restarts the WAF until root removes it.
 fn applied_said(port: u16, answer: &Value) -> String {
+    // A note it could not remove: said in its place, whatever was done
+    // with the WAF, since the reasons the rest would give are not so.
+    if answer["note_error"].is_string() {
+        return t!(
+            "worker_waf.deploy.note_kept",
+            port,
+            error = note_said(answer)
+        );
+    }
     let changed = answer["changed"] == json!(true);
     let restarted = !changed && answer["proxy"] == json!("restarted");
     let because = answer["restarted_because"].as_str();
@@ -1131,6 +1182,153 @@ mod tests {
         }
     }
 
+    /// What the agent says of a note no apply can remove: in `status`, its
+    /// path and what is there; in `waf-apply`'s answer, its path and the
+    /// system's reason.
+    const KEPT: &str = "/etc/erpc/worker-waf/bot-default.applying: is a directory";
+    const NOT_REMOVED: &str =
+        "/etc/erpc/worker-waf/bot-default.applying: Is a directory (os error 21)";
+
+    #[test]
+    fn a_note_that_cannot_be_removed_is_its_own_case_and_holds_the_port_as_before_config_does() {
+        use super::Rules;
+        use serde_json::json;
+        let wanted = app(WAF).waf_config("default").expect("a config");
+        let mut kept = serving();
+        kept["started"] = "before_config".into();
+        kept["note_error"] = KEPT.into();
+        assert_eq!(super::rules(&kept, &wanted), Rules::NoteKept);
+        assert_eq!(
+            super::rules_named(&app(WAF), "default", &kept),
+            json!("note_kept")
+        );
+        // No note named, or not as a string: as before.
+        for not in [json!(null), json!(true), json!(["x"])] {
+            let mut before = kept.clone();
+            before["note_error"] = not.clone();
+            assert_eq!(super::rules(&before, &wanted), Rules::BeforeConfig, "{not}");
+        }
+        let mut before = kept.clone();
+        before
+            .as_object_mut()
+            .expect("the WAF")
+            .remove("note_error");
+        assert_eq!(super::rules(&before, &wanted), Rules::BeforeConfig);
+        // What comes first is said first: an earlier agent's WAF, one that
+        // does not run; and one started after its files has no note.
+        let mut earlier = kept.clone();
+        earlier["binary"] = "other".into();
+        assert_eq!(super::rules(&earlier, &wanted), Rules::EarlierAgent);
+        let mut down = kept.clone();
+        down["active"] = false.into();
+        assert_eq!(super::rules(&down, &wanted), Rules::NotRunning);
+        let mut after = kept.clone();
+        after["started"] = "after_config".into();
+        assert_eq!(super::rules(&after, &wanted), Rules::Asked);
+        // `status` and `firewall list` say it with the path, and what to
+        // do, also where the config does not read: a deploy ends neither.
+        let line = format!(
+            "WAF: the note the server keeps while a deploy writes the WAF's files cannot be \
+             removed there ({KEPT}): a deploy that leaves those files as they are restarts the \
+             WAF, which forgets its bans and counts, one that would change them fails, and \
+             outside a deploy its port is not opened wider; remove that path on the server as \
+             root (only root can)"
+        );
+        let mut unread = kept.clone();
+        unread["port"] = serde_json::Value::Null;
+        unread["config"] = serde_json::Value::Null;
+        for said in [&kept, &unread] {
+            assert_eq!(
+                super::out_of_step(&app(WAF), "default", said, SCOPE).as_deref(),
+                Some(line.as_str())
+            );
+        }
+        let lines = super::status_lines(&app(WAF), "default", &kept, SCOPE);
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert_eq!(lines[1], line);
+        // What the server says is printed with nothing a terminal acts on.
+        let mut escaped = kept.clone();
+        escaped["note_error"] = "/etc/erpc/worker-waf/x.applying: \u{1b}[2J".into();
+        let said = super::out_of_step(&app(WAF), "default", &escaped, SCOPE).expect("a line");
+        assert!(
+            said.contains("x.applying: ?[2J") && !said.contains('\u{1b}'),
+            "{said}"
+        );
+    }
+
+    #[test]
+    fn a_note_that_cannot_be_removed_is_said_with_its_path_and_what_to_do_in_every_language() {
+        use serde_json::json;
+        let answer = json!({
+            "ok": true, "changed": false, "proxy": "restarted",
+            "restarted_because": "older_than_config", "note_error": NOT_REMOVED,
+        });
+        let said = || {
+            let mut kept = serving();
+            kept["started"] = "before_config".into();
+            kept["note_error"] = KEPT.into();
+            [
+                super::out_of_step(&app(WAF), "default", &kept, SCOPE).expect("a line"),
+                super::applied_said(8080, &answer),
+            ]
+        };
+        // The deploy says it in place of why it restarted the WAF, which
+        // would be that a deploy was ended; started or written, the same.
+        let [status, deploy] = said();
+        assert_eq!(
+            deploy,
+            format!(
+                "the WAF listens on port 8080; the note the server keeps while a deploy writes \
+                 the WAF's files could not be removed there ({NOT_REMOVED}): a deploy that leaves \
+                 those files as they are restarts the WAF, which forgets its bans and counts, one \
+                 that would change them fails, and outside a deploy its port is not opened wider; \
+                 remove that path on the server as root (only root can)"
+            )
+        );
+        for (changed, proxy) in [(true, "restarted"), (false, "started")] {
+            let mut other = answer.clone();
+            other["changed"] = changed.into();
+            other["proxy"] = proxy.into();
+            assert_eq!(super::applied_said(8080, &other), deploy);
+        }
+        // Neither says that every deploy restarts the WAF: one that would
+        // change its files fails at the note.
+        for line in [&status, &deploy] {
+            assert!(!line.contains("was ended"), "{line}");
+            assert!(!line.contains("every deploy restarts"), "{line}");
+        }
+        for (lang, root, restarts, fails) in [
+            (
+                Lang::Ja,
+                "root で削除",
+                "ファイルを変えないデプロイでは WAF が再起動",
+                "ファイルを変えるデプロイは失敗",
+            ),
+            (
+                Lang::Zh,
+                "以 root 身份删除",
+                "不改动这些文件的部署会重启 WAF",
+                "改动这些文件的部署会失败",
+            ),
+            (
+                Lang::Ru,
+                "от имени root",
+                "развёртывание, которое не меняет эти файлы, перезапускает WAF",
+                "развёртывание, которое их меняет, завершается ошибкой",
+            ),
+        ] {
+            let lines = crate::cli::i18n::speaking(lang, said);
+            for line in &lines {
+                assert!(line.contains(root) && line.contains(restarts), "{line}");
+                assert!(line.contains(fails), "{line}");
+                assert!(!line.contains("as root") && !line.contains('{'), "{line}");
+            }
+            assert!(lines[0].contains(KEPT), "{}", lines[0]);
+            assert!(lines[1].contains(NOT_REMOVED) && lines[1].contains("8080"));
+            assert_ne!(lines[0], lines[1]);
+        }
+    }
+
     #[test]
     fn a_config_comes_back_from_a_server_as_erpc_toml_made_it() {
         // The config in force is compared with erpc.toml's once it has come
@@ -1664,6 +1862,7 @@ mod tests {
             assert_eq!(settled.json["changed"], false);
             assert_eq!(settled.json["proxy"], "restarted");
             assert_eq!(settled.json["restarted_because"], because);
+            assert!(settled.json["note_error"].is_null(), "{}", settled.json);
             assert_eq!(
                 settled.json["open_to"],
                 serde_json::json!(["0.0.0.0/0", "::/0"])
@@ -1751,6 +1950,7 @@ mod tests {
             assert_eq!(settled.json["changed"], false);
             assert_eq!(settled.json["proxy"], "restarted");
             assert_eq!(settled.json["restarted_because"], because);
+            assert!(settled.json["note_error"].is_null(), "{}", settled.json);
             assert_eq!(
                 settled.json["open_to"],
                 serde_json::json!(["0.0.0.0/0", "::/0"])
@@ -1763,6 +1963,131 @@ mod tests {
             assert_eq!(after, ["waf-apply 0.0.0.0:8080"]);
             assert!(settled.is_err());
         }
+    }
+
+    #[test]
+    fn a_deploy_holds_a_port_behind_a_note_it_cannot_remove_and_opens_it_once_the_waf_restarted() {
+        use crate::worker::firewall::recorded::{Recorded, running};
+        use erpc_worker::server::Opening;
+        // Something on the server at the note's path that no apply can
+        // remove: the server says `before_config`, and names it.
+        let m = deployed(WAF, EVERYONE);
+        let narrow = deployed(WAF, ONE);
+        let one = Opening::for_app(&narrow, &narrow.env["default"]).expect("an opening");
+        let config = m.waf_config("default").expect("a config");
+        let mut on_server = running(&config);
+        on_server["started"] = "before_config".into();
+        on_server["note_error"] = KEPT.into();
+        let mut server = Recorded::with(&on_server, "bot-default", Some(&one));
+        server.waf_applied = serde_json::json!({
+            "ok": true,
+            "changed": false,
+            "proxy": "restarted",
+            "restarted_because": "older_than_config",
+            "note_error": NOT_REMOVED,
+        });
+        // Held at the firewall step, as for any proxy not known to run
+        // its files; opened once `waf-apply` has restarted it from them.
+        let (before, after, settled) = deploy(&m, &server);
+        assert_eq!(
+            before,
+            [
+                "allow-ssh 198.51.100.7",
+                "firewall-show",
+                "open 8080 to 198.51.100.7/32, limit 50/100",
+            ]
+        );
+        assert_eq!(
+            after,
+            [
+                "waf-apply 0.0.0.0:8080",
+                "open 8080 to 0.0.0.0/0, ::/0, limit 50/100"
+            ]
+        );
+        // `--json` carries the agent's words.
+        let settled = settled.expect("settled");
+        assert_eq!(settled.json["note_error"], NOT_REMOVED, "{}", settled.json);
+        assert_eq!(settled.json["restarted_because"], "older_than_config");
+    }
+
+    #[test]
+    fn a_deploy_that_changes_the_waf_under_a_note_no_apply_can_remove_says_root_removes_it() {
+        use crate::worker::firewall::recorded::{Recorded, running};
+        use erpc_worker::server::Opening;
+        // `[waf]` changed, and something no apply can remove is at the
+        // note's path: `waf-apply` cannot leave its note, writes nothing,
+        // and says what is there.
+        let m = deployed(WAF, EVERYONE);
+        let narrow = deployed(WAF, ONE);
+        let one = Opening::for_app(&narrow, &narrow.env["default"]).expect("an opening");
+        let mut earlier = m.waf_config("default").expect("a config");
+        earlier.deny_paths = vec!["/admin/*".to_owned()];
+        let mut on_server = running(&earlier);
+        on_server["started"] = "before_config".into();
+        on_server["note_error"] = KEPT.into();
+        let mut server = Recorded::with(&on_server, "bot-default", Some(&one));
+        server.waf_applied = serde_json::json!({
+            "ok": false,
+            "error": "could not keep /etc/erpc/worker-waf/bot-default.applying: Is a directory \
+                      (os error 21); its config and unit are as they were",
+            "note_error": KEPT,
+            "unit": "erpc-waf-bot-default.service",
+        });
+        let failed = |server: &Recorded| {
+            let (_, after, settled) = deploy(&m, server);
+            (after, settled.err().expect("failed"))
+        };
+        // The deploy fails, the port is not opened wider, and what to do
+        // is what `status` says: root removes the path. Not another
+        // deploy, which meets it again.
+        let (after, error) = failed(&server);
+        assert_eq!(after, ["waf-apply 0.0.0.0:8080"]);
+        assert_eq!(
+            error.message,
+            format!(
+                "release {RELEASE} runs, and its WAF's files on the server were not changed: the \
+                 note the server keeps while a deploy writes them cannot be removed there \
+                 ({KEPT}), so no deploy can change them, and the WAF's port is not opened wider"
+            )
+        );
+        assert_eq!(
+            error.hint.as_deref(),
+            Some(
+                "remove that path on the server as root (only root can), then run `erpc worker \
+                 deploy --env default` again"
+            )
+        );
+        for (lang, as_root) in [
+            (Lang::Ja, "root で削除"),
+            (Lang::Zh, "以 root 身份删除"),
+            (Lang::Ru, "от имени root"),
+        ] {
+            let (_, error) = crate::cli::i18n::speaking(lang, || failed(&server));
+            assert!(error.message.contains(KEPT), "{}", error.message);
+            assert!(error.message.contains(RELEASE), "{}", error.message);
+            let hint = error.hint.expect("a hint");
+            assert!(hint.contains(as_root), "{hint}");
+            assert!(
+                hint.contains("`erpc worker deploy --env default`"),
+                "{hint}"
+            );
+            for line in [&error.message, &hint] {
+                assert!(!line.contains('{') && !line.contains("as root"), "{line}");
+            }
+        }
+        // A failure the note is not named in is said as before.
+        server.waf_applied["note_error"] = serde_json::Value::Null;
+        let (_, error) = failed(&server);
+        assert!(
+            error.message.contains("its WAF did not come up"),
+            "{}",
+            error.message
+        );
+        assert!(
+            error
+                .hint
+                .is_some_and(|h| h.contains("again puts it in place"))
+        );
     }
 
     #[test]

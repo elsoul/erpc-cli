@@ -255,6 +255,11 @@ pub(crate) enum Why {
     /// unit there, and is not taken for `erpc.toml`'s rules until a
     /// deploy has restarted it.
     BeforeConfig,
+    /// As [`Why::BeforeConfig`], kept so by something at the path of the
+    /// note a deploy leaves while it writes the WAF's files that cannot be
+    /// removed ([`crate::worker::waf::Rules::NoteKept`]): a deploy opens
+    /// the port, and outside one it is held, until root removes that path.
+    NoteKept,
 }
 
 impl Why {
@@ -266,6 +271,7 @@ impl Why {
             Self::UnsaidRules => "unreported_rules",
             Self::EarlierAgent => "earlier_agent",
             Self::BeforeConfig => "before_config",
+            Self::NoteKept => "note_kept",
         }
     }
 
@@ -278,6 +284,7 @@ impl Why {
             Self::UnsaidRules => t!("worker_firewall.rules_unsaid"),
             Self::EarlierAgent => t!("worker_firewall.rules_earlier"),
             Self::BeforeConfig => t!("worker_firewall.rules_before_config"),
+            Self::NoteKept => t!("worker_firewall.rules_note_kept"),
         }
     }
 }
@@ -349,7 +356,11 @@ pub(crate) fn decide(
     let (apply, why) = match crate::worker::waf::rules(on_server, waf) {
         Rules::Asked => (wanted.clone(), None),
         Rules::NotRunning => (None, Some(Why::NoWaf)),
-        Rules::Other | Rules::Unsaid | Rules::EarlierAgent | Rules::BeforeConfig
+        Rules::Other
+        | Rules::Unsaid
+        | Rules::EarlierAgent
+        | Rules::BeforeConfig
+        | Rules::NoteKept
             if narrows(wanted.as_ref(), in_force) =>
         {
             let narrowed = wanted.as_ref().zip(in_force).map(|(wanted, now)| Opening {
@@ -362,6 +373,7 @@ pub(crate) fn decide(
         Rules::Unsaid => (in_force.cloned(), Some(Why::UnsaidRules)),
         Rules::EarlierAgent => (in_force.cloned(), Some(Why::EarlierAgent)),
         Rules::BeforeConfig => (in_force.cloned(), Some(Why::BeforeConfig)),
+        Rules::NoteKept => (in_force.cloned(), Some(Why::NoteKept)),
     };
     Decision {
         apply,
@@ -580,7 +592,13 @@ fn asked_said(synced: &Synced) -> Option<String> {
             let limit = limit_said(o);
             t!("worker_firewall.opening_waf", port, addresses, limit)
         }
-        Some(Why::OtherRules | Why::UnsaidRules | Why::EarlierAgent | Why::BeforeConfig) => {
+        Some(
+            Why::OtherRules
+            | Why::UnsaidRules
+            | Why::EarlierAgent
+            | Why::BeforeConfig
+            | Why::NoteKept,
+        ) => {
             let limit = limit_said(o);
             t!("worker_firewall.opening_waf_rules", port, addresses, limit)
         }
@@ -1119,7 +1137,11 @@ fn held_back(worker: &str, synced: &Synced, held: &Held, scope: &str) -> CliErro
             ssh
         ))
         .hint(t!("worker_firewall.held_no_waf_hint", scope)),
-        why @ (Why::OtherRules | Why::UnsaidRules | Why::EarlierAgent | Why::BeforeConfig) => {
+        why @ (Why::OtherRules
+        | Why::UnsaidRules
+        | Why::EarlierAgent
+        | Why::BeforeConfig
+        | Why::NoteKept) => {
             let held = failed(t!(
                 "worker_firewall.held_other_rules",
                 port,
@@ -1129,10 +1151,15 @@ fn held_back(worker: &str, synced: &Synced, held: &Held, scope: &str) -> CliErro
                 worker,
                 ssh
             ));
-            held.hint(if why == Why::EarlierAgent {
-                t!("worker_firewall.held_earlier_hint", scope)
-            } else {
-                t!("worker_firewall.held_other_rules_hint", scope)
+            held.hint(match why {
+                Why::EarlierAgent => t!("worker_firewall.held_earlier_hint", scope),
+                // A deploy does not end this; root removing the path does.
+                Why::NoteKept => t!(
+                    "worker_firewall.held_note_hint",
+                    path = erpc_worker::server::waf_note_path(worker),
+                    scope
+                ),
+                _ => t!("worker_firewall.held_other_rules_hint", scope),
             })
         }
     }
@@ -2640,6 +2667,139 @@ mod tests {
                 hint.contains("`erpc worker deploy --env prod`") && !hint.contains('{'),
                 "{hint}"
             );
+        }
+    }
+
+    /// What the hint for a port held behind a note says, in each
+    /// language's own words: "as root", removing the path (not only the
+    /// parenthesis that only root can), and that a deploy after a change
+    /// to `[waf]` or `run.port` fails.
+    const HELD_NOTE: [(Lang, &str, &str); 3] = [
+        (
+            Lang::Ja,
+            "root で削除",
+            "[waf] か run.port を変えたデプロイ",
+        ),
+        (
+            Lang::Zh,
+            "以 root 身份删除",
+            "改动 [waf] 或 run.port 后的部署",
+        ),
+        (
+            Lang::Ru,
+            "от имени root",
+            "развёртывание после изменения [waf] или run.port",
+        ),
+    ];
+
+    #[test]
+    fn a_port_held_behind_a_note_no_deploy_removes_names_the_path_to_remove_as_root() {
+        use erpc_ssh::worker::UnitId;
+        let m = app(WAF, EVERYONE);
+        let config = m.waf_config("prod").expect("a config");
+        let wanted = Opening::for_app(&m, &m.env["prod"]);
+        let everyone = wanted.clone().expect("an opening");
+        let (one, two) = (
+            opening(8080, &["198.51.100.7"]),
+            opening(8080, &["198.51.100.7", "203.0.113.0/24"]),
+        );
+        // The very config erpc.toml makes, under a note the server cannot
+        // remove: held as `before_config` is, and a narrowing applied.
+        let mut kept = running(&config);
+        kept["started"] = "before_config".into();
+        kept["note_error"] = "/etc/erpc/worker-waf/bot-prod.applying: is a directory".into();
+        let held = Some(Held {
+            opening: everyone.clone(),
+            why: Why::NoteKept,
+        });
+        let decided = super::decide(wanted.clone(), &config, &kept, Some(&one));
+        assert_eq!(
+            decided,
+            Decision {
+                apply: Some(one.clone()),
+                held: held.clone()
+            }
+        );
+        let narrowed = super::decide(Some(one.clone()), &config, &kept, Some(&two));
+        assert_eq!(narrowed.apply, Some(one.clone()));
+        assert_eq!(narrowed.held, None);
+        // Said without "a deploy was ended", and the hint names the path
+        // and who can remove it.
+        let rules = "the note the server keeps while a deploy writes the WAF's files cannot be \
+                     removed there, so what the WAF runs is not taken for erpc.toml's rules";
+        assert_eq!(
+            super::dropping(Some(8080), &decided),
+            format!(
+                "dropping every other inbound connection; {rules}, so port 8080 stays open to \
+                 198.51.100.7/32 and no wider until a deploy puts erpc.toml's in place"
+            )
+        );
+        let synced = Synced {
+            ssh_allow: vec!["198.51.100.7".parse().expect("an address")],
+            wanted: wanted.clone(),
+            opening: Some(one.clone()),
+            held,
+        };
+        let id = UnitId::new("bot-prod").expect("id");
+        let failed = super::report(false, &id, &m, &synced, SCOPE).expect_err("held");
+        assert_eq!(
+            failed.message,
+            format!(
+                "the WAF's port 8080 was not opened to 0.0.0.0/0, ::/0: {rules}, and its port is \
+                 not opened wider meanwhile, so port 8080 stays open to 198.51.100.7/32 and no \
+                 wider. The rest of bot-prod's server firewall is in force: SSH from \
+                 198.51.100.7, everything else dropped"
+            )
+        );
+        assert_eq!(
+            failed.hint.as_deref(),
+            Some(
+                "remove /etc/erpc/worker-waf/bot-prod.applying on the server as root (only root \
+                 can); until then `erpc worker deploy --env prod` restarts the WAF, then opens the \
+                 port as erpc.toml says, as long as it leaves the WAF's config and unit as they \
+                 are; a deploy after a change to [waf] or run.port, or from an erpc that writes \
+                 the WAF's unit differently, fails"
+            )
+        );
+        assert_eq!(
+            failed.details.expect("details")["held_because"],
+            "note_kept"
+        );
+        // In every language: its own words, not `before_config`'s, and the
+        // path, "as root", a failing deploy ([`HELD_NOTE`]) and the deploy
+        // as they are typed.
+        for (lang, as_root, fails) in HELD_NOTE {
+            let (dropping, before, hint) = crate::cli::i18n::speaking(lang, || {
+                let before = Decision {
+                    held: Some(Held {
+                        opening: everyone.clone(),
+                        why: Why::BeforeConfig,
+                    }),
+                    ..decided.clone()
+                };
+                let held = synced.held.as_ref().expect("held");
+                (
+                    super::dropping(Some(8080), &decided),
+                    super::dropping(Some(8080), &before),
+                    super::held_back("bot-prod", &synced, held, SCOPE).hint,
+                )
+            });
+            assert_ne!(dropping, before);
+            assert!(
+                dropping.contains("8080") && !dropping.contains('{'),
+                "{dropping}"
+            );
+            assert!(!dropping.contains("the note"), "{dropping}");
+            let hint = hint.expect("a hint");
+            for typed in [
+                "/etc/erpc/worker-waf/bot-prod.applying",
+                as_root,
+                fails,
+                "`erpc worker deploy --env prod`",
+            ] {
+                assert!(hint.contains(typed), "{hint}");
+            }
+            assert!(!hint.contains('{') && !hint.contains("as root"), "{hint}");
         }
     }
 

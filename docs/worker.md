@@ -1026,7 +1026,19 @@ name, and forwards the rest to the app on `127.0.0.1:<run.port>`.
   note beside the config (`/etc/erpc/worker-waf/<id>.applying`), and
   until a deploy has restarted the WAF the WAF counts as started before
   its files last changed, whatever started it in between (systemd starts
-  it again by itself when it fails, under the unit it had read). What
+  it again by itself when it fails, under the unit it had read).
+  Something at that path that cannot be removed (a directory, a file made
+  immutable or append-only: only root can put one there) keeps it counted
+  so after every deploy: a deploy that leaves the WAF's config and unit
+  as they are restarts the WAF, which forgets its bans and counts, and
+  opens the port as `erpc.toml` asks; one that would change them (you
+  changed `[waf]` or `run.port`, which the WAF forwards to, or the erpc
+  deploying writes the WAF's unit differently from the one that wrote it)
+  cannot leave its note, so it changes nothing, opens the port no wider and
+  fails; and outside a deploy the port is opened no
+  wider. The deploy, `status` and `firewall list` say so with the path,
+  and `allow`, `deny` and `sync` name it in their hint: remove it on the
+  server as root. Then the two times decide again. What
   the two times alone decide is a file changed there by anything else: a
   clock set back between the WAF's start and that change, or systemd
   starting the WAF again before it has read a unit changed that way,
@@ -1056,8 +1068,9 @@ name, and forwards the rest to the app on `127.0.0.1:<run.port>`.
     `earlier_agent` where the WAF was started by an earlier agent than
     the one installed or the server could not tell, `before_config` where
     it was started before its config or its unit last changed or the
-    server could not tell when, `unreported_rules` where the server's
-    agent is from before
+    server could not tell when, `note_kept` where that is so for good, by
+    a note on the server that cannot be removed, `unreported_rules` where
+    the server's agent is from before
     it reported them, or `no_waf` where no WAF runs yet). `allow` and
     `deny` have written the
     change to `erpc.toml` all the same, and the rest of the firewall is in
@@ -1078,8 +1091,9 @@ name, and forwards the rest to the app on `127.0.0.1:<run.port>`.
     agent or before its config or its unit last changed, with the deploy
     that makes
     them so; `--json` has `waf_rules`: `erpc_toml`, `other`,
-    `earlier_agent`, `before_config`, `unreported` (a server whose agent
-    is from before it reported its config, which agent its WAF runs and
+    `earlier_agent`, `before_config`, `note_kept` (`before_config` kept
+    so by a note that cannot be removed), `unreported` (a server whose
+    agent is from before it reported its config, which agent its WAF runs and
     whether the WAF was started after its config, which is treated as
     other rules), `not_running`, `not_in_erpc_toml`, or null when the
     server has no WAF. Under `waf`, `binary` is what the server said of
@@ -1087,7 +1101,9 @@ name, and forwards the rest to the app on `127.0.0.1:<run.port>`.
     of when it was started: `after_config` (after its config and its
     unit last changed), `before_config` (before one of them did, or a
     deploy's step that writes them was ended there and no deploy has
-    restarted the WAF since) or `unknown`.
+    restarted the WAF since) or `unknown`; and `note_error`, null, or the
+    path of a note that cannot be removed and why (a deploy's `--json`
+    has the same under `waf`, as the server could not remove it).
 
   An address counts as let in already only where it is listed as written:
   `198.51.100.7` beside `198.51.100.0/24` is a new one. The firewall's own
@@ -1483,6 +1499,7 @@ ones a worker meets most:
 | `the WAF's port <port> was not opened to …: the server does not say which rules its WAF runs …` | The agent on the server is from an erpc before this one, and does not report its WAF's config. The port stays as it was | `erpc worker deploy`: it installs this erpc's agent, puts `erpc.toml`'s rules in place, then opens the port |
 | `the WAF's port <port> was not opened to …: the WAF on the server was started by an earlier agent …` | A newer agent was installed since the WAF started (by a `--prepare`, or by a deploy that stopped before its last step), or the server could not tell which agent's process the WAF is. The port stays as it was | `erpc worker deploy`: it restarts the WAF as the agent installed, with `erpc.toml`'s rules, then opens the port |
 | `the WAF's port <port> was not opened to …: the WAF on the server was started before its config or its unit there last changed …` | The step of a deploy that writes the WAF's config and its unit was ended on the server before it restarted the WAF (it leaves a note there, and that holds until a deploy has restarted the WAF, also when systemd started it again in between), or one of the two files was changed there, so the WAF is not known to run the two files as they are; or the server could not tell when the WAF was started. The port stays as it was | `erpc worker deploy`: it restarts the WAF, with `erpc.toml`'s rules and under the unit on the server, then opens the port |
+| `WAF: the note the server keeps while a deploy writes the WAF's files cannot be removed there (<path>: …)` (in `status`, `firewall list`); `the WAF listens on port <port>; the note … could not be removed there (…)` (from `deploy`); `release … runs, and its WAF's files on the server were not changed: the note … cannot be removed there (…)` (from a `deploy` that changes `[waf]` or `run.port`, or the WAF's unit, which fails); `the WAF's port <port> was not opened to …: the note the server keeps … cannot be removed there …` (from `firewall allow`, `deny`, `sync`) | Something is at `/etc/erpc/worker-waf/<id>.applying` that cannot be removed: a directory, or a file made immutable or append-only (`chattr +i`, `+a`). Only root can put it there. The WAF counts as started before its files for as long as it is there, and outside a deploy its port is not opened wider. A deploy that leaves the WAF's config and unit as they are restarts it, which forgets its bans and counts, and opens the port as `erpc.toml` asks; `firewall allow` holds again after. A deploy that would change them (`[waf]` or `run.port` changed, or an erpc that writes the WAF's unit differently) cannot leave its note: it changes nothing, opens the port no wider, and fails; another deploy fails the same way | On the server, as root (only root can): `rm -r` that path, after `chattr -i -a` for a file made so. The next `status` no longer names it, and the next deploy puts `[waf]` in place |
 | `the WAF's port <port> was not opened to …: no WAF listens on it yet …` (from `firewall allow`, `sync`) | The app has `[waf]` and was not deployed with it yet, or its WAF is not running. The port stays closed | `erpc worker deploy` starts the WAF, then opens the port |
 | `port <port> keeps the limit on new connections that is in force …` (a warning under what `firewall allow`, `deny`, `sync` say, which succeed) | The WAF on the server runs, and is not known to run `erpc.toml`'s rules (the four cases above: `[waf]` changed since the last deploy, an agent that does not report its rules, an earlier agent's WAF, a WAF started before its config or its unit last changed); `app_allow` lets nobody new in and still lists someone (the addresses the port is open to, or some of them, whether or not you changed the list); and the limit in force is not the one `new_connections` gives. The port was applied as `app_allow` has it, with the limit the server had | `erpc worker deploy`: it puts `erpc.toml`'s rules in place, then the limit `[waf]` gives |
 | `WAF: the rules it runs are not erpc.toml's` (in `status`, `firewall list`) | As above: `[waf]` changed since the last deploy | `erpc worker deploy` |
