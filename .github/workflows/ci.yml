@@ -405,6 +405,7 @@ jobs:
           scripts/tests/workflow-audit.test.sh
           scripts/tests/installer-deploy.test.sh
           scripts/tests/self-hosted-routing.test.sh
+          GITLEAKS="$RUNNER_TEMP/gitleaks" scripts/tests/gitleaks-rules.test.sh
       - name: hygiene gate (all tracked files)
         run: scripts/check-oss-hygiene.sh
       - name: endpoint allowlist (all tracked files)
