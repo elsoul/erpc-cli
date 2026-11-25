@@ -16,6 +16,9 @@ pre-commit:
     endpoints:
       glob: "*"
       run: scripts/check-endpoints.sh {staged_files}
+    chain-imports:
+      glob: "crates/erpc/src/chains/**/*.rs"
+      run: scripts/check-chain-imports.sh
     fmt:
       glob: "*.rs"
       run: cargo fmt --all -- --check
@@ -29,8 +32,10 @@ pre-push:
       run: scripts/check-oss-hygiene.sh
     endpoints-all:
       run: scripts/check-endpoints.sh
+    chain-imports:
+      run: scripts/check-chain-imports.sh
     gate-self-tests:
-      run: scripts/tests/check-oss-hygiene.test.sh && scripts/tests/check-endpoints.test.sh && scripts/tests/build-manifest.test.sh && scripts/tests/release-wiring.test.sh && scripts/tests/workflow-audit.test.sh && scripts/tests/self-hosted-routing.test.sh
+      run: scripts/tests/check-oss-hygiene.test.sh && scripts/tests/check-endpoints.test.sh && scripts/tests/check-chain-imports.test.sh && scripts/tests/build-manifest.test.sh && scripts/tests/release-wiring.test.sh && scripts/tests/workflow-audit.test.sh && scripts/tests/self-hosted-routing.test.sh
     installer-tests:
       run: cd installer && npm test
     clippy:
