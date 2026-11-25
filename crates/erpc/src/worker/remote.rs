@@ -19,6 +19,7 @@ use zeroize::Zeroizing;
 use crate::account::commands::Outcome;
 use crate::cli::error::{CliError, Code};
 use crate::node::common::{Say, go_ahead};
+use crate::worker::account::{Account, Kept};
 use crate::worker::secrets;
 use crate::worker::vps::OnAccount;
 use crate::worker::{App, load_env};
@@ -256,8 +257,14 @@ fn json_string(value: &str) -> Zeroizing<String> {
 }
 
 /// The app and environment, the worker's id, and a session to its server.
-pub(crate) fn reach(app: &App) -> Result<(Manifest, UnitId, Session), CliError> {
-    let (_, m) = load_env(app)?;
+pub(crate) fn reach(
+    app: &App,
+    kept: Option<&Kept>,
+) -> Result<(Manifest, UnitId, Session), CliError> {
+    let m = match kept {
+        Some(kept) => kept.manifest.clone(),
+        None => load_env(app)?.1,
+    };
     let env = crate::worker::env_of(&m, app)?;
     let id = UnitId::new(&m.unit_id(&app.env)).map_err(failed)?;
     let session = open(&target(app, env)?)?;
@@ -390,7 +397,12 @@ pub(crate) fn positions_warning(m: &Manifest, app: &App, say: &Say) {
 /// `erpc worker status`.
 pub(crate) async fn status(json: bool, app: &App) -> Outcome {
     let run = async || -> Result<Outcome, CliError> {
-        let (m, id, session) = reach(app)?;
+        let (_, m) = crate::worker::load(&app.dir)?;
+        if crate::worker::account::kept_there(&m, &app.env) {
+            let (answer, text) = crate::worker::account::status(json, app, &m).await?;
+            return Ok(done(json, &answer, text));
+        }
+        let (m, id, session) = reach(app, None)?;
         let (answer, text) = status_from(&m, app, |verb| ctl(&session, &id, verb, None)).await?;
         Ok(done(json, &answer, text))
     };
@@ -443,7 +455,7 @@ async fn status_from(
 /// ([`crate::worker::waf::status_lines`]); then `charged`, what it is
 /// charged for by the hour. The answer gets `waf_rules` for `--json`
 /// ([`crate::worker::waf::rules_named`]).
-fn status_said(
+pub(crate) fn status_said(
     m: &Manifest,
     env_name: &str,
     host: &str,
@@ -578,7 +590,7 @@ pub(crate) fn api(app: &App, method: &str, path: &str, data: Option<&str>) -> Ou
                 t!("worker_remote.api.bad_path", path),
             ));
         }
-        let (m, _, session) = reach(app)?;
+        let (m, _, session) = reach(app, None)?;
         let port = m
             .run
             .port
@@ -627,9 +639,14 @@ fn journal<E: core::fmt::Display>(
 /// `erpc worker logs`: the journal of the worker's unit, the app's and the
 /// agent's; with `waf`, that of its WAF's unit instead, where each request
 /// it refused is a line ([`logs_from`]).
-pub(crate) fn logs(app: &App, lines: u32, follow: bool, waf: bool) -> Outcome {
+pub(crate) fn logs(
+    app: &App,
+    (lines, follow): (u32, bool),
+    waf: bool,
+    kept: Option<&Kept>,
+) -> Outcome {
     let run = || -> Result<Outcome, CliError> {
-        let (_, id, session) = reach(app)?;
+        let (_, id, session) = reach(app, kept)?;
         logs_from(
             id,
             (lines, follow),
@@ -674,6 +691,17 @@ fn unlock_if_locked(
     say: &Say,
 ) -> Result<(), CliError> {
     let answer = ctl(session, id, Verb::Status, None)?;
+    unlock_if_said_locked(m, &answer, id, session, say)
+}
+
+/// [`unlock_if_locked`], once the agent's status `answer` is read.
+fn unlock_if_said_locked(
+    m: &Manifest,
+    answer: &Value,
+    id: &UnitId,
+    session: &Session,
+    say: &Say,
+) -> Result<(), CliError> {
     let held = answer["agent"]["key_held"].as_bool().unwrap_or(false) || m.wallet.is_none();
     let secrets_held = answer["agent"]["secrets_held"]
         .as_array()
@@ -687,11 +715,18 @@ fn unlock_if_locked(
     Ok(())
 }
 
-/// `erpc worker start` and `erpc worker restart`.
-pub(crate) fn start(json: bool, app: &App, yes: bool, again: bool) -> Outcome {
+/// `erpc worker start` and `erpc worker restart`. For an environment kept
+/// in the account (`held`), the account records that the app runs before
+/// it is started, so that it never says the app is stopped while it runs.
+pub(crate) async fn start(
+    json: bool,
+    app: &App,
+    (yes, again): (bool, bool),
+    held: Option<(&impl Account, &Kept)>,
+) -> Outcome {
     let say = Say { quiet: json };
-    let run = || -> Result<Outcome, CliError> {
-        let (m, id, session) = reach(app)?;
+    let run = async || -> Result<Outcome, CliError> {
+        let (m, id, session) = reach(app, held.map(|(_, kept)| kept))?;
         say.line(&if again {
             t!("worker_remote.start.restart_prompt", id = id.as_str())
         } else {
@@ -701,46 +736,214 @@ pub(crate) fn start(json: bool, app: &App, yes: bool, again: bool) -> Outcome {
             positions_warning(&m, app, &say);
         }
         go_ahead(yes, &t!("worker_remote.start.refused"))?;
-        unlock_if_locked(&m, &id, &session, &say)?;
         let verb = if again { Verb::Restart } else { Verb::Start };
-        let answer = ctl_ok(&session, &id, verb, None)?;
+        let answer = start_steps(
+            held.map(|(api, kept)| (api, m.name.as_str(), kept)),
+            app,
+            again,
+            Steps {
+                status: || ctl(&session, &id, Verb::Status, None),
+                unlock: |status: &Value| unlock_if_said_locked(&m, status, &id, &session, &say),
+                start: || ctl_ok(&session, &id, verb, None),
+            },
+        )
+        .await?;
         let text = format!("{}: {}", id.as_str(), describe(&answer["status"]));
         Ok(done(json, &answer, text))
     };
     run()
+        .await
         .map_err(|e| unreached(app, e))
         .unwrap_or_else(Into::into)
 }
 
-/// `erpc worker stop`.
-pub(crate) fn stop(json: bool, app: &App, lock: bool, yes: bool) -> Outcome {
-    let run = || -> Result<Outcome, CliError> {
-        let (m, id, session) = reach(app)?;
+/// An environment kept in the account, for a start or a stop: how to reach
+/// the account, the app's name, and the account's record as read.
+type Held<'a, A> = (&'a A, &'a str, &'a Kept);
+
+/// The steps of a start on the server, each run once, in order.
+pub(crate) struct Steps<S, U, G> {
+    /// Reads the agent's status: the first contact with the server.
+    pub(crate) status: S,
+    /// Hands the key and the secrets over when the status says the worker
+    /// is locked, which starts an app that is wanted running.
+    pub(crate) unlock: U,
+    /// Starts (or restarts) the app.
+    pub(crate) start: G,
+}
+
+/// What `start` and `restart` do once the person said yes, in this order:
+/// 1. The agent's status is read: the server is reached before anything
+///    is recorded.
+/// 2. For an environment kept in the account (`held`) whose account names
+///    a server in use, the account records that the app runs, so that it
+///    never says the app is stopped while it runs. A record it does not
+///    take hands nothing over and starts nothing.
+/// 3. The key and the secrets are handed over when the worker is locked.
+/// 4. The app is started (or restarted).
+///
+/// When 3 or 4 fails after 2, the account says the app runs, and that is
+/// said too.
+pub(crate) async fn start_steps<A: Account, S, U, G>(
+    held: Option<Held<'_, A>>,
+    app: &App,
+    again: bool,
+    steps: Steps<S, U, G>,
+) -> Result<Value, CliError>
+where
+    S: FnOnce() -> Result<Value, CliError>,
+    U: FnOnce(&Value) -> Result<(), CliError>,
+    G: FnOnce() -> Result<Value, CliError>,
+{
+    let status = (steps.status)()?;
+    let recorded =
+        held.filter(|(_, _, kept)| crate::worker::account::has_server_in_use(&kept.record));
+    if let Some((api, name, _)) = recorded {
+        crate::worker::account::record_running(api, app, name, true)
+            .await
+            .map_err(|u| {
+                let (env, error) = (app.env.as_str(), u.error.message.as_str());
+                let said = CliError::new(
+                    u.error.code,
+                    if again {
+                        t!("worker_account.not_recorded_restart", env, error)
+                    } else {
+                        t!("worker_account.not_recorded_start", env, error)
+                    },
+                );
+                // A write whose outcome is not known may have been taken.
+                let maybe = u
+                    .unknown
+                    .then(|| t!("worker_account.may_say_running", scope = app.scope()));
+                match (u.error.hint, maybe) {
+                    (Some(hint), Some(maybe)) => {
+                        said.hint(format!("{hint}{}{maybe}", t!("worker_account.hint_sep")))
+                    }
+                    (Some(hint), None) | (None, Some(hint)) => said.hint(hint),
+                    (None, None) => said,
+                }
+            })?;
+    }
+    let said = |e: CliError| {
+        if recorded.is_none() {
+            return e;
+        }
+        let note = t!("worker_account.says_running", scope = app.scope());
+        match e.hint.clone() {
+            Some(hint) => e.hint(format!("{hint}{}{note}", t!("worker_account.hint_sep"))),
+            None => e.hint(note),
+        }
+    };
+    (steps.unlock)(&status).map_err(said)?;
+    (steps.start)().map_err(said)
+}
+
+/// What `stop` does once the server is reached and the person said yes:
+/// `stop` stops (or locks) the app, then, for an environment kept in the
+/// account (`held`), the account records that it no longer runs. Stopped
+/// either way: a record that could not be written comes back as what to
+/// say, and the answer carries `accountRecorded`.
+pub(crate) async fn stop_steps<A: Account>(
+    held: Option<Held<'_, A>>,
+    app: &App,
+    stop: impl FnOnce() -> Result<Value, CliError>,
+) -> Result<(Value, Option<String>), CliError> {
+    let mut answer = stop()?;
+    // A server of the person's own has no state in the account to record.
+    let Some((api, name, kept)) =
+        held.filter(|(_, _, kept)| crate::worker::account::has_server_in_use(&kept.record))
+    else {
+        return Ok((answer, None));
+    };
+    let recorded = crate::worker::account::record_running(api, app, name, false).await;
+    let said = recorded.as_ref().err().map(|u| {
+        let error = u.error.message.as_str();
+        // "Run it again" only where that can record it, and only when the
+        // account did say the app runs.
+        if u.sign_in {
+            t!(
+                "worker_account.stop_not_recorded_sign_in",
+                error,
+                scope = app.scope()
+            )
+        } else if u.unknown {
+            t!(
+                "worker_account.stop_may_be_recorded",
+                error,
+                scope = app.scope()
+            )
+        } else if u.again && crate::worker::account::says_running(&kept.record) {
+            t!(
+                "worker_account.not_recorded_stop",
+                error,
+                scope = app.scope()
+            )
+        } else {
+            t!("worker_account.stop_not_recorded", error)
+        }
+    });
+    if let Some(object) = answer.as_object_mut() {
+        object.insert("accountRecorded".to_owned(), json!(recorded.is_ok()));
+        if let Err(u) = &recorded {
+            object.insert(
+                "accountError".to_owned(),
+                json!({
+                    "code": u.error.code.as_str(),
+                    "message": u.error.message,
+                    "again": u.again,
+                    "unknown": u.unknown,
+                    "signIn": u.sign_in,
+                }),
+            );
+        }
+    }
+    Ok((answer, said))
+}
+
+/// `erpc worker stop`. For an environment kept in the account (`held`),
+/// the account records that the app no longer runs once it is stopped.
+pub(crate) async fn stop(
+    json: bool,
+    app: &App,
+    (lock, yes): (bool, bool),
+    held: Option<(&impl Account, &Kept)>,
+) -> Outcome {
+    let run = async || -> Result<Outcome, CliError> {
+        let (m, id, session) = reach(app, held.map(|(_, kept)| kept))?;
         positions_warning(&m, app, &Say { quiet: json });
         go_ahead(yes, &t!("worker_remote.stop.refused"))?;
-        let answer = ctl_ok(
-            &session,
-            &id,
-            if lock { Verb::Lock } else { Verb::Stop },
-            None,
-        )?;
+        let verb = if lock { Verb::Lock } else { Verb::Stop };
+        let (answer, unrecorded) = stop_steps(
+            held.map(|(api, kept)| (api, m.name.as_str(), kept)),
+            app,
+            || ctl_ok(&session, &id, verb, None),
+        )
+        .await?;
         let mut text = if lock {
             t!("worker_remote.stop.locked", id = id.as_str())
         } else {
             t!("worker_remote.stop.stopped", id = id.as_str())
         };
         // Stopping the app ends none of what is charged by the hour.
-        if let Some(charged) = m
-            .env
-            .get(&app.env)
-            .and_then(|e| still_charged_line(e, &app.scope()))
-        {
+        let charged = match held {
+            Some((_, kept)) => crate::worker::account::still_charged(&kept.record, &app.scope()),
+            None => m
+                .env
+                .get(&app.env)
+                .and_then(|e| still_charged_line(e, &app.scope())),
+        };
+        if let Some(charged) = charged {
             text.push('\n');
             text.push_str(&charged);
+        }
+        if let Some(unrecorded) = unrecorded {
+            text.push('\n');
+            text.push_str(&unrecorded);
         }
         Ok(done(json, &answer, text))
     };
     run()
+        .await
         .map_err(|e| unreached(app, e))
         .unwrap_or_else(Into::into)
 }
@@ -753,7 +956,7 @@ pub(crate) fn rollback(json: bool, app: &App, to: Option<&str>, yes: bool) -> Ou
             .map(ReleaseId::new)
             .transpose()
             .map_err(|e| CliError::new(Code::Usage, e))?;
-        let (m, id, session) = reach(app)?;
+        let (m, id, session) = reach(app, None)?;
         positions_warning(&m, app, &say);
         go_ahead(yes, &t!("worker_remote.rollback.refused"))?;
         unlock_if_locked(&m, &id, &session, &say)?;
@@ -776,9 +979,9 @@ pub(crate) fn rollback(json: bool, app: &App, to: Option<&str>, yes: bool) -> Ou
 }
 
 /// `erpc worker releases`.
-pub(crate) fn releases(json: bool, app: &App) -> Outcome {
+pub(crate) fn releases(json: bool, app: &App, kept: Option<&Kept>) -> Outcome {
     let run = || -> Result<Outcome, CliError> {
-        let (_, id, session) = reach(app)?;
+        let (_, id, session) = reach(app, kept)?;
         let answer = ctl_ok(&session, &id, Verb::Releases, None)?;
         let (current, previous) = (
             t!("worker_remote.releases.current"),
@@ -1206,7 +1409,9 @@ fn unreached(app: &App, e: CliError) -> CliError {
         .resource
         .as_ref()
         .filter(|r| !r.id.is_empty())
-        .map_or_else(String::new, |r| format!(" (VPS {})", r.id));
+        .map_or_else(String::new, |r| {
+            t!("worker_remote.unreached.which", id = r.id)
+        });
     CliError::new(
         Code::Network,
         t!("worker_remote.unreached.message", host, vps),
@@ -1381,11 +1586,15 @@ fn shared_server_stop(
     if !(release_server && yes && ends_server(env)) {
         return None;
     }
-    let sharing = match listed() {
-        Ok(listed) => sharing_server(env, &listed),
+    let (sharing, unread) = match listed() {
+        Ok(listed) => (
+            sharing_server(env, &listed),
+            listed.iter().any(|l| l.record.is_none() && !l.in_account),
+        ),
         Err(e) => return Some(e),
     };
     (!sharing.is_empty()).then(|| {
+        let delete = format!("erpc worker delete --release-server{scope}");
         CliError::new(
             Code::Usage,
             t!(
@@ -1393,10 +1602,75 @@ fn shared_server_stop(
                 others = sharing.join(", ")
             ),
         )
-        .hint(t!(
-            "worker_remote.delete.server_shared_hint",
-            delete = format!("erpc worker delete --release-server{scope}")
-        ))
+        .hint(if unread {
+            t!("worker_remote.delete.server_shared_unread_hint", delete)
+        } else {
+            t!("worker_remote.delete.server_shared_hint", delete)
+        })
+    })
+}
+
+/// The other environments on this machine's list that are, or may be, on
+/// the server at `host`, by name: for the delete of environment `env_name`
+/// of `m` kept in the ERPC account, whose server the account knows by that
+/// address. One whose facts cannot be read here (one kept in the account,
+/// an erpc.toml or an item that cannot be read) may be.
+///
+/// # Errors
+///
+/// When the list itself cannot be read.
+pub(crate) fn sharing_host(
+    path: &std::path::Path,
+    m: &Manifest,
+    env_name: &str,
+    host: &str,
+) -> Result<Sharing, CliError> {
+    sharing_host_in(m, env_name, host, || {
+        listed_on_this_machine(&app_dir(path), m, env_name)
+    })
+}
+
+/// What of this machine's list is, or may be, on a server, as each is
+/// named, and whether one of them could not be read (its erpc.toml or
+/// 1Password item), which fixing it would settle.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Sharing {
+    pub(crate) named: Vec<String>,
+    pub(crate) unread: bool,
+}
+
+impl Sharing {
+    /// `named`, none of them unread.
+    #[cfg(test)]
+    pub(crate) fn named(named: Vec<String>) -> Self {
+        Self {
+            named,
+            unread: false,
+        }
+    }
+}
+
+/// [`sharing_host`], with what else this machine's list has from `listed`.
+/// An environment `m` does not have is refused: nothing would be compared,
+/// and the check would pass for no reason.
+fn sharing_host_in(
+    m: &Manifest,
+    env_name: &str,
+    host: &str,
+    listed: impl FnOnce() -> Result<Vec<Listed>, CliError>,
+) -> Result<Sharing, CliError> {
+    let Some(mut env) = m.env.get(env_name).cloned() else {
+        return Err(CliError::new(
+            Code::Failed,
+            t!("worker_remote.delete.no_env_to_compare", env = env_name),
+        ));
+    };
+    env.host = Some(host.to_owned());
+    env.account = false;
+    let listed = listed()?;
+    Ok(Sharing {
+        named: sharing_server(&env, &listed),
+        unread: listed.iter().any(|l| l.record.is_none() && !l.in_account),
     })
 }
 
@@ -1416,6 +1690,10 @@ fn app_dir(path: &std::path::Path) -> std::path::PathBuf {
 struct Listed {
     name: String,
     record: Option<Env>,
+    /// Whether it is kept in the ERPC account: this list does not say which
+    /// server it is on, so its server is not known here, as one that could
+    /// not be read is not.
+    in_account: bool,
 }
 
 /// [`listed_besides`] on this machine's list, with the facts of an
@@ -1476,6 +1754,7 @@ fn listed_besides(
             Err(_) => listed.push(Listed {
                 name: entry.name.clone(),
                 record: None,
+                in_account: false,
             }),
         }
     }
@@ -1484,9 +1763,11 @@ fn listed_besides(
 
 /// Environment `name` of app `app` as `<app> --env <name>`, with its
 /// server facts: those in `env`, or for one kept in 1Password, its item's
-/// through `read`.
+/// through `read`. One kept in the ERPC account has none here, and is
+/// listed with none: not as one with no server.
 fn with_facts(app: &str, name: &str, env: &Env, read: ItemReader<'_>) -> Listed {
     let record = match &env.inventory {
+        _ if env.account => None,
         None => Some(env.clone()),
         Some(inventory) => match read(&inventory.vault, app, name) {
             Ok(Some(facts)) => Some(erpc_worker::inventory::merged(env, facts)),
@@ -1498,6 +1779,7 @@ fn with_facts(app: &str, name: &str, env: &Env, read: ItemReader<'_>) -> Listed 
     Listed {
         name: format!("{app} --env {name}"),
         record,
+        in_account: env.account,
     }
 }
 
@@ -1509,6 +1791,9 @@ fn sharing_server(env: &Env, listed: &[Listed]) -> Vec<String> {
         let name = match &l.record {
             Some(record) if same_server(env, record) => l.name.clone(),
             Some(_) => continue,
+            None if l.in_account => {
+                t!("worker_remote.delete.server_in_account", name = l.name)
+            }
             None => t!("worker_remote.delete.server_unknown", name = l.name),
         };
         if !named.contains(&name) {
@@ -2988,6 +3273,7 @@ mod tests {
         use super::{Listed, app_dir, sharing_server};
         let on = |name: &str, host: Option<&str>, id: Option<&str>| Listed {
             name: name.to_owned(),
+            in_account: false,
             record: Some(Env {
                 host: host.map(str::to_owned),
                 resource: id.map(|id| Resource {
@@ -3012,6 +3298,7 @@ mod tests {
             Listed {
                 name: "vault-bot --env prod".to_owned(),
                 record: None,
+                in_account: false,
             },
         ];
         let sharing = sharing_server(&env(), &listed);
@@ -3042,6 +3329,7 @@ mod tests {
             Ok(vec![Listed {
                 name: "sniper --env prod".to_owned(),
                 record: Some(env()),
+                in_account: false,
             }])
         };
         let e = shared_server_stop((true, true), &env(), shared, " --env prod").expect("stopped");
@@ -3052,6 +3340,53 @@ mod tests {
             hint.contains("erpc worker delete --release-server --env prod"),
             "{hint}"
         );
+        // Fixing a file is offered only when one could not be read, and the
+        // others are never to be deleted first.
+        assert!(
+            !hint.contains("could not be read") && !hint.contains("delete those"),
+            "{hint}"
+        );
+        let unread = || {
+            Ok(vec![Listed {
+                name: "sniper --env prod".to_owned(),
+                record: None,
+                in_account: false,
+            }])
+        };
+        let e = shared_server_stop((true, true), &env(), unread, "").expect("stopped");
+        assert!(e.hint.unwrap_or_default().contains("could not be read"));
+        // One kept in the account is not unread: nothing to fix.
+        let in_account = || {
+            Ok(vec![Listed {
+                name: "sniper --env staging".to_owned(),
+                record: None,
+                in_account: true,
+            }])
+        };
+        let e = shared_server_stop((true, true), &env(), in_account, "").expect("stopped");
+        assert!(!e.hint.unwrap_or_default().contains("could not be read"));
+        // In every language, fixing a file is offered only when one could
+        // not be read.
+        for (lang, fix) in [
+            (erpc_core::i18n::Lang::Ja, "読めなかった"),
+            (erpc_core::i18n::Lang::Zh, "无法读取"),
+            (erpc_core::i18n::Lang::Ru, "не удалось прочитать"),
+        ] {
+            let read = crate::cli::i18n::speaking(lang, || {
+                shared_server_stop((true, true), &env(), shared, "")
+                    .expect("stopped")
+                    .hint
+                    .unwrap_or_default()
+            });
+            assert!(!read.contains(fix), "{lang:?}: {read}");
+            let not_read = crate::cli::i18n::speaking(lang, || {
+                shared_server_stop((true, true), &env(), unread, "")
+                    .expect("stopped")
+                    .hint
+                    .unwrap_or_default()
+            });
+            assert!(not_read.contains(fix), "{lang:?}: {not_read}");
+        }
         // Alone on its server: it goes ahead.
         assert!(shared_server_stop((true, true), &env(), || Ok(Vec::new()), "").is_none());
         // A list that cannot be read stops it too.
@@ -3093,8 +3428,9 @@ mod tests {
         };
         // `env()` is VPS 100001 at 203.0.113.10.
         let here = "[env.prod]\nhost = \"203.0.113.10\"\n\
-                    resource = { kind = \"vps\", id = \"100001\", hourly = true }\n";
-        let apps: [(&str, Option<String>); 9] = [
+                    resource = { kind = \"vps\", id = \"100001\", hourly = true }\n\
+                    [env.live]\naccount = true\n";
+        let apps: [(&str, Option<String>); 10] = [
             // The app itself, and another checkout of it: left out.
             ("bot", Some(toml("bot", here))),
             ("bot-copy", Some(toml("bot", here))),
@@ -3127,6 +3463,12 @@ mod tests {
             ("gone", Some(String::new())),
             // Never deployed: nothing on record.
             ("fresh", Some(toml("fresh", ""))),
+            // Kept in the ERPC account, which this list does not say the
+            // server of: named, as one whose server is not known here.
+            (
+                "accounted",
+                Some(toml("accounted", "[env.prod]\naccount = true\n")),
+            ),
         ];
         let mut entries = Vec::new();
         for (name, text) in &apps {
@@ -3152,15 +3494,24 @@ mod tests {
         let listed = listed_besides(&root.join("bot"), (&m, "prod"), &entries, &read);
         let named = sharing_server(&env(), &listed);
         let _ = std::fs::remove_dir_all(&root);
-        assert_eq!(named.len(), 4, "{named:?}");
-        assert_eq!(named[0], "sniper --env prod");
-        assert!(named[1].starts_with("vaulted --env prod "), "{named:?}");
-        assert!(named[2].starts_with("broken "), "{named:?}");
-        assert!(named[3].starts_with("locked "), "{named:?}");
+        assert_eq!(named.len(), 6, "{named:?}");
+        // The app's own other environment, kept in the account, first.
+        assert!(
+            named[0].starts_with("bot --env live ") && named[0].contains("ERPC account"),
+            "{named:?}"
+        );
+        assert_eq!(named[1], "sniper --env prod");
+        assert!(named[2].starts_with("vaulted --env prod "), "{named:?}");
+        assert!(named[3].starts_with("broken "), "{named:?}");
+        assert!(named[4].starts_with("locked "), "{named:?}");
+        assert!(
+            named[5].starts_with("accounted --env prod ") && named[5].contains("ERPC account"),
+            "{named:?}"
+        );
         assert!(
             !named
                 .iter()
-                .any(|n| n.starts_with("bot") || n.starts_with("gone")),
+                .any(|n| n.starts_with("bot --env prod") || n.starts_with("gone")),
             "{named:?}"
         );
     }
@@ -3469,5 +3820,344 @@ mod tests {
         assert_eq!(fields["server_ended"], serde_json::Value::Null);
         assert_eq!(fields["lines_dropped"][0], "Shreds line 100003");
         assert_eq!(fields["lines_ended"], json!([]));
+    }
+}
+
+#[cfg(test)]
+mod held_tests {
+    use erpc_api::worker::EnvDetail;
+    use serde_json::{Value, json};
+
+    use super::*;
+    use crate::worker::account::stand_in::{Fake, refused};
+
+    fn record(running: bool) -> EnvDetail {
+        serde_json::from_value(json!({
+            "name": "prod", "revision": 3, "factsFormat": 2,
+            "facts": { "host": "203.0.113.10", "sshUser": null, "sshPort": null,
+                "hostKey": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl",
+                "firewall": { "sshAllow": [], "appAllow": [] }, "starting": {}, "backup": null,
+                "desiredCores": null },
+            "servers": [{ "id": "0b8e7c52-91d4-4f6a-8e23-7d1a5c9b3e60", "slot": "active",
+                "cores": 2, "memoryGb": 8, "region": "amsterdam", "hourly": true,
+                "appRunning": running, "state": "active" }],
+            "desiredCores": null, "activeCores": 2, "coreOptions": [], "lines": [],
+            "refStates": { "backup": null }, "deployed": null, "deployedApp": null,
+            "updatedAt": "2026-10-29T15:40:37.000Z"
+        }))
+        .expect("an environment")
+    }
+
+    fn kept(running: bool) -> Kept {
+        Kept {
+            manifest: Manifest::parse(
+                "name = \"bot\"\nchain = \"solana\"\n[env.prod]\naccount = true\n",
+            )
+            .expect("a manifest"),
+            record: record(running),
+            app_id: "6f1c2b9e-4d3a-4e8b-9a71-2c5d8e0f4b13".to_owned(),
+            uid: "user-100001".to_owned(),
+        }
+    }
+
+    fn app() -> App {
+        App::at("apps/bot", "prod")
+    }
+
+    /// The steps of a start, each written to the stand-in's log as it runs,
+    /// failing where asked.
+    async fn started_on(
+        fake: &Fake,
+        kept: Option<&Kept>,
+        again: bool,
+        fail: Option<&str>,
+    ) -> Result<Value, CliError> {
+        let step = |name: &str| -> Result<(), CliError> {
+            fake.log.borrow_mut().push(name.to_owned());
+            if fail == Some(name) {
+                Err(failed(format!("{name} failed")))
+            } else {
+                Ok(())
+            }
+        };
+        start_steps(
+            kept.map(|kept| (fake, "bot", kept)),
+            &app(),
+            again,
+            Steps {
+                status: || step("status").map(|()| json!({ "agent": { "state": "locked" } })),
+                unlock: |_: &Value| step("unlock"),
+                start: || step("start").map(|()| json!({ "ok": true })),
+            },
+        )
+        .await
+    }
+
+    async fn started(
+        fake: &Fake,
+        held: bool,
+        again: bool,
+        fail: Option<&str>,
+    ) -> Result<Value, CliError> {
+        let kept = kept(false);
+        started_on(fake, held.then_some(&kept), again, fail).await
+    }
+
+    #[tokio::test]
+    async fn the_account_records_that_the_app_runs_before_the_key_is_handed_over() {
+        let fake = Fake::new(record(false));
+        started(&fake, true, false, None).await.expect("started");
+        assert_eq!(
+            *fake.log.borrow(),
+            ["status", "record true", "unlock", "start"]
+        );
+        // Kept in erpc.toml: nothing is recorded.
+        let fake = Fake::new(record(false));
+        started(&fake, false, false, None).await.expect("started");
+        assert_eq!(*fake.log.borrow(), ["status", "unlock", "start"]);
+    }
+
+    #[tokio::test]
+    async fn a_record_the_account_does_not_take_hands_nothing_over_and_starts_nothing() {
+        let fake = Fake::new(record(false));
+        fake.answers
+            .borrow_mut()
+            .push(refused(409, "app_running_elsewhere", Value::Null));
+        let e = started(&fake, true, false, None)
+            .await
+            .expect_err("refused");
+        assert!(e.message.contains("it was not started"), "{}", e.message);
+        assert_eq!(*fake.log.borrow(), ["status", "record true"]);
+        // A restart says so in its own words.
+        let fake = Fake::new(record(false));
+        fake.answers
+            .borrow_mut()
+            .push(refused(409, "app_running_elsewhere", Value::Null));
+        let e = started(&fake, true, true, None).await.expect_err("refused");
+        assert!(e.message.contains("nothing was restarted"), "{}", e.message);
+    }
+
+    #[tokio::test]
+    async fn a_failure_after_the_record_says_the_account_now_says_the_app_runs() {
+        let fake = Fake::new(record(false));
+        let e = started(&fake, true, false, Some("unlock"))
+            .await
+            .expect_err("failed");
+        assert_eq!(*fake.log.borrow(), ["status", "record true", "unlock"]);
+        let hint = e.hint.unwrap_or_default();
+        assert!(hint.contains("now says the app runs"), "{hint}");
+    }
+
+    #[tokio::test]
+    async fn a_server_not_reached_has_nothing_recorded_and_an_own_server_nothing_to_record() {
+        // The server does not answer: nothing is recorded, nothing handed over.
+        let fake = Fake::new(record(false));
+        assert!(started(&fake, true, false, Some("status")).await.is_err());
+        assert_eq!(*fake.log.borrow(), ["status"]);
+        // A server of the person's own: the account has no state for it.
+        let mut own = kept(false);
+        own.record.servers.clear();
+        let fake = Fake::new(own.record.clone());
+        started_on(&fake, Some(&own), false, None)
+            .await
+            .expect("started");
+        assert_eq!(*fake.log.borrow(), ["status", "unlock", "start"]);
+        let (answer, said) = stop_steps(Some((&fake, "bot", &own)), &app(), || {
+            Ok(json!({ "ok": true }))
+        })
+        .await
+        .expect("stopped");
+        assert_eq!(said, None);
+        assert!(answer.get("accountRecorded").is_none());
+        assert_eq!(*fake.written.borrow(), Vec::<bool>::new());
+    }
+
+    async fn stopped(fake: &Fake, running: bool) -> (Value, Option<String>) {
+        let kept = kept(running);
+        stop_steps(Some((fake, "bot", &kept)), &app(), || {
+            fake.log.borrow_mut().push("stop".to_owned());
+            Ok(json!({ "ok": true }))
+        })
+        .await
+        .expect("stopped")
+    }
+
+    #[tokio::test]
+    async fn a_stop_is_recorded_after_it_is_made_and_a_record_not_written_is_said_truly() {
+        let fake = Fake::new(record(true));
+        let (answer, said) = stopped(&fake, true).await;
+        assert_eq!(*fake.log.borrow(), ["stop", "record false"]);
+        assert_eq!(answer["accountRecorded"], true);
+        assert_eq!(said, None);
+        // Busy every time while the account said it runs: run it again.
+        let fake = Fake::new(record(true));
+        for _ in 0..3 {
+            fake.answers.borrow_mut().push(refused(
+                429,
+                "rate_limited",
+                json!({ "retryAfter": 0 }),
+            ));
+        }
+        let (answer, said) = stopped(&fake, true).await;
+        assert_eq!(answer["accountRecorded"], false);
+        assert!(said.expect("said").contains("again records it"));
+        assert_eq!(answer["accountError"]["again"], true);
+        // No server in use: what the account answered, and no "again".
+        let fake = Fake::new(record(true));
+        fake.answers
+            .borrow_mut()
+            .push(refused(404, "server_not_found", Value::Null));
+        let said = stopped(&fake, true).await.1.expect("said");
+        assert!(
+            said.contains("did not record it") && !said.contains("again"),
+            "{said}"
+        );
+        // A sign-in to renew: said, with the way to record it after.
+        let fake = Fake::new(record(true));
+        fake.answers
+            .borrow_mut()
+            .push(erpc_api::worker::WorkerError::Session("refused".to_owned()));
+        let (answer, said) = stopped(&fake, true).await;
+        assert!(said.expect("said").contains("erpc login"));
+        assert_eq!(answer["accountError"]["signIn"], true);
+        // Failing on the account's side: whether it took the write is not
+        // known, and that is said.
+        let fake = Fake::new(record(true));
+        fake.answers
+            .borrow_mut()
+            .push(refused(500, "internal_error", Value::Null));
+        let (answer, said) = stopped(&fake, true).await;
+        assert!(said.expect("said").contains("did not say whether"));
+        assert_eq!(answer["accountError"]["unknown"], true);
+    }
+
+    #[tokio::test]
+    async fn a_start_whose_record_may_have_been_taken_says_the_account_may_say_it_runs() {
+        let fake = Fake::new(record(false));
+        for _ in 0..3 {
+            fake.answers.borrow_mut().push(refused(
+                429,
+                "rate_limited",
+                json!({ "retryAfter": 0 }),
+            ));
+        }
+        // Busy every time: answered before the write, so not taken.
+        let e = started(&fake, true, false, None)
+            .await
+            .expect_err("not recorded");
+        assert!(!e.hint.unwrap_or_default().contains("may have taken it"));
+        assert!(!fake.log.borrow().contains(&"unlock".to_owned()));
+        // Out of reach, failing, or taken and answered in a newer form:
+        // the account may have taken it.
+        for unknown in [
+            refused(500, "internal_error", Value::Null),
+            erpc_api::worker::WorkerError::Api(erpc_api::ApiError::Status(502)),
+            erpc_api::worker::WorkerError::NewerFormat {
+                found: 3,
+                after_write: true,
+            },
+        ] {
+            let fake = Fake::new(record(false));
+            fake.answers.borrow_mut().push(unknown);
+            let e = started(&fake, true, false, None)
+                .await
+                .expect_err("not recorded");
+            assert!(e.hint.unwrap_or_default().contains("may have taken it"));
+            assert!(!fake.log.borrow().contains(&"unlock".to_owned()));
+        }
+    }
+
+    #[test]
+    fn an_environment_kept_in_the_account_is_compared_with_this_machines_list_by_its_address() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let this = dir.path().join("bot");
+        let other = dir.path().join("relay");
+        std::fs::create_dir_all(&this).expect("made");
+        std::fs::create_dir_all(&other).expect("made");
+        std::fs::write(
+            this.join("erpc.toml"),
+            "name = \"bot\"\nchain = \"solana\"\n[env.prod]\naccount = true\n[env.staging]\naccount = true\n",
+        )
+        .expect("written");
+        std::fs::write(
+            other.join("erpc.toml"),
+            "name = \"relay\"\nchain = \"solana\"\n[env.prod]\nhost = \"203.0.113.10\"\n[env.dev]\nhost = \"198.51.100.7\"\n",
+        )
+        .expect("written");
+        let m = Manifest::load(&this.join("erpc.toml")).expect("read");
+        let entries = vec![erpc_worker::index::Entry {
+            name: "relay".to_owned(),
+            dir: other.clone(),
+        }];
+        let no_item = |_: &str, _: &str, _: &str| -> Result<Option<Env>, String> { Ok(None) };
+        let listed = || Ok(listed_besides(&this, (&m, "prod"), &entries, &no_item));
+        let sharing = sharing_host_in(&m, "prod", "203.0.113.10", listed).expect("compared");
+        // Everything there was read: no fixing settles it.
+        assert!(!sharing.unread, "{sharing:?}");
+        let shared = sharing.named;
+        // The other app's environment at the address, and this app's other
+        // environment kept in the account, which may be on it.
+        assert!(
+            shared
+                .iter()
+                .any(|n| n.contains("relay") && n.contains("prod")),
+            "{shared:?}"
+        );
+        assert!(shared.iter().any(|n| n.contains("staging")), "{shared:?}");
+        assert!(!shared.iter().any(|n| n.contains("dev")), "{shared:?}");
+        // An environment whose server could not be read is said so.
+        let unread = || {
+            Ok(vec![Listed {
+                name: "relay --env prod".to_owned(),
+                record: None,
+                in_account: false,
+            }])
+        };
+        let sharing = sharing_host_in(&m, "prod", "203.0.113.10", unread).expect("compared");
+        assert!(sharing.unread && sharing.named.len() == 1, "{sharing:?}");
+        // An environment the manifest does not have is refused.
+        let listed = || Ok(Vec::new());
+        assert!(sharing_host_in(&m, "gone", "203.0.113.10", listed).is_err());
+    }
+}
+
+/// What keeping an environment in the ERPC account does to this machine's
+/// other environments' deletes: the note `erpc worker move` shows before
+/// its yes says it (`worker_move.loses`).
+#[cfg(test)]
+mod an_environment_kept_in_the_account {
+    use super::*;
+
+    #[test]
+    fn refuses_another_environments_delete_with_yes_and_asks_without_it() {
+        let text = "name = \"bot\"\nchain = \"solana\"\n\
+            [env.prod]\naccount = true\n\
+            [env.dev]\naccount = true\n\
+            [env.staging]\nhost = \"203.0.113.11\"\n\
+            resource = { kind = \"vps\", id = \"200002\", region = \"amsterdam\", hourly = true }\n";
+        let m = Manifest::parse(text).expect("a manifest");
+        let dir = tempfile::tempdir().expect("a directory");
+        let read: ItemReader<'_> = &|_, _, _| Ok(None);
+        // An environment kept in erpc.toml, on an hourly ERPC server: its
+        // delete with --yes is refused (run without it, it is asked).
+        let listed = listed_besides(dir.path(), (&m, "staging"), &[], read);
+        let stopped = shared_server_stop((true, true), &m.env["staging"], || Ok(listed), "")
+            .expect("stopped");
+        assert_eq!(stopped.code, Code::Usage);
+        // Without --yes, each end is asked anyway: nothing stops here.
+        let listed = listed_besides(dir.path(), (&m, "staging"), &[], read);
+        assert!(shared_server_stop((true, false), &m.env["staging"], || Ok(listed), "").is_none());
+        // A moved environment's own delete, with another kept in the
+        // account too: that one is named as one that may share its server.
+        let listed = listed_besides(dir.path(), (&m, "prod"), &[], read);
+        let sharing = sharing_host_in(&m, "prod", "203.0.113.10", || Ok(listed)).expect("compared");
+        assert!(!sharing.named.is_empty());
+        // The only one kept in the account: nothing is named.
+        let one =
+            Manifest::parse(&text.replace("[env.dev]\naccount = true\n", "")).expect("a manifest");
+        let listed = listed_besides(dir.path(), (&one, "prod"), &[], read);
+        let sharing =
+            sharing_host_in(&one, "prod", "203.0.113.10", || Ok(listed)).expect("compared");
+        assert!(sharing.named.is_empty());
     }
 }

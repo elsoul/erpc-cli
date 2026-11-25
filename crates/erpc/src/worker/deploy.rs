@@ -108,6 +108,7 @@ use sha2::{Digest as _, Sha256};
 use crate::account::commands::Outcome;
 use crate::cli::error::{CliError, Code};
 use crate::node::common::{Say, go_ahead};
+use crate::worker::account::{Account, Kept};
 use crate::worker::remote::{ctl, ctl_ok, failed, open, unlock_request};
 use crate::worker::vps::{self, Api, LineRecord, LineTarget, Server, StartRecord, Stays};
 use crate::worker::{App, EnvRecord, load_env};
@@ -162,11 +163,15 @@ pub(crate) struct Where {
     pub(crate) starts: Starts,
     /// How far the deploy goes.
     pub(crate) upto: Upto,
+    /// For an environment kept in the ERPC account: `erpc.toml` with the
+    /// environment as the account keeps it, its lines included. Read in
+    /// place of `erpc.toml`'s environment, and never saved.
+    pub(crate) kept: Option<Manifest>,
 }
 
 /// Who answers what a start asks (an hourly product's price) and the
 /// first login to a server erpc has not made key-only yet, a new one or
-/// one named with `--vps`.
+/// one named with `--server`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum Starts {
     /// The person at the terminal.
@@ -619,7 +624,7 @@ fn udp_public(ip: Ipv4Addr) -> Result<(), CliError> {
 /// the server: `--udp-region`; else the region of the server on record (a
 /// server of the user's own has none, and needs `--udp-region`); else the
 /// region of a VPS a stopped deploy left on record; a server named with
-/// `--host` has none; one named with `--vps` is read with it, and checked
+/// `--host` has none; one named with `--server` is read with it, and checked
 /// before any line is started (`None` here); a new VPS is bought in
 /// `--region`, else the nearest region. Chosen at a terminal from the
 /// account's servers, it is checked before any line is started too.
@@ -1609,9 +1614,14 @@ impl Waiting {
     fn named(&self) -> String {
         match self {
             Self::Ready(server) => format!("{}@{}", server.target.user, server.target.host),
-            Self::Vps(_, resource) => format!("VPS {}", resource.id),
+            Self::Vps(_, resource) => server_named(&resource.id),
         }
     }
+}
+
+/// An ERPC server, as a message names it by its id.
+fn server_named(id: impl std::fmt::Display) -> String {
+    t!("worker_deploy.vps.named", id)
 }
 
 /// The line to say before the go-ahead, when there is one to ask: every
@@ -1673,7 +1683,7 @@ where
         let hint = t!("worker_deploy.vps.not_kept_hint", id, scope);
         failed(t!("worker_deploy.vps.not_kept", id, error = e)).hint(hint)
     })?;
-    on_record.borrow_mut().push(format!("VPS {id}"));
+    on_record.borrow_mut().push(server_named(&id));
     ready(resource).await
 }
 
@@ -1714,7 +1724,7 @@ async fn server(
     // is the record, less a VPS the person took off it ([`drop_ended_vps`]).
     if let Some(resource) = pending_vps(Some(base)) {
         say.line(&t!("worker_deploy.vps.taking_up", id = resource.id));
-        on_record.borrow_mut().push(format!("VPS {}", resource.id));
+        on_record.borrow_mut().push(server_named(&resource.id));
         let api = Api::open().await?.accepting(at.starts.accepted());
         return Ok(found(Waiting::Vps(api, resource.clone()), true, false));
     }
@@ -1772,7 +1782,7 @@ async fn server(
     let running = vps::running(&api).await?;
     let mut options: Vec<String> = running
         .iter()
-        .map(|(id, ip, region, plan)| format!("VPS {id}  {ip}  {region}  {plan}"))
+        .map(|(id, ip, region, plan)| format!("{}  {ip}  {region}  {plan}", server_named(id)))
         .collect();
     let region = vps::nearest_region();
     options.push(t!("worker_deploy.server.new_vps", region));
@@ -2019,8 +2029,25 @@ fn pending_vps(env: Option<&Env>) -> Option<&Resource> {
         .filter(|r| env.host.is_none() && r.kind == ResourceKind::Vps && !r.id.is_empty())
 }
 
+/// What became of the account's two writes of a deploy: the firewall
+/// step's (`saved`) and the deploy record (`deployed`), which is sent
+/// whatever became of the first. Each failure is said.
+fn both_written(saved: Result<(), String>, deployed: Result<(), String>) -> Result<(), String> {
+    match (saved, deployed) {
+        (Ok(()), deployed) => deployed,
+        (Err(error), Ok(())) => Err(error),
+        (Err(error), Err(also)) => Err(format!("{error}{}{also}", t!("worker_account.hint_sep"))),
+    }
+}
+
 /// `erpc worker deploy`.
-pub(crate) async fn deploy(json: bool, app: &App, at: &Where, yes: bool) -> Outcome {
+pub(crate) async fn deploy<A: Account>(
+    json: bool,
+    app: &App,
+    at: &Where,
+    yes: bool,
+    held: Option<(&A, &Kept)>,
+) -> Outcome {
     let say = Say { quiet: json };
     let on_record = RefCell::new(Vec::new());
     // The summary is English in `--json` output, which scripts read.
@@ -2029,7 +2056,7 @@ pub(crate) async fn deploy(json: bool, app: &App, at: &Where, yes: bool) -> Outc
     } else {
         crate::cli::i18n::lang()
     };
-    let result = run(&say, lang, app, at, yes, &on_record).await;
+    let result = run(&say, lang, app, at, yes, &on_record, held).await;
     let scope = app.scope();
     // A failure once a server is on record says what is charged, and how
     // the next command carries on with it.
@@ -2061,6 +2088,19 @@ pub(crate) async fn deploy(json: bool, app: &App, at: &Where, yes: bool) -> Outc
     }
 }
 
+/// A deploy's answer for `--json`, with where its record was kept said by
+/// the key for that place: `account_updated` for an environment kept in
+/// the ERPC account, `erpc_toml_updated` for one kept in `erpc.toml`.
+pub(crate) fn kept_where(mut report: Value, in_account: bool) -> Value {
+    if in_account
+        && let Some(object) = report.as_object_mut()
+        && let Some(updated) = object.remove("erpc_toml_updated")
+    {
+        object.insert("account_updated".to_owned(), updated);
+    }
+    report
+}
+
 /// The start of step 1: the app's `erpc.toml`, read, with everything
 /// about the app's settings, its key and its secrets that refuses a deploy
 /// before this machine's tools are looked for, a server is chosen or
@@ -2083,7 +2123,10 @@ fn app_ready_in(
     app: &App,
     at: &Where,
 ) -> Result<(PathBuf, Manifest), CliError> {
-    let (path, m) = load_env(app)?;
+    let (path, m) = match &at.kept {
+        Some(kept) => (crate::worker::load(&app.dir)?.0, kept.clone()),
+        None => load_env(app)?,
+    };
     let asked_lines = at.lines();
     let mut provided: Vec<&str> = asked_lines.iter().map(|(k, _)| k.setting()).collect();
     if let Some(env) = m.env.get(&app.env) {
@@ -2099,6 +2142,11 @@ fn app_ready_in(
             .join(", ");
         // A line's setting comes from the line's flag, not from a secret.
         let hint = match LineKind::ALL.into_iter().find(|k| k.setting() == first) {
+            // An environment kept in the account takes no line from a flag
+            // yet: its lines are the account's.
+            Some(_) if at.kept.is_some() => {
+                t!("worker_deploy_account.missing_line_hint", first)
+            }
             Some(kind) => t!(
                 "worker_deploy.missing_line_hint",
                 first,
@@ -2233,13 +2281,14 @@ where
     clippy::too_many_lines,
     reason = "the steps are one sequence, read top to bottom"
 )]
-async fn run(
+async fn run<A: Account>(
     say: &Say,
     lang: Lang,
     app: &App,
     at: &Where,
     yes: bool,
     on_record: &RefCell<Vec<String>>,
+    held: Option<(&A, &Kept)>,
 ) -> Result<Value, CliError> {
     // 1. The app, and all that refuses the deploy before anything is
     // bought. Every next command a hint names is for this app and
@@ -2265,6 +2314,22 @@ async fn run(
         env: &app.env,
     };
     let asked_lines = at.lines();
+    // An environment kept in the ERPC account: what this deploy writes goes
+    // there, built on the record it last answered with.
+    let mut account = match held {
+        Some((api, held)) => Some(crate::worker::deploy_account::Deploying::new(
+            api,
+            &m.name,
+            held,
+            crate::worker::account::pins_path().map_err(failed)?,
+        )),
+        None => None,
+    };
+    // What it ships, checked against what the account keeps of it now.
+    let shipped = match &account {
+        Some(_) => Some(crate::worker::deploy_account::deployed_app(&m)?),
+        None => None,
+    };
 
     // 2. The server, chosen and agreed to before the build, so that the
     // person is asked at the start and not after it.
@@ -2420,7 +2485,18 @@ async fn run(
         },
         ..env_before
     };
-    let saved = kept.save(&env, None);
+    let saved = match &mut account {
+        Some(account) => {
+            let allow = crate::worker::deploy_account::allow_list(&env);
+            let written = account.write_firewall(app, &allow).await;
+            // A pin that could not follow is said now, whatever comes next.
+            for warning in &account.warnings {
+                say.line(&format!("warning: {warning}"));
+            }
+            written
+        }
+        None => kept.save(&env, None),
+    };
     let root = index_root(&path);
     let _ = crate::account::session::beside_config(erpc_worker::index::FILE_NAME)
         .and_then(|p| erpc_worker::index::update(&p, |i| Ok(((), i.remember(&m.name, &root)?))));
@@ -2540,17 +2616,52 @@ async fn run(
     // restarted, which stops the app; then the key goes to it at once.
     // Nothing between step 4 and here asked the agent for more than its
     // status.
-    let handed = hand_over(
-        at.upto,
-        waiting,
-        &scope,
-        || unlock_request(&m),
+    // For an environment kept in the account, the account records that the
+    // app runs first ([`record_then_hand_over`]): a record it does not take,
+    // or a record changed during the build, hands nothing over.
+    let handed = crate::worker::deploy_account::record_then_hand_over(
+        account.as_mut(),
+        app,
+        at.upto.prepares(),
         || {
-            crate::worker::remote::positions_warning(&m, app, say);
-            say.line(&t!("worker_deploy.agent.restarting"));
+            hand_over(
+                at.upto,
+                waiting,
+                &scope,
+                || unlock_request(&m),
+                || {
+                    crate::worker::remote::positions_warning(&m, app, say);
+                    say.line(&t!("worker_deploy.agent.restarting"));
+                },
+                |verb, stdin| ctl_ok(&session, &id, verb, stdin),
+            )
         },
-        |verb, stdin| ctl_ok(&session, &id, verb, stdin),
-    )?;
+    )
+    .await;
+    // Said on a failure from here on: that the account now says the app
+    // runs, only when this deploy did record it (a server of the person's
+    // own has no such record), and a pin that could not follow a write.
+    let recorded = account.as_ref().is_some_and(|a| a.recorded);
+    let warned = account
+        .as_ref()
+        .map(|a| a.warnings.join(&t!("worker_account.hint_sep")))
+        .filter(|w| !w.is_empty());
+    let runs_said = |e: CliError| {
+        let mut notes: Vec<String> = Vec::new();
+        if recorded {
+            notes.push(t!("worker_account.says_running", scope = app.scope()));
+        }
+        notes.extend(warned.clone());
+        if notes.is_empty() {
+            return e;
+        }
+        let note = notes.join(&t!("worker_account.hint_sep"));
+        match e.hint.clone() {
+            Some(hint) => e.hint(format!("{hint}{}{note}", t!("worker_account.hint_sep"))),
+            None => e.hint(note),
+        }
+    };
+    let handed = handed.map_err(runs_said)?;
     // A --prepare ends here, with nothing handed over: the server, the
     // firewall, the lines and the release are in place, and nothing that
     // needs the key or a secret was read. Nothing was started, stopped or
@@ -2582,51 +2693,67 @@ async fn run(
         }
         // The WAF is put in place with the app, by the deploy that starts it.
         text.extend(crate::worker::waf::prepared(lang, &m));
+        if let Some(account) = &account {
+            text.extend(account.warnings.iter().map(|w| format!("warning: {w}")));
+        }
         if let Err(error) = &saved {
             text.push(format!(
                 "warning: {}",
-                said_in!(lang, t!("worker_deploy.done.not_kept", error))
+                if account.is_some() {
+                    said_in!(lang, t!("worker_deploy_account.not_kept", error))
+                } else {
+                    said_in!(lang, t!("worker_deploy.done.not_kept", error))
+                }
             ));
         }
-        text.extend(on_record_said(
-            lang,
-            &env,
-            &server.resource,
-            udp_state,
-            &scope,
-        ));
+        // What is on record by product id: the account names none.
+        if account.is_none() {
+            text.extend(on_record_said(
+                lang,
+                &env,
+                &server.resource,
+                udp_state,
+                &scope,
+            ));
+        }
         text.extend(starts_left_said(
             lang,
             &starts_left(&env, &[]),
             &env,
             &app.env,
         ));
-        return Ok(json!({
-            "text": text.join("\n"),
-            "prepared": true,
-            "release": built.release,
-            "host": server.target.host,
-            "worker": id.as_str(),
-            "agent": agent_said(
-                &agent,
-                &set_up,
-                agent_changed,
-                waiting == WaitingAgent::Kept,
-                false,
-            ),
-            "ssh_allow": ssh_allow,
-            // Not touched: the deploy that starts the app puts it in place.
-            "waf": m.waf.as_ref().map(|waf| json!({ "port": waf.port, "applied": false })),
-            "lines": env.lines,
-            "lines_forgotten": forgotten.iter().map(|l| l.id.as_str()).collect::<Vec<_>>(),
-            "starting": env.starting,
-            "erpc_toml_updated": saved.is_ok(),
-            "next": [format!("erpc worker deploy{scope}")],
-        }));
+        return Ok(kept_where(
+            json!({
+                "text": text.join("\n"),
+                "prepared": true,
+                "release": built.release,
+                "host": server.target.host,
+                "worker": id.as_str(),
+                "agent": agent_said(
+                    &agent,
+                    &set_up,
+                    agent_changed,
+                    waiting == WaitingAgent::Kept,
+                    false,
+                ),
+                "ssh_allow": ssh_allow,
+                // Not touched: the deploy that starts the app puts it in place.
+                "waf": m.waf.as_ref().map(|waf| json!({ "port": waf.port, "applied": false })),
+                "lines": env.lines,
+                "lines_forgotten": forgotten.iter().map(|l| l.id.as_str()).collect::<Vec<_>>(),
+                "starting": env.starting,
+                "erpc_toml_updated": saved.is_ok(),
+                "next": [format!("erpc worker deploy{scope}")],
+            }),
+            account.is_some(),
+        ));
     };
     // What a failure from here on carries for --json: the agent was
     // restarted, whatever became of the start.
-    let restarted_said = |e: CliError| if restarted { agent_restarted(e) } else { e };
+    let restarted_said = |e: CliError| {
+        let e = runs_said(e);
+        if restarted { agent_restarted(e) } else { e }
+    };
 
     // 9. Activation, which restarts an app already running there.
     if !restarted {
@@ -2662,9 +2789,16 @@ async fn run(
             t!("worker_deploy.done.rollback", scope, previous)
         ));
     }
-    // An inventory environment's item also records what runs, and when.
-    let saved = match (&saved, &env.inventory) {
-        (Ok(()), Some(_)) => kept.save(
+    // An inventory environment's item also records what runs, and when; so
+    // does the account's record of an environment kept there.
+    let saved = match (&saved, &env.inventory, &mut account, shipped) {
+        // The deploy is put on record once the app runs, whatever became of
+        // step 5's write: the record was read again at step 8.
+        (_, _, Some(account), Some(shipped)) => {
+            let deployed = account.write_deploy(app, release.as_str(), shipped).await;
+            both_written(saved, deployed)
+        }
+        (Ok(()), Some(_), None, _) => kept.save(
             &env,
             Some(&crate::worker::inventory::deployed(release.as_str())),
         ),
@@ -2689,18 +2823,27 @@ async fn run(
             ));
         }
         (Ok(()), _) => {}
+        (Err(error), _) if account.is_some() => after.push(format!(
+            "warning: {}",
+            said_in!(lang, t!("worker_deploy_account.not_kept", error))
+        )),
         (Err(error), _) => after.push(format!(
             "warning: {}",
             said_in!(lang, t!("worker_deploy.done.not_kept", error))
         )),
     }
-    after.extend(on_record_said(
-        lang,
-        &env,
-        &server.resource,
-        udp_state,
-        &scope,
-    ));
+    if let Some(account) = &account {
+        after.extend(account.warnings.iter().map(|w| format!("warning: {w}")));
+    }
+    if account.is_none() {
+        after.extend(on_record_said(
+            lang,
+            &env,
+            &server.resource,
+            udp_state,
+            &scope,
+        ));
+    }
     after.extend(starts_left_said(
         lang,
         &starts_left(&env, &[]),
@@ -2719,6 +2862,7 @@ async fn run(
         "starting": env.starting,
         "erpc_toml_updated": saved.is_ok(),
     });
+    let report = kept_where(report, account.is_some());
 
     // 10. The WAF, now that the app answers behind it; then its port as
     // erpc.toml asks, wherever the firewall step left it otherwise.
@@ -3424,7 +3568,7 @@ mod tests {
         let taken_up = super::Waiting::Vps(super::Api::offline(), bought());
         let line = super::go_ahead_line(&taken_up, false, "bot", "erpc-worker-bot")
             .expect("a VPS taken up from an earlier deploy asks");
-        assert!(line.contains("VPS 100001"), "{line}");
+        assert!(line.contains("server 100001"), "{line}");
         assert!(super::go_ahead_line(&taken_up, true, "bot", "erpc-worker-bot").is_none());
     }
 
@@ -3449,7 +3593,7 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(*log.borrow(), ["saved 100001", "waited for 100001"]);
         // The failure is then told what is charged (deploy's wrapper).
-        assert_eq!(*on_record.borrow(), ["VPS 100001"]);
+        assert_eq!(*on_record.borrow(), ["server 100001"]);
     }
 
     #[tokio::test]
@@ -3478,7 +3622,7 @@ mod tests {
         assert!(
             e.hint
                 .unwrap_or_default()
-                .contains("`erpc worker deploy --vps 100001 --env staging`")
+                .contains("`erpc worker deploy --server 100001 --env staging`")
         );
     }
 
@@ -3618,14 +3762,14 @@ mod tests {
                 server.contains("account's servers")
                     && server.contains("`erpc ai`")
                     && server
-                        .contains("`erpc worker deploy --vps <ID> --env prod bot` takes one up")
+                        .contains("`erpc worker deploy --server <ID> --env prod bot` takes one up")
                     && server
                         .contains("Then remove `server` from [env.prod.starting] in erpc.toml"),
                 "{server}"
             );
             let line = hint(why, StartOf::Grpc, &deployed);
             assert!(
-                !line.contains("same command") && !line.contains("--vps"),
+                !line.contains("same command") && !line.contains("--server"),
                 "{line}"
             );
             assert!(
@@ -4013,7 +4157,7 @@ mod tests {
     /// The region a UDP line would send from is known before anything is
     /// bought wherever the deploy decides the server itself: refused then
     /// (a mistyped region, sydney, a server of one's own with no region),
-    /// nothing is charged. A VPS named with `--vps` is checked once it is
+    /// nothing is charged. A VPS named with `--server` is checked once it is
     /// read, before any line is started.
     #[test]
     fn the_udp_region_is_decided_before_anything_is_bought() {
@@ -4075,7 +4219,7 @@ mod tests {
                 .as_deref(),
             Some("frankfurt")
         );
-        // --vps: read with it, checked later; and nothing asked yet.
+        // --server: read with it, checked later; and nothing asked yet.
         let named = super::Where {
             vps: Some(100_001),
             ..super::Where::default()
@@ -4930,7 +5074,7 @@ mod tests {
             env: "default",
         };
         let on_record = RefCell::new(vec![
-            "VPS 100001".to_owned(),
+            "server 100001".to_owned(),
             "UDP Forwarding line 7".to_owned(),
         ]);
         let step = super::Step {
@@ -4954,7 +5098,7 @@ mod tests {
                 && !hint.contains("deploy again"),
             "{hint}"
         );
-        assert_eq!(*on_record.borrow(), ["VPS 100001"]);
+        assert_eq!(*on_record.borrow(), ["server 100001"]);
     }
 
     #[test]
@@ -5456,5 +5600,18 @@ mod tests {
         assert!(refused.message.contains("read-only"), "{}", refused.message);
         assert_eq!(env, pending, "a record not written is not gone on with");
         assert_eq!(saved.borrow().len(), 1, "only the one yes wrote");
+    }
+
+    #[test]
+    fn the_deploy_record_is_written_whatever_became_of_the_firewall_write_and_each_failure_said() {
+        let refused = || Err::<(), String>("refused".to_owned());
+        assert_eq!(super::both_written(Ok(()), Ok(())), Ok(()));
+        assert_eq!(super::both_written(refused(), Ok(())), refused());
+        assert_eq!(super::both_written(Ok(()), refused()), refused());
+        let both = super::both_written(refused(), Err("conflict".to_owned())).expect_err("both");
+        assert!(
+            both.starts_with("refused") && both.ends_with("conflict"),
+            "{both}"
+        );
     }
 }

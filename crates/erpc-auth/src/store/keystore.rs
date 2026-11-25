@@ -55,7 +55,7 @@
 //!   "version": 1,
 //!   "key_id": "<the id of the master key it is sealed under>",
 //!   "name": "<service>/<account>",
-//!   "kind": "<key or secret>",
+//!   "kind": "<key, seal or secret>",
 //!   "kdf": "hkdf-sha256",
 //!   "salt": "<32 random bytes, new at every write>",
 //!   "cipher": "chacha20-poly1305",
@@ -64,9 +64,9 @@
 //! }
 //! ```
 //!
-//! - `kind` says what the value is: `key` for a trading key, `secret` for
-//!   anything else ([`Kind`]). An entry is read as one or the other, and
-//!   opens only as the kind it was written as.
+//! - `kind` says what the value is: `key` for a trading key, `seal` for a
+//!   machine's sealing key, `secret` for anything else ([`Kind`]). An entry
+//!   is read as one of them, and opens only as the kind it was written as.
 //! - The entry's key is 32 bytes of HKDF-SHA256 over the master key, with
 //!   `salt` and the info string [`ENTRY_INFO`].
 //! - The value is sealed with ChaCha20-Poly1305 under that key and `nonce`.
@@ -170,6 +170,10 @@ pub enum Kind {
     Key,
     /// Anything else: an API token, a URL that carries one.
     Secret,
+    /// A machine's sealing key: the private key the app's secrets kept
+    /// in the ERPC account are opened with. Opened as nothing else, so no
+    /// read of a secret or of a trading key hands it over.
+    Seal,
 }
 
 impl Kind {
@@ -179,6 +183,7 @@ impl Kind {
         match self {
             Self::Key => "key",
             Self::Secret => "secret",
+            Self::Seal => "seal",
         }
     }
 
@@ -186,6 +191,7 @@ impl Kind {
         match word {
             "key" => Some(Self::Key),
             "secret" => Some(Self::Secret),
+            "seal" => Some(Self::Seal),
             _ => None,
         }
     }
@@ -288,14 +294,18 @@ impl fmt::Display for KeystoreError {
                 kept: Kind::Key,
             } => write!(
                 f,
-                "{name} is kept as a trading key, and is not read as a secret"
+                "{name} is kept as a trading key, and is read as nothing else"
             ),
             Self::OtherKind {
                 name,
                 kept: Kind::Secret,
+            } => write!(f, "{name} is kept as a secret, and is read as nothing else"),
+            Self::OtherKind {
+                name,
+                kept: Kind::Seal,
             } => write!(
                 f,
-                "{name} is kept as a secret, and is not read as a trading key"
+                "{name} is kept as a machine's sealing key, and is read as nothing else"
             ),
             Self::OtherSpelling { name, found } => write!(
                 f,
@@ -1662,6 +1672,45 @@ mod tests {
     }
 
     #[test]
+    fn a_machines_sealing_key_opens_as_nothing_else_and_nothing_else_as_one() {
+        let (_home, store) = fresh();
+        let master = store.create(PASSPHRASE).expect("made");
+        store
+            .write(&master, SERVICE, "bot.API_TOKEN", Kind::Secret, "tok-1")
+            .expect("kept");
+        store
+            .write(&master, SERVICE, "0123abcd.seal", Kind::Seal, "the seal")
+            .expect("kept");
+        let other = |account: &str, kept| KeystoreError::OtherKind {
+            name: format!("{SERVICE}/{account}"),
+            kept,
+        };
+        for asked in [Kind::Key, Kind::Secret] {
+            assert_eq!(
+                store.read(&master, SERVICE, "0123abcd.seal", asked).err(),
+                Some(other("0123abcd.seal", Kind::Seal))
+            );
+        }
+        assert_eq!(
+            store
+                .read(&master, SERVICE, "bot.API_TOKEN", Kind::Seal)
+                .err(),
+            Some(other("bot.API_TOKEN", Kind::Secret))
+        );
+        let read = store
+            .read(&master, SERVICE, "0123abcd.seal", Kind::Seal)
+            .expect("reads")
+            .expect("there");
+        assert_eq!(read.as_str(), "the seal");
+        assert_eq!(
+            other("0123abcd.seal", Kind::Seal).to_string(),
+            format!(
+                "{SERVICE}/0123abcd.seal is kept as a machine's sealing key, and is read as nothing else"
+            )
+        );
+    }
+
+    #[test]
     fn an_entry_opens_only_as_the_kind_it_was_written_as() {
         let (_home, store) = fresh();
         let master = store.create(PASSPHRASE).expect("made");
@@ -1746,11 +1795,11 @@ mod tests {
         // What the refusal says.
         assert_eq!(
             other("bot.wallet", Kind::Key).to_string(),
-            "erpc-worker/bot.wallet is kept as a trading key, and is not read as a secret"
+            "erpc-worker/bot.wallet is kept as a trading key, and is read as nothing else"
         );
         assert_eq!(
             other("bot.API_TOKEN", Kind::Secret).to_string(),
-            "erpc-worker/bot.API_TOKEN is kept as a secret, and is not read as a trading key"
+            "erpc-worker/bot.API_TOKEN is kept as a secret, and is read as nothing else"
         );
     }
 

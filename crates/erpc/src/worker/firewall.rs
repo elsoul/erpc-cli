@@ -72,6 +72,7 @@ use serde_json::{Value, json};
 use crate::account::commands::{Outcome, Said};
 use crate::cli::error::{CliError, Code};
 use crate::node::common::{Say, go_ahead};
+use crate::worker::account as kept;
 use crate::worker::remote::{ctl, ctl_ok, failed, open, target};
 use crate::worker::waf::{Rules, addresses};
 use crate::worker::{App, Port, load_env};
@@ -94,28 +95,70 @@ pub(crate) fn controller(session: &Session) -> Option<IpAddr> {
         .and_then(|c| c.parse().ok())
 }
 
+/// The most addresses the ERPC account keeps that may reach SSH, for an
+/// environment kept there.
+pub(crate) const ACCOUNT_SSH_MAX: usize = 16;
+
 /// The SSH addresses to allow: `ssh_allow` and `me`.
-fn ssh_addresses(env: &Env, me: Option<IpAddr>, say: &Say) -> Result<Vec<IpAddr>, CliError> {
+fn ssh_addresses(
+    env: &Env,
+    me: Option<IpAddr>,
+    say: &Say,
+    scope: &str,
+) -> Result<Vec<IpAddr>, CliError> {
+    // An environment kept in the ERPC account has its list there: said so,
+    // not as erpc.toml's keys, with the command that takes a network off.
+    let in_account = env.account;
     let mut out: Vec<IpAddr> = Vec::new();
     for cidr in &env.firewall.ssh_allow {
         let single = if cidr.address().is_ipv4() { 32 } else { 128 };
         if cidr.prefix() != single {
-            return Err(failed(t!("worker_firewall.ssh_network", cidr)));
+            return Err(if in_account {
+                failed(t!("worker_firewall.ssh_network_account", cidr)).hint(t!(
+                    "worker_firewall.ssh_network_account_hint",
+                    cidr,
+                    scope
+                ))
+            } else {
+                failed(t!("worker_firewall.ssh_network", cidr))
+            });
         }
         out.push(cidr.address());
     }
+    let mut added = None;
     if let Some(me) = me
         && !out.contains(&me)
     {
         if !env.firewall.ssh_allow.is_empty() {
-            say.line(&t!("worker_firewall.me_added", me));
+            added = Some(me);
         }
         out.push(me);
     }
     if out.is_empty() {
-        return Err(
+        return Err(if in_account {
+            failed(t!("worker_firewall.no_address_account"))
+                .hint(t!("worker_firewall.no_address_account_hint", scope))
+        } else {
             failed(t!("worker_firewall.no_address")).hint(t!("worker_firewall.no_address_hint"))
-        );
+        });
+    }
+    // The account keeps so many and no more: refused here, before the
+    // server's firewall is changed, rather than after it.
+    if in_account && out.len() > ACCOUNT_SSH_MAX {
+        return Err(failed(t!(
+            "worker_firewall.account_list_full",
+            max = ACCOUNT_SSH_MAX,
+            count = out.len()
+        ))
+        .hint(t!("worker_firewall.account_list_hint", scope)));
+    }
+    // Said once the list is taken, not before a refusal of it.
+    if let Some(me) = added {
+        say.line(&if in_account {
+            t!("worker_firewall.me_added_account", me)
+        } else {
+            t!("worker_firewall.me_added", me)
+        });
     }
     Ok(out)
 }
@@ -499,6 +542,9 @@ pub(crate) struct Synced {
     /// with why: a WAF's port, while no WAF listens on it, or while the
     /// one that does runs rules that are not erpc.toml's.
     held: Option<Held>,
+    /// Whether the environment is kept in the ERPC account, whose lists
+    /// these are: said as the account's, not erpc.toml's.
+    in_account: bool,
 }
 
 impl Synced {
@@ -549,7 +595,7 @@ fn kept(waf_port: u16, in_force: Option<&Opening>) -> String {
 
 /// What a sync says it does about the worker's port: `waf_port` is the
 /// WAF's when the app has one.
-fn dropping(waf_port: Option<u16>, decided: &Decision) -> String {
+fn dropping(waf_port: Option<u16>, decided: &Decision, in_account: bool, scope: &str) -> String {
     let opening = decided.apply.as_ref();
     let why = decided.held.as_ref().map(|held| held.why);
     match (waf_port, opening, why) {
@@ -571,6 +617,9 @@ fn dropping(waf_port: Option<u16>, decided: &Decision) -> String {
             addresses = addresses(&o.allow),
             limit = limit_said(o)
         ),
+        (Some(port), None, None) if in_account => {
+            t!("worker_firewall.dropping_waf_nobody_account", port, scope)
+        }
         (Some(port), None, None) => t!("worker_firewall.dropping_waf_nobody", port),
     }
 }
@@ -652,7 +701,14 @@ pub(crate) fn sync(
     ask: Ask<'_>,
     say: &Say,
 ) -> Result<Synced, CliError> {
-    let ssh_allow = ssh_addresses(env, me, say)?;
+    // The account's lists are not held to erpc.toml's checks where they
+    // are written: checked before anything ([`account_lists_usable`]), and
+    // again here, before the firewall is changed. Entries erpc does not
+    // read are not in `env`, so they are not checked here.
+    if env.account {
+        account_lists_usable(m, env, &Unread::default(), ask.scope)?;
+    }
+    let ssh_allow = ssh_addresses(env, me, say, ask.scope)?;
     say.line(&t!(
         "worker_firewall.allowing_ssh",
         addresses = ssh_allow
@@ -680,7 +736,7 @@ pub(crate) fn sync(
             held: None,
         },
     };
-    say.line(&dropping(waf_port, &decided));
+    say.line(&dropping(waf_port, &decided, env.account, ask.scope));
     if udp_line(env).is_some() {
         say.line(&say_udp(env, ask));
     }
@@ -698,12 +754,17 @@ pub(crate) fn sync(
     if let (Some(o), None) = (tcp_part(opening.as_ref()), waf_port) {
         say.line(&t!("worker_firewall.app_loopback", port = o.port));
     }
-    say.line(&t!("worker_firewall.lockout_note"));
+    say.line(&if env.account {
+        t!("worker_firewall.lockout_note_account")
+    } else {
+        t!("worker_firewall.lockout_note")
+    });
     Ok(Synced {
         ssh_allow,
         wanted,
         opening,
         held,
+        in_account: env.account,
     })
 }
 
@@ -910,10 +971,11 @@ fn edited(
     }
     // Refused here, before the plan is shown: the SSH allow list
     // (`ssh_addresses`) takes single addresses only.
+    // A network the account's SSH list holds is taken off by `deny`, which
+    // is the way out its refusal names.
     if to == Port::Ssh
-        && let Some(network) = parsed
-            .iter()
-            .find(|c| c.prefix() != if c.address().is_ipv4() { 32 } else { 128 })
+        && (allow || !env.account)
+        && let Some(network) = parsed.iter().find(|c| !is_single(c))
     {
         return Err(CliError::new(
             Code::Usage,
@@ -948,7 +1010,9 @@ fn edited(
 /// is: `changed` is false, where the answer to a change has it true
 /// ([`reported_change`]). What is in force on the server is not in it,
 /// since the server was not asked; `erpc_toml` has the lists erpc.toml
-/// asks for, as `firewall list` names them.
+/// asks for, as `firewall list` names them, and for an environment kept in
+/// the account `account` has the account's lists as it keeps them (put in
+/// by the caller, from the record).
 fn unchanged(
     json: bool,
     worker: &str,
@@ -958,20 +1022,30 @@ fn unchanged(
     scope: &str,
 ) -> Said {
     if json {
+        let kept_in = if env.account { "account" } else { "erpc_toml" };
         return Said::Json(json!({
             "worker": worker,
             "changed": false,
-            "erpc_toml": env.firewall,
+            kept_in: env.firewall,
         }));
     }
     let (addresses, command) = (
         addresses.join(", "),
         format!("erpc worker firewall sync{scope}"),
     );
-    let text = if allow {
-        t!("worker_firewall.unchanged.allowed", addresses, command)
-    } else {
-        t!("worker_firewall.unchanged.denied", addresses, command)
+    let text = match (allow, env.account) {
+        (true, false) => t!("worker_firewall.unchanged.allowed", addresses, command),
+        (false, false) => t!("worker_firewall.unchanged.denied", addresses, command),
+        (true, true) => t!(
+            "worker_firewall.unchanged.allowed_account",
+            addresses,
+            command
+        ),
+        (false, true) => t!(
+            "worker_firewall.unchanged.denied_account",
+            addresses,
+            command
+        ),
     };
     Said::Text(crate::cli::ui::decorate(&text, "👌"))
 }
@@ -1078,6 +1152,1038 @@ pub(crate) fn sync_verb(json: bool, app: &App, yes: bool) -> Outcome {
     run().unwrap_or_else(Into::into)
 }
 
+// ------------------------------------------ kept in the ERPC account
+
+/// The word `--to` takes for `to`.
+const fn port_arg(to: Port) -> &'static str {
+    match to {
+        Port::Ssh => "ssh",
+        Port::App => "app",
+    }
+}
+
+/// Whether `cidr` is one address, as SSH takes them.
+fn is_single(cidr: &Cidr) -> bool {
+    cidr.prefix() == if cidr.address().is_ipv4() { 32 } else { 128 }
+}
+
+/// `cidr` as the account takes it: an IPv4-mapped IPv6 address in hex
+/// (`::ffff:102:304`), which the account's form has, not dotted as Rust
+/// writes it; every other address as erpc writes it.
+pub(crate) fn account_text(cidr: &Cidr) -> String {
+    if let IpAddr::V6(v6) = cidr.address()
+        && let Some(v4) = v6.to_ipv4_mapped()
+    {
+        let [a, b, c, d] = v4.octets();
+        return format!(
+            "::ffff:{:x}:{:x}/{}",
+            u16::from_be_bytes([a, b]),
+            u16::from_be_bytes([c, d]),
+            cidr.prefix()
+        );
+    }
+    cidr.to_string()
+}
+
+/// `list` as written to the account: each address the account holds
+/// already (`raw`) in its own text, a new one as the account takes it
+/// ([`account_text`]).
+pub(crate) fn written_text(raw: &[String], list: &[Cidr]) -> Vec<String> {
+    list.iter()
+        .map(|cidr| {
+            raw.iter()
+                .find(|e| Cidr::parse_any(e).is_ok_and(|c| c == *cidr))
+                .cloned()
+                .unwrap_or_else(|| account_text(cidr))
+        })
+        .collect()
+}
+
+/// The entries of the account's lists that erpc does not read as an
+/// address with its prefix length (an address with bits set past its
+/// prefix, or no address at all), each as the account has it. They are
+/// never applied, and never dropped from the account without a word.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Unread {
+    /// Of the list of who may reach SSH.
+    pub(crate) ssh: Vec<String>,
+    /// Of the list of who may reach the app.
+    pub(crate) app: Vec<String>,
+}
+
+impl Unread {
+    /// Those of `record`'s lists.
+    pub(crate) fn of(record: &erpc_api::worker::EnvDetail) -> Self {
+        let unread = |list: &[String]| -> Vec<String> {
+            list.iter()
+                .filter(|e| Cidr::parse_any(e).is_err())
+                .cloned()
+                .collect()
+        };
+        Self {
+            ssh: unread(&record.facts.firewall.ssh_allow),
+            app: unread(&record.facts.firewall.app_allow),
+        }
+    }
+}
+
+/// `env`'s lists with each address once, and a line for each list that
+/// had one more than once: the meaning is the same, and the account's
+/// record is written with each once.
+fn once_each(env: &Env) -> (Env, Vec<String>) {
+    let mut env = env.clone();
+    let mut said = Vec::new();
+    for (to, list) in [
+        (Port::Ssh, &mut env.firewall.ssh_allow),
+        (Port::App, &mut env.firewall.app_allow),
+    ] {
+        let mut seen: Vec<Cidr> = Vec::new();
+        let mut twice: Vec<String> = Vec::new();
+        for cidr in core::mem::take(list) {
+            if seen.contains(&cidr) {
+                if !twice.contains(&cidr.to_string()) {
+                    twice.push(cidr.to_string());
+                }
+            } else {
+                seen.push(cidr);
+            }
+        }
+        *list = seen;
+        if !twice.is_empty() {
+            let entries = twice.join(", ");
+            said.push(match to {
+                Port::Ssh => t!("worker_firewall.account_twice_ssh", entries),
+                Port::App => t!("worker_firewall.account_twice_app", entries),
+            });
+        }
+    }
+    (env, said)
+}
+
+/// What stops the account's lists from being put on the server as they
+/// are, all of it at once: for each list, every entry that stops it, as
+/// `deny` takes it off; what each kind of problem is, said; and the ways
+/// out besides `deny`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Stops {
+    /// The entries of the SSH list that stop it, as `deny` takes them.
+    pub(crate) ssh: Vec<String>,
+    /// The entries of the app's list that stop it, as `deny` takes them.
+    pub(crate) app: Vec<String>,
+    /// What each kind of problem is.
+    said: Vec<String>,
+    /// The ways out besides `deny`: a WAF, `run.port`.
+    also: Vec<String>,
+}
+
+impl Stops {
+    /// Whether nothing stops the lists.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.said.is_empty()
+    }
+
+    /// The `deny` commands that clear it, one per list, each naming every
+    /// entry of its list that stops it.
+    fn commands(&self, scope: &str) -> String {
+        [(Port::Ssh, &self.ssh), (Port::App, &self.app)]
+            .into_iter()
+            .filter(|(_, entries)| !entries.is_empty())
+            .map(|(to, entries)| {
+                format!(
+                    "`erpc worker firewall deny --to {} {}{scope}`",
+                    port_arg(to),
+                    entries
+                        .iter()
+                        .map(|e| crate::worker::shell_word(e))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(&t!("worker_firewall.stop_and"))
+    }
+
+    /// What is said of it: every problem, and every way out.
+    fn hint(&self, scope: &str) -> String {
+        let mut hint = t!(
+            "worker_firewall.account_stopped_hint",
+            commands = self.commands(scope)
+        );
+        for also in &self.also {
+            hint.push_str(&t!("worker_firewall.stop_or", also));
+        }
+        hint
+    }
+
+    /// The refusal: nothing was changed.
+    fn error(&self, scope: &str) -> CliError {
+        failed(t!(
+            "worker_firewall.account_stopped",
+            problems = self.said.join(&t!("worker_firewall.stop_sep"))
+        ))
+        .hint(self.hint(scope))
+    }
+}
+
+/// What stops `env`'s lists, kept in the account (`unread` the entries
+/// erpc does not read), from being put on the server: an entry erpc does
+/// not read, a network on the SSH list, everyone on the app's list with no
+/// WAF in front of the app, and addresses on the app's list with no
+/// `run.port` for them to reach. The account holds none of these to
+/// erpc.toml's checks where they are written.
+pub(crate) fn stops(m: &Manifest, env: &Env, unread: &Unread) -> Stops {
+    let mut stops = Stops::default();
+    let push = |list: &mut Vec<String>, entry: String| {
+        if !list.contains(&entry) {
+            list.push(entry);
+        }
+    };
+    if !unread.ssh.is_empty() {
+        let shown: Vec<String> = unread.ssh.iter().map(|e| kept::shown(e)).collect();
+        stops.said.push(t!(
+            "worker_firewall.stop_unread_ssh",
+            entries = shown.join(", ")
+        ));
+        for e in shown {
+            push(&mut stops.ssh, e);
+        }
+    }
+    let networks: Vec<String> = env
+        .firewall
+        .ssh_allow
+        .iter()
+        .filter(|c| !is_single(c))
+        .map(ToString::to_string)
+        .collect();
+    if !networks.is_empty() {
+        stops.said.push(t!(
+            "worker_firewall.stop_network",
+            entries = networks.join(", ")
+        ));
+        for e in networks {
+            push(&mut stops.ssh, e);
+        }
+    }
+    if !unread.app.is_empty() {
+        let shown: Vec<String> = unread.app.iter().map(|e| kept::shown(e)).collect();
+        stops.said.push(t!(
+            "worker_firewall.stop_unread_app",
+            entries = shown.join(", ")
+        ));
+        for e in shown {
+            push(&mut stops.app, e);
+        }
+    }
+    let everyone: Vec<String> = env
+        .firewall
+        .app_allow
+        .iter()
+        .filter(|c| c.is_everyone())
+        .map(ToString::to_string)
+        .collect();
+    if m.waf.is_none() && !everyone.is_empty() {
+        stops.said.push(t!(
+            "worker_firewall.stop_everyone",
+            entries = everyone.join(", ")
+        ));
+        stops.also.push(t!("worker_firewall.stop_also_waf"));
+        for e in everyone {
+            push(&mut stops.app, e);
+        }
+    }
+    if m.run.port.is_none() && !(env.firewall.app_allow.is_empty() && unread.app.is_empty()) {
+        stops.said.push(t!("worker_firewall.stop_no_port"));
+        stops.also.push(t!("worker_firewall.stop_also_port"));
+        for e in env.firewall.app_allow.iter().map(ToString::to_string) {
+            push(&mut stops.app, e);
+        }
+    }
+    stops
+}
+
+/// Refuses, before anything is changed or the server asked, lists of an
+/// environment kept in the account that erpc would not put on the server
+/// as they are ([`stops`], every problem at once, with the `deny` for each
+/// list that clears it), and more than the account keeps in a list.
+pub(crate) fn account_lists_usable(
+    m: &Manifest,
+    env: &Env,
+    unread: &Unread,
+    scope: &str,
+) -> Result<(), CliError> {
+    let stopped = stops(m, env, unread);
+    if !stopped.is_empty() {
+        return Err(stopped.error(scope));
+    }
+    for (to, list) in [
+        (Port::Ssh, &env.firewall.ssh_allow),
+        (Port::App, &env.firewall.app_allow),
+    ] {
+        if list.len() > ACCOUNT_SSH_MAX {
+            return Err(CliError::new(
+                Code::Usage,
+                t!(
+                    "worker_firewall.account_list_too_long",
+                    max = ACCOUNT_SSH_MAX,
+                    count = list.len()
+                ),
+            )
+            .hint(t!(
+                "worker_firewall.account_list_too_long_hint",
+                port = port_arg(to),
+                scope
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// What `allow` or `deny` asks of an environment kept in the account.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Change<'a> {
+    /// Which list.
+    pub(crate) to: Port,
+    /// The addresses, as typed.
+    pub(crate) addresses: &'a [String],
+    /// Let them in, or take them off.
+    pub(crate) allow: bool,
+}
+
+/// The lists once `change` is made to `env`, with what is left `unread`:
+/// none when nothing changes. `deny` takes an entry erpc does not read off
+/// by its text as the account has it, or as erpc shows it.
+fn account_edited(
+    behind_waf: bool,
+    env: &Env,
+    unread: &Unread,
+    change: Change<'_>,
+) -> Result<Option<(Env, Unread)>, CliError> {
+    let mut left = unread.clone();
+    let mut rest: Vec<String> = Vec::new();
+    let mut taken = false;
+    for typed in change.addresses {
+        let typed = typed.trim();
+        let list = match change.to {
+            Port::Ssh => &mut left.ssh,
+            Port::App => &mut left.app,
+        };
+        let names = |e: &String| e == typed || kept::shown(e) == typed;
+        if !change.allow && list.iter().any(names) {
+            list.retain(|e| !names(e));
+            taken = true;
+        } else {
+            rest.push(typed.to_owned());
+        }
+    }
+    let changed = if rest.is_empty() {
+        None
+    } else {
+        edited(behind_waf, env, change.to, &rest, change.allow)?
+    };
+    Ok(match (changed, taken) {
+        (Some(env), _) => Some((env, left)),
+        (None, true) => Some((env.clone(), left)),
+        (None, false) => None,
+    })
+}
+
+/// `raw`, one of the account's lists as it keeps it, with only what is
+/// left after a `deny`: the entries still `unread`, and those whose
+/// address is in `kept`, each as the account had it.
+fn raw_left(raw: &[String], unread: &[String], kept: &[Cidr]) -> Vec<String> {
+    raw.iter()
+        .filter(|e| match Cidr::parse_any(e) {
+            Ok(cidr) => kept.contains(&cidr),
+            Err(_) => unread.contains(e),
+        })
+        .cloned()
+        .collect()
+}
+
+/// A worker's server, reached over a connection of its own.
+pub(crate) struct Reached {
+    session: Session,
+    target: Target,
+    id: UnitId,
+}
+
+impl Reached {
+    /// Reaches the server `env` names for `app`, with the address this
+    /// machine connects from, when the server says it.
+    fn open(app: &App, env: &Env, id: &UnitId) -> Result<(Self, Option<IpAddr>), CliError> {
+        let target = target(app, env)?;
+        let session = open(&target)?;
+        let me = controller(&session);
+        Ok((
+            Self {
+                session,
+                target,
+                id: id.clone(),
+            },
+            me,
+        ))
+    }
+
+    fn remote(&self) -> Remote<'_> {
+        Remote {
+            session: &self.session,
+            target: &self.target,
+            id: &self.id,
+        }
+    }
+}
+
+impl Server for Reached {
+    fn allow_ssh(&self, addresses: Vec<IpAddr>) -> Result<(), CliError> {
+        self.remote().allow_ssh(addresses)
+    }
+
+    fn shown(&self) -> Result<Value, CliError> {
+        self.remote().shown()
+    }
+
+    fn apply(&self, opening: Option<Opening>) -> Result<(), CliError> {
+        self.remote().apply(opening)
+    }
+
+    fn waf_apply(&self, config: &WafConfig) -> Result<Value, CliError> {
+        self.remote().waf_apply(config)
+    }
+
+    fn waf_remove(&self) -> Result<Value, CliError> {
+        self.remote().waf_remove()
+    }
+}
+
+/// What a write to the account's record that did not go as sent is said
+/// as, `server` what became of the server's firewall: changed, or not.
+fn unwritten_said(
+    unwritten: crate::worker::deploy_account::Unwritten,
+    app: &App,
+    repair: Option<&str>,
+) -> CliError {
+    use crate::worker::deploy_account::Unwritten;
+    let (env, scope) = (app.env.as_str(), app.scope());
+    let server_changed = repair.is_none();
+    let server = if server_changed {
+        t!("worker_firewall.server_changed")
+    } else {
+        t!("worker_firewall.server_not_changed")
+    };
+    // A repair (the server not changed) is finished by the same deny, named
+    // in full: a sync is refused while something still stops the lists.
+    let again = |hint: String| match repair {
+        None => hint,
+        Some(command) => t!("worker_firewall.account_repair_again_hint", command),
+    };
+    match unwritten {
+        Unwritten::Conflict => failed(t!("worker_firewall.account_conflict", env, server))
+            .hint(again(t!("worker_firewall.account_conflict_hint", scope))),
+        Unwritten::Lost(error) => failed(t!(
+            "worker_firewall.account_write_unknown",
+            env,
+            server,
+            error
+        ))
+        .hint(again(t!(
+            "worker_firewall.account_write_unknown_hint",
+            scope
+        ))),
+        Unwritten::Differs => failed(t!("worker_firewall.account_answer_differs", env, server))
+            .hint(t!("worker_firewall.account_answer_differs_hint", scope)),
+        Unwritten::Refused(error) => failed(t!(
+            "worker_firewall.account_not_written",
+            env,
+            server,
+            error
+        ))
+        .hint(again(t!("worker_firewall.account_not_written_hint", scope))),
+        Unwritten::NotSignedIn(error) => CliError::new(
+            Code::NotSignedIn,
+            t!("worker_firewall.account_not_written", env, server, error),
+        )
+        .hint(t!("worker_vps.login_hint")),
+        Unwritten::TooLong => failed(t!(
+            "worker_firewall.account_too_long_to_write",
+            env,
+            server,
+            max = ACCOUNT_SSH_MAX
+        )),
+    }
+}
+
+/// Writes `ssh` and `app_allow`, each entry as written to the account, to
+/// its record of the environment `held` keeps, built on the record read
+/// and trusted as written. `repair` is the deny that changes the account
+/// alone, the server not changed, which finishes the write when it does
+/// not go as sent; none when the server has the change by then. What this
+/// machine's record could not follow is said on stderr, under `--json`
+/// too: nothing is trusted unasked after it.
+async fn write_lists(
+    api: &impl kept::Account,
+    (held, pins): (&kept::Kept, &std::path::Path),
+    app: &App,
+    (ssh, app_allow): (&[String], &[String]),
+    repair: Option<&str>,
+) -> Result<(), CliError> {
+    let mut account = crate::worker::deploy_account::Deploying::new(
+        api,
+        &held.manifest.name,
+        held,
+        pins.to_path_buf(),
+    );
+    let written = account.write_lists(app, ssh, app_allow).await;
+    for warning in &account.warnings {
+        Say { quiet: false }.line(&format!("warning: {warning}"));
+    }
+    written.map_err(|u| unwritten_said(u, app, repair))
+}
+
+/// The firewall step for an environment kept in the account, on `server`
+/// (`me` the address this machine connects from): the server first, as
+/// for erpc.toml, then the account's record of the lists, through `api`:
+/// SSH as the server now lets it in (erpc's own address added), the app's
+/// list as `env` has it. The app's list put on the server is then the one
+/// this machine last saw; a record of it that cannot be written is said on
+/// stderr, under `--json` too.
+async fn apply_account(
+    server: &dyn Server,
+    me: Option<IpAddr>,
+    api: &impl kept::Account,
+    (held, pins): (&kept::Kept, &std::path::Path),
+    app: &App,
+    env: &Env,
+    say: &Say,
+) -> Result<Synced, CliError> {
+    let scope = app.scope();
+    let synced = sync(
+        server,
+        &held.manifest,
+        &app.env,
+        env,
+        me,
+        Ask::from_record(&scope),
+        say,
+    )?;
+    let raw = &held.record.facts.firewall;
+    let ssh_now: Vec<Cidr> = synced
+        .ssh_allow
+        .iter()
+        .filter_map(|a| Cidr::parse(&a.to_string()).ok())
+        .collect();
+    let ssh = written_text(&raw.ssh_allow, &ssh_now);
+    let app_allow = written_text(&raw.app_allow, &env.firewall.app_allow);
+    write_lists(api, (held, pins), app, (&ssh, &app_allow), None).await?;
+    let key = kept::pin_key(&held.uid, &held.manifest.name, &app.env);
+    if let Err(error) = kept::see_app(pins, &key, &app_allow) {
+        Say { quiet: false }.line(&format!(
+            "warning: {}",
+            t!("worker_deploy_account.seen_not_updated", error)
+        ));
+    }
+    Ok(synced)
+}
+
+/// After the yes and before the server is asked: the account's record is
+/// read again, and a record another sign-in changed since `held` read it
+/// changes nothing.
+async fn still_as_read(
+    api: &impl kept::Account,
+    held: &kept::Kept,
+    app: &App,
+) -> Result<(), CliError> {
+    let env = app.env.as_str();
+    let fresh = api
+        .env(&held.manifest.name, env)
+        .await
+        .map_err(|e| kept::worker_error(&held.manifest.name, app, &e))?;
+    if fresh.revision != held.record.revision {
+        return Err(
+            failed(t!("worker_firewall.account_changed_since_read", env))
+                .hint(t!("worker_firewall.account_changed_since_read_hint")),
+        );
+    }
+    Ok(())
+}
+
+/// What changed in the account's list of who may reach the app since this
+/// machine last put it on the server (`seen`), in a line: none when
+/// nothing did. A list never seen here is said whole.
+fn app_changes(seen: Option<&[String]>, now: &[String]) -> Option<String> {
+    let shown = |list: &[&String]| -> String {
+        list.iter()
+            .map(|e| kept::shown(e))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    match seen {
+        None if now.is_empty() => None,
+        None => Some(t!(
+            "worker_firewall.app_list_first_seen",
+            entries = shown(&now.iter().collect::<Vec<_>>())
+        )),
+        Some(seen) => {
+            let added: Vec<&String> = now.iter().filter(|e| !seen.contains(e)).collect();
+            let removed: Vec<&String> = seen.iter().filter(|e| !now.contains(e)).collect();
+            if added.is_empty() && removed.is_empty() {
+                return None;
+            }
+            let none = t!("worker_firewall.app_list_none");
+            Some(t!(
+                "worker_firewall.app_list_changed",
+                added = if added.is_empty() {
+                    none.clone()
+                } else {
+                    shown(&added)
+                },
+                removed = if removed.is_empty() {
+                    none
+                } else {
+                    shown(&removed)
+                }
+            ))
+        }
+    }
+}
+
+/// [`app_changes`] for the environment `held` keeps, by this machine's
+/// record beside its pins at `pins`: unreadable is read as never seen.
+pub(crate) fn app_changes_of(
+    held: &kept::Kept,
+    pins: &std::path::Path,
+    app: &App,
+) -> Option<String> {
+    let key = kept::pin_key(&held.uid, &held.manifest.name, &app.env);
+    let seen = kept::app_seen(pins, &key).ok().flatten();
+    app_changes(seen.as_deref(), &held.record.facts.firewall.app_allow)
+}
+
+/// The account's lists as it keeps them, each entry shown safe, and what
+/// erpc does not read of them.
+fn account_lists_json(record: &erpc_api::worker::EnvDetail) -> Value {
+    let shown = |list: &[String]| -> Vec<String> { list.iter().map(|e| kept::shown(e)).collect() };
+    json!({
+        "ssh_allow": shown(&record.facts.firewall.ssh_allow),
+        "app_allow": shown(&record.facts.firewall.app_allow),
+    })
+}
+
+/// What `erpc worker firewall list --json` answers for an environment kept
+/// in the account, `shown` what the server has.
+fn list_json(
+    (m, app, held, pins): (&Manifest, &App, &kept::Kept, &std::path::Path),
+    shown: &Value,
+) -> Value {
+    let record = &held.record;
+    let unread = Unread::of(record);
+    let clean = |list: &[String]| -> Vec<String> { list.iter().map(|e| kept::shown(e)).collect() };
+    let stopped = crate::worker::env_of(m, app)
+        .ok()
+        .and_then(|env| account_lists_usable(m, env, &unread, &app.scope()).err())
+        .map(|e| e.message);
+    json!({
+        "account": account_lists_json(record),
+        "unread": { "ssh_allow": clean(&unread.ssh), "app_allow": clean(&unread.app) },
+        "app_allow_changed": app_changes_of(held, pins, app),
+        "stopped": stopped,
+        "run_port": m.run.port,
+        "waf_port": m.waf.as_ref().map(|waf| waf.port),
+        "waf_rules": crate::worker::waf::rules_named(m, &app.env, &shown["waf"]),
+        "server": shown,
+    })
+}
+
+/// `erpc worker firewall list` of an environment kept in the account, with
+/// the server reached through `reach`: the account's lists as it keeps
+/// them, what erpc does not read of them, what the server has, what
+/// changed in the app's list since this machine put it there, and, as a
+/// warning, what would stop a change.
+fn list_in<S: Server>(
+    json: bool,
+    app: &App,
+    held: &kept::Kept,
+    pins: &std::path::Path,
+    reach: impl FnOnce(&Env) -> Result<(S, Option<IpAddr>), CliError>,
+) -> Result<Outcome, CliError> {
+    let m = &held.manifest;
+    let env = crate::worker::env_of(m, app)?.clone();
+    let unread = Unread::of(&held.record);
+    let (server, _) = reach(&env)?;
+    let shown = server.shown()?;
+    if json {
+        crate::print_json(&list_json((m, app, held, pins), &shown));
+        return Ok(Outcome::Done(String::new()));
+    }
+    let host = env.host.clone().unwrap_or_default();
+    let mut lines = vec![listed(m, &app.env, &host, &shown, &app.scope())];
+    lines.extend(app_changes_of(held, pins, app));
+    let (_, twice) = once_each(&env);
+    lines.extend(twice);
+    if let Err(e) = account_lists_usable(m, &env, &unread, &app.scope()) {
+        lines.push(format!("warning: {}", e.message));
+        if let Some(hint) = e.hint {
+            lines.push(format!("hint: {hint}"));
+        }
+    }
+    Ok(Outcome::Done(crate::cli::ui::decorate(
+        &lines.join("\n"),
+        "🛡️",
+    )))
+}
+
+/// How `allow`, `deny` and `sync` of an environment kept in the account go
+/// on: `--json`, the yes, the server, and this machine's pins.
+pub(crate) struct Going<'a, S, F, R> {
+    /// `--json`.
+    pub(crate) json: bool,
+    /// Asks to go ahead (`go_ahead`, which `--yes` answers).
+    pub(crate) go_ahead: F,
+    /// Reaches the server the lists are put on.
+    pub(crate) reach: R,
+    /// This machine's pins.
+    pub(crate) pins: std::path::PathBuf,
+    /// Where progress is said.
+    pub(crate) say: &'a Say,
+    _server: core::marker::PhantomData<S>,
+}
+
+impl<'a, S, F, R> Going<'a, S, F, R>
+where
+    S: Server,
+    F: FnOnce() -> Result<(), CliError>,
+    R: FnOnce(&Env) -> Result<(S, Option<IpAddr>), CliError>,
+{
+    pub(crate) const fn new(
+        json: bool,
+        go_ahead: F,
+        reach: R,
+        pins: std::path::PathBuf,
+        say: &'a Say,
+    ) -> Self {
+        Self {
+            json,
+            go_ahead,
+            reach,
+            pins,
+            say,
+            _server: core::marker::PhantomData,
+        }
+    }
+}
+
+/// Says what changed in the app's list since this machine put it on the
+/// server: on stderr, under `--json` too, before anything is asked or
+/// done.
+fn say_app_changes(held: &kept::Kept, pins: &std::path::Path, app: &App) {
+    if let Some(line) = app_changes_of(held, pins, app) {
+        Say { quiet: false }.line(&line);
+    }
+}
+
+/// The lists of `env` as erpc puts them for an environment kept in the
+/// account, checked, said and agreed to; then the record read again, the
+/// server, and the account's record.
+async fn put_account<S, F, R>(
+    api: &impl kept::Account,
+    held: &kept::Kept,
+    app: &App,
+    env: &Env,
+    unread: &Unread,
+    going: Going<'_, S, F, R>,
+) -> Result<(UnitId, Synced), CliError>
+where
+    S: Server,
+    F: FnOnce() -> Result<(), CliError>,
+    R: FnOnce(&Env) -> Result<(S, Option<IpAddr>), CliError>,
+{
+    let m = &held.manifest;
+    let id = UnitId::new(&m.unit_id(&app.env)).map_err(failed)?;
+    let scope = app.scope();
+    let (env, twice) = once_each(env);
+    account_lists_usable(m, &env, unread, &scope)?;
+    say_app_changes(held, &going.pins, app);
+    for line in twice {
+        going.say.line(&line);
+    }
+    going.say.line(&t!("worker_firewall.will_be"));
+    for line in plan(&env, m) {
+        going.say.line(&line);
+    }
+    (going.go_ahead)()?;
+    still_as_read(api, held, app).await?;
+    let (server, me) = (going.reach)(&env)?;
+    let synced = apply_account(&server, me, api, (held, &going.pins), app, &env, going.say).await?;
+    Ok((id, synced))
+}
+
+/// A `deny` that only takes entries off while something still stops the
+/// lists (`stopped`): written to the account's record alone, each entry
+/// left as the account had it, the server's firewall not changed. It ends
+/// with a failure that says so and what still stops them, as a held port
+/// does, for a script to tell.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the change, what is left of it, and how it goes on"
+)]
+async fn repair_account<S, F, R>(
+    api: &impl kept::Account,
+    held: &kept::Kept,
+    app: &App,
+    change: Change<'_>,
+    (env, left): (&Env, &Unread),
+    stopped: &Stops,
+    going: Going<'_, S, F, R>,
+) -> Result<Outcome, CliError>
+where
+    S: Server,
+    F: FnOnce() -> Result<(), CliError>,
+    R: FnOnce(&Env) -> Result<(S, Option<IpAddr>), CliError>,
+{
+    let scope = app.scope();
+    let raw = &held.record.facts.firewall;
+    let (ssh, app_allow) = match change.to {
+        Port::Ssh => (
+            raw_left(&raw.ssh_allow, &left.ssh, &env.firewall.ssh_allow),
+            raw.app_allow.clone(),
+        ),
+        Port::App => (
+            raw.ssh_allow.clone(),
+            raw_left(&raw.app_allow, &left.app, &env.firewall.app_allow),
+        ),
+    };
+    let (before, after) = match change.to {
+        Port::Ssh => (&raw.ssh_allow, &ssh),
+        Port::App => (&raw.app_allow, &app_allow),
+    };
+    let removed: Vec<String> = before
+        .iter()
+        .filter(|e| !after.contains(e))
+        .map(|e| kept::shown(e))
+        .collect();
+    let problems = stopped.said.join(&t!("worker_firewall.stop_sep"));
+    let what = match change.to {
+        Port::Ssh => t!("worker_firewall.list_ssh"),
+        Port::App => t!("worker_firewall.list_app"),
+    };
+    say_app_changes(held, &going.pins, app);
+    going.say.line(&t!(
+        "worker_firewall.repair_plan",
+        what = what.as_str(),
+        removed = removed.join(", "),
+        problems = problems.as_str()
+    ));
+    (going.go_ahead)()?;
+    still_as_read(api, held, app).await?;
+    let again = format!(
+        "erpc worker firewall deny --to {} {}{scope}",
+        port_arg(change.to),
+        change
+            .addresses
+            .iter()
+            .map(|a| crate::worker::shell_word(a.trim()))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    write_lists(
+        api,
+        (held, &going.pins),
+        app,
+        (&ssh, &app_allow),
+        Some(&again),
+    )
+    .await?;
+    Err(failed(t!(
+        "worker_firewall.repaired",
+        what = what.as_str(),
+        removed = removed.join(", "),
+        problems,
+        scope = scope.as_str()
+    ))
+    .hint(stopped.hint(&scope))
+    .details(json!({
+        "changed": true,
+        "account_only": true,
+        "removed": removed,
+        "stopped_by": { "ssh_allow": stopped.ssh, "app_allow": stopped.app },
+    })))
+}
+
+/// What `allow` and `deny` of an environment kept in the account say when
+/// the list is as asked already ([`unchanged`]), with the account's lists
+/// as it keeps them (`record`) under `account` in the JSON.
+fn unchanged_in_account(
+    json: bool,
+    worker: &str,
+    (env, record): (&Env, &erpc_api::worker::EnvDetail),
+    change: Change<'_>,
+    scope: &str,
+) -> Said {
+    match unchanged(json, worker, env, change.addresses, change.allow, scope) {
+        Said::Json(mut body) => {
+            body["account"] = account_lists_json(record);
+            Said::Json(body)
+        }
+        text @ Said::Text(_) => text,
+    }
+}
+
+/// `erpc worker firewall allow|deny` of an environment kept in the
+/// account, through `api` and `going`: checked before anything, the server
+/// first, then the account's record of the lists; erpc.toml is not
+/// changed. A `deny` that only takes entries off always lands: while
+/// something else still stops the lists, in the account's record alone
+/// ([`repair_account`]).
+async fn change_in<S, F, R>(
+    api: &impl kept::Account,
+    held: &kept::Kept,
+    app: &App,
+    change: Change<'_>,
+    going: Going<'_, S, F, R>,
+) -> Result<Outcome, CliError>
+where
+    S: Server,
+    F: FnOnce() -> Result<(), CliError>,
+    R: FnOnce(&Env) -> Result<(S, Option<IpAddr>), CliError>,
+{
+    let m = &held.manifest;
+    let env = crate::worker::env_of(m, app)?.clone();
+    let id = UnitId::new(&m.unit_id(&app.env)).map_err(failed)?;
+    let scope = app.scope();
+    let json = going.json;
+    let say = going.say;
+    let unread = Unread::of(&held.record);
+    let Some((after, left)) = account_edited(m.waf.is_some(), &env, &unread, change)? else {
+        // Nothing to change: what stops the lists, if anything does, is
+        // said rather than "sync applies them again".
+        let stopped = stops(m, &env, &unread);
+        if !stopped.is_empty() {
+            return Err(stopped.error(&scope));
+        }
+        let said = unchanged_in_account(json, id.as_str(), (&env, &held.record), change, &scope);
+        return Ok(said.done());
+    };
+    let stopped = stops(m, &after, &left);
+    if !stopped.is_empty() {
+        if change.allow {
+            return Err(stopped.error(&scope));
+        }
+        return repair_account(api, held, app, change, (&after, &left), &stopped, going).await;
+    }
+    let (id, synced) = put_account(api, held, app, &after, &left, going).await?;
+    // Taking erpc's own address off SSH would lock this machine out: it
+    // stays, and is said to.
+    if change.to == Port::Ssh && !change.allow {
+        for typed in change.addresses {
+            if let Ok(cidr) = Cidr::parse_any(typed)
+                && synced.ssh_allow.contains(&cidr.address())
+            {
+                say.line(&t!("worker_firewall.kept_own", address = cidr.address()));
+            }
+        }
+    }
+    let body = reported_change(id.as_str(), &synced);
+    report_as(json, &id, m, &synced, &scope, body)
+}
+
+/// `erpc worker firewall sync` of an environment kept in the account,
+/// through `api` and `going`: the server's firewall made what the
+/// account's lists say, and erpc's own address written back when it was
+/// added.
+async fn sync_in<S, F, R>(
+    api: &impl kept::Account,
+    held: &kept::Kept,
+    app: &App,
+    going: Going<'_, S, F, R>,
+) -> Result<Outcome, CliError>
+where
+    S: Server,
+    F: FnOnce() -> Result<(), CliError>,
+    R: FnOnce(&Env) -> Result<(S, Option<IpAddr>), CliError>,
+{
+    let m = &held.manifest;
+    let env = crate::worker::env_of(m, app)?.clone();
+    let unread = Unread::of(&held.record);
+    let json = going.json;
+    let (id, synced) = put_account(api, held, app, &env, &unread, going).await?;
+    report(json, &id, m, &synced, &app.scope())
+}
+
+/// What `erpc worker firewall` was asked to do, of which app.
+#[derive(Debug, Clone)]
+pub(crate) enum FirewallAsk {
+    List,
+    Sync {
+        yes: bool,
+    },
+    Change {
+        to: Port,
+        addresses: Vec<String>,
+        allow: bool,
+        yes: bool,
+    },
+}
+
+/// `erpc worker firewall` of an environment kept in the account, through
+/// `api`, `pins` and `reach`, asking as `go_ahead` does (`--yes` answers).
+pub(crate) async fn account<S, R>(
+    json: bool,
+    app: &App,
+    ask: FirewallAsk,
+    (api, held): (&impl kept::Account, &kept::Kept),
+    pins: std::path::PathBuf,
+    reach: R,
+) -> Outcome
+where
+    S: Server,
+    R: FnOnce(&Env) -> Result<(S, Option<IpAddr>), CliError>,
+{
+    let say = Say { quiet: json };
+    let refused = t!("worker_firewall.nothing_changed");
+    let run = async {
+        match ask {
+            FirewallAsk::List => list_in(json, app, held, &pins, reach),
+            FirewallAsk::Sync { yes } => {
+                let going = Going::new(json, || go_ahead(yes, &refused), reach, pins, &say);
+                sync_in(api, held, app, going).await
+            }
+            FirewallAsk::Change {
+                to,
+                addresses,
+                allow,
+                yes,
+            } => {
+                let going = Going::new(json, || go_ahead(yes, &refused), reach, pins, &say);
+                let change = Change {
+                    to,
+                    addresses: &addresses,
+                    allow,
+                };
+                change_in(api, held, app, change, going).await
+            }
+        }
+    };
+    run.await.unwrap_or_else(Into::into)
+}
+
+/// [`account`], through `api` and this machine's pins at `pins`, reaching
+/// the server over SSH.
+pub(crate) async fn account_kept(
+    json: bool,
+    app: &App,
+    ask: FirewallAsk,
+    (api, held): (&impl kept::Account, &kept::Kept),
+    pins: std::path::PathBuf,
+) -> Outcome {
+    let id = match UnitId::new(&held.manifest.unit_id(&app.env)).map_err(failed) {
+        Ok(id) => id,
+        Err(e) => return e.into(),
+    };
+    account(json, app, ask, (api, held), pins, |env: &Env| {
+        Reached::open(app, env, &id)
+    })
+    .await
+}
+
 /// What the worker's port is now, in the sentence that says the firewall
 /// is in force: the app's own, or behind a WAF the WAF's, open, or closed
 /// because nobody is listed. A port that was held is not said here: that
@@ -1096,6 +2202,7 @@ fn port_said(m: &Manifest, synced: &Synced) -> String {
             port = o.port,
             addresses = addresses(&o.allow)
         ),
+        (Some(port), None) if synced.in_account => t!("worker_firewall.waf_closed_account", port),
         (Some(port), None) => t!("worker_firewall.waf_closed", port),
     };
     match synced.opening.as_ref().and_then(|o| o.udp.as_ref()) {
@@ -1993,17 +3100,17 @@ mod tests {
             }),
         };
         assert_eq!(
-            super::dropping(Some(8080), &decided(Some(&opening), None)),
+            super::dropping(Some(8080), &decided(Some(&opening), None), false, ""),
             "dropping every other inbound connection; the WAF's port 8080 open to 0.0.0.0/0, \
              ::/0, new connections over 50 a second from one address dropped (burst 100)"
         );
         assert_eq!(
-            super::dropping(Some(8080), &decided(None, Some(Why::NoWaf))),
+            super::dropping(Some(8080), &decided(None, Some(Why::NoWaf)), false, ""),
             "dropping every other inbound connection; the WAF's port 8080 stays closed until \
              the WAF listens there"
         );
         assert_eq!(
-            super::dropping(Some(8080), &decided(None, None)),
+            super::dropping(Some(8080), &decided(None, None), false, ""),
             "dropping every other inbound connection; the WAF's port 8080 stays closed: \
              firewall.app_allow lists nobody"
         );
@@ -2011,33 +3118,53 @@ mod tests {
         // was open to, or closed.
         let one = self::opening(8080, &["198.51.100.7"]);
         assert_eq!(
-            super::dropping(Some(8080), &decided(Some(&one), Some(Why::OtherRules))),
+            super::dropping(
+                Some(8080),
+                &decided(Some(&one), Some(Why::OtherRules)),
+                false,
+                ""
+            ),
             "dropping every other inbound connection; the WAF on the server runs rules that \
              are not erpc.toml's, so port 8080 stays open to 198.51.100.7/32 and no wider until \
              a deploy puts erpc.toml's in place"
         );
         assert_eq!(
-            super::dropping(Some(8080), &decided(None, Some(Why::OtherRules))),
+            super::dropping(Some(8080), &decided(None, Some(Why::OtherRules)), false, ""),
             "dropping every other inbound connection; the WAF on the server runs rules that \
              are not erpc.toml's, so the WAF's port 8080 stays closed until a deploy puts \
              erpc.toml's in place"
         );
         assert_eq!(
-            super::dropping(Some(8080), &decided(Some(&one), Some(Why::UnsaidRules))),
+            super::dropping(
+                Some(8080),
+                &decided(Some(&one), Some(Why::UnsaidRules)),
+                false,
+                ""
+            ),
             "dropping every other inbound connection; the server does not say which rules \
              its WAF runs (its agent is from before this erpc), so they are not taken for \
              erpc.toml's, so port 8080 stays open to 198.51.100.7/32 and no wider until a \
              deploy puts erpc.toml's in place"
         );
         assert_eq!(
-            super::dropping(Some(8080), &decided(Some(&one), Some(Why::EarlierAgent))),
+            super::dropping(
+                Some(8080),
+                &decided(Some(&one), Some(Why::EarlierAgent)),
+                false,
+                ""
+            ),
             "dropping every other inbound connection; the WAF on the server was started by an \
              earlier agent than the one installed there, or the server could not tell which, so \
              what it runs is not taken for erpc.toml's rules, so port 8080 stays open to \
              198.51.100.7/32 and no wider until a deploy puts erpc.toml's in place"
         );
         assert_eq!(
-            super::dropping(Some(8080), &decided(Some(&one), Some(Why::BeforeConfig))),
+            super::dropping(
+                Some(8080),
+                &decided(Some(&one), Some(Why::BeforeConfig)),
+                false,
+                ""
+            ),
             "dropping every other inbound connection; the WAF on the server was started before \
              its config or its unit there last changed, or a deploy that was writing them was \
              ended before it restarted the WAF, or the server could not tell when it was \
@@ -2048,11 +3175,11 @@ mod tests {
         let direct = app("", "\"198.51.100.0/24\"");
         let own = Opening::for_app(&direct, &direct.env["prod"]).expect("an opening");
         assert_eq!(
-            super::dropping(None, &decided(Some(&own), None)),
+            super::dropping(None, &decided(Some(&own), None), false, ""),
             "dropping every other inbound connection; port 3000 open to 198.51.100.0/24"
         );
         assert_eq!(
-            super::dropping(None, &decided(None, None)),
+            super::dropping(None, &decided(None, None), false, ""),
             "dropping every other inbound connection; the app's port stays closed"
         );
     }
@@ -2066,6 +3193,7 @@ mod tests {
             wanted: opening.clone(),
             opening,
             held: None,
+            in_account: false,
         };
         assert_eq!(
             super::port_said(&m, &synced(opening)),
@@ -2098,6 +3226,7 @@ mod tests {
                 opening: everyone.clone(),
                 why,
             }),
+            in_account: false,
         };
         // Held under other rules, the port left open to one address.
         let kept = synced(Some(one.clone()), Why::OtherRules);
@@ -2114,7 +3243,7 @@ mod tests {
             failed.hint.as_deref(),
             Some(
                 "`erpc worker deploy --env prod` puts erpc.toml's rules in place, then opens \
-                 the port as erpc.toml says"
+                 the port to the list of who may reach the app"
             )
         );
         // What a script reads: the same facts, under --json too.
@@ -2167,7 +3296,7 @@ mod tests {
             failed.hint.as_deref(),
             Some(
                 "`erpc worker deploy --env prod` restarts the WAF as the agent installed, with \
-                 erpc.toml's rules, then opens the port as erpc.toml says"
+                 erpc.toml's rules, then opens the port to the list of who may reach the app"
             )
         );
         assert_eq!(
@@ -2193,7 +3322,7 @@ mod tests {
             failed.hint.as_deref(),
             Some(
                 "`erpc worker deploy --env prod` puts erpc.toml's rules in place, then opens \
-                 the port as erpc.toml says"
+                 the port to the list of who may reach the app"
             )
         );
         assert_eq!(
@@ -2212,14 +3341,15 @@ mod tests {
         assert_eq!(
             failed.hint.as_deref(),
             Some(
-                "`erpc worker deploy --env prod` starts the WAF, then opens the port as \
-                 erpc.toml says"
+                "`erpc worker deploy --env prod` starts the WAF, then opens the port to the \
+                 list of who may reach the app"
             )
         );
         assert_eq!(failed.details.expect("details")["held_because"], "no_waf");
         // Nothing held: the firewall is in force, and that is success.
         let open = Synced {
             held: None,
+            in_account: false,
             ..synced(Some(everyone.clone()), Why::NoWaf)
         };
         assert!(super::report(false, &id, &m, &open, SCOPE).is_ok());
@@ -2551,6 +3681,7 @@ mod tests {
             wanted: opening.clone(),
             opening: opening.clone(),
             held: None,
+            in_account: false,
         };
         let synced = super::reported("bot-prod", &in_force);
         let changed = super::reported_change("bot-prod", &in_force);
@@ -2568,6 +3699,7 @@ mod tests {
                 opening: opening.expect("an opening"),
                 why: Why::NoWaf,
             }),
+            in_account: false,
             ..in_force
         };
         let body = super::reported_change("bot-prod", &held);
@@ -2626,11 +3758,11 @@ mod tests {
                 crate::cli::i18n::speaking(lang, || {
                     (
                         super::plan(&m.env["prod"], &m).join("\n"),
-                        super::dropping(Some(8080), &held(Why::NoWaf)),
-                        super::dropping(Some(8080), &held(Why::OtherRules)),
-                        super::dropping(Some(8080), &held(Why::UnsaidRules)),
-                        super::dropping(Some(8080), &held(Why::EarlierAgent)),
-                        super::dropping(Some(8080), &held(Why::BeforeConfig)),
+                        super::dropping(Some(8080), &held(Why::NoWaf), false, ""),
+                        super::dropping(Some(8080), &held(Why::OtherRules), false, ""),
+                        super::dropping(Some(8080), &held(Why::UnsaidRules), false, ""),
+                        super::dropping(Some(8080), &held(Why::EarlierAgent), false, ""),
+                        super::dropping(Some(8080), &held(Why::BeforeConfig), false, ""),
                     )
                 });
             assert_ne!(plan, english);
@@ -2657,6 +3789,7 @@ mod tests {
                     opening: wanted.clone(),
                     why: Why::EarlierAgent,
                 }),
+                in_account: false,
             };
             let hint = crate::cli::i18n::speaking(lang, || {
                 let held = synced.held.as_ref().expect("held");
@@ -2692,6 +3825,10 @@ mod tests {
         ),
     ];
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scene, the note the server keeps and every way it is said"
+    )]
     #[test]
     fn a_port_held_behind_a_note_no_deploy_removes_names_the_path_to_remove_as_root() {
         use erpc_ssh::worker::UnitId;
@@ -2728,7 +3865,7 @@ mod tests {
         let rules = "the note the server keeps while a deploy writes the WAF's files cannot be \
                      removed there, so what the WAF runs is not taken for erpc.toml's rules";
         assert_eq!(
-            super::dropping(Some(8080), &decided),
+            super::dropping(Some(8080), &decided, false, ""),
             format!(
                 "dropping every other inbound connection; {rules}, so port 8080 stays open to \
                  198.51.100.7/32 and no wider until a deploy puts erpc.toml's in place"
@@ -2739,6 +3876,7 @@ mod tests {
             wanted: wanted.clone(),
             opening: Some(one.clone()),
             held,
+            in_account: false,
         };
         let id = UnitId::new("bot-prod").expect("id");
         let failed = super::report(false, &id, &m, &synced, SCOPE).expect_err("held");
@@ -2756,7 +3894,7 @@ mod tests {
             Some(
                 "remove /etc/erpc/worker-waf/bot-prod.applying on the server as root (only root \
                  can); until then `erpc worker deploy --env prod` restarts the WAF, then opens the \
-                 port as erpc.toml says, as long as it leaves the WAF's config and unit as they \
+                 port to the list of who may reach the app, as long as it leaves the WAF's config and unit as they \
                  are; a deploy after a change to [waf] or run.port, or from an erpc that writes \
                  the WAF's unit differently, fails"
             )
@@ -2779,8 +3917,8 @@ mod tests {
                 };
                 let held = synced.held.as_ref().expect("held");
                 (
-                    super::dropping(Some(8080), &decided),
-                    super::dropping(Some(8080), &before),
+                    super::dropping(Some(8080), &decided, false, ""),
+                    super::dropping(Some(8080), &before, false, ""),
                     super::held_back("bot-prod", &synced, held, SCOPE).hint,
                 )
             });
@@ -3006,6 +4144,7 @@ mod tests {
             wanted: None,
             opening,
             held: None,
+            in_account: false,
         };
         let m = port_only(None);
         assert_eq!(
@@ -3110,5 +4249,1660 @@ mod tests {
             other.asked(),
             ["open 8080 to 0.0.0.0/0, ::/0, limit 50/100"]
         );
+    }
+
+    #[test]
+    fn an_environment_kept_in_the_account_is_told_of_its_list_there_and_held_to_its_size() {
+        use std::net::IpAddr;
+
+        use erpc_worker::net::Cidr;
+
+        use crate::worker::firewall::ssh_addresses;
+        let say = Say { quiet: true };
+        let mut env = Env {
+            account: true,
+            ..Env::default()
+        };
+        // Sixteen addresses, and erpc's own would be the seventeenth:
+        // refused before anything is changed.
+        env.firewall.ssh_allow = (1..=16)
+            .map(|i| Cidr::parse(&format!("198.51.100.{i}")).expect("an address"))
+            .collect();
+        let me: IpAddr = "203.0.113.9".parse().expect("an address");
+        let e = ssh_addresses(&env, Some(me), &say, "").expect_err("refused");
+        assert!(e.message.contains("at most 16"), "{}", e.message);
+        assert!(
+            e.hint
+                .unwrap_or_default()
+                .contains("firewall deny --to ssh")
+        );
+        // erpc's own already on it: sixteen, taken.
+        assert_eq!(
+            ssh_addresses(
+                &env,
+                Some("198.51.100.1".parse().expect("an address")),
+                &say,
+                ""
+            )
+            .expect("taken")
+            .len(),
+            16
+        );
+        // A network on the account's list is said as the account's.
+        env.firewall.ssh_allow = vec![Cidr::parse("198.51.100.0/24").expect("a network")];
+        let e = ssh_addresses(&env, Some(me), &say, "").expect_err("refused");
+        assert!(
+            e.message.contains("the ERPC account's list"),
+            "{}",
+            e.message
+        );
+        // Kept in erpc.toml: no limit of the account's.
+        env.account = false;
+        env.firewall.ssh_allow = (1..=16)
+            .map(|i| Cidr::parse(&format!("198.51.100.{i}")).expect("an address"))
+            .collect();
+        assert_eq!(
+            ssh_addresses(&env, Some(me), &say, "")
+                .expect("taken")
+                .len(),
+            17
+        );
+    }
+
+    #[test]
+    fn a_sync_of_an_environment_kept_in_the_account_names_no_key_or_command_refused_there() {
+        // An address not on the account's list: the note that adds it.
+        let me = Some("198.51.100.8".parse().expect("an address"));
+        let m = app(WAF, EVERYONE);
+        let mut env = m.env["prod"].clone();
+        env.account = true;
+        // The account's starting shape: nobody may reach the app yet.
+        env.firewall.app_allow.clear();
+        let none = server(&Value::Null, None);
+        let _ = crate::node::common::heard::take();
+        super::sync(&none, &m, "prod", &env, me, ASK, &QUIET).expect("synced");
+        let mut said = crate::node::common::heard::take();
+        assert!(said.join("\n").contains("8080"), "{said:?}");
+        // The note that erpc's own address is added, among the lines held.
+        assert!(
+            said.iter()
+                .any(|l| l.contains("198.51.100.8") && l.contains("does not have")),
+            "{said:?}"
+        );
+        // No address at all, and a network on the list: the refusals.
+        let mut empty = env.clone();
+        empty.firewall.ssh_allow.clear();
+        let mut network = env.clone();
+        network.firewall.ssh_allow = vec![Cidr::parse_any("198.51.100.0/24").expect("a network")];
+        // A list the account would hold more than 16 of: refused before the
+        // server is asked anything.
+        let mut full = env.clone();
+        full.firewall.ssh_allow = (1..=16)
+            .map(|n| Cidr::parse(&format!("203.0.113.{n}")).expect("an address"))
+            .collect();
+        let untouched = server(&Value::Null, None);
+        let Err(e) = super::sync(&untouched, &m, "prod", &full, me, ASK, &QUIET) else {
+            panic!("refused");
+        };
+        assert!(e.message.contains("16"), "{}", e.message);
+        assert!(untouched.asked().is_empty(), "{:?}", untouched.asked());
+        said.push(e.message);
+        for (refused_env, me) in [(&empty, None), (&network, me)] {
+            let Err(e) = super::sync(&none, &m, "prod", refused_env, me, ASK, &QUIET) else {
+                panic!("refused");
+            };
+            said.push(e.message);
+            said.push(e.hint.unwrap_or_default());
+        }
+        // And what the step says of the worker's port in every case it can
+        // decide, with a WAF and without, opened, held and closed.
+        let opening = Opening::for_app(&m, &m.env["prod"]).expect("an opening");
+        let whys = [
+            None,
+            Some(Why::NoWaf),
+            Some(Why::OtherRules),
+            Some(Why::UnsaidRules),
+            Some(Why::EarlierAgent),
+            Some(Why::BeforeConfig),
+            Some(Why::NoteKept),
+        ];
+        for waf in [Some(8080), None] {
+            for apply in [Some(&opening), None] {
+                for why in whys {
+                    let decided = Decision {
+                        apply: apply.cloned(),
+                        held: why.map(|why| Held {
+                            opening: opening.clone(),
+                            why,
+                        }),
+                    };
+                    said.push(super::dropping(waf, &decided, true, ""));
+                }
+            }
+        }
+        for line in &said {
+            for refused in ["firewall.ssh_allow", "firewall.app_allow", "[env."] {
+                assert!(!line.contains(refused), "{refused} in: {line}");
+            }
+        }
+    }
+
+    // ---------------------------------------- kept in the ERPC account
+
+    use std::net::IpAddr;
+
+    use erpc_worker::waf::WafConfig;
+
+    use crate::account::commands::Said;
+    use crate::cli::error::CliError;
+
+    /// A server the account path reaches, the test keeping its log.
+    struct By<'a>(&'a Recorded);
+
+    impl super::Server for By<'_> {
+        fn allow_ssh(&self, addresses: Vec<IpAddr>) -> Result<(), CliError> {
+            self.0.allow_ssh(addresses)
+        }
+
+        fn shown(&self) -> Result<Value, CliError> {
+            self.0.shown()
+        }
+
+        fn apply(&self, opening: Option<Opening>) -> Result<(), CliError> {
+            self.0.apply(opening)
+        }
+
+        fn waf_apply(&self, config: &WafConfig) -> Result<Value, CliError> {
+            self.0.waf_apply(config)
+        }
+
+        fn waf_remove(&self) -> Result<Value, CliError> {
+            self.0.waf_remove()
+        }
+    }
+
+    /// The account's record of environment prod, its lists as written
+    /// there.
+    fn record_with(ssh: &[&str], app_allow: &[&str]) -> erpc_api::worker::EnvDetail {
+        serde_json::from_value(json!({
+            "name": "prod", "revision": 7, "factsFormat": 2,
+            "facts": { "desiredCores": null, "host": "203.0.113.10", "sshUser": null,
+                "sshPort": null, "hostKey": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGtest",
+                "firewall": { "sshAllow": ssh, "appAllow": app_allow },
+                "starting": {}, "backup": null },
+            "servers": [{ "id": "0b8e7c52-91d4-4f6a-8e23-7d1a5c9b3e60", "slot": "active",
+                "cores": 2, "memoryGb": 8, "region": "amsterdam", "hourly": true,
+                "appRunning": true, "state": "active" }],
+            "desiredCores": null, "activeCores": 2, "coreOptions": [], "lines": [],
+            "refStates": { "backup": null }, "deployed": null, "deployedApp": null,
+            "updatedAt": "2026-10-29T15:40:37.000Z"
+        }))
+        .expect("an environment")
+    }
+
+    /// What `held` carries for `record`: erpc.toml (`top` its tables
+    /// before the environment) with the account's facts in place.
+    fn held_of(top: &str, record: &erpc_api::worker::EnvDetail) -> crate::worker::account::Kept {
+        let mut m = Manifest::parse(&format!(
+            "name = \"bot\"\nchain = \"solana\"\n{top}[env.prod]\naccount = true\n"
+        ))
+        .expect("valid");
+        let mut env = crate::worker::account::facts_env(record);
+        env.account = true;
+        m.env.insert("prod".to_owned(), env);
+        crate::worker::account::Kept {
+            manifest: m,
+            record: record.clone(),
+            app_id: "6f1c2b9e-4d3a-4e8b-9a71-2c5d8e0f4b13".to_owned(),
+            uid: "user-100001".to_owned(),
+        }
+    }
+
+    /// The server of `held`'s environment, its WAF running what erpc.toml
+    /// asks when it has one.
+    fn on(held: &crate::worker::account::Kept) -> Recorded {
+        match held.manifest.waf_config("prod") {
+            Some(config) => server(&running(&config), None),
+            None => server(&Value::Null, None),
+        }
+    }
+
+    const PORT_WAF: &str = "[run]\nport = 3000\n[waf]\nport = 8080\n";
+    const PORT: &str = "[run]\nport = 3000\n";
+
+    fn bot() -> crate::worker::App {
+        crate::worker::App::at("apps/bot", "prod")
+    }
+
+    /// Goes ahead, reaching `server`, with erpc connecting from
+    /// 198.51.100.7.
+    #[allow(
+        clippy::type_complexity,
+        reason = "the two closures are the seam under test, named where they are made"
+    )]
+    fn going<'a>(
+        server: &'a Recorded,
+        pins: std::path::PathBuf,
+    ) -> super::Going<
+        'a,
+        By<'a>,
+        impl FnOnce() -> Result<(), CliError>,
+        impl FnOnce(&Env) -> Result<(By<'a>, Option<IpAddr>), CliError>,
+    > {
+        super::Going::new(
+            true,
+            || Ok(()),
+            move |_: &Env| {
+                Ok((
+                    By(server),
+                    Some("198.51.100.7".parse().expect("an address")),
+                ))
+            },
+            pins,
+            &QUIET,
+        )
+    }
+
+    /// Asks nobody and reaches nothing: what is refused before either.
+    #[allow(
+        clippy::type_complexity,
+        reason = "the two closures are the seam under test, named where they are made"
+    )]
+    fn refused_before<'a>(
+        pins: std::path::PathBuf,
+    ) -> super::Going<
+        'a,
+        By<'a>,
+        impl FnOnce() -> Result<(), CliError>,
+        impl FnOnce(&Env) -> Result<(By<'a>, Option<IpAddr>), CliError>,
+    > {
+        super::Going::new(
+            true,
+            || -> Result<(), CliError> { panic!("nobody is asked") },
+            |_: &Env| -> Result<(By<'a>, Option<IpAddr>), CliError> {
+                panic!("the server is not reached")
+            },
+            pins,
+            &QUIET,
+        )
+    }
+
+    fn change(to: Port, addresses: &[String], allow: bool) -> super::Change<'_> {
+        super::Change {
+            to,
+            addresses,
+            allow,
+        }
+    }
+
+    fn strings(list: &[&str]) -> Vec<String> {
+        list.iter().map(|&a| a.to_owned()).collect()
+    }
+
+    #[tokio::test]
+    async fn a_network_on_the_accounts_ssh_list_is_refused_and_the_deny_it_names_clears_it() {
+        use crate::worker::account::stand_in::Fake;
+        let dir = tempfile::tempdir().expect("a directory");
+        let pins = dir.path().join("worker_account.json");
+        let record = record_with(&["198.51.100.0/24", "198.51.100.7/32"], &[]);
+        let fake = Fake::new(record.clone());
+        let held = held_of(PORT_WAF, &record);
+        // Sync: refused, nobody asked, the command that clears it named.
+        let Err(e) = super::sync_in(&fake, &held, &bot(), refused_before(pins.clone())).await
+        else {
+            panic!("refused");
+        };
+        let hint = e.hint.unwrap_or_default();
+        assert!(
+            hint.contains("`erpc worker firewall deny --to ssh 198.51.100.0/24"),
+            "{hint}"
+        );
+        // An allow before that deny is refused the same way.
+        let more = strings(&["198.51.100.9"]);
+        let Err(e) = super::change_in(
+            &fake,
+            &held,
+            &bot(),
+            change(Port::Ssh, &more, true),
+            refused_before(pins.clone()),
+        )
+        .await
+        else {
+            panic!("refused");
+        };
+        assert!(e.message.contains("198.51.100.0/24"), "{}", e.message);
+        assert!(fake.log.borrow().is_empty());
+        // The deny it names is taken, and the account's list follows.
+        let network = strings(&["198.51.100.0/24"]);
+        let on_server = on(&held);
+        super::change_in(
+            &fake,
+            &held,
+            &bot(),
+            change(Port::Ssh, &network, false),
+            going(&on_server, pins.clone()),
+        )
+        .await
+        .expect("taken");
+        assert_eq!(
+            fake.env.borrow().facts.firewall.ssh_allow,
+            ["198.51.100.7/32"]
+        );
+        // Then sync goes through.
+        let now = fake.env.borrow().clone();
+        let held = held_of(PORT_WAF, &now);
+        let on_server = on(&held);
+        super::sync_in(&fake, &held, &bot(), going(&on_server, pins))
+            .await
+            .expect("synced");
+        // An environment kept in erpc.toml still takes no network to SSH.
+        let toml = app(WAF, ONE);
+        let env = toml.env["prod"].clone();
+        assert!(super::edited(true, &env, Port::Ssh, &network, false).is_err());
+    }
+
+    #[tokio::test]
+    async fn everyone_with_no_waf_names_every_such_entry_and_its_deny_clears_it() {
+        use crate::worker::account::stand_in::Fake;
+        let dir = tempfile::tempdir().expect("a directory");
+        let pins = dir.path().join("worker_account.json");
+        for (listed, named) in [
+            (vec!["::/0"], "deny --to app ::/0"),
+            (vec!["0.0.0.0/0", "::/0"], "deny --to app 0.0.0.0/0 ::/0"),
+        ] {
+            let record = record_with(&["198.51.100.7/32"], &listed);
+            let fake = Fake::new(record.clone());
+            let held = held_of(PORT, &record);
+            let Err(e) = super::sync_in(&fake, &held, &bot(), refused_before(pins.clone())).await
+            else {
+                panic!("refused");
+            };
+            let hint = e.hint.unwrap_or_default();
+            assert!(hint.contains(named), "{hint}");
+            // What it names, denied: the list is empty, and sync goes on.
+            let typed = strings(&listed);
+            let on_server = server(&Value::Null, None);
+            super::change_in(
+                &fake,
+                &held,
+                &bot(),
+                change(Port::App, &typed, false),
+                going(&on_server, pins.clone()),
+            )
+            .await
+            .expect("taken");
+            assert!(fake.env.borrow().facts.firewall.app_allow.is_empty());
+            let now = fake.env.borrow().clone();
+            let on_server = server(&Value::Null, None);
+            super::sync_in(
+                &fake,
+                &held_of(PORT, &now),
+                &bot(),
+                going(&on_server, pins.clone()),
+            )
+            .await
+            .expect("synced");
+        }
+        // Behind a WAF, everyone may reach its port.
+        let record = record_with(&["198.51.100.7/32"], &["0.0.0.0/0"]);
+        let fake = Fake::new(record.clone());
+        let held = held_of(PORT_WAF, &record);
+        let on_server = on(&held);
+        super::sync_in(&fake, &held, &bot(), going(&on_server, pins))
+            .await
+            .expect("synced behind a WAF");
+    }
+
+    #[tokio::test]
+    async fn an_entry_erpc_does_not_read_is_refused_never_dropped_and_denied_by_its_text() {
+        use crate::worker::account::stand_in::Fake;
+        let dir = tempfile::tempdir().expect("a directory");
+        let pins = dir.path().join("worker_account.json");
+        let record = record_with(
+            &["198.51.100.7/32"],
+            &["10.0.0.1/24", "198.51.100.30/32", "198.51.100.30/32"],
+        );
+        let fake = Fake::new(record.clone());
+        let held = held_of(PORT_WAF, &record);
+        let more = strings(&["198.51.100.20"]);
+        let Err(e) = super::change_in(
+            &fake,
+            &held,
+            &bot(),
+            change(Port::App, &more, true),
+            refused_before(pins.clone()),
+        )
+        .await
+        else {
+            panic!("refused");
+        };
+        assert!(e.message.contains("10.0.0.1/24"), "{}", e.message);
+        assert!(
+            e.hint
+                .unwrap_or_default()
+                .contains("deny --to app 10.0.0.1/24"),
+            "named"
+        );
+        assert!(fake.log.borrow().is_empty());
+        // Denied by its text: gone, and the address listed twice written
+        // once.
+        let typed = strings(&["10.0.0.1/24"]);
+        let on_server = on(&held);
+        super::change_in(
+            &fake,
+            &held,
+            &bot(),
+            change(Port::App, &typed, false),
+            going(&on_server, pins),
+        )
+        .await
+        .expect("taken");
+        assert_eq!(
+            fake.env.borrow().facts.firewall.app_allow,
+            ["198.51.100.30/32"]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_record_changed_after_it_was_read_is_not_put_on_the_server() {
+        use crate::worker::account::stand_in::Fake;
+        let dir = tempfile::tempdir().expect("a directory");
+        let record = record_with(&["198.51.100.7/32"], &[]);
+        let held = held_of(PORT_WAF, &record);
+        let mut moved = record.clone();
+        moved.revision = 8;
+        let fake = Fake::new(moved);
+        let more = strings(&["198.51.100.20"]);
+        let going = super::Going::new(
+            true,
+            || Ok(()),
+            |_: &Env| -> Result<(By<'_>, Option<IpAddr>), CliError> {
+                panic!("the server is not reached")
+            },
+            dir.path().join("worker_account.json"),
+            &QUIET,
+        );
+        let Err(e) =
+            super::change_in(&fake, &held, &bot(), change(Port::App, &more, true), going).await
+        else {
+            panic!("refused");
+        };
+        assert!(
+            e.message.contains("after this command read it"),
+            "{}",
+            e.message
+        );
+        assert!(fake.log.borrow().is_empty());
+    }
+
+    #[tokio::test]
+    async fn nothing_reaches_the_server_or_the_account_without_the_yes() {
+        use crate::worker::account::stand_in::Fake;
+        let dir = tempfile::tempdir().expect("a directory");
+        let record = record_with(&["198.51.100.7/32"], &[]);
+        let held = held_of(PORT_WAF, &record);
+        let fake = Fake::new(record);
+        let more = strings(&["198.51.100.20"]);
+        let no = || Err(CliError::new(Code::Declined, "no".to_owned()));
+        let never = |_: &Env| -> Result<(By<'_>, Option<IpAddr>), CliError> {
+            panic!("the server is not reached")
+        };
+        let going = super::Going::new(
+            true,
+            no,
+            never,
+            dir.path().join("worker_account.json"),
+            &QUIET,
+        );
+        let Err(e) =
+            super::change_in(&fake, &held, &bot(), change(Port::App, &more, true), going).await
+        else {
+            panic!("declined");
+        };
+        assert_eq!(e.code, Code::Declined);
+        let going = super::Going::new(
+            true,
+            no,
+            never,
+            dir.path().join("worker_account.json"),
+            &QUIET,
+        );
+        assert!(super::sync_in(&fake, &held, &bot(), going).await.is_err());
+        assert!(fake.log.borrow().is_empty());
+    }
+
+    #[tokio::test]
+    async fn sixteen_at_most_and_an_app_list_needs_run_port_before_anything() {
+        use crate::worker::account::stand_in::Fake;
+        let dir = tempfile::tempdir().expect("a directory");
+        let pins = dir.path().join("worker_account.json");
+        let full: Vec<String> = (1..=16).map(|n| format!("203.0.113.{n}/32")).collect();
+        let full: Vec<&str> = full.iter().map(String::as_str).collect();
+        let record = record_with(&["198.51.100.7/32"], &full);
+        let fake = Fake::new(record.clone());
+        let more = strings(&["198.51.100.20"]);
+        let Err(e) = super::change_in(
+            &fake,
+            &held_of(PORT_WAF, &record),
+            &bot(),
+            change(Port::App, &more, true),
+            refused_before(pins.clone()),
+        )
+        .await
+        else {
+            panic!("refused");
+        };
+        assert!(e.message.contains("17"), "{}", e.message);
+        assert!(e.hint.unwrap_or_default().contains("deny --to app"));
+        // No run.port: an app list has no port to open.
+        let record = record_with(&["198.51.100.7/32"], &[]);
+        let fake = Fake::new(record.clone());
+        let Err(e) = super::change_in(
+            &fake,
+            &held_of("", &record),
+            &bot(),
+            change(Port::App, &more, true),
+            refused_before(pins),
+        )
+        .await
+        else {
+            panic!("refused");
+        };
+        assert!(e.message.contains("run.port"), "{}", e.message);
+        assert!(fake.log.borrow().is_empty());
+    }
+
+    #[tokio::test]
+    async fn sync_writes_back_the_address_erpc_connects_from_and_a_deny_of_it_says_it_stays() {
+        use crate::worker::account::stand_in::Fake;
+        let dir = tempfile::tempdir().expect("a directory");
+        let pins = dir.path().join("worker_account.json");
+        let record = record_with(&["203.0.113.9/32"], &[]);
+        let fake = Fake::new(record.clone());
+        let on_server = server(&Value::Null, None);
+        super::sync_in(
+            &fake,
+            &held_of(PORT_WAF, &record),
+            &bot(),
+            going(&on_server, pins.clone()),
+        )
+        .await
+        .expect("synced");
+        assert_eq!(
+            fake.env.borrow().facts.firewall.ssh_allow,
+            ["203.0.113.9/32", "198.51.100.7/32"]
+        );
+        // Denying erpc's own address: it stays, and that is said.
+        let now = fake.env.borrow().clone();
+        let own = strings(&["198.51.100.7"]);
+        let on_server = server(&Value::Null, None);
+        let _ = crate::node::common::heard::take();
+        super::change_in(
+            &fake,
+            &held_of(PORT_WAF, &now),
+            &bot(),
+            change(Port::Ssh, &own, false),
+            going(&on_server, pins),
+        )
+        .await
+        .expect("taken");
+        let heard = crate::node::common::heard::take().join("\n");
+        assert!(
+            heard.contains("198.51.100.7 is the address erpc connects from"),
+            "{heard}"
+        );
+    }
+
+    #[tokio::test]
+    async fn what_the_account_did_with_a_write_is_what_is_said() {
+        use crate::worker::account::stand_in::{Fake, refused};
+        let dir = tempfile::tempdir().expect("a directory");
+        let pins = dir.path().join("worker_account.json");
+        let more = strings(&["198.51.100.20"]);
+        for (answer, said) in [
+            (
+                Some(refused(409, "revision_conflict", Value::Null)),
+                "as this command read them",
+            ),
+            (Some(refused(500, "internal", Value::Null)), "is not known"),
+            (
+                Some(refused(400, "invalid_request", Value::Null)),
+                "does not",
+            ),
+            (None, "took the lists"),
+        ] {
+            let record = record_with(&["198.51.100.7/32"], &[]);
+            let fake = Fake::new(record.clone());
+            match answer {
+                Some(answer) => fake.answers.borrow_mut().push(answer),
+                None => *fake.meddle.borrow_mut() = Some("203.0.113.99".to_owned()),
+            }
+            let on_server = server(&Value::Null, None);
+            let Err(e) = super::change_in(
+                &fake,
+                &held_of(PORT_WAF, &record),
+                &bot(),
+                change(Port::App, &more, true),
+                going(&on_server, pins.clone()),
+            )
+            .await
+            else {
+                panic!("not as sent");
+            };
+            assert!(e.message.contains(said), "{said}: {}", e.message);
+            assert!(!on_server.asked().is_empty());
+        }
+    }
+
+    #[test]
+    fn unchanged_and_list_name_the_accounts_lists_as_it_keeps_them() {
+        let record = record_with(&["198.51.100.7/32"], &["10.0.0.1/24"]);
+        let held = held_of(PORT_WAF, &record);
+        let env = held.manifest.env["prod"].clone();
+        let Said::Json(body) = super::unchanged(true, "bot-prod", &env, &[], true, SCOPE) else {
+            panic!("JSON");
+        };
+        assert!(
+            body.get("account").is_some() && body.get("erpc_toml").is_none(),
+            "{body}"
+        );
+        let lists = super::account_lists_json(&record);
+        assert_eq!(lists["app_allow"], json!(["10.0.0.1/24"]));
+        assert_eq!(super::Unread::of(&record).app, ["10.0.0.1/24"]);
+    }
+
+    #[test]
+    fn an_environment_kept_in_the_account_is_refused_by_the_erpc_toml_path() {
+        let dir = tempfile::tempdir().expect("a directory");
+        std::fs::write(
+            dir.path().join("erpc.toml"),
+            "name = \"bot\"\nchain = \"solana\"\n[env.prod]\naccount = true\n",
+        )
+        .expect("written");
+        let app = crate::worker::App::at(dir.path().to_str().expect("a path"), "prod");
+        let e = crate::worker::load_env(&app).expect_err("refused");
+        assert!(
+            e.message.contains("kept in the ERPC account"),
+            "{}",
+            e.message
+        );
+    }
+
+    #[test]
+    fn the_firewall_step_itself_refuses_an_account_list_before_the_server_is_asked() {
+        // What the deploy reaches as its step 5, whatever was checked before.
+        for (top, ssh, app_allow) in [
+            ("[run]\nport = 3000\n", "198.51.100.7/32", "0.0.0.0/0"),
+            (PORT_WAF, "198.51.100.0/24", "198.51.100.20/32"),
+        ] {
+            let held = held_of(top, &record_with(&[ssh], &[app_allow]));
+            let env = held.manifest.env["prod"].clone();
+            let untouched = server(&Value::Null, None);
+            let me = Some("198.51.100.7".parse().expect("an address"));
+            let Err(e) = super::sync(&untouched, &held.manifest, "prod", &env, me, ASK, &QUIET)
+            else {
+                panic!("refused");
+            };
+            assert!(
+                e.message.contains("the firewall was not changed"),
+                "{}",
+                e.message
+            );
+            assert!(untouched.asked().is_empty(), "{:?}", untouched.asked());
+        }
+    }
+
+    /// The `deny` commands a refusal's hint names: which list, and the
+    /// entries, as typed.
+    fn hinted_denies(hint: &str) -> Vec<(Port, Vec<String>)> {
+        hint.split('`')
+            .filter_map(|part| part.strip_prefix("erpc worker firewall deny --to "))
+            .map(|rest| {
+                let (to, rest) = rest.split_once(' ').expect("a list");
+                let entries = rest.split(" --env ").next().expect("entries");
+                let to = if to == "ssh" { Port::Ssh } else { Port::App };
+                // As a shell reads them: a quoted entry without its quotes.
+                let word = |w: &str| w.trim_matches('\'').replace("'\\''", "'");
+                (to, entries.split(' ').map(word).collect())
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn following_only_the_hinted_denies_clears_every_mix_of_problems() {
+        use crate::worker::account::stand_in::Fake;
+        // unread SSH, network SSH, unread app, everyone without a WAF, no
+        // run.port.
+        for mask in 0u8..32 {
+            let has = |bit: u8| mask & (1 << bit) != 0;
+            let mut ssh = vec!["198.51.100.7/32"];
+            let mut app_allow = vec!["198.51.100.30/32"];
+            if has(0) {
+                ssh.push("10.0.0.1/24");
+            }
+            if has(1) {
+                ssh.push("198.51.100.0/24");
+            }
+            if has(2) {
+                app_allow.push("10.0.0.2/24");
+            }
+            if has(3) {
+                app_allow.push("0.0.0.0/0");
+            }
+            // A WAF needs run.port; everyone is a problem only without one.
+            let top = match (has(3), has(4)) {
+                (_, true) => "",
+                (true, false) => PORT,
+                (false, false) => PORT_WAF,
+            };
+            let dir = tempfile::tempdir().expect("a directory");
+            let pins = dir.path().join("worker_account.json");
+            let fake = Fake::new(record_with(&ssh, &app_allow));
+            let mut steps = 0;
+            loop {
+                let now = fake.env.borrow().clone();
+                let held = held_of(top, &now);
+                let on_server = on(&held);
+                let Err(e) =
+                    super::sync_in(&fake, &held, &bot(), going(&on_server, pins.clone())).await
+                else {
+                    break;
+                };
+                let hint = e.hint.unwrap_or_default();
+                let denies = hinted_denies(&hint);
+                assert!(!denies.is_empty(), "{mask:05b}: {}: {hint}", e.message);
+                for (to, entries) in denies {
+                    let now = fake.env.borrow().clone();
+                    let held = held_of(top, &now);
+                    let on_server = on(&held);
+                    // Taken: on the server, or in the account's record
+                    // alone while something else still stops the lists.
+                    match super::change_in(
+                        &fake,
+                        &held,
+                        &bot(),
+                        change(to, &entries, false),
+                        going(&on_server, pins.clone()),
+                    )
+                    .await
+                    {
+                        Ok(_) => {}
+                        Err(e) => assert_eq!(
+                            e.details.as_ref().map(|d| d["account_only"].clone()),
+                            Some(Value::Bool(true)),
+                            "{mask:05b}: {}",
+                            e.message
+                        ),
+                    }
+                }
+                steps += 1;
+                assert!(steps <= 3, "{mask:05b}: no way out after {steps} rounds");
+            }
+            // What was not named stays, as the account had it.
+            let left = fake.env.borrow().facts.firewall.clone();
+            assert!(
+                left.ssh_allow.contains(&"198.51.100.7/32".to_owned()),
+                "{mask:05b}"
+            );
+            if !has(4) {
+                assert!(
+                    left.app_allow.contains(&"198.51.100.30/32".to_owned()),
+                    "{mask:05b}: {left:?}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_deny_while_something_else_stops_the_lists_lands_in_the_account_alone() {
+        use crate::worker::account::stand_in::Fake;
+        let dir = tempfile::tempdir().expect("a directory");
+        let pins = dir.path().join("worker_account.json");
+        let record = record_with(
+            &["198.51.100.7/32", "10.0.0.1/24"],
+            &["10.0.0.2/24", "198.51.100.30/32"],
+        );
+        let fake = Fake::new(record.clone());
+        let held = held_of(PORT_WAF, &record);
+        let typed = strings(&["10.0.0.1/24"]);
+        let never = |_: &Env| -> Result<(By<'_>, Option<IpAddr>), CliError> {
+            panic!("the server is not reached")
+        };
+        let going = super::Going::new(true, || Ok(()), never, pins.clone(), &QUIET);
+        let Err(e) = super::change_in(
+            &fake,
+            &held,
+            &bot(),
+            change(Port::Ssh, &typed, false),
+            going,
+        )
+        .await
+        else {
+            panic!("said as the account's alone");
+        };
+        assert!(
+            e.message
+                .contains("was not changed, and lets in whatever of them"),
+            "{}",
+            e.message
+        );
+        assert!(
+            e.hint
+                .unwrap_or_default()
+                .contains("deny --to app 10.0.0.2/24")
+        );
+        // The SSH entry gone; the app's list as the account had it, the
+        // entry erpc does not read included.
+        let now = fake.env.borrow().facts.firewall.clone();
+        assert_eq!(now.ssh_allow, ["198.51.100.7/32"]);
+        assert_eq!(now.app_allow, ["10.0.0.2/24", "198.51.100.30/32"]);
+        // An SSH entry erpc does not read is never dropped by a sync.
+        let fake = Fake::new(record_with(&["198.51.100.7/32", "10.0.0.1/24"], &[]));
+        let held = held_of(PORT_WAF, &fake.env.borrow().clone());
+        assert!(
+            super::sync_in(&fake, &held, &bot(), refused_before(pins))
+                .await
+                .is_err()
+        );
+        assert!(fake.log.borrow().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_record_changed_while_the_question_waits_is_not_put_on_the_server() {
+        use crate::worker::account::stand_in::Fake;
+        let dir = tempfile::tempdir().expect("a directory");
+        let record = record_with(&["198.51.100.7/32"], &[]);
+        let held = held_of(PORT_WAF, &record);
+        let fake = Fake::new(record);
+        let more = strings(&["198.51.100.20"]);
+        let meanwhile = || {
+            fake.env.borrow_mut().revision += 1;
+            Ok(())
+        };
+        let never = |_: &Env| -> Result<(By<'_>, Option<IpAddr>), CliError> {
+            panic!("the server is not reached")
+        };
+        let going = super::Going::new(
+            true,
+            meanwhile,
+            never,
+            dir.path().join("worker_account.json"),
+            &QUIET,
+        );
+        let Err(e) =
+            super::change_in(&fake, &held, &bot(), change(Port::App, &more, true), going).await
+        else {
+            panic!("refused");
+        };
+        assert!(
+            e.message.contains("after this command read it"),
+            "{}",
+            e.message
+        );
+        assert!(fake.log.borrow().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_dispatch_asks_as_go_ahead_does_and_lists_through_the_account() {
+        use crate::worker::account::stand_in::Fake;
+        let dir = tempfile::tempdir().expect("a directory");
+        let pins = dir.path().join("worker_account.json");
+        let record = record_with(&["198.51.100.7/32"], &["10.0.0.2/24"]);
+        let held = held_of(PORT_WAF, &record);
+        let fake = Fake::new(record);
+        let never = |_: &Env| -> Result<(By<'static>, Option<IpAddr>), CliError> {
+            panic!("the server is not reached")
+        };
+        // No --yes and no terminal here: refused before anything.
+        let clean = held_of(PORT_WAF, &record_with(&["198.51.100.7/32"], &[]));
+        let ask = super::FirewallAsk::Sync { yes: false };
+        let said = super::account(false, &bot(), ask, (&fake, &clean), pins.clone(), never).await;
+        assert!(
+            matches!(&said, crate::account::commands::Outcome::Error(e) if e.code == Code::NeedsTerminal),
+            "{said:?}"
+        );
+        let ask = super::FirewallAsk::Change {
+            to: Port::App,
+            addresses: strings(&["198.51.100.20"]),
+            allow: true,
+            yes: false,
+        };
+        let said = super::account(false, &bot(), ask, (&fake, &clean), pins.clone(), never).await;
+        assert!(
+            matches!(&said, crate::account::commands::Outcome::Error(e) if e.code == Code::NeedsTerminal),
+            "{said:?}"
+        );
+        assert!(fake.log.borrow().is_empty());
+        // `list` reads the account's lists, and says what stops them.
+        let on_server = on(&held);
+        let reach = |_: &Env| Ok((By(&on_server), None));
+        let said = super::account(
+            false,
+            &bot(),
+            super::FirewallAsk::List,
+            (&fake, &held),
+            pins.clone(),
+            reach,
+        )
+        .await;
+        let crate::account::commands::Outcome::Done(text) = said else {
+            panic!("listed: {said:?}");
+        };
+        assert!(
+            text.contains("warning:") && text.contains("10.0.0.2/24"),
+            "{text}"
+        );
+        assert!(text.contains("has not put"), "{text}");
+        let listed = super::list_json((&held.manifest, &bot(), &held, &pins), &Value::Null);
+        assert_eq!(listed["account"]["app_allow"], json!(["10.0.0.2/24"]));
+        assert_eq!(listed["unread"]["app_allow"], json!(["10.0.0.2/24"]));
+    }
+
+    #[tokio::test]
+    async fn what_changed_in_the_apps_list_since_it_was_put_on_the_server_is_said_first() {
+        use crate::worker::account::stand_in::Fake;
+        let dir = tempfile::tempdir().expect("a directory");
+        let pins = dir.path().join("worker_account.json");
+        let fake = Fake::new(record_with(&["198.51.100.7/32"], &["198.51.100.30/32"]));
+        // Never put there from here: said whole, on stderr under --json too.
+        let _ = crate::node::common::heard::take_printed();
+        let held = held_of(PORT_WAF, &fake.env.borrow().clone());
+        let on_server = on(&held);
+        super::sync_in(&fake, &held, &bot(), going(&on_server, pins.clone()))
+            .await
+            .expect("synced");
+        let printed = crate::node::common::heard::take_printed().join("\n");
+        assert!(
+            printed.contains("has not put") && printed.contains("198.51.100.30/32"),
+            "{printed}"
+        );
+        // Another sign-in changes it: what was added and removed is said.
+        fake.env.borrow_mut().facts.firewall = erpc_api::worker::Firewall::new(
+            vec!["198.51.100.7/32".to_owned()],
+            vec!["198.51.100.40/32".to_owned()],
+        );
+        let held = held_of(PORT_WAF, &fake.env.borrow().clone());
+        let on_server = on(&held);
+        let _ = crate::node::common::heard::take();
+        super::sync_in(&fake, &held, &bot(), going(&on_server, pins.clone()))
+            .await
+            .expect("synced");
+        let printed = crate::node::common::heard::take_printed().join("\n");
+        assert!(
+            printed.contains("added 198.51.100.40/32; removed 198.51.100.30/32"),
+            "{printed}"
+        );
+        // The plan is said too, and nothing more is new after.
+        let heard = crate::node::common::heard::take().join("\n");
+        assert!(heard.contains("The firewall will be:"), "{heard}");
+        let held = held_of(PORT_WAF, &fake.env.borrow().clone());
+        assert!(super::app_changes_of(&held, &pins, &bot()).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_record_of_this_machine_that_cannot_be_written_is_said_under_json_too() {
+        use crate::worker::account::stand_in::Fake;
+        let dir = tempfile::tempdir().expect("a directory");
+        // The pins' place is a directory: nothing can be written there.
+        let pins = dir.path().join("pins");
+        std::fs::create_dir_all(&pins).expect("a directory");
+        let fake = Fake::new(record_with(&["198.51.100.7/32"], &["198.51.100.30/32"]));
+        let held = held_of(PORT_WAF, &fake.env.borrow().clone());
+        let on_server = on(&held);
+        let _ = crate::node::common::heard::take_printed();
+        // An address let in to SSH changes how the server is reached: the
+        // pin follows the write, and the app's list is recorded as put.
+        super::change_in(
+            &fake,
+            &held,
+            &bot(),
+            change(Port::Ssh, &strings(&["203.0.113.5"]), true),
+            going(&on_server, pins),
+        )
+        .await
+        .expect("let in");
+        let printed = crate::node::common::heard::take_printed().join("\n");
+        assert!(
+            printed.contains("record of what it trusts could not follow"),
+            "{printed}"
+        );
+        assert!(
+            printed.contains("as last put on the server, could not be written"),
+            "{printed}"
+        );
+    }
+
+    #[tokio::test]
+    async fn sixteen_fit_and_listed_twice_is_said() {
+        use crate::worker::account::stand_in::Fake;
+        let dir = tempfile::tempdir().expect("a directory");
+        let pins = dir.path().join("worker_account.json");
+        let full: Vec<String> = (1..=15).map(|n| format!("203.0.113.{n}/32")).collect();
+        let mut listed: Vec<&str> = full.iter().map(String::as_str).collect();
+        listed.push("203.0.113.1/32");
+        let fake = Fake::new(record_with(&["198.51.100.7/32"], &listed));
+        let held = held_of(PORT_WAF, &fake.env.borrow().clone());
+        let on_server = on(&held);
+        let _ = crate::node::common::heard::take();
+        super::change_in(
+            &fake,
+            &held,
+            &bot(),
+            change(Port::App, &strings(&["203.0.113.16"]), true),
+            going(&on_server, pins),
+        )
+        .await
+        .expect("sixteen fit");
+        assert_eq!(fake.env.borrow().facts.firewall.app_allow.len(), 16);
+        let heard = crate::node::common::heard::take().join("\n");
+        assert!(heard.contains("more than once: 203.0.113.1/32"), "{heard}");
+    }
+
+    #[test]
+    fn a_write_is_said_by_what_became_of_it() {
+        use crate::worker::deploy_account::Unwritten;
+        use erpc_api::worker::WorkerError;
+        let of = |e: WorkerError| Unwritten::of(&e);
+        assert!(matches!(
+            of(WorkerError::Api(erpc_api::ApiError::Malformed(
+                "cut".to_owned()
+            ))),
+            Unwritten::Lost(_)
+        ));
+        assert!(matches!(
+            of(WorkerError::Api(erpc_api::ApiError::Status(502))),
+            Unwritten::Lost(_)
+        ));
+        assert!(matches!(
+            of(WorkerError::NewerFormat {
+                found: 9,
+                after_write: true
+            }),
+            Unwritten::Lost(_)
+        ));
+        assert!(matches!(
+            of(WorkerError::NewerFormat {
+                found: 9,
+                after_write: false
+            }),
+            Unwritten::Refused(_)
+        ));
+        assert!(matches!(
+            of(WorkerError::Session("expired".to_owned())),
+            Unwritten::NotSignedIn(_)
+        ));
+        assert!(matches!(
+            of(WorkerError::Api(erpc_api::ApiError::Status(400))),
+            Unwritten::Refused(_)
+        ));
+        let e = super::unwritten_said(Unwritten::NotSignedIn("x".to_owned()), &bot(), None);
+        assert_eq!(e.code, Code::NotSignedIn);
+        let env = held_of(PORT_WAF, &record_with(&["198.51.100.7/32"], &[]))
+            .manifest
+            .env["prod"]
+            .clone();
+        let Said::Text(text) = super::unchanged(
+            false,
+            "bot-prod",
+            &env,
+            &strings(&["198.51.100.7"]),
+            true,
+            SCOPE,
+        ) else {
+            panic!("text");
+        };
+        assert!(text.contains("ERPC account's lists"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn a_waf_nobody_may_reach_is_said_as_the_accounts_list() {
+        use crate::worker::account::stand_in::Fake;
+        let dir = tempfile::tempdir().expect("a directory");
+        let fake = Fake::new(record_with(&["198.51.100.7/32"], &[]));
+        let held = held_of(PORT_WAF, &fake.env.borrow().clone());
+        let on_server = on(&held);
+        let going = super::Going::new(
+            false,
+            || Ok(()),
+            |_: &Env| {
+                Ok((
+                    By(&on_server),
+                    Some("198.51.100.7".parse().expect("an address")),
+                ))
+            },
+            dir.path().join("worker_account.json"),
+            &QUIET,
+        );
+        let said = super::sync_in(&fake, &held, &bot(), going)
+            .await
+            .expect("synced");
+        let crate::account::commands::Outcome::Done(text) = said else {
+            panic!("{said:?}");
+        };
+        assert!(
+            text.contains("the ERPC account's list of who may reach the app has nobody"),
+            "{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn every_stopping_entry_is_named_and_what_is_not_denied_stays_as_the_account_had_it() {
+        use crate::worker::account::stand_in::Fake;
+        let dir = tempfile::tempdir().expect("a directory");
+        let pins = dir.path().join("worker_account.json");
+        let ssh = ["198.51.100.7/32", "10.0.0.1/24", "10.0.0.3/24"];
+        let app_allow = ["10.0.0.2/24", "198.51.100.30/32"];
+        let fake = Fake::new(record_with(&ssh, &app_allow));
+        let held = held_of(PORT_WAF, &fake.env.borrow().clone());
+        // Two entries of one list: both named in one deny.
+        let Err(e) = super::sync_in(&fake, &held, &bot(), refused_before(pins.clone())).await
+        else {
+            panic!("refused");
+        };
+        let hint = e.hint.unwrap_or_default();
+        assert!(
+            hint.contains("deny --to ssh 10.0.0.1/24 10.0.0.3/24 "),
+            "{hint}"
+        );
+        assert!(hint.contains("deny --to app 10.0.0.2/24 "), "{hint}");
+        // Denying one of them: the other stays, as the account had it, and
+        // so does the app's list.
+        let never = |_: &Env| -> Result<(By<'_>, Option<IpAddr>), CliError> {
+            panic!("the server is not reached")
+        };
+        let one = strings(&["10.0.0.1/24"]);
+        let first = super::Going::new(true, || Ok(()), never, pins.clone(), &QUIET);
+        let _ = super::change_in(&fake, &held, &bot(), change(Port::Ssh, &one, false), first).await;
+        let now = fake.env.borrow().facts.firewall.clone();
+        assert_eq!(now.ssh_allow, ["198.51.100.7/32", "10.0.0.3/24"]);
+        assert_eq!(now.app_allow, app_allow);
+        // Denying the app's entry: the SSH list stays as the account has it.
+        let held = held_of(PORT_WAF, &fake.env.borrow().clone());
+        let app_one = strings(&["10.0.0.2/24"]);
+        let second = super::Going::new(true, || Ok(()), never, pins.clone(), &QUIET);
+        let _ = super::change_in(
+            &fake,
+            &held,
+            &bot(),
+            change(Port::App, &app_one, false),
+            second,
+        )
+        .await;
+        let now = fake.env.borrow().facts.firewall.clone();
+        assert_eq!(now.ssh_allow, ["198.51.100.7/32", "10.0.0.3/24"]);
+        assert_eq!(now.app_allow, ["198.51.100.30/32"]);
+        // An entry holding terminal control is named as shown, and denied
+        // by that.
+        let fake = Fake::new(record_with(&["198.51.100.7/32"], &["10.0.0.\u{1b}5/24"]));
+        let held = held_of(PORT_WAF, &fake.env.borrow().clone());
+        let Err(e) = super::sync_in(&fake, &held, &bot(), refused_before(pins.clone())).await
+        else {
+            panic!("refused");
+        };
+        let named = hinted_denies(&e.hint.unwrap_or_default());
+        assert_eq!(named.len(), 1);
+        assert!(!named[0].1[0].contains('\u{1b}'), "{named:?}");
+        let on_server = on(&held);
+        super::change_in(
+            &fake,
+            &held,
+            &bot(),
+            change(Port::App, &named[0].1, false),
+            going(&on_server, pins),
+        )
+        .await
+        .expect("taken");
+        assert!(fake.env.borrow().facts.firewall.app_allow.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_repair_says_what_changed_before_it_asks_and_advances_nothing() {
+        use crate::worker::account::stand_in::Fake;
+        let dir = tempfile::tempdir().expect("a directory");
+        let pins = dir.path().join("worker_account.json");
+        let record = record_with(
+            &["198.51.100.7/32", "10.0.0.1/24"],
+            &["198.51.100.30/32", "10.0.0.2/24"],
+        );
+        let held = held_of(PORT_WAF, &record);
+        let fake = Fake::new(record);
+        let typed = strings(&["10.0.0.1/24"]);
+        let never = |_: &Env| -> Result<(By<'_>, Option<IpAddr>), CliError> {
+            panic!("the server is not reached")
+        };
+        // Said before the question; a no writes nothing.
+        let _ = crate::node::common::heard::take_printed();
+        let no = || {
+            let printed = crate::node::common::heard::take_printed().join("\n");
+            assert!(printed.contains("has not put"), "said first: {printed}");
+            Err(CliError::new(Code::Declined, "no".to_owned()))
+        };
+        let going = super::Going::new(true, no, never, pins.clone(), &QUIET);
+        let Err(e) = super::change_in(
+            &fake,
+            &held,
+            &bot(),
+            change(Port::Ssh, &typed, false),
+            going,
+        )
+        .await
+        else {
+            panic!("declined");
+        };
+        assert_eq!(e.code, Code::Declined);
+        assert!(fake.log.borrow().is_empty());
+        // A yes: written to the account alone, the removal said in the
+        // message and its details, and the app's list not taken as seen.
+        let going = super::Going::new(true, || Ok(()), never, pins.clone(), &QUIET);
+        let Err(e) = super::change_in(
+            &fake,
+            &held,
+            &bot(),
+            change(Port::Ssh, &typed, false),
+            going,
+        )
+        .await
+        else {
+            panic!("said as the account's alone");
+        };
+        assert!(
+            e.message.contains("no longer has 10.0.0.1/24")
+                && e.message.contains("the server's firewall was not changed"),
+            "{}",
+            e.message
+        );
+        assert_eq!(
+            e.details.expect("details")["removed"],
+            json!(["10.0.0.1/24"])
+        );
+        let key = crate::worker::account::pin_key("user-100001", "bot", "prod");
+        assert_eq!(
+            crate::worker::account::app_seen(&pins, &key).expect("read"),
+            None
+        );
+        // Its hints name the same deny, not a sync that is refused.
+        let fake = Fake::new(record_with(
+            &["198.51.100.7/32", "10.0.0.1/24"],
+            &["10.0.0.2/24"],
+        ));
+        fake.answers
+            .borrow_mut()
+            .push(crate::worker::account::stand_in::refused(
+                400,
+                "invalid_request",
+                Value::Null,
+            ));
+        let held = held_of(PORT_WAF, &fake.env.borrow().clone());
+        let going = super::Going::new(true, || Ok(()), never, pins, &QUIET);
+        let Err(e) = super::change_in(
+            &fake,
+            &held,
+            &bot(),
+            change(Port::Ssh, &typed, false),
+            going,
+        )
+        .await
+        else {
+            panic!("refused");
+        };
+        let hint = e.hint.unwrap_or_default();
+        assert!(
+            hint.contains("deny") && !hint.contains("firewall sync"),
+            "{hint}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_ipv4_mapped_address_is_written_as_the_account_takes_it_and_its_own_text_kept() {
+        use crate::worker::account::stand_in::Fake;
+        let dir = tempfile::tempdir().expect("a directory");
+        let pins = dir.path().join("worker_account.json");
+        let cidr = Cidr::parse_any("::ffff:1.2.3.4").expect("an address");
+        assert_eq!(super::account_text(&cidr), "::ffff:102:304/128");
+        // Held in the account in its own text: kept so.
+        let record = record_with(&["198.51.100.7/32", "::FFFF:102:304/128"], &[]);
+        let fake = Fake::new(record.clone());
+        let held = held_of(PORT_WAF, &record);
+        let on_server = on(&held);
+        super::sync_in(&fake, &held, &bot(), going(&on_server, pins.clone()))
+            .await
+            .expect("synced");
+        assert_eq!(
+            fake.env.borrow().facts.firewall.ssh_allow,
+            ["198.51.100.7/32", "::FFFF:102:304/128"]
+        );
+        // A new one, typed dotted: written in hex, which the account takes.
+        let fake = Fake::new(record_with(&["198.51.100.7/32"], &[]));
+        let held = held_of(PORT_WAF, &fake.env.borrow().clone());
+        let on_server = on(&held);
+        super::change_in(
+            &fake,
+            &held,
+            &bot(),
+            change(Port::Ssh, &strings(&["::ffff:1.2.3.4"]), true),
+            going(&on_server, pins),
+        )
+        .await
+        .expect("taken");
+        assert!(
+            fake.env
+                .borrow()
+                .facts
+                .firewall
+                .ssh_allow
+                .contains(&"::ffff:102:304/128".to_owned()),
+            "{:?}",
+            fake.env.borrow().facts.firewall
+        );
+    }
+
+    #[tokio::test]
+    async fn the_list_says_unread_ssh_entries_and_twice_and_nothing_to_change_says_what_stops() {
+        use crate::worker::account::stand_in::Fake;
+        let dir = tempfile::tempdir().expect("a directory");
+        let pins = dir.path().join("worker_account.json");
+        let record = record_with(
+            &["198.51.100.7/32", "10.0.0.1/24"],
+            &["198.51.100.30/32", "198.51.100.30/32"],
+        );
+        let held = held_of(PORT_WAF, &record);
+        let listed = super::list_json((&held.manifest, &bot(), &held, &pins), &Value::Null);
+        assert_eq!(listed["unread"]["ssh_allow"], json!(["10.0.0.1/24"]));
+        assert!(
+            listed["stopped"]
+                .as_str()
+                .is_some_and(|s| s.contains("10.0.0.1/24"))
+        );
+        let on_server = on(&held);
+        let text = match super::list_in(false, &bot(), &held, &pins, |_: &Env| {
+            Ok((By(&on_server), None))
+        }) {
+            Ok(crate::account::commands::Outcome::Done(text)) => text,
+            other => panic!("{other:?}"),
+        };
+        assert!(text.contains("more than once: 198.51.100.30/32"), "{text}");
+        // Nothing to change while something stops the lists: what stops
+        // them is said, not "sync applies them again".
+        let fake = Fake::new(record);
+        let absent = strings(&["203.0.113.99"]);
+        let Err(e) = super::change_in(
+            &fake,
+            &held,
+            &bot(),
+            change(Port::App, &absent, false),
+            refused_before(pins),
+        )
+        .await
+        else {
+            panic!("stopped");
+        };
+        assert!(
+            e.message.contains("cannot be put on the server"),
+            "{}",
+            e.message
+        );
+    }
+
+    #[test]
+    fn unchanged_json_has_the_accounts_lists_as_it_keeps_them() {
+        let record = record_with(&["198.51.100.7/32"], &["198.51.100.30/32", "203.0.113.7"]);
+        let held = held_of(PORT_WAF, &record);
+        let lists = super::account_lists_json(&held.record);
+        assert_eq!(
+            lists["app_allow"],
+            json!(["198.51.100.30/32", "203.0.113.7"])
+        );
+    }
+
+    #[test]
+    fn nothing_to_change_answers_with_the_accounts_lists_as_it_keeps_them() {
+        // An entry the account keeps in its own text, not as erpc writes it.
+        let record = record_with(&["198.51.100.7/32"], &["2001:DB8::1/128"]);
+        let held = held_of(PORT_WAF, &record);
+        let env = held.manifest.env["prod"].clone();
+        let typed = strings(&["2001:db8::1"]);
+        let Said::Json(body) = super::unchanged_in_account(
+            true,
+            "bot-prod",
+            (&env, &held.record),
+            change(Port::App, &typed, true),
+            SCOPE,
+        ) else {
+            panic!("JSON");
+        };
+        assert_eq!(
+            body["account"]["app_allow"],
+            json!(["2001:DB8::1/128"]),
+            "{body}"
+        );
+        assert!(body.get("erpc_toml").is_none(), "{body}");
+    }
+
+    #[tokio::test]
+    async fn the_list_put_on_the_server_is_the_one_seen_and_a_later_change_is_said() {
+        use crate::worker::account::stand_in::Fake;
+        let dir = tempfile::tempdir().expect("a directory");
+        let pins = dir.path().join("worker_account.json");
+        let key = crate::worker::account::pin_key("user-100001", "bot", "prod");
+        let fake = Fake::new(record_with(&["198.51.100.7/32"], &["198.51.100.66/32"]));
+        // A deny changes the app's list: what was put there is what is seen.
+        let held = held_of(PORT_WAF, &fake.env.borrow().clone());
+        let on_server = on(&held);
+        super::change_in(
+            &fake,
+            &held,
+            &bot(),
+            change(Port::App, &strings(&["198.51.100.66"]), false),
+            going(&on_server, pins.clone()),
+        )
+        .await
+        .expect("taken");
+        assert_eq!(
+            crate::worker::account::app_seen(&pins, &key).expect("read"),
+            Some(Vec::<String>::new())
+        );
+        // An allow: the same.
+        let held = held_of(PORT_WAF, &fake.env.borrow().clone());
+        let on_server = on(&held);
+        super::change_in(
+            &fake,
+            &held,
+            &bot(),
+            change(Port::App, &strings(&["198.51.100.20"]), true),
+            going(&on_server, pins.clone()),
+        )
+        .await
+        .expect("taken");
+        assert_eq!(
+            crate::worker::account::app_seen(&pins, &key).expect("read"),
+            Some(vec!["198.51.100.20/32".to_owned()])
+        );
+        // Another sign-in puts the address back: the next command and the
+        // list say so.
+        fake.env.borrow_mut().facts.firewall = erpc_api::worker::Firewall::new(
+            vec!["198.51.100.7/32".to_owned()],
+            vec!["198.51.100.20/32".to_owned(), "198.51.100.66/32".to_owned()],
+        );
+        let held = held_of(PORT_WAF, &fake.env.borrow().clone());
+        let listed = super::list_json((&held.manifest, &bot(), &held, &pins), &Value::Null);
+        assert!(
+            listed["app_allow_changed"]
+                .as_str()
+                .is_some_and(|c| c.contains("added 198.51.100.66/32")),
+            "{listed}"
+        );
+        let _ = crate::node::common::heard::take_printed();
+        let on_server = on(&held);
+        super::sync_in(&fake, &held, &bot(), going(&on_server, pins))
+            .await
+            .expect("synced");
+        let printed = crate::node::common::heard::take_printed().join("\n");
+        assert!(printed.contains("added 198.51.100.66/32"), "{printed}");
+    }
+
+    #[tokio::test]
+    async fn a_repair_is_read_again_after_the_yes_and_its_hint_is_the_whole_deny() {
+        use crate::worker::account::stand_in::{Fake, refused};
+        let dir = tempfile::tempdir().expect("a directory");
+        let pins = dir.path().join("worker_account.json");
+        let record = record_with(
+            &["198.51.100.7/32"],
+            &["198.51.100.2/24", "198.51.100.3/24"],
+        );
+        let held = held_of(PORT_WAF, &record);
+        let fake = Fake::new(record.clone());
+        let typed = strings(&["198.51.100.2/24"]);
+        let never = |_: &Env| -> Result<(By<'_>, Option<IpAddr>), CliError> {
+            panic!("the server is not reached")
+        };
+        // Changed while the question waits: nothing written.
+        let meanwhile = || {
+            fake.env.borrow_mut().revision += 1;
+            Ok(())
+        };
+        let going = super::Going::new(true, meanwhile, never, pins.clone(), &QUIET);
+        let Err(e) = super::change_in(
+            &fake,
+            &held,
+            &bot(),
+            change(Port::App, &typed, false),
+            going,
+        )
+        .await
+        else {
+            panic!("refused");
+        };
+        assert!(
+            e.message.contains("after this command read it"),
+            "{}",
+            e.message
+        );
+        assert!(fake.log.borrow().is_empty());
+        // A write it cannot make: the hint is the same deny, whole.
+        let fake = Fake::new(record);
+        fake.answers
+            .borrow_mut()
+            .push(refused(400, "invalid_request", Value::Null));
+        let going = super::Going::new(true, || Ok(()), never, pins, &QUIET);
+        let Err(e) = super::change_in(
+            &fake,
+            &held,
+            &bot(),
+            change(Port::App, &typed, false),
+            going,
+        )
+        .await
+        else {
+            panic!("refused");
+        };
+        let hint = e.hint.unwrap_or_default();
+        assert!(
+            hint.contains("`erpc worker firewall deny --to app 198.51.100.2/24 --env prod"),
+            "{hint}"
+        );
+        // The server was not touched, and that is said.
+        assert!(
+            e.message.contains("the server's firewall was not changed"),
+            "{}",
+            e.message
+        );
+        assert!(!e.message.contains("the server's firewall has the change"));
+    }
+
+    #[tokio::test]
+    async fn the_accounts_own_text_is_kept_on_the_apps_list_and_a_mapped_network_keeps_its_prefix()
+    {
+        use crate::worker::account::stand_in::Fake;
+        let dir = tempfile::tempdir().expect("a directory");
+        let pins = dir.path().join("worker_account.json");
+        let net = Cidr::parse_any("::ffff:198.51.100.0/120").expect("a network");
+        assert_eq!(super::account_text(&net), "::ffff:c633:6400/120");
+        let record = record_with(&["198.51.100.7/32"], &["2001:DB8::1/128"]);
+        let fake = Fake::new(record.clone());
+        let held = held_of(PORT_WAF, &record);
+        let on_server = on(&held);
+        super::change_in(
+            &fake,
+            &held,
+            &bot(),
+            change(Port::App, &strings(&["::ffff:198.51.100.0/120"]), true),
+            going(&on_server, pins),
+        )
+        .await
+        .expect("taken");
+        assert_eq!(
+            fake.env.borrow().facts.firewall.app_allow,
+            ["2001:DB8::1/128", "::ffff:c633:6400/120"]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_repair_of_several_entries_names_each_in_its_hint() {
+        use crate::worker::account::stand_in::{Fake, refused};
+        let dir = tempfile::tempdir().expect("a directory");
+        let record = record_with(
+            &["198.51.100.7/32"],
+            &["198.51.100.2/24", "198.51.100.3/24", "198.51.100.4/24"],
+        );
+        let held = held_of(PORT_WAF, &record);
+        let fake = Fake::new(record);
+        fake.answers
+            .borrow_mut()
+            .push(refused(400, "invalid_request", Value::Null));
+        let never = |_: &Env| -> Result<(By<'_>, Option<IpAddr>), CliError> {
+            panic!("the server is not reached")
+        };
+        let going = super::Going::new(
+            true,
+            || Ok(()),
+            never,
+            dir.path().join("worker_account.json"),
+            &QUIET,
+        );
+        let typed = strings(&[" 198.51.100.2/24 ", "198.51.100.3/24"]);
+        let Err(e) = super::change_in(
+            &fake,
+            &held,
+            &bot(),
+            change(Port::App, &typed, false),
+            going,
+        )
+        .await
+        else {
+            panic!("refused");
+        };
+        let hint = e.hint.unwrap_or_default();
+        assert!(
+            hint.contains(
+                "`erpc worker firewall deny --to app 198.51.100.2/24 198.51.100.3/24 --env prod --dir apps/bot`"
+            ),
+            "{hint}"
+        );
+    }
+
+    #[test]
+    fn the_empty_ssh_list_hint_is_a_command_scoped_to_its_app_in_every_language() {
+        use erpc_core::i18n::Lang;
+        let mut env = Env {
+            account: true,
+            ..Env::default()
+        };
+        env.firewall.ssh_allow.clear();
+        for lang in [Lang::En, Lang::Ja, Lang::Zh, Lang::Ru] {
+            let hint = crate::cli::i18n::speaking(lang, || {
+                super::ssh_addresses(&env, None, &QUIET, " --env prod")
+                    .expect_err("refused")
+                    .hint
+                    .unwrap_or_default()
+            });
+            assert!(
+                hint.contains("`erpc worker firewall allow --to ssh <ADDRESS> --env prod`"),
+                "{lang:?}: {hint}"
+            );
+            assert!(
+                !hint.contains('{') && !hint.contains('}'),
+                "{lang:?}: {hint}"
+            );
+        }
     }
 }

@@ -23,14 +23,14 @@ Ctrl-C stops it. `erpc worker run --check` starts it, waits until
 ## Deploy it
 
 ```bash
-erpc worker deploy --new-vps    # a new hourly ERPC VPS; its price is shown and asked first
+erpc worker deploy --new-server # a new hourly ERPC server; its price is shown and asked first
 erpc worker api /               # call the API on the server, from here
 erpc worker status              # running or not, which release, what is charged
 erpc worker logs -n 50
 ```
 
-`erpc worker deploy --vps <ID>` takes a VPS the account already has, and
-`--host <ADDRESS>` a server of your own. A deploy builds the app for Linux,
+`erpc worker deploy --server <ID>` takes a VPS the account already has, by
+its id, and `--host <ADDRESS>` any other server. A deploy builds the app for Linux,
 uploads the release, sets the firewall and starts it; a release that does
 not come up healthy is rolled back to the one before. `erpc worker check`
 lists what a deploy from this machine still needs (an SSH key and the

@@ -122,7 +122,7 @@ pub const FAMILIES: &[Family] = &[
         "/v3/geyser-grpc/start-hourly",
         "/v3/geyser-grpc/end-hourly",
         &["productId", "region"],
-        &["identityPubkey", "validatorType"],
+        &["validatorType"],
         "geyserGrpcId",
         true,
     ),
@@ -176,7 +176,7 @@ pub const FAMILIES: &[Family] = &[
         "/v3/rpc-index/start-hourly",
         "/v3/rpc-index/end-hourly",
         &["productId", "region"],
-        &["identityPubkey", "validatorType"],
+        &["validatorType"],
         "rpcIndexId",
         true,
     ),
@@ -417,6 +417,33 @@ mod tests {
         );
         let extra = json!({ "productId": "prod_x", "region": "frankfurt", "price": 0 });
         assert!(vps.start_body(extra.as_object().expect("object")).is_err());
+    }
+
+    #[test]
+    fn a_dedicated_node_start_takes_a_validator_type_and_never_an_identity() {
+        // user-api generates the node's validator identity and refuses a
+        // start that names one, so the start is refused here before it is
+        // sent, and the catalogue does not offer the field.
+        for name in ["geyser-grpc", "rpc-index"] {
+            let family = find(name).expect(name);
+            let ok =
+                json!({ "productId": "prod_x", "region": "frankfurt", "validatorType": "agave" });
+            assert_eq!(
+                family.start_body(ok.as_object().expect("object")),
+                Ok(ok.clone()),
+                "{name}"
+            );
+            let identity =
+                json!({ "productId": "prod_x", "region": "frankfurt", "identityPubkey": "x" });
+            let refused = family
+                .start_body(identity.as_object().expect("object"))
+                .expect_err(name);
+            assert!(
+                refused.contains("does not take identityPubkey"),
+                "{refused}"
+            );
+            assert!(!family.optional.contains(&"identityPubkey"), "{name}");
+        }
     }
 
     #[test]

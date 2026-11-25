@@ -96,7 +96,7 @@ mod tests {
     fn a_workers_deploy_build_and_checked_run_are_long_and_nothing_else_of_it_is() {
         for words in [
             &["erpc", "worker", "deploy"][..],
-            &["erpc", "worker", "deploy", "bot", "--new-vps", "--yes"],
+            &["erpc", "worker", "deploy", "bot", "--new-server", "--yes"],
             &["erpc", "w", "deploy", "--env", "prod"],
             &["erpc", "--json", "worker", "build"],
             &["erpc", "--lang", "ja", "w", "build", "--dir", "apps/bot"],
@@ -606,8 +606,8 @@ mod tests {
         for (starts, has) in [
             ("erpc worker deploy", "--prepare"),
             ("erpc worker deploy", "--yes"),
-            ("erpc worker deploy", "--new-vps"),
-            ("erpc worker deploy", "--vps"),
+            ("erpc worker deploy", "--new-server"),
+            ("erpc worker deploy", "--server"),
             ("erpc worker deploy", "--unlimited"),
             ("erpc worker deploy", "--forget-line"),
             ("erpc worker build", "build"),

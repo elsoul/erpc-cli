@@ -63,11 +63,12 @@ none = "服务器上还没有版本。"
 [delete]
 refused = "未移除任何内容"
 server_shared = "按本机的应用列表，这台服务器不只属于此应用：{others}。`--yes` 不会结束有或可能有其他应用或环境的服务器；未删除任何内容"
-server_shared_hint = "先删除它们，或修复无法读取的 erpc.toml 或 1Password 条目，或在终端中不带 `--yes` 自己运行 `{delete}`，每次结束前都会询问"
+server_shared_hint = "请在终端自己运行 `{delete}`（不加 `--yes`），每次终止前都会询问"
 server_unknown = "{name}（无法读取其服务器）"
 missing_ask = "要继续，并在不终止 {kind} {id} 的情况下将其从记录中移除吗？它不在当前登录的账户（{account}）中：它已终止，或属于另一个账户"
 missing_needs_person = "{kind} {id} 不在当前登录的账户（{account}）中：它已终止，或属于另一个账户；是否将其从记录中移除，只有终端前的人才能回答；未做任何操作"
 missing_needs_person_hint = "请您自己在终端中运行同一命令，不要加 `--json`；`--yes` 不会回答这个问题"
+server_in_account = "{name}（保存在 ERPC 账户中：此列表看不出它在哪台服务器上）"
 not_removed = "无法从服务器移除它（{error}）"
 not_removed_ending = "无法从服务器移除它（{error}）；仍将终止服务器"
 nothing_removed = "未移除任何内容；{hint}"
@@ -77,6 +78,8 @@ skipped = "[env.{env}] 已从记录中移除；按要求未连接 {host}：如�
 forgotten = "[env.{env}] 已移除。"
 still_in_toml = "[env.{env}] 仍在 erpc.toml 中：{error}"
 waf_left = "无法从服务器移除它的 WAF（{error}）：端口已关闭，但单元 {unit} 会一直留在服务器上，直到在那里将其移除"
+no_env_to_compare = "erpc.toml 中没有可与本机列表比较的环境 {env}；未发送任何内容"
+server_shared_unread_hint = "请在终端自己运行 `{delete}`（不加 `--yes`），每次终止前都会询问；也可以修复无法读取的 erpc.toml 或 1Password 项目"
 
 [delete_prompt]
 forget_unreached = "按要求不连接 {host}，将 [env.{env}] 从记录中移除：{id} 不会从服务器上移除"
@@ -93,6 +96,7 @@ keeps_charging = "；这不会终止其按小时计费的 {items}：仍在运行
 
 [unreached]
 message = "无法连接服务器 {host}{vps}；它可能已被终止或已停机"
+which = "（服务器 {id}）"
 plain = "如果服务器已无法连接且 worker 不在那里运行，`{command}` 会在不连接服务器的情况下将其移除"
 charged = "如果服务器已无法连接且 worker 不在那里运行，`{command}` 会在不连接服务器的情况下将其移除，并终止按小时计费的资源"
 backup = "；无论服务器是否应答，`{command}` 都会立即吊销其备份密钥"

@@ -91,6 +91,7 @@ absent = "本机的密钥库中没有 {source} 的值。"
 shared = "其值仍保留在密钥库的 {source}：{other} 也引用了它。"
 is_key = "其值仍保留在密钥库的 {source}：这是交易密钥的条目，erpc 不会删除它。"
 not_deleted = "无法从密钥库中删除其值（{source}）：{error}"
+is_seal = "其值保留在 {source}：那是机器的封装密钥，erpc 不会删除。"
 
 [send]
 bad_pubkey = "{to} 不是 Solana 地址"

@@ -1,6 +1,6 @@
 ---
 name: erpc-worker
-description: Running the user's app on a server with `erpc worker` (`erpc w`): making it from a template (HelloWorld, pump.fun bot), keys and secrets (1Password, keychain, keystore), deploying it to an ERPC VPS with gRPC, Shreds, UDP or Unlimited RPC lines, running, firewalling and removing it, hourly cost and how to stop paying, trade history in Redis, backups, its API, getting the SOL out.
+description: Running the user's app on a server with `erpc worker` (`erpc w`): making it from a template (HelloWorld, pump.fun bot), keys and secrets (1Password, keychain, keystore), deploying it to an ERPC server (VPS) with gRPC, Shreds, UDP or Unlimited RPC lines, running, firewalling and removing it, hourly cost and how to stop paying, trade history in Redis, backups, its API, getting the SOL out.
 ---
 
 # Worker apps on the user's server
@@ -26,7 +26,7 @@ in the erpc repository.
 - **After a reboot** the worker is **locked** on purpose: `erpc worker start` sends the key
   again. Do not treat locked as broken. An agent that failed or was killed (out of memory,
   say) is started again by systemd and is locked the same way.
-- **Money:** `--new-vps`, `--grpc`, `--shreds`, `--udp` and `--unlimited` (on `deploy`, and
+- **Money:** `--new-server`, `--grpc`, `--shreds`, `--udp` and `--unlimited` (on `deploy`, and
   `--grpc`, `--shreds` on `run`) start hourly products. erpc shows each price and asks at a terminal;
   on `deploy`, `--yes` answers it (the price is still printed), since an hourly product is
   paid from prepaid ERPC Credit and refused when the credit does not cover it. Start one only
@@ -72,7 +72,7 @@ directory.
   - For an app with a `[wallet]`: `run`, `deploy`, `start`, `restart`, `rollback`. The key
     gate needs a person at a terminal; from `run_command` it refuses with "no terminal is
     attached". What you can do for such an app is everything but the key: once `erpc worker
-    build <app>` has finished, `erpc worker deploy <app> --new-vps --grpc --yes --prepare`
+    build <app>` has finished, `erpc worker deploy <app> --new-server --grpc --yes --prepare`
     gets the server, the firewall, the lines and a release in place and starts, stops and
     restarts nothing: an app that runs there runs on, under the agent it had, even when a
     newer agent was installed (the command says so). Then hand over one line, `erpc worker
@@ -84,18 +84,18 @@ directory.
   - `logs -f`, `backup now`: longer than five minutes.
 - **Build before you buy:** before a deploy that starts something, run `erpc worker build
   <app>` and wait until it has finished. A deploy buys the server first and builds after:
-  a build that fails then leaves a VPS charged by the hour with nothing on it. With the
+  a build that fails then leaves a server charged by the hour with nothing on it. With the
   build done, the deploy's own build is cached and short. Give the deploy as `argv`, as it
   is, so that it has its 90 minutes: inside a script it is stopped after five, with the
   server bought. A deploy that was stopped all the same has its server on record: the same
   command again takes it up.
 - **Starting hourly products yourself:** when the user asked for a server or a line, and the
   build is done, run the deploy with the flags that name them and `--yes` (`erpc worker
-  deploy <app> --new-vps --yes`, `--vps <ID>`, `--grpc`, …). Say first what each costs per
+  deploy <app> --new-server --yes`, `--server <ID>`, `--grpc`, …). Say first what each costs per
   hour (`hourly_catalog`) and what the credit is; read the price lines the command prints
   back to the user after. Without `--yes` the command refuses from `run_command` and says
   so. Never add `--yes` to a start the user did not ask for. `--yes` also answers the first
-  login to a server erpc has not made key-only yet (a new one, or `--vps <ID>`): its key
+  login to a server erpc has not made key-only yet (a new one, or `--server <ID>`): its key
   goes in and password logins go off.
 - **A start with no outcome:** when a deploy says a start "may or may not have gone
   through", that the purchase "is still being made", or that the answer "says nothing
@@ -107,7 +107,7 @@ directory.
   under this request and does not give it to this command", or "did not say which" it
   started, run nothing again: the server or line may well have been started already.
   Show the user what the account runs (`my_services`, `credit_balance`) and the hint the
-  command printed. A server is taken up with `erpc worker deploy <app> --vps <ID>`; a
+  command printed. A server is taken up with `erpc worker deploy <app> --server <ID>`; a
   line that is not on record is ended (`end_hourly_product`, the user's yes). Removing
   the request from erpc.toml afterwards is the user's to do, and to decide.
 
@@ -121,14 +121,14 @@ a small HTTP API in Rust that needs no key, no secret and no data line; `init` w
 ```bash
 erpc worker init --template helloworld   # makes ./hello-world
 erpc worker run hello-world              # builds and runs it here: http://127.0.0.1:3000/
-erpc worker deploy hello-world           # a VPS of the account, or a new hourly one, price asked
+erpc worker deploy hello-world           # a server of the account, or a new hourly one, price asked
 erpc worker api / --dir hello-world      # the answer from the server, over SSH
 erpc worker delete hello-world --release-server   # removes it and ends the hourly server
 ```
 
 - It has no `[wallet]`, so the key gate does not apply: you can run `run --check`, `status`,
   `logs` and `api` for it yourself, and the whole deploy too: after `erpc worker build
-  <app>`, `erpc worker deploy <app> --new-vps --yes` (or `--vps <ID> --yes`) buys the
+  <app>`, `erpc worker deploy <app> --new-server --yes` (or `--server <ID> --yes`) buys the
   server, logs in to it and starts the app with nobody at a terminal, printing the price it
   accepted. It takes about two minutes.
 - `erpc worker api <PATH>` sends no token for an app with no `API_TOKEN` in `[secrets]`.
@@ -204,8 +204,8 @@ describes, and changes nothing else in the app.
 
 One order, the same in `erpc worker init`'s Next box, `docs/worker.md` and the template's
 README. Ask first, one question at a time (`ask_choice`): do they use the 1Password desktop app
-(else the keychain: see **Without 1Password**)? a server already (`--vps <ID>` from
-`my_services`, `--host <ADDRESS>`), or a new hourly one? SOL they can afford to lose?
+(else the keychain: see **Without 1Password**)? a server already (`--server <ID>` with a VPS id from
+`my_services`, `--host <ADDRESS>` for anything else), or a new hourly one? SOL they can afford to lose?
 
 ```bash
 erpc login                             # once per machine; the session in 1Password or the keychain
@@ -215,7 +215,7 @@ erpc worker secret put API_TOKEN --generate          # the bot's own API token, 
 erpc worker secret put ERPC_API_KEY --from-account   # the account's RPC key, read from the account; or SOLANA_RPC_ENDPOINT in [vars]
 erpc worker check                      # what is missing, every problem at once
 erpc worker run --grpc --ip <IPV4>     # here, with an hourly gRPC line that lets this machine in
-erpc worker deploy --new-vps --grpc    # a new hourly VPS and gRPC line, prices asked
+erpc worker deploy --new-server --grpc # a new hourly server and gRPC line, prices asked
 ```
 
 - `API_TOKEN` is any 16 or more random characters: `--generate` makes 64 and shows them to
@@ -243,8 +243,8 @@ erpc worker deploy --new-vps --grpc    # a new hourly VPS and gRPC line, prices 
   1.98.1 or newer (`rustup update`); `deploy` names an older one before it buys anything
   (`check` does not run Rust, so it cannot).
 
-- The server: `[env.<name>]` in erpc.toml, else `--vps <ID>` (an ERPC VPS of the account),
-  `--new-vps` (cheapest, nearest region; `--region`, `--plan`), or `--host <ADDRESS>` (a server
+- The server: `[env.<name>]` in erpc.toml, else `--server <ID>` (a VPS of the account, by its id),
+  `--new-server` (cheapest, nearest region; `--region`, `--plan`), or `--host <ADDRESS>` (a server
   of their own, with `--user`, `--port`, `--fingerprint`).
 - Lines: `--grpc` sets `GRPC_ENDPOINT`, `--shreds` sets `SHREDS_ENDPOINT`, `--unlimited` sets
   `SOLANA_SEND_RPC_ENDPOINT` (the app sends through the Unlimited RPC and reads elsewhere). They

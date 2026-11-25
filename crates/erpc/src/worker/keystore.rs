@@ -240,6 +240,10 @@ fn explain(store: &Keystore, error: &KeystoreError) -> String {
             name,
             kept: Kind::Secret,
         } => t!("worker_keystore.kept_as_secret", name),
+        KeystoreError::OtherKind {
+            name,
+            kept: Kind::Seal,
+        } => t!("worker_keystore.kept_as_seal", name),
         KeystoreError::OtherSpelling { name, found } => {
             t!("worker_keystore.other_spelling", name, found)
         }
@@ -412,8 +416,8 @@ pub(crate) fn file_of(service: &str, account: &str) -> Result<PathBuf, String> {
 
 /// The value under `service` and `account`, read as a `kind`, or none
 /// when this machine's keystore has no such entry (and then nothing is
-/// asked). An entry kept as the other kind is refused: a trading key is
-/// not read as a secret, nor a secret as a trading key.
+/// asked). An entry kept as another kind is refused: a trading key, a
+/// sealing key and a secret are each read as nothing else.
 pub(crate) fn read(
     service: &str,
     account: &str,
@@ -1308,8 +1312,8 @@ mod tests {
         );
         assert_eq!(
             as_key(),
-            "erpc-worker/bot.API_TOKEN is kept as a secret, and a trading key is not read from \
-             it: [wallet] names an entry that was kept as a key"
+            "erpc-worker/bot.API_TOKEN is kept as a secret, and is read as nothing else: what \
+             names it as a trading key or a sealing key names the wrong entry"
         );
         // Each as what it is.
         for (account, kind, value) in [

@@ -66,11 +66,12 @@ none = "No releases on the server yet."
 [delete]
 refused = "nothing was removed"
 server_shared = "by this machine's list of apps, this server is not this app's alone: {others}. `--yes` does not end a server another app or environment is, or may be, on; nothing was removed"
-server_shared_hint = "delete those first, fix an erpc.toml or 1Password item that could not be read, or run `{delete}` yourself at a terminal without `--yes`, which asks before each end"
+server_shared_hint = "run `{delete}` yourself at a terminal without `--yes`, which asks before each end"
 server_unknown = "{name} (its server could not be read)"
 missing_ask = "Go ahead, taking {kind} {id} off the record without ending it? It is not on the account you are signed in to ({account}): it has ended, or it is another account's"
 missing_needs_person = "{kind} {id} is not on the account you are signed in to ({account}): it has ended, or it is another account's, and only a person at a terminal can say it leaves the record; nothing was done"
 missing_needs_person_hint = "run the same command yourself at a terminal, without `--json`; `--yes` does not answer this"
+server_in_account = "{name} (kept in the ERPC account: this list does not say which server it is on)"
 not_removed = "could not remove it from the server ({error})"
 not_removed_ending = "could not remove it from the server ({error}); ending the server anyway"
 nothing_removed = "nothing was removed; {hint}"
@@ -80,6 +81,8 @@ skipped = "[env.{env}] leaves the record; {host} was not reached, as asked: if t
 forgotten = "[env.{env}] is removed."
 still_in_toml = "[env.{env}] is still in erpc.toml: {error}"
 waf_left = "its WAF could not be removed from the server ({error}): its port is closed, and its unit {unit} stays until it is removed there"
+no_env_to_compare = "erpc.toml has no environment {env} to compare with this machine's list; nothing was sent"
+server_shared_unread_hint = "run `{delete}` yourself at a terminal without `--yes`, which asks before each end; or fix the erpc.toml or 1Password item that could not be read"
 
 [delete_prompt]
 forget_unreached = "Forget [env.{env}] without reaching {host}, as asked: {id} is not removed from it"
@@ -96,6 +99,7 @@ keeps_charging = "; its hourly {items} are not ended by this: any that still run
 
 [unreached]
 message = "could not reach the server {host}{vps}; it may have been ended or be down"
+which = " (server {id})"
 plain = "if the server can no longer be reached and the worker does not run there, `{command}` leaves it unreached"
 charged = "if the server can no longer be reached and the worker does not run there, `{command}` leaves it unreached and ends what is charged by the hour"
 backup = "; `{command}` revokes its backup keys now, whether or not the server answers"

@@ -3,6 +3,7 @@
 
 # Что говорит сам `erpc worker`: поиск приложения, check, init и list.
 
+account_facts_not_saved = "окружение {env} хранится в аккаунте ERPC: сведения о его сервере не записываются в erpc.toml"
 [chain]
 unknown = "у erpc worker есть шаблоны для {chains}"
 
@@ -30,12 +31,14 @@ deploy_needs = "перед развёртыванием с этой машины
 no_pubkey = "(публичный ключ не задан)"
 no_server = "(сервера пока нет)"
 in_1password = "сведения о сервере хранятся в 1Password"
+in_account = "сведения о сервере хранятся в аккаунте ERPC"
 build = "{command}  → {bin} для {target}"
 prebuilt = "{prebuilt}, разворачивается как есть  → {bin} для {target}"
 prebuilt_drawn = "{prebuilt}, разворачивается как есть  → {bin}"
 no_wallet = "нет; `erpc worker key new{dir_scope}` создаст кошелёк"
 no_env = "пока нет; `erpc worker deploy{scope}` добавит окружение"
 env_in_1password = "{name}: сведения о сервере хранятся в 1Password (хранилище {vault})  служба {service}"
+env_in_account = "{name}: сведения о сервере хранятся в аккаунте ERPC  служба {service}"
 env = "{name}: {host}{resource}  служба {service}"
 hourly = ", почасовая оплата"
 keystore_missing = "{at} — это {reference}, а в хранилище ключей этой машины такой записи нет: она сохранена на другой машине. Сохраните значение заново на этой машине или перенесите сюда весь каталог хранилища ключей той машины вместе с его парольной фразой"

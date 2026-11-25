@@ -61,7 +61,7 @@ pub(crate) async fn bench(json: bool, app: &App, asked: &Asked) -> Outcome {
 }
 
 async fn run(app: &App, asked: &Asked) -> Result<(serde_json::Value, String), CliError> {
-    let (m, id, session) = reach(app)?;
+    let (m, id, session) = reach(app, None)?;
     let env = crate::worker::env_of(&m, app)?.clone();
     let (request, refused_here) =
         request_for(&m, &env, asked, crate::worker::vps::Api::open).await?;

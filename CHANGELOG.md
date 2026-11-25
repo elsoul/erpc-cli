@@ -17,9 +17,233 @@ whose version has no entry below.
 - Official Linux, macOS and Windows archives include the opt-in Server
   Security Check command, `erpc ai --security-check`, for eligible ERPC
   rentals.
+- `erpc worker seal show` and `erpc worker seal list`: this machine's
+  sealing key in the ERPC account, which the app's secrets kept there will
+  be sealed to. `seal show` makes the key the first time, keeps its private
+  half where a secret is kept (in the keystore as a sealing key, which
+  opens as nothing else; in 1Password in a reserved field), records where
+  it is in `worker_seal.json`, and registers its public half, to be
+  approved on the ERPC dashboard by its fingerprint; what the account
+  answers is checked against this machine's own computation. `check` and
+  every read of a setting refuse a sealing key's place, in any case and
+  under any spelling a keychain takes for the same entry.
+- `erpc worker seal trust`, `seal untrust` and `seal revoke`: another
+  machine's key is trusted here by the fingerprint computed from its
+  bytes, only by a person at a terminal after a yes; trust is dropped
+  here; a key is revoked in the account after a yes or `--yes`.
+  `seal list` marks the keys trusted here, shows the fingerprint computed
+  from a key's bytes (and the account's, when it differs), and shows a key
+  trusted here that the account no longer lists.
+
+- An `erpc worker` environment can keep its server facts in the ERPC
+  account (`account = true` under `[env.<name>]`), where its servers and
+  lines are named by the account's own ids, never by product number.
+  - `erpc worker move --to account` moves an environment kept in `erpc.toml`
+    there: the app's and the environment's records are written, its server and
+    lines are taken in, and `erpc.toml` keeps only `account = true`. One way,
+    asked first, and written so that a move stopped half way is run again:
+    what the account has is read before anything is written, a server already
+    in the slot in use is sent again for the account to say it is this one,
+    and `erpc.toml` is changed after the account, only if it is as the move
+    read it, with this machine's record of what it trusts written after it.
+    What this machine trusts of the moved environment is its own record, and
+    the account's answer must match it. Before the yes it says what does not
+    work on a moved environment yet. It refuses an environment with a start
+    not settled, a UDP Forwarding line, no server or a server not set up yet,
+    a 1Password item keeping it or a backup; an account app of that name on
+    another chain or with another wallet, a record in use from another
+    checkout, or a server in the account's record that the move does not take
+    in, gone or not; and an account that does not yet let erpc end what such
+    an environment runs on. The record is read as the commands that work on a
+    moved environment read it before `erpc.toml` is changed. Whatever stops it
+    after the account was written to says the move stopped part way; a refusal
+    or no answer from the account before it, as not moved. The note before the
+    yes says that the move is one way and what changes once moved, in the
+    groups of the docs' list "What changes once moved", which names more of
+    them: the sign-in every command then needs, the trust at a terminal on
+    another machine signed in to the same ERPC account (another ERPC account
+    does not see it), the commands and `deploy` options that do not work there
+    yet, that `delete --release-server` ends nothing while anything on it but
+    a line bought as part of a Bundle (which it takes off without ending,
+    whatever its state) is not paid by the hour or cannot be ended yet, its
+    hourly items staying charged, a Bundle's line, and this machine's other
+    environments. An app
+    with more settings or secret settings than the account keeps is not moved.
+    A line the account refuses to take in (`not_adoptable`; a line bought as
+    part of a Bundle, `bundle_part`) stops it, said by its product ID, without
+    changing `erpc.toml`.
+  - `erpc worker server start` buys a server, paid for by the hour, for one
+    whose record names no server and no address yet: it says the price the
+    account gives for the size asked for and asks first. It keeps the start's
+    key on this machine before it is sent, so that a run after an answer was
+    lost reads the account first and makes no new start while the record names
+    a server or a start is open; and it sends a new start at the environment's
+    revision read before the price, which the account refuses, buying nothing,
+    when the environment changed meanwhile (a start sent again under its key
+    while still open is answered as before). It makes the app's and the
+    environment's records when the account has none (the app's not yet when
+    its `erpc.toml` names a wallet). The question says that `erpc worker
+    deploy` then waits for the server, logs in to it once after a yes at a
+    terminal and deploys to it, and that erpc ends it with `erpc worker delete
+    --release-server` at a terminal, which deletes the environment's record
+    with it.
+  - `deploy` to such an environment whose server in use has no host key on
+    the account's record (one `server start` started) logs in to it first, at a terminal only
+    (`--yes` is not enough, and `--json` asks nobody): it waits about ten
+    minutes (40 reads, 15 seconds apart) for the account to say the server is ready and for its SSH to
+    answer, while the account has it as available, provisioning or active;
+    asks, naming the address, the host key the server offers and the key
+    erpc logs in with; reads the record again and goes on only for the same
+    server at the same address; reads the server's first login from the
+    account once and logs in with its password once, to put the person's key
+    on it and turn password logins off (an earlier attempt on the same
+    machine that got as far as the key is taken up from the key, and one
+    erpc made key-only before is not logged in to again); then writes the
+    address, the host key and the login name to the account's record at the
+    revision read. The deploy then asks at the terminal whether to trust
+    what the account has, as for any record not trusted yet. A wait that
+    runs out, a no, a record that changed and each of the account's
+    refusals before the login stop it, with nothing written to the
+    account's record. A stop after the login says the key is on the server,
+    and says the address and host key were not written by this run, or,
+    after a write that got no answer, an unreadable one or a 5xx, that
+    whether they were is not known.
+  - One machine reached both as an ERPC VPS (`erpc ai`) and as a server kept
+    in the account keeps one pin in `vps_hosts.json`, known by its host key,
+    which serves both ways. A pin at the address holding another host key
+    stops the first login before anything is sent, unless it is of another
+    server the account names; the `erpc ai` login is held the same way to a
+    pin with no VPS id.
+  - `status` reads one from the account: each server by slot, size, region
+    and state and each line by kind, a line bought as part of a Bundle
+    said as such (`bundlePart` under `--json`), then the worker's own
+    state.
+  - `logs`, `start`, `stop`, `restart`, `releases` and `deploy` reach its
+    server with what the account says of it, and write nothing to
+    `erpc.toml`. Only a server in use the account has as active is
+    reached; one gone, given back or held, and a pinned server the record
+    no longer names, are refused before anyone is asked.
+  - `delete --release-server` has the account end every server and line
+    the environment holds, a Bundle's line aside (below), and delete its
+    record, then drops this
+    machine's record of what it trusts for it and the table in
+    `erpc.toml`; the app's record in the account stays, with its secrets.
+    It asks first at a terminal, sends the first delete at the revision
+    asked about, and says "nothing was ended" only when the account's
+    answers and its record show it. A record with an address and no server
+    in use is asked about at a terminal only, told both, unless this
+    machine recorded before sending that the person agreed to end what it
+    held there: then running the same command again finishes it. A server
+    something else may be on (another environment at its address on this
+    machine's list, another kept in the account, a server with no address
+    on record, or one coming in or going out) is ended only after a yes at
+    a terminal, to a question that names it: not with `--yes`, under
+    `--json` or with no terminal. What it ends is said on stderr under
+    `--json` too. A line bought as part of a Bundle is taken off the
+    environment without being ended, whatever its state, and billed with its
+    Bundle: the question and the line after the delete name it apart from
+    what is ended, and `--json` lists such lines by kind
+    (`bundle_parts_taken_off`).
+  - A server or line not active is said by what its state means, and never
+    as one to end. A suspended one is said with every way it may come
+    back, none as sure, whatever its `hourly` says: paid by the hour, once
+    the credit covers an
+    hour of all the account's hourly charges; paid from credit by the
+    period, once it covers its next period's charge; paid by card, once
+    the unpaid invoice is paid. A server or Unlimited line can be ended if
+    left so (soon); a gRPC or Shreds line paid by the hour, or in a Bundle
+    paid by the hour, is normally ended at once (now). Each names ERPC
+    support and its id.
+  - `firewall list`, `allow`, `deny` and `sync` work on one through the
+    account's lists of who may reach SSH and the app, with the rules
+    `erpc.toml`'s have and at most 16 addresses each; the record is read
+    again after the yes, then the server first, then the account's
+    record, and what is said follows what the account did with the write.
+    Lists erpc would not put on the server as they are (an entry it does
+    not read, a network on SSH, everyone with no WAF, addresses with no
+    `run.port`) are refused before anything, by `allow`, `sync` and the
+    deploy, with every problem said at once and one `firewall deny` per
+    list that clears it. A `deny` that only takes entries off lands while
+    something still stops the lists, in the account's record alone. What
+    changed in the account's list of who may reach the app since this
+    machine last put it on the server is said before anything is asked,
+    by the firewall commands and by a deploy, which then asks before it
+    goes on. A firewall command that cannot write this machine's record of
+    what it trusts, or of the app's list it put on the server, says so on
+    stderr, under `--json` too. Each address is written as the account
+    holds it, and a new IPv4-mapped one in hex, as the account takes it.
+  - `deploy` ships a release to the server the account names and writes
+    to the account instead of `erpc.toml`: who may reach SSH when it
+    changes, that the app runs before the key and secrets are handed over,
+    and the deploy and what it shipped (by name only) once the app runs.
+    Each write is built on the record the account last answered with and
+    expects its revision; what is pinned is this machine's own facts; the
+    record is read again before the hand-over and must still be the one
+    trusted, and one the deploy can carry. The deploy is recorded whatever
+    became of the firewall write, and an SSH list past the account's 16 is
+    refused before the server's firewall changes. What it says of the
+    firewall and the WAF names the account's lists. Only lines in use are
+    handed to the app, one of each kind. It
+    buys nothing and changes no line yet, and refuses the options that
+    would before the account or the server is reached.
+  - `start` and `restart` reach the server first, then record in the
+    account that the app runs, before the key and secrets are handed over
+    and the app is started; they start nothing when the account does not
+    take the record. `stop` records that the app no longer runs, and says
+    so, with what the account answered, when the record could not be
+    written. A server of the person's own, which the account knows only by
+    its address, has no such record.
+  - `stop` says what is still charged by the hour, leaving out what is gone
+    or cancelled, and how to end it: `delete --release-server`, or the
+    dashboard for a line when no ERPC server is in use.
+  - `list` and `check` name where it is kept; every other command refuses
+    it by name, and a `delete --release-server` of another environment
+    counts it as one whose server is not known here, and stops.
+  - What the account says of the server (address, host key, SSH user and
+    port, SSH allow list, the app's id, the server in use) is pinned per
+    account, app and environment in `worker_account.json`, and a first
+    sighting or a change goes on only after a yes at a terminal, never on
+    `--yes`. What is not to be reached (a pinned server in use the record
+    no longer names among it) is refused before anyone is asked, by
+    `status` and every command alike, and `status` shows the account's
+    record alone then, leaving the pin as it was.
+
+### Changed
+
+- `erpc worker deploy` names the server it deploys to as a server, not a
+  VPS: `--server <ID>` and `--new-server`, in every language's help and
+  message. `--vps` and `--new-vps`, the names before, still work, so a
+  script that uses them is not broken.
 
 ### Fixed
 
+- A gRPC or Shreds line start that user-api answers "This purchase was
+  ended while it was starting" (what was bought under its key has been
+  ended, and the key is refused from then on) leaves
+  `[env.<name>.starting]`, and its key is never sent again. Before, the
+  entry stayed and was to be removed by hand. The error says it may have
+  been charged by the hour from its start until it was ended, one hour at
+  the least, which the dashboard shows, and that starting it again is a
+  new purchase with a new key; when the entry could not be written, the
+  error says so instead, and that the next run sends the key once more.
+- `erpc worker delete --release-server` on an environment kept in the
+  ERPC account waits as long as the account asks (`retryAfter`, up to two
+  minutes) when it answers that another operation holds the environment
+  (409 `end_refused` with the reason `operation_in_progress`), says the
+  account is busy, and then asks again. Before, it stopped at once and
+  asked to be run again. Some of what it was to end may be ended before
+  that answer, so a run that then stops says part may be ended.
+- `erpc ai` no longer offers `identityPubkey` for an hourly start of
+  dedicated gRPC (`geyser-grpc`) or dedicated RPC (`rpc-index`): the node's
+  validator identity is generated for you, and user-api refuses a start
+  that names one. `hourly_catalog` lists `validatorType` as the only field
+  such a start also takes, and `start_hourly_product` refuses
+  `identityPubkey` before anything is sent, saying the family does not take
+  it.
+- A `keychain:` reference that a keychain filing an entry by one name
+  (Windows) takes for the trading key's entry, such as
+  `keychain:wallet.erpc-worker/<app>`, is refused as a setting, as the
+  entry itself is.
 - Something at the path of the WAF's note
   (`/etc/erpc/worker-waf/<id>.applying`) that cannot be removed (a
   directory, a file made immutable or append-only, which only root can

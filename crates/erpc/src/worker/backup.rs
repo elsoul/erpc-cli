@@ -996,7 +996,7 @@ fn describe(answer: &Value) -> String {
 /// `erpc worker backup status`.
 pub(crate) fn status(json: bool, app: &App) -> Outcome {
     let run = || -> Result<Outcome, CliError> {
-        let (_, id, session) = reach(app)?;
+        let (_, id, session) = reach(app, None)?;
         let answer = ctl_ok(&session, &id, Verb::BackupStatus, None)?;
         let text = t!(
             "worker_backup.status.line",
@@ -1011,7 +1011,7 @@ pub(crate) fn status(json: bool, app: &App) -> Outcome {
 /// `erpc worker backup now`.
 pub(crate) fn now(json: bool, app: &App) -> Outcome {
     let run = || -> Result<Outcome, CliError> {
-        let (_, id, session) = reach(app)?;
+        let (_, id, session) = reach(app, None)?;
         crate::cli::interrupt::say(&t!("worker_backup.now.running", id = id.as_str()));
         let answer = ctl(&session, &id, Verb::BackupNow, None)?;
         if answer["ok"].as_bool() == Some(false) && answer["on"].is_null() {

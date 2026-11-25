@@ -31,12 +31,14 @@ not_known = "user-api's answer does not say whether it started anything (HTTP {s
 unmatched = "user-api has a purchase under this request and does not give it to this command (HTTP {status}, IDEMPOTENCY_CONFLICT); nothing was started, and nothing was sent again"
 unnamed = "user-api answered that it started this and did not say which (HTTP {status})"
 other_purchase = "user-api says this request's key belongs to another purchase; nothing was started, and nothing was sent again"
+ended = "user-api says what was bought under this start's key has been ended, and refuses the key from now on: it may have been charged by the hour from its start until it was ended, one hour at the least, which the dashboard shows. erpc takes the request off its record and does not send its key again; starting it again is a new purchase, with a new key, and its price is said again"
+ended_stays = "user-api says what was bought under this start's key has been ended, and refuses the key from now on: it may have been charged by the hour from its start until it was ended, one hour at the least, which the dashboard shows. erpc could not take the request off its record ({error}): the next run of the same command sends its key once more"
 
 [vps]
-none = "the account has no VPS {id}"
-no_address = "VPS {id} has no address yet"
-not_key_only = "VPS {id} was not made key-only"
-bad_id = "{id} is not a VPS id"
+none = "the account has no VPS {id}, and --server takes a VPS id (a bare-metal server goes in with --host)"
+no_address = "server {id} has no address yet"
+not_key_only = "server {id} was not made key-only"
+bad_id = "{id} is not a server id"
 
 [plan]
 not_offered = "{id} is not a {family} plan offered by the hour now"
@@ -45,17 +47,17 @@ as_asked = "as asked"
 cheapest = "the cheapest"
 
 [buy]
-bad_region = "`{region}` is not a VPS region; there are {regions}"
-buying = "A new hourly VPS: {name} ({product}; {how}, €{price} an hour), region {region} ({why})"
+bad_region = "`{region}` is not a server region; there are {regions}"
+buying = "A new hourly server: {name} ({product}; {how}, €{price} an hour), region {region} ({why})"
 region_asked = "as asked"
 region_nearest = "nearest by this machine's time zone"
 not_started = "user-api did not start it (HTTP {status}): {reason}"
 other_region_hint = "another --region may have stock; `erpc worker deploy --region <name>{scope}`"
-started = "VPS {id} started"
+started = "server {id} started"
 
 [ready]
-waiting = "waiting for VPS {id} to be ready (up to five minutes)"
-failed = "VPS {id} did not get ready: {reason}"
+waiting = "waiting for server {id} to be ready (up to five minutes)"
+failed = "server {id} did not get ready: {reason}"
 
 [end]
 not_hourly = "this environment's server is not an hourly ERPC server; nothing was ended"
@@ -71,7 +73,7 @@ no_list = "user-api's VPS status has no list in it, so whether VPS {id} is still
 no_status = "erpc knows no status of {kind} lines"
 no_list = "user-api's status of {kind} lines has no list in it; nothing was changed"
 no_region = "an Unlimited RPC is started in the server's ERPC region, and this server has none on record"
-no_region_hint = "deploy to an ERPC VPS (`--vps <id>` or `--new-vps`)"
+no_region_hint = "deploy to an ERPC server (`--server <id>` or `--new-server`)"
 buying = "A new hourly {kind} line: {name} ({product}; {how}, €{price} an hour), for {ip}"
 not_started = "user-api did not start the {kind} line (HTTP {status}): {reason}"
 made_anyway = "user-api made line {id} anyway, and it is on record; it may be charged until `erpc worker delete --release-server{scope}` or the dashboard ends it"
@@ -94,7 +96,7 @@ ending = "Ending hourly {kind} line {id}"
 end_failed = "user-api did not end {kind} line {id}: {answer}"
 udp_no_port = "a UDP Forwarding line sends to a UDP port of the server, and none was given"
 udp_no_region = "a UDP Forwarding line sends from an ERPC region, and this server has none on record"
-udp_no_region_hint = "deploy to an ERPC VPS (`--vps <id>` or `--new-vps`), or name the region with `--udp-region`"
+udp_no_region_hint = "deploy to an ERPC server (`--server <id>` or `--new-server`), or name the region with `--udp-region`"
 udp_bad_region = "`{region}` is not a {name} region; it sends from {regions}"
 udp_region_elsewhere = "{name} sends from {region}: `--udp-plan {product}` chooses it"
 buying_udp = "A new hourly UDP Forwarding line: {name} ({product}; {how}, €{price} an hour), sending to {ip}:{port} from {region}"

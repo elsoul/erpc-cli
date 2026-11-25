@@ -3,6 +3,7 @@
 
 # What `erpc worker` says itself: finding the app, check, init and list.
 
+account_facts_not_saved = "environment {env} is kept in the ERPC account: its server facts are not written to erpc.toml"
 [chain]
 unknown = "erpc worker has templates for {chains}"
 
@@ -30,12 +31,14 @@ deploy_needs = "before a deploy from this machine: {what}"
 no_pubkey = "(public key not set)"
 no_server = "(no server yet)"
 in_1password = "server kept in 1Password"
+in_account = "server kept in the ERPC account"
 build = "{command}  → {bin} for {target}"
 prebuilt = "{prebuilt}, shipped as it is  → {bin} for {target}"
 prebuilt_drawn = "{prebuilt}, shipped as it is  → {bin}"
 no_wallet = "none; `erpc worker key new{dir_scope}` makes one"
 no_env = "none yet; `erpc worker deploy{scope}` adds one"
 env_in_1password = "{name}: server kept in 1Password (vault {vault})  service {service}"
+env_in_account = "{name}: server kept in the ERPC account  service {service}"
 env = "{name}: {host}{resource}  service {service}"
 hourly = ", hourly"
 keystore_missing = "{at} is {reference}, which this machine's keystore does not hold: it was kept on another machine. Keep it again on this one, or bring that machine's whole keystore directory and its passphrase"

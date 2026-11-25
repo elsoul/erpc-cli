@@ -405,7 +405,8 @@ pub(crate) trait StartRecord {
     fn begin(&mut self, start: &Start) -> Result<(), String>;
 
     /// Takes the request off the record: user-api answered for it, and
-    /// nothing was started under it.
+    /// nothing was started under it, or what was has been ended and its key
+    /// is refused from then on.
     fn settle(&mut self) -> Result<(), String>;
 
     /// What to do after an answer that did not settle the start, in the
@@ -477,12 +478,14 @@ pub(crate) enum Stays {
 /// What an answer to a start says of its request on record.
 ///
 /// The rule: **a request sent again leaves the record only when the answer
-/// is the purchase itself**, a 2xx that names it. No refusal of a request
-/// sent again says what became of the first, and the one that names the
-/// key (`IDEMPOTENCY_CONFLICT`) says a row made under it exists. A first
-/// request, whose key this run made and nobody sent before, also leaves on
-/// a certain refusal. A request dropped on a guess is bought again, with a
-/// new key, by the next run.
+/// is the purchase itself**, a 2xx that names it, **or says that what was
+/// bought under its key was ended** (`START_ENDED`, [`failure_code`]): that
+/// key is refused for good, so sending it again buys nothing. No other
+/// refusal of a request sent again says what became of the first, and the
+/// one that names the key (`IDEMPOTENCY_CONFLICT`) says a row made under it
+/// exists. A first request, whose key this run made and nobody sent
+/// before, also leaves on a certain refusal. A request dropped on a guess
+/// is bought again, with a new key, by the next run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Answer {
     /// 2xx with its id: user-api made the purchase, or answers with the
@@ -506,6 +509,12 @@ enum Answer {
     /// only, so that purchase may well be the earlier request's own. The
     /// request stays, nothing is started and nothing sent again.
     Unmatched,
+    /// 409 `START_ENDED`, first request or not: what was bought under this
+    /// key has been ended (while it was being started, or later, after it
+    /// ran), and user-api refuses the key from then on. The key is never
+    /// sent again, so the request leaves the record; buying it again is a
+    /// new purchase, with a new key.
+    Ended,
     /// 409 `PURCHASE_IN_PROGRESS`: the account's hourly lock is held, by
     /// the first request of this very key perhaps, or the row it made is
     /// not linked yet. The request stays, and the same command sends it
@@ -546,6 +555,9 @@ impl Answer {
         if status == 409 && code == Some("PURCHASE_IN_PROGRESS") {
             return Self::InProgress;
         }
+        if status == 409 && code == Some("START_ENDED") {
+            return Self::Ended;
+        }
         // A timeout, too many requests, a fault of user-api's, or nothing
         // it answers a start with: it did not get to the request.
         if matches!(status, 408 | 429) || !(400..=499).contains(&status) {
@@ -553,7 +565,8 @@ impl Answer {
         }
         let conflict = status == 409 && code == Some("IDEMPOTENCY_CONFLICT");
         // A refusal. A request sent again stays whatever it is refused
-        // with: only the purchase itself, above, takes it off the record.
+        // with: only the purchase itself, or what was bought under its key
+        // ended (both above), takes it off the record.
         if again {
             return if conflict {
                 Self::Unmatched
@@ -576,11 +589,12 @@ impl Answer {
 
     /// What is said of an answer that leaves the request where it is, and
     /// why it stays; `None` for one that takes it off the record, with the
-    /// product put there ([`Self::Made`]) or because nothing was made
-    /// under it. `status` and `reason` are user-api's own.
+    /// product put there ([`Self::Made`]), because nothing was made under
+    /// it, or because what was has been ended and its key is refused
+    /// ([`Self::Ended`]). `status` and `reason` are user-api's own.
     fn stays(self, status: &Value, reason: &str) -> Option<(String, Stays)> {
         Some(match self {
-            Self::Made | Self::Refused | Self::OtherPurchase => return None,
+            Self::Made | Self::Refused | Self::OtherPurchase | Self::Ended => return None,
             Self::Unnamed => (t!("worker_vps.start.unnamed", status), Stays::Unnamed),
             // Without user-api's own sentence for it, which tells a client
             // to start a new purchase with a new key: here that would buy
@@ -611,14 +625,27 @@ impl Answer {
 /// `UDP_FORWARDING_CONFLICT` and `UDP_FORWARDING_UPSTREAM_UNAVAILABLE`,
 /// which erpc does not tell apart from any other 409 and 502). The gRPC,
 /// Shreds and Unlimited routes give a key's conflict, and a duplicate
-/// insert's "in progress", as the whole `message`, with no `code`.
+/// insert's "in progress", as the whole `message`, with no `code`. The
+/// gRPC and Shreds routes say that what was bought under a start's key has
+/// been ended, and the key is refused from then on, in one sentence
+/// ([`FIRST_HOUR_ENDED`]), with no `code`: read as `START_ENDED`, as the
+/// ERPC account reads it.
 fn failure_code(started: &Value) -> Option<&str> {
-    started["code"].as_str().or_else(|| {
-        started["message"]
-            .as_str()
-            .filter(|message| matches!(*message, "IDEMPOTENCY_CONFLICT" | "PURCHASE_IN_PROGRESS"))
-    })
+    started["code"]
+        .as_str()
+        .or_else(|| match started["message"].as_str() {
+            Some(message @ ("IDEMPOTENCY_CONFLICT" | "PURCHASE_IN_PROGRESS")) => Some(message),
+            Some(FIRST_HOUR_ENDED) => Some("START_ENDED"),
+            _ => None,
+        })
 }
+
+/// user-api's whole answer, with no `code`, when what was bought under a
+/// start's key has been ended: while it was being started, or, to a
+/// request sent again, at any time after (its words say only the first).
+/// The start's key is refused for good from then on.
+const FIRST_HOUR_ENDED: &str =
+    "This purchase was ended while it was starting. Nothing more was granted.";
 
 /// A purchase as a refusal names it: `vps prod_… (amsterdam)`.
 pub(crate) fn purchase_name(start: &Start) -> String {
@@ -643,9 +670,16 @@ pub(crate) enum Sent {
         /// user-api's reply.
         started: Value,
     },
-    /// Refused, and its request is off the record: user-api's reply, for
-    /// the caller to say.
-    Refused(Value),
+    /// Refused: user-api's reply, for the caller to say. Its request is off
+    /// the record, but for `stays`: why the record could not be written,
+    /// for an answer that should have taken it off ([`Answer::Ended`]), so
+    /// that the error says the next run sends its key once more.
+    Refused {
+        /// user-api's reply.
+        started: Value,
+        /// Why the request is still on record, when it should not be.
+        stays: Option<String>,
+    },
 }
 
 /// The id user-api names what it started by, under `field` of its reply.
@@ -670,6 +704,10 @@ fn named_id(started: &Value, field: &str) -> Option<String> {
 ///   started on record, and the request leaves with it.
 /// - A first request refused for certain: the request is taken off the
 ///   record, and the reply returned for the caller to say.
+/// - What was bought under its key has been ended, first request or not
+///   ([`Answer::Ended`]): the same; when the record cannot be written, the
+///   reply comes back with why, for the error to say that the next run
+///   sends the key once more.
 /// - Anything else leaves the request where it is, and is an error that
 ///   says what user-api answered; the record's hint says what becomes of
 ///   the request and the way on.
@@ -742,26 +780,34 @@ pub(crate) async fn start_on_record(
     let (status, reason) = (started["httpStatus"].clone(), reason(&started));
     let Some((message, why)) = answer.stays(&status, &reason) else {
         // It leaves the record: with the purchase, which the caller puts
-        // there in the same write, or here, as nothing was made under it.
+        // there in the same write, or here, as nothing was made under it or
+        // what was has been ended.
         return Ok(match id {
             Some(id) if answer == Answer::Made => Sent::Made { id, started },
             _ => {
-                let _ = record.settle();
-                Sent::Refused(started)
+                let stays = match record.settle() {
+                    Err(error) if answer == Answer::Ended => Some(error),
+                    _ => None,
+                };
+                Sent::Refused { started, stays }
             }
         });
     };
     Err(failed(message).hint(record.stays_hint(why)))
 }
 
-/// What is said of a start user-api refused, its request off the record:
-/// that its key was another purchase's, when that is what user-api says;
-/// else the caller's own hint.
-fn refused_hint(started: &Value, own: Option<String>) -> Option<String> {
-    if failure_code(started) == Some("IDEMPOTENCY_CONFLICT") {
-        Some(t!("worker_vps.start.other_purchase"))
-    } else {
-        own
+/// What is said of a start user-api refused: that its key was another
+/// purchase's, or that what was bought under it has been ended (and, by
+/// `stays`, that its request could not be taken off the record), when that
+/// is what user-api says; else the caller's own hint.
+fn refused_hint(started: &Value, stays: Option<&str>, own: Option<String>) -> Option<String> {
+    match failure_code(started) {
+        Some("IDEMPOTENCY_CONFLICT") => Some(t!("worker_vps.start.other_purchase")),
+        Some("START_ENDED") => Some(match stays {
+            Some(error) => t!("worker_vps.start.ended_stays", error),
+            None => t!("worker_vps.start.ended"),
+        }),
+        _ => own,
     }
 }
 
@@ -1311,8 +1357,9 @@ pub(crate) async fn buy(
     .await?;
     let id = match sent {
         Sent::Made { id, .. } => id,
-        // Refused, and its request is off the record (`start_on_record`).
-        Sent::Refused(started) => {
+        // Refused, and its request is off the record but for `stays`
+        // (`start_on_record`).
+        Sent::Refused { started, stays } => {
             let error = failed(t!(
                 "worker_vps.buy.not_started",
                 status = started["httpStatus"],
@@ -1320,7 +1367,7 @@ pub(crate) async fn buy(
             ));
             let own =
                 elsewhere_may_do(&started).then(|| t!("worker_vps.buy.other_region_hint", scope));
-            return Err(match refused_hint(&started, own) {
+            return Err(match refused_hint(&started, stays.as_deref(), own) {
                 Some(hint) => error.hint(hint),
                 None => error,
             });
@@ -1930,7 +1977,7 @@ fn line_ips(row: &Value) -> Vec<&str> {
 /// as `http://<host>`, served over TLS on 443 too, which is what the app
 /// gets; an Unlimited RPC is `http://<address>:<port>`, served without
 /// TLS, and kept as it is.
-fn line_endpoint(kind: LineKind, given: &str) -> Option<String> {
+pub(crate) fn line_endpoint(kind: LineKind, given: &str) -> Option<String> {
     if kind == LineKind::Unlimited {
         let given = given.trim_end_matches('/');
         return kind.endpoint_ok(given).then(|| given.to_owned());
@@ -2410,10 +2457,11 @@ pub(crate) async fn start_line(
     .await?;
     let (id, started) = match sent {
         Sent::Made { id, started } => (id, started),
-        // Refused, and its request is off the record (`start_on_record`).
-        // A line user-api names all the same goes on record (`named`), so
-        // that the next deploy finds it rather than buy another.
-        Sent::Refused(started) => {
+        // Refused, and its request is off the record but for `stays`
+        // (`start_on_record`). A line user-api names all the same goes on
+        // record (`named`), so that the next deploy finds it rather than
+        // buy another.
+        Sent::Refused { started, stays } => {
             let error = failed(t!(
                 "worker_vps.line.not_started",
                 kind = kind.label(),
@@ -2424,7 +2472,7 @@ pub(crate) async fn start_line(
                 record.named(&id)?;
                 Some(t!("worker_vps.line.made_anyway", id, scope))
             } else {
-                refused_hint(&started, None)
+                refused_hint(&started, stays.as_deref(), None)
             };
             return Err(match hint {
                 Some(hint) => error.hint(hint),
@@ -3695,6 +3743,8 @@ mod tests {
         begun: u32,
         /// The record cannot be written.
         read_only: bool,
+        /// A request on record cannot be taken off it.
+        stuck: bool,
     }
 
     impl super::StartRecord for Kept {
@@ -3712,6 +3762,9 @@ mod tests {
         }
 
         fn settle(&mut self) -> Result<(), String> {
+            if self.stuck {
+                return Err("the disk is full".to_owned());
+            }
             self.start = None;
             Ok(())
         }
@@ -3737,14 +3790,17 @@ mod tests {
     fn made(sent: super::Sent) -> String {
         match sent {
             super::Sent::Made { id, .. } => id,
-            super::Sent::Refused(reply) => panic!("refused: {reply}"),
+            super::Sent::Refused { started, .. } => panic!("refused: {started}"),
         }
     }
 
     /// The reply a start was refused with, its request off the record.
     fn refused(sent: super::Sent) -> serde_json::Value {
         match sent {
-            super::Sent::Refused(reply) => reply,
+            super::Sent::Refused { started, stays } => {
+                assert_eq!(stays, None);
+                started
+            }
             super::Sent::Made { id, .. } => panic!("made {id}"),
         }
     }
@@ -3927,9 +3983,10 @@ mod tests {
     }
 
     /// The rule, over every answer there can be: a request sent again
-    /// leaves the record only when the answer is the purchase itself.
+    /// leaves the record only when the answer is the purchase itself, or
+    /// says that what was bought under its key has been ended.
     #[test]
-    fn a_request_sent_again_leaves_the_record_only_on_the_purchase_itself() {
+    fn a_request_sent_again_leaves_the_record_only_on_the_purchase_itself_or_its_end() {
         use super::Answer;
         let status = json!(0);
         let codes = [
@@ -3938,6 +3995,7 @@ mod tests {
             Some("IDEMPOTENCY_CONFLICT"),
             Some("OUT_OF_STOCK"),
             Some("REGION_DOWN"),
+            Some("START_ENDED"),
             Some("SOMETHING_NEW"),
         ];
         let statuses = core::iter::once(None).chain((100..=599).map(Some));
@@ -3948,11 +4006,14 @@ mod tests {
                     let leaves = answer.stays(&status, "").is_none();
                     let purchase =
                         http.is_some_and(|http| (200..=299).contains(&http)) && done && named;
+                    let ended = http == Some(409) && code == Some("START_ENDED");
                     assert_eq!(
-                        leaves, purchase,
+                        leaves,
+                        purchase || ended,
                         "{http:?} {code:?} done {done} named {named}: {answer:?}"
                     );
                     assert_eq!(answer == Answer::Made, purchase);
+                    assert_eq!(answer == Answer::Ended, ended);
                 }
             }
         }
@@ -3963,6 +4024,7 @@ mod tests {
             (409, Some("OUT_OF_STOCK"), true),
             (409, Some("IDEMPOTENCY_CONFLICT"), true),
             (409, Some("PURCHASE_IN_PROGRESS"), false),
+            (409, Some("START_ENDED"), true),
             (409, None, false),
             (503, None, false),
         ] {
@@ -3990,10 +4052,27 @@ mod tests {
             "Stored purchase identity is invalid; retry with the same key.",
             "OUT_OF_STOCK",
             "idempotency_conflict",
+            "START_ENDED",
+            "This purchase was ended while it was starting.",
+            "this purchase was ended while it was starting. nothing more was granted.",
+            "This purchase was ended while it was starting. Nothing more was granted. Retry.",
+            " This purchase was ended while it was starting. Nothing more was granted.",
+            "Not so: This purchase was ended while it was starting. Nothing more was granted.",
         ] {
             assert_eq!(failure_code(&json!({ "message": message })), None);
         }
         assert_eq!(failure_code(&json!({})), None);
+        // The gRPC and Shreds routes' sentence for a start ended meanwhile,
+        // whole, and only with no code of its own.
+        let ended = "This purchase was ended while it was starting. Nothing more was granted.";
+        assert_eq!(
+            failure_code(&json!({ "message": ended })),
+            Some("START_ENDED")
+        );
+        assert_eq!(
+            failure_code(&json!({ "code": "SOMETHING_NEW", "message": ended })),
+            Some("SOMETHING_NEW")
+        );
     }
 
     /// The end-to-end case, short of user-api: a start times out, and the
@@ -4372,7 +4451,7 @@ mod tests {
             assert_eq!((record.begun, record.start), (1, None));
             // Not sent again by itself.
             assert_eq!(sends, 1);
-            let hint = super::refused_hint(&reply, None).expect("a hint");
+            let hint = super::refused_hint(&reply, None, None).expect("a hint");
             assert!(hint.contains("another purchase"), "{hint}");
         }
     }
@@ -4602,7 +4681,7 @@ mod tests {
             answer(409, Some("IDEMPOTENCY_CONFLICT"), "a different purchase"),
             answer(409, None, "IDEMPOTENCY_CONFLICT"),
         ] {
-            let said = super::refused_hint(&conflict, own()).expect("a hint");
+            let said = super::refused_hint(&conflict, None, own()).expect("a hint");
             assert!(said.contains("another purchase"), "{said}");
             // True of a deploy and of a run alike: no word of a record,
             // nor of what the next run does.
@@ -4612,9 +4691,9 @@ mod tests {
         }
         // Any other refusal keeps the caller's hint, or has none.
         let no_stock = answer(409, Some("OUT_OF_STOCK"), "out of stock");
-        assert_eq!(super::refused_hint(&no_stock, own()), own());
+        assert_eq!(super::refused_hint(&no_stock, None, own()), own());
         let no_credit = answer(402, None, "Insufficient credit");
-        assert_eq!(super::refused_hint(&no_credit, None), None);
+        assert_eq!(super::refused_hint(&no_credit, None, None), None);
         // Another region is worth a try only where this one had no stock
         // or is down, never for want of credit.
         assert!(super::elsewhere_may_do(&no_stock));
@@ -5387,4 +5466,267 @@ mod tests {
         );
         assert_eq!(said.chars().count(), 300);
     }
+
+    #[tokio::test]
+    async fn a_start_ended_while_it_was_starting_leaves_the_record_and_its_key_is_not_sent_again() {
+        use super::start_on_record;
+        let ended = || {
+            answer(
+                409,
+                None,
+                "This purchase was ended while it was starting. Nothing more was granted.",
+            )
+        };
+        let wanted = vps("amsterdam");
+        // Sent again by this run, the key an earlier run left: it leaves
+        // the record, refused, with the hint that says so.
+        let (mut record, _) = left_by_an_earlier_run(&wanted);
+        let sent = start_on_record(&wanted, "userVpsId", &mut record, &QUIET, async |key| {
+            key()?;
+            Ok(ended())
+        })
+        .await
+        .expect("refused, off the record");
+        assert_eq!(record.start, None);
+        let reply = refused(sent);
+        let hint = super::refused_hint(&reply, None, Some("elsewhere".to_owned())).expect("a hint");
+        assert!(hint.contains("has been ended"), "{hint}");
+        assert!(hint.contains("new key"), "{hint}");
+        assert!(hint.contains("one hour at the least"), "{hint}");
+        assert!(hint.contains("dashboard"), "{hint}");
+        // A first request answered so: the same.
+        let mut record = Kept::default();
+        let sent = start_on_record(&wanted, "userVpsId", &mut record, &QUIET, async |key| {
+            key()?;
+            Ok(ended())
+        })
+        .await
+        .expect("refused, off the record");
+        assert_eq!(record.start, None);
+        assert_eq!(record.begun, 1);
+        refused(sent);
+        // The next run starts it afresh: a new key, never the ended one.
+        let (mut record, earlier) = left_by_an_earlier_run(&wanted);
+        start_on_record(&wanted, "userVpsId", &mut record, &QUIET, async |key| {
+            key()?;
+            Ok(ended())
+        })
+        .await
+        .expect("refused");
+        let mut sent_with = String::new();
+        let _ = start_on_record(&wanted, "userVpsId", &mut record, &QUIET, async |key| {
+            sent_with = key()?;
+            Ok(ended())
+        })
+        .await;
+        assert_ne!(sent_with, earlier.key);
+        assert!(!sent_with.is_empty());
+    }
+
+    #[test]
+    fn an_ended_start_is_said_in_every_language() {
+        use erpc_core::i18n::Lang;
+        let reply = answer(
+            409,
+            None,
+            "This purchase was ended while it was starting. Nothing more was granted.",
+        );
+        // Words that would tell the person to end, stop or cancel
+        // something: in English as whole words, elsewhere as phrases.
+        let english_end = ["end", "cancel", "stop", "terminate", "delete", "release"];
+        let other_end = [
+            "終了してください",
+            "終了できます",
+            "終了すると",
+            "解約",
+            "停止してください",
+            "请终止",
+            "可以终止",
+            "终止它",
+            "取消",
+            "завершите",
+            "завершить",
+            "отмените",
+            "остановите",
+        ];
+        for (lang, needles) in [
+            (
+                Lang::En,
+                [
+                    "new key",
+                    "charged by the hour from its start until it was ended, one hour at the least",
+                    "dashboard",
+                ],
+            ),
+            (
+                Lang::Ja,
+                [
+                    "新しいキー",
+                    "開始から終了までの分が時間単位で、少なくとも 1 時間分",
+                    "ダッシュボード",
+                ],
+            ),
+            (
+                Lang::Zh,
+                [
+                    "新密钥",
+                    "从开通到终止期间可能已按小时计费，至少一个小时",
+                    "控制面板",
+                ],
+            ),
+            (
+                Lang::Ru,
+                [
+                    "новым ключом",
+                    "с запуска до завершения могли списывать оплату почасово, не меньше чем за один час",
+                    "панели управления",
+                ],
+            ),
+        ] {
+            let hint = crate::cli::i18n::speaking(lang, || super::refused_hint(&reply, None, None))
+                .expect("a hint");
+            for needle in needles {
+                assert!(hint.contains(needle), "{lang:?}: {hint}");
+            }
+            let words: Vec<String> = hint
+                .split(|c: char| !c.is_alphanumeric())
+                .map(str::to_lowercase)
+                .collect();
+            for end in english_end {
+                assert!(!words.iter().any(|w| w == end), "{lang:?}: {hint}");
+            }
+            for end in other_end {
+                assert!(!hint.contains(end), "{lang:?}: {hint}");
+            }
+            // Not the first hour alone: a request sent again may meet a line
+            // that ran for hours before it was ended.
+            for first_hour in ["first hour", "最初の 1 時間", "第一个小时", "первый час"]
+            {
+                assert!(!hint.contains(first_hour), "{lang:?}: {hint}");
+            }
+            // The words of the [start] section: キー, 密钥, not the Latin
+            // "key".
+            if lang != Lang::En {
+                assert!(!hint.contains("key"), "{lang:?}: {hint}");
+            }
+        }
+        // Each language's hint is the text reviewed for it, whole: no list
+        // of words to avoid is complete.
+        for (lang, reviewed) in [
+            (Lang::En, ENDED_EN),
+            (Lang::Ja, ENDED_JA),
+            (Lang::Zh, ENDED_ZH),
+            (Lang::Ru, ENDED_RU),
+        ] {
+            let hint = crate::cli::i18n::speaking(lang, || super::refused_hint(&reply, None, None));
+            assert_eq!(hint.as_deref(), Some(reviewed), "{lang:?}");
+        }
+    }
+
+    /// The ended start's hint, as reviewed, in each language.
+    const ENDED_EN: &str = "user-api says what was bought under this start's key has been ended, and refuses the key from now on: it may have been charged by the hour from its start until it was ended, one hour at the least, which the dashboard shows. erpc takes the request off its record and does not send its key again; starting it again is a new purchase, with a new key, and its price is said again";
+    const ENDED_JA: &str = "user-api によると、この開始のキーで買ったものは既に終了しており、このキーは今後受け付けられません。開始から終了までの分が時間単位で、少なくとも 1 時間分、課金された可能性があり、ダッシュボードで確認できます。erpc はこのリクエストを記録から外し、そのキーは二度と送信しません。もう一度開始すると、新しいキーでの新しい購入になり、価格もあらためて示します";
+    const ENDED_ZH: &str = "user-api 表示，以此次开通的密钥购买的内容已被终止，今后不再接受该密钥：从开通到终止期间可能已按小时计费，至少一个小时，可在控制面板中查看。erpc 会将此请求从记录中移除，不再发送其密钥；再次开通即为使用新密钥的新购买，价格会再次显示";
+    const ENDED_RU: &str = "user-api сообщает, что купленное по ключу этого запуска уже завершено, и больше этот ключ не принимает: с запуска до завершения могли списывать оплату почасово, не меньше чем за один час, это видно в панели управления. erpc убирает запрос из записей и больше не отправляет его ключ; новый запуск — это новая покупка с новым ключом, и цена будет названа снова";
+
+    /// What [`super::start_on_record`] came back with, refused: the reply,
+    /// and why its request is still on record, if it should not be.
+    fn refused_and_why(sent: super::Sent) -> (serde_json::Value, Option<String>) {
+        match sent {
+            super::Sent::Refused { started, stays } => (started, stays),
+            super::Sent::Made { id, .. } => panic!("made {id}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn an_ended_start_that_cannot_leave_the_record_says_so_in_its_error() {
+        use super::start_on_record;
+        let ended = || {
+            answer(
+                409,
+                None,
+                "This purchase was ended while it was starting. Nothing more was granted.",
+            )
+        };
+        let wanted = vps("amsterdam");
+        // Sent again, and a first request: the error says the request is
+        // still on record, and that the next run sends its key once more.
+        let (mut sent_again, earlier) = left_by_an_earlier_run(&wanted);
+        sent_again.stuck = true;
+        let mut first = Kept {
+            stuck: true,
+            ..Kept::default()
+        };
+        for record in [&mut sent_again, &mut first] {
+            let sent = start_on_record(&wanted, "userVpsId", record, &QUIET, async |key| {
+                key()?;
+                Ok(ended())
+            })
+            .await
+            .expect("refused");
+            let (reply, stays) = refused_and_why(sent);
+            assert_eq!(stays.as_deref(), Some("the disk is full"));
+            assert!(record.start.is_some());
+            let hint = super::refused_hint(&reply, stays.as_deref(), None).expect("a hint");
+            assert!(
+                hint.contains("could not take the request off its record (the disk is full)"),
+                "{hint}"
+            );
+            assert!(hint.contains("sends its key once more"), "{hint}");
+            assert!(!hint.contains("does not send its key again"), "{hint}");
+        }
+        assert_eq!(sent_again.start, Some(earlier));
+        // Other refusals that take a first request off the record say
+        // nothing of it, as before, even when the record cannot be written.
+        for refusal in [
+            answer(402, None, "Insufficient credit"),
+            answer(409, Some("IDEMPOTENCY_CONFLICT"), ""),
+            answer(409, Some("OUT_OF_STOCK"), "out of stock"),
+        ] {
+            let mut record = Kept {
+                stuck: true,
+                ..Kept::default()
+            };
+            let said = refusal.to_string();
+            let sent = start_on_record(&wanted, "userVpsId", &mut record, &QUIET, async |key| {
+                key()?;
+                Ok(refusal)
+            })
+            .await
+            .expect("refused");
+            assert_eq!(refused_and_why(sent).1, None, "{said}");
+        }
+    }
+
+    #[test]
+    fn an_ended_start_still_on_record_is_said_in_every_language_as_reviewed() {
+        use erpc_core::i18n::Lang;
+        let reply = answer(
+            409,
+            None,
+            "This purchase was ended while it was starting. Nothing more was granted.",
+        );
+        for (lang, reviewed) in [
+            (Lang::En, STAYS_EN),
+            (Lang::Ja, STAYS_JA),
+            (Lang::Zh, STAYS_ZH),
+            (Lang::Ru, STAYS_RU),
+        ] {
+            let hint = crate::cli::i18n::speaking(lang, || {
+                super::refused_hint(&reply, Some("the disk is full"), None)
+            });
+            assert_eq!(
+                hint.as_deref(),
+                Some(reviewed.replace("{error}", "the disk is full").as_str()),
+                "{lang:?}"
+            );
+        }
+    }
+
+    /// The hint for an ended start still on record, as reviewed, in each
+    /// language.
+    const STAYS_EN: &str = "user-api says what was bought under this start's key has been ended, and refuses the key from now on: it may have been charged by the hour from its start until it was ended, one hour at the least, which the dashboard shows. erpc could not take the request off its record ({error}): the next run of the same command sends its key once more";
+    const STAYS_JA: &str = "user-api によると、この開始のキーで買ったものは既に終了しており、このキーは今後受け付けられません。開始から終了までの分が時間単位で、少なくとも 1 時間分、課金された可能性があり、ダッシュボードで確認できます。erpc はこのリクエストを記録から外せませんでした（{error}）。同じコマンドを次に実行すると、そのキーをもう一度送信します";
+    const STAYS_ZH: &str = "user-api 表示，以此次开通的密钥购买的内容已被终止，今后不再接受该密钥：从开通到终止期间可能已按小时计费，至少一个小时，可在控制面板中查看。erpc 无法将此请求从记录中移除（{error}）：下次运行同一命令时会再发送一次其密钥";
+    const STAYS_RU: &str = "user-api сообщает, что купленное по ключу этого запуска уже завершено, и больше этот ключ не принимает: с запуска до завершения могли списывать оплату почасово, не меньше чем за один час, это видно в панели управления. erpc не удалось убрать запрос из записей ({error}): при следующем запуске той же команды его ключ будет отправлен ещё раз";
 }

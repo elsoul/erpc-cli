@@ -1932,7 +1932,7 @@ mod erpc_looks_tests {
             // Drops entries from the app index.
             "erpc worker list --prune",
             "erpc --json worker list --prune",
-            "erpc worker deploy --new-vps",
+            "erpc worker deploy --new-server",
             "erpc worker run bot",
             "erpc worker secret put API_TOKEN",
             "erpc worker key new",

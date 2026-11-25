@@ -533,7 +533,8 @@ fn summary(lang: Lang, config: &WafConfig, opening: Option<&Opening>, scope: &st
         }
         None => said_in!(lang, t!("worker_waf.done.nobody", port, upstream, scope)),
     };
-    vec![first, said_in!(lang, t!("worker_waf.done.see", scope))]
+    let see = said_in!(lang, t!("worker_waf.done.see", scope));
+    vec![first, see]
 }
 
 /// What the WAF `m` asks for will do, in two lines: what it listens on and

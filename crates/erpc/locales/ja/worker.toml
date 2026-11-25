@@ -3,6 +3,7 @@
 
 # `erpc worker` 自身のメッセージ：アプリの特定、check、init、list。
 
+account_facts_not_saved = "環境 {env} は ERPC のアカウントに保管されています。そのサーバー情報は erpc.toml に書きません"
 [chain]
 unknown = "erpc worker のテンプレートがあるチェーンは {chains} です"
 
@@ -30,12 +31,14 @@ deploy_needs = "このマシンからデプロイする前に：{what}"
 no_pubkey = "（公開鍵が未設定）"
 no_server = "（サーバーはまだありません）"
 in_1password = "サーバー情報は 1Password に保管"
+in_account = "サーバー情報は ERPC のアカウントに保管"
 build = "{command}  → {bin}（{target} 向け）"
 prebuilt = "{prebuilt} をそのまま配置  → {target} 向けの {bin}"
 prebuilt_drawn = "{prebuilt} をそのまま配置  → {bin}"
 no_wallet = "なし。`erpc worker key new{dir_scope}` で作成できます"
 no_env = "まだありません。`erpc worker deploy{scope}` で追加できます"
 env_in_1password = "{name}：サーバー情報は 1Password に保管（保管庫 {vault}）  サービス {service}"
+env_in_account = "{name}：サーバー情報は ERPC のアカウントに保管  サービス {service}"
 env = "{name}：{host}{resource}  サービス {service}"
 hourly = "、時間課金"
 keystore_missing = "{at} は {reference} ですが、このマシンのキーストアにはありません。別のマシンで保管されたものです。このマシンで保管し直すか、そのマシンのキーストアのディレクトリ全体とパスフレーズを持ってきてください"
