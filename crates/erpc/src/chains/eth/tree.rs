@@ -3,7 +3,7 @@
 
 //! `erpc rpc --chain eth <verb>`: the flags of each verb, and where each is
 //! sent. Kept apart from `node/tree.rs` so the Ethereum commands do not grow
-//! the tree the other chains share.
+//! the tree every other network shares.
 
 use clap::{Arg, ArgAction, ArgMatches, Command, value_parser};
 use erpc_core::chain::Verb;
