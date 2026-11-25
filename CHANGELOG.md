@@ -87,6 +87,24 @@ whose version has no entry below.
     terminal and deploys to it, and that erpc ends it with `erpc worker delete
     --release-server` at a terminal, which deletes the environment's record
     with it.
+  - `erpc worker server end` ends the server such an environment uses,
+    when it is the only server on the record and the environment has no
+    line that is not ended (a line bought as part of a Bundle counts), and
+    the record's address, if any, is the server's own (the one the account
+    gives for it, or, for a server gone since, the one this machine
+    recorded for it before it set out to end it); after a yes at a terminal or with `--yes` (a server another app
+    on this machine's list may be on: at a terminal only), and after the
+    record is read again and still names the same server, as live or as
+    gone, at the same address, with no start of the environment open. It
+    then clears the address, host key, login name and SSH port the
+    account keeps in the record's facts, so that `server start` can
+    start another; the record stays. Before the end is sent this machine
+    records which server it sets out to end, so that the same command
+    finishes a run that stopped before the clear. The end and the clear
+    are said as done only from their own answers; after any other answer
+    the record is read again and what is said comes from it, or is said as
+    not known. The account's refusals of the end and the clear are said by
+    their status, code and reason, never in the account's own text.
   - `deploy` to such an environment whose server in use has no host key on
     the account's record (one `server start` started) logs in to it first, at a terminal only
     (`--yes` is not enough, and `--json` asks nobody): it waits about ten
@@ -106,8 +124,8 @@ whose version has no entry below.
     refusals before the login stop it, with nothing written to the
     account's record. A stop after the login says the key is on the server,
     and says the address and host key were not written by this run, or,
-    after a write that got no answer, an unreadable one or a 5xx, that
-    whether they were is not known.
+    after a write that got no answer, an unreadable one, a 5xx or a refusal
+    with no code, that whether they were is not known.
   - One machine reached both as an ERPC VPS (`erpc ai`) and as a server kept
     in the account keeps one pin in `vps_hosts.json`, known by its host key,
     which serves both ways. A pin at the address holding another host key

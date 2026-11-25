@@ -1161,6 +1161,20 @@ mod tests {
             Ok(self.detail())
         }
 
+        async fn end_server(
+            &self,
+            _: &str,
+            _: &str,
+            _: &account::Slot,
+            _: &str,
+        ) -> Result<account::money::Ended, WorkerError> {
+            unreachable!("a move ends nothing")
+        }
+
+        async fn open_starts(&self, _: &str, _: &str) -> Result<usize, WorkerError> {
+            unreachable!("a move reads no starts this way")
+        }
+
         async fn adopt_line(
             &self,
             _: &str,

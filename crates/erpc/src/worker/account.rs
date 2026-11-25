@@ -574,6 +574,18 @@ pub(crate) trait Account {
         slot: &account::Slot,
         running: bool,
     ) -> Result<EnvDetail, WorkerError>;
+    /// How many starts of the environment are still open: bought, or
+    /// perhaps bought, and not on its record yet.
+    async fn open_starts(&self, name: &str, env: &str) -> Result<usize, WorkerError>;
+    /// Ends the server `server_id` in `slot` and takes it off the
+    /// environment's record (`POST …/server/end`).
+    async fn end_server(
+        &self,
+        name: &str,
+        env: &str,
+        slot: &account::Slot,
+        server_id: &str,
+    ) -> Result<account::money::Ended, WorkerError>;
 }
 
 impl Account for Signed {
@@ -658,6 +670,23 @@ impl Account for Signed {
     ) -> Result<EnvDetail, WorkerError> {
         let token = self.token().await?;
         account::money::set_app_running(&self.client, &token, name, env, slot, running).await
+    }
+
+    async fn open_starts(&self, name: &str, env: &str) -> Result<usize, WorkerError> {
+        account::money::list_starts(&self.client, &self.token().await?, name, env)
+            .await
+            .map(|starts| starts.len())
+    }
+
+    async fn end_server(
+        &self,
+        name: &str,
+        env: &str,
+        slot: &account::Slot,
+        server_id: &str,
+    ) -> Result<account::money::Ended, WorkerError> {
+        let token = self.token().await?;
+        account::money::end_server(&self.client, &token, name, env, slot, server_id).await
     }
 }
 
@@ -1336,6 +1365,27 @@ pub(crate) mod stand_in {
         pub(crate) gone: RefCell<bool>,
         /// Failures the next reads of the environment answer, in turn.
         pub(crate) reads: RefCell<Vec<WorkerError>>,
+        /// What the next ends of a server answer, in turn, each with the
+        /// environment as it is after it (`None`: as it was); with none
+        /// left, the server is ended and taken off, as the account does.
+        #[allow(clippy::type_complexity, reason = "a test's script of answers")]
+        pub(crate) ends: RefCell<
+            Vec<(
+                Result<account::money::Ended, WorkerError>,
+                Option<EnvDetail>,
+            )>,
+        >,
+        /// A failure the read of the environment with this number (1 for
+        /// the first) answers.
+        pub(crate) fail_read: RefCell<Option<(usize, WorkerError)>>,
+        /// How many reads of the environment were made.
+        pub(crate) read_count: RefCell<usize>,
+        /// The environment as it is from the read with this number on,
+        /// as when another sign-in changes it.
+        pub(crate) changes_at: RefCell<Option<(usize, EnvDetail)>>,
+        /// How many starts of the environment are open, read in turn
+        /// (the last one stays).
+        pub(crate) open: RefCell<Vec<usize>>,
     }
 
     impl Fake {
@@ -1349,6 +1399,11 @@ pub(crate) mod stand_in {
                 pending: RefCell::new(false),
                 gone: RefCell::new(false),
                 reads: RefCell::new(Vec::new()),
+                ends: RefCell::new(Vec::new()),
+                fail_read: RefCell::new(None),
+                read_count: RefCell::new(0),
+                changes_at: RefCell::new(None),
+                open: RefCell::new(vec![0]),
             }
         }
     }
@@ -1380,6 +1435,21 @@ pub(crate) mod stand_in {
         }
 
         async fn env(&self, _: &str, _: &str) -> Result<EnvDetail, WorkerError> {
+            *self.read_count.borrow_mut() += 1;
+            let mut changes = self.changes_at.borrow_mut();
+            if changes
+                .as_ref()
+                .is_some_and(|(n, _)| *n == *self.read_count.borrow())
+            {
+                *self.env.borrow_mut() = changes.take().expect("a change").1;
+            }
+            let mut fail = self.fail_read.borrow_mut();
+            if fail
+                .as_ref()
+                .is_some_and(|(n, _)| *n == *self.read_count.borrow())
+            {
+                return Err(fail.take().expect("a failure").1);
+            }
             let mut reads = self.reads.borrow_mut();
             if !reads.is_empty() {
                 return Err(reads.remove(0));
@@ -1506,6 +1576,39 @@ pub(crate) mod stand_in {
             } else {
                 Err(answers.remove(0))
             }
+        }
+
+        async fn open_starts(&self, _: &str, _: &str) -> Result<usize, WorkerError> {
+            let mut open = self.open.borrow_mut();
+            Ok(if open.len() > 1 {
+                open.remove(0)
+            } else {
+                open.first().copied().unwrap_or(0)
+            })
+        }
+
+        async fn end_server(
+            &self,
+            _: &str,
+            _: &str,
+            slot: &account::Slot,
+            server_id: &str,
+        ) -> Result<account::money::Ended, WorkerError> {
+            self.log.borrow_mut().push(format!("end {server_id}"));
+            let mut ends = self.ends.borrow_mut();
+            if !ends.is_empty() {
+                let (answer, after) = ends.remove(0);
+                if let Some(after) = after {
+                    *self.env.borrow_mut() = after;
+                }
+                return answer;
+            }
+            // The account keeps the address in the facts: erpc clears it.
+            let mut env = self.env.borrow_mut();
+            env.servers
+                .retain(|s| !(s.slot == *slot && s.id == server_id));
+            env.revision += 1;
+            Ok(account::money::Ended::Done(Box::new(env.clone())))
         }
     }
 }

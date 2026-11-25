@@ -1561,7 +1561,8 @@ encrypted by restic. A storage plan is needed (`erpc storage buy 5`).
       while it names the same server at the same address. Each way this
       stops after the login says the key is on the server already, and
       whether this run wrote the address and host key: not, or not known
-      after a write that got no answer, an unreadable one or a 5xx.
+      after a write that got no answer, an unreadable one, a 5xx or a
+      refusal with no code.
     - This machine does not trust the record yet: the deploy then asks at
       the terminal, as for any record it has not trusted, showing all that
       the account has of the server, and goes on after a yes.
@@ -1986,6 +1987,66 @@ encrypted by restic. A storage plan is needed (`erpc storage buy 5`).
       and asked first otherwise, which `--yes` answers (signed in to
       another account, it would look the same).
     - Refused: no `--release-server`, and `--forget` or `--forget-line`.
+  - **Ending only the server:** `erpc worker server end [--env <name>]
+    [--yes]` has the account end the server the environment uses and take
+    it off the record, when it is the only server on the record and the
+    environment has no line that is not ended; the environment's record
+    stays. It then clears the address, host key, login name and SSH port
+    from the record's facts, which the account keeps, so that `erpc worker
+    server start` can start another for the environment.
+    - Refused before anything is sent: another server on the record
+      (coming in, going out, or gone); a line not ended (a line bought as
+      part of a Bundle counts; the refusal says what `erpc worker delete
+      --release-server` does); a server not paid for by the hour; an
+      address on the record that is not the server's own (another, or a
+      name), so that no other address is ever cleared. The server's own is
+      the one the account gives for it; for a server gone since, which the
+      account gives none for, it is the one this machine recorded for that
+      server of that app before it set out to end it (so a run again takes
+      off a server the account ended but left on the record, and clears
+      its address); without that record such a server is refused;
+      a start of the environment not settled yet (what it bought may not
+      be on the record); and a record with no server and no address. A record with an address
+      and no server is cleared only as below; otherwise it is refused,
+      with nothing changed.
+    - It is asked first at a terminal, naming the server's size and
+      region; `--yes` goes ahead, and with neither, nobody is asked and
+      nothing is sent. A server another app or environment on this
+      machine's list may be on, by the address the account gives for it,
+      is ended only after a yes at a terminal, to a question that names
+      them; a server the account gives no address for is compared with
+      nothing. A server the account says is gone is asked about as such,
+      and is only taken off.
+    - After the yes the record is read and decided on again, and the end
+      is sent only for the same server, as live or as gone as it was asked
+      about, at the same address: a line or a start added, another
+      server, another address, or the server ended elsewhere in the
+      meantime stops it, with nothing sent.
+    - Before the end is sent, this machine records which server of which
+      app it sets out to end, at which address (`worker_server_end.json`
+      beside the config); nothing is sent when it cannot be. Run again
+      after a stop, the same command clears the address of a record with
+      no server and that address on it, without asking, as nothing is
+      ended then; and a record with neither puts that record away. That
+      record is no record of trust, and goes, with this machine's record
+      of what it trusts for the environment, once the address is cleared
+      or no longer on the record.
+    - The end is said as ended only from its own 200. After any other
+      answer (the end under way, a refusal, or no answer), the record is
+      read again, and what is said comes from it: the server still on it,
+      with the account's status, code and reason in erpc's words, never
+      the account's own text (a busy environment says how many seconds to
+      wait); no longer on it, said as such, and the clear goes on;
+      another server on it, and nothing more is done; or, when that read
+      fails, that whether it was ended is not known.
+    - The clear is written at the revision read: again after a busy
+      answer and after a revision conflict while the record holds the same
+      address and no server, at most 3 writes. It is said as cleared only
+      from its own answer. After any other failure the record is read
+      again: the address gone is said as no longer on the record; the same
+      address still there is said with the account's reason; a server or
+      another address there is left as it is; a failed read is said as not
+      known.
   - **What `stop` says:** what is still charged by the hour, leaving out
     what is gone or cancelled, and how to end it: the delete, or the
     dashboard for a line when no ERPC server is in use.

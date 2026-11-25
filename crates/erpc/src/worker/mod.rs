@@ -33,6 +33,7 @@ pub(crate) mod seal;
 pub(crate) mod seal_keys;
 pub(crate) mod secrets;
 pub(crate) mod server;
+pub(crate) mod server_end;
 pub(crate) mod vps;
 pub(crate) mod waf;
 
@@ -878,6 +879,14 @@ pub(crate) enum ServerAction {
         #[arg(long, short = 'y')]
         yes: bool,
     },
+    /// End the server an environment kept in the ERPC account uses, when it is the only server on the environment's record and the environment has no line that is not ended, and clear its address from the record: its billing by the hour stops, and what is on it is lost.
+    End {
+        #[command(flatten)]
+        app: App,
+        /// End it without asking; refused when this machine's list of apps names others on the server, which are asked about at a terminal only.
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
 }
 
 /// What `erpc worker secret` does.
@@ -1110,6 +1119,9 @@ pub(crate) async fn run(json: bool, action: Action) -> Outcome {
                 region,
                 yes,
             } => crate::worker::server::start(json, &app, cores, &region, yes).await,
+            ServerAction::End { app, yes } => {
+                crate::worker::server_end::end_server(json, &app, yes).await
+            }
         },
         Action::Secret { action } => match action {
             SecretAction::Put {
@@ -2778,6 +2790,7 @@ mod tests {
             ("worker/seal_keys.rs", include_str!("seal_keys.rs")),
             ("worker/secrets.rs", include_str!("secrets.rs")),
             ("worker/server.rs", include_str!("server.rs")),
+            ("worker/server_end.rs", include_str!("server_end.rs")),
             ("worker/vps.rs", include_str!("vps.rs")),
             ("worker/waf.rs", include_str!("waf.rs")),
             ("node/common.rs", include_str!("../node/common.rs")),
