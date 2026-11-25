@@ -14,7 +14,9 @@ code as authoritative if the two ever disagree.
 - `scripts/check-endpoints.sh` applies **one rule**: every `http`, `https`,
   `ws` or `wss` URL in a tracked file must name a host declared in the code,
   and plaintext schemes are refused outside loopback. Hosts in
-  `DOCUMENTATION_HOSTS` are accepted in prose files only. There is no
+  `DOCUMENTATION_HOSTS` are accepted in prose files only. Hosts matching
+  `WORKER_REPORT_HOST_PATTERNS` are accepted only in files under `installer/`
+  that are not prose, for the installer Worker's error reports. There is no
   heuristic about code blocks or command verbs; earlier versions had one and
   every review round found both a bypass and a false positive in it.
   A URL whose host is built from an expression is reported unless the literal
@@ -239,6 +241,7 @@ services listed below.
 | `erpc.global` | project home page, linked from package metadata | none |
 | `solana-snapshot-*.erpc.global` | snapshot mirrors | none |
 | `install.erpc.global` | installer script | none |
+| the Sentry ingest host its DSN names: `o*.ingest.sentry.io`, `o*.ingest.de.sentry.io` or `o*.ingest.us.sentry.io` (`WORKER_REPORT_HOST_PATTERNS`; the worker refuses a DSN naming any other host) | installer worker error reports, only when its `SENTRY_DSN` secret is set ([Install counts](install-counts.md#error-reports)); the `erpc` CLI sends nothing there | the DSN's public key |
 | `github.com`, `api.github.com` | releases, attestations, the pinned restic `erpc backup` installs | none |
 | `objects.githubusercontent.com`, `release-assets.githubusercontent.com` | release artifact downloads | none |
 | `bitcoincore.org` | Bitcoin Core signed checksum manifests and official release archives | none |

@@ -54,6 +54,53 @@ This is about the data point. The worker also has Cloudflare's Workers
 observability turned on (`[observability]` in `installer/wrangler.toml`), as
 it had before counts were added.
 
+## Error reports
+
+When its `SENTRY_DSN` Worker secret is set, the worker reports its own
+failures in answering a `GET` to Sentry: an exception, a fetch from GitHub
+Releases that failed (with the release tag and the installer's flavour), or
+a deployment that selected no release. The Sentry SDK does not report on
+`HEAD` or `OPTIONS` requests. Each failed request is one report; there is no
+sampling, so while GitHub is unreachable or a deployment has no release,
+every request sends one.
+
+Without the secret the worker reports nothing. It also reports nothing when a
+`SENTRY_TUNNEL` variable is set, or when the DSN names anything but a Sentry
+ingest host over https: `o<org id>.ingest.sentry.io`, or the same in Sentry's
+`de` or `us` region. Those are among the hosts `WORKER_REPORT_HOST_PATTERNS`
+in `crates/erpc-core/src/endpoints.rs` declares for this worker, and a test
+checks that. The DSN is never in this repository; a maintainer sets it with
+`npx wrangler secret put SENTRY_DSN` in `installer/`. Whoever holds the DSN
+can submit events to that Sentry project and cannot read them.
+
+A report names what failed in the worker, and the request's method and URL
+without its query string. The Sentry SDK would also attach the request's
+headers (among them the user agent, `Accept-Language` and Cloudflare's
+client IP and location headers), its query string, a user, the client's
+timezone, any `sentry-*` baggage the request carries and the trace id its
+`sentry-trace` header names;
+`installer/src/sentry.ts` removes all of them before sending. Request bodies
+are not read, and what the worker logs to the console is not attached.
+
+Only error events are sent. Performance tracing is off, including when a
+request carries a `sentry-trace` header asking for a sampled trace: the
+worker samples no trace, drops any transaction before it is sent, and adds
+no trace headers to its fetches from GitHub.
+
+`installer/src/sentry.test.ts` runs the SDK with the worker's options and a
+transport that keeps what would be sent. The network is a stub that presents
+itself as the native `fetch`, so the SDK instruments it as it does in
+Cloudflare's runtime. The tests cover a failed fetch from GitHub, a request
+asking for a sampled trace, a deployment with no release selected and an
+exception. Each checks that one error event is sent, no transaction, and
+none of the request's IP address, user agent, language, cookie, timezone,
+city or query. Where the worker fetched GitHub, they also check that the
+fetch carried no trace headers. Further tests check that a refused DSN, or a
+tunnel, sends nothing. The tests run under Node, not in Cloudflare's runtime.
+
+Reports go from Cloudflare to Sentry, so Sentry sees Cloudflare's address,
+not the address of the person installing.
+
 ## Reading the numbers
 
 - **A download is not an install.** A count is an installer served. CI
@@ -73,6 +120,6 @@ it had before counts were added.
 ## Why Analytics Engine
 
 The worker's trust model (top of `installer/src/index.ts`) is that it holds
-no secrets. An Analytics Engine binding is not a credential, so the worker
-stays that way. Writing anywhere else from the worker would need a
-credential in it.
+no credential that could change what it serves. An Analytics Engine binding
+is not a credential, so counts add none. Its one secret, the optional
+Sentry DSN above, can only submit events to its Sentry project.

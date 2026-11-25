@@ -9,6 +9,8 @@
 name = "erpc-installer"
 main = "src/index.ts"
 compatibility_date = "2026-10-01"
+# AsyncLocalStorage, which the Sentry SDK keeps each request's scope in.
+compatibility_flags = ["nodejs_als"]
 workers_dev = false
 
 routes = [

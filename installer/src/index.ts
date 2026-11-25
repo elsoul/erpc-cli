@@ -10,9 +10,11 @@
  *   GET /vX.Y.Z/ps1  -> PowerShell installer pinned to that tag
  *   GET /healthz     -> 200
  *
- * Trust model (docs/verify-release.md). This worker holds no secrets and no
- * keys, and it verifies no signatures: WebCrypto has no BLAKE2b, so minisign
- * cannot be checked here.
+ * Trust model (docs/verify-release.md). This worker holds no signing keys
+ * and no credential that could change what it serves, and it verifies no
+ * signatures: WebCrypto has no BLAKE2b, so minisign cannot be checked here.
+ * Its one secret is the optional Sentry DSN (src/sentry.ts). Whoever holds
+ * it can submit events to that Sentry project and cannot read them.
  *
  * Because it cannot verify anything, **everything it serves comes from GitHub
  * Releases and nothing else**. GitHub Actions resolves the tag before deploying
@@ -25,10 +27,10 @@
  * Releases. Operators who need more follow the high-assurance path in
  * docs/verify-release.md, which does not involve this worker at all.
  *
- * One thing is added to the body: a fixed tail, `AFTER_INSTALL` below, that
- * runs the binary the installer just put in place with `skills install`, so
- * the assistant's skills are on the machine from the start. It is a constant
- * in this file, the same for every request; it adds no source of code, only
+ * One thing is added to the body: a fixed tail, `AFTER_INSTALL` in
+ * src/body.ts, that runs the binary the installer just put in place with
+ * `skills install`, so the assistant's skills are on the machine from the
+ * start. It is a constant in that file, the same for every request; it adds no source of code, only
  * a call to the binary the GitHub installer installed.
  *
  * Install counts. Every GET of an installer writes one data point to Workers
@@ -41,13 +43,19 @@
  * served, so it names a published release.
  * Recording cannot change or delay the response: `writeDataPoint` does not
  * wait on anything, and any error in it is dropped. The columns are in
- * docs/install-counts.md. The binding holds no secret, so this worker still
- * holds none.
+ * docs/install-counts.md. The binding holds no secret.
  */
 
-import { TAG_RE } from "./releases.ts";
+import { captureMessage, withSentry } from "@sentry/cloudflare";
 
-export interface Env {
+import { TAG_RE } from "./releases.ts";
+import { sentryOptions, type SentryEnv } from "./sentry.ts";
+import { looksLikeInstaller, withAfterInstall } from "./body.ts";
+
+// Re-exported for the tests; the body logic lives in ./body.ts.
+export { AFTER_INSTALL, looksLikeInstaller, withAfterInstall } from "./body.ts";
+
+export interface Env extends SentryEnv {
   GITHUB_REPO: string; // "elsoul/erpc-cli"
   LATEST_RELEASE?: string;
   LATEST_RELEASE_SOURCE?: string;
@@ -58,8 +66,19 @@ export interface Env {
 const CACHE_TTL = 300;
 const UA = "erpc-installer-worker (+https://github.com/elsoul/erpc-cli)";
 
-export default {
-  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+/**
+ * A fresh handler, before `withSentry` wraps it. The SDK marks the `fetch`
+ * function it wraps and reuses that wrapper (and its options) for any later
+ * wrap of the same function, so a test that wraps this with its own options
+ * needs a function production never wrapped.
+ */
+export function makeHandler() {
+  return {
+    fetch: (request: Request, env: Env, ctx: ExecutionContext) => handle(request, env, ctx),
+  } satisfies ExportedHandler<Env>;
+}
+
+async function handle(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     if (request.method !== "GET" && request.method !== "HEAD") {
       return text("method not allowed", 405);
@@ -88,8 +107,11 @@ export default {
     const res = await serveInstaller(url, tag, flavor, env, ctx);
     if (request.method === "GET") recordInstall(env, request, tag, flavor, res);
     return res;
-  },
-};
+}
+
+// Errors go to Sentry when the SENTRY_DSN secret names a Sentry ingest host
+// (src/sentry.ts).
+export default withSentry((env: Env) => sentryOptions(env), makeHandler());
 
 async function serveInstaller(
   url: URL,
@@ -103,6 +125,7 @@ async function serveInstaller(
   if (!tag) {
     if (!env.LATEST_RELEASE || !TAG_RE.test(env.LATEST_RELEASE)
       || !["github-latest", "github-prerelease"].includes(env.LATEST_RELEASE_SOURCE ?? "")) {
+      captureMessage("no published release was selected during deployment", "warning");
       return text("no published release was selected during deployment; use a pinned version", 502);
     }
     tag = env.LATEST_RELEASE;
@@ -122,16 +145,22 @@ async function serveInstaller(
   const file = flavor === "sh" ? "erpc-installer.sh" : "erpc-installer.ps1";
   const got = await fetchInstaller(env, tag, file, flavor);
   if (!got) {
+    captureMessage("could not fetch the installer from GitHub Releases", {
+      level: "error",
+      tags: { release: tag, flavor },
+    });
     return text(
       `could not fetch the installer for ${tag} from GitHub Releases; there is no fallback source for an executable script`,
       502,
     );
   }
 
-  const res = new Response(withAfterInstall(got.body, flavor), {
+  const body = withAfterInstall(got.body, flavor);
+  const res = new Response(body, {
     status: 200,
     headers: {
       "content-type": "text/plain; charset=utf-8",
+      "content-length": byteLength(body),
       "cache-control": `public, max-age=${CACHE_TTL}`,
       "x-erpc-tag": tag,
       "x-erpc-tag-source": tagSource,
@@ -146,8 +175,21 @@ async function serveInstaller(
 function text(msg: string, status: number): Response {
   return new Response(msg, {
     status,
-    headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },
+    headers: {
+      "content-type": "text/plain; charset=utf-8",
+      "content-length": byteLength(msg),
+      "cache-control": "no-store",
+    },
   });
+}
+
+/**
+ * A text response's length, set on every response this worker builds. The
+ * Sentry SDK treats `text/plain` without a length as a stream, and passes
+ * such a body through a stream of its own to see where it ends.
+ */
+function byteLength(body: string): string {
+  return String(new TextEncoder().encode(body).byteLength);
 }
 
 /**
@@ -251,90 +293,6 @@ function recordInstall(
   } catch {
     // dropped: a lost count is better than a lost install
   }
-}
-
-/**
- * What runs after the installer: `erpc skills install`, with the binary the
- * installer put in place. cargo-dist's installers end by calling their main
- * function (`download_binary_and_run_installer "$@" || exit 1`, and
- * `Install-Binary` in a try/catch), so a tail runs after a successful
- * install and not after a failed one. The binary is looked for where the
- * generated installer puts it, in its order of precedence: with
- * `ERPC_INSTALL_DIR`, `CARGO_DIST_FORCE_INSTALL_DIR` or
- * `ERPC_UNMANAGED_INSTALL` set, in that directory itself (cargo-dist's
- * "flat" layout; under `bin/` only when the directory is Cargo's home), and
- * otherwise in `~/.erpc/bin` (dist-workspace.toml). An earlier tail looked
- * under `bin/` for the first two and so ran a binary from an earlier
- * install; `installer/scripts/verify-against-real-installers.mjs` now pins
- * the layout and the endings this tail depends on. A failure here never
- * fails the install: `erpc skills install` can be run again by hand.
- */
-export const AFTER_INSTALL: Record<"sh" | "ps1", string> = {
-  sh: `
-# erpc: put the assistant's skills on this machine (~/.erpc/skills), with the
-# binary the installer above put in place: in the forced directory itself
-# (bin/ only when that directory is Cargo's home), else in ~/.erpc/bin.
-for _erpc_dir in "\${ERPC_INSTALL_DIR:-}" "\${CARGO_DIST_FORCE_INSTALL_DIR:-}" \\
-    "\${ERPC_UNMANAGED_INSTALL:-}" "$HOME/.erpc/bin"; do
-  [ -n "$_erpc_dir" ] || continue
-  for _erpc_bin in "$_erpc_dir/erpc" "$_erpc_dir/bin/erpc"; do
-    if [ -x "$_erpc_bin" ]; then
-      "$_erpc_bin" skills install || say "could not write the skills; run: erpc skills install"
-      break 2
-    fi
-  done
-done
-`,
-  ps1: `
-# erpc: put the assistant's skills on this machine (~/.erpc/skills), with the
-# binary the installer above put in place: in the forced directory itself
-# (bin\\ only when that directory is Cargo's home), else in ~/.erpc/bin.
-$erpcDirs = @()
-foreach ($erpcForced in @($env:ERPC_INSTALL_DIR, $env:CARGO_DIST_FORCE_INSTALL_DIR, $env:ERPC_UNMANAGED_INSTALL)) {
-  if ($erpcForced) { $erpcDirs += $erpcForced }
-}
-$erpcDirs += Join-Path $HOME ".erpc\\bin"
-:erpcFound foreach ($erpcDir in $erpcDirs) {
-  foreach ($erpcBin in @((Join-Path $erpcDir "erpc.exe"), (Join-Path $erpcDir "bin\\erpc.exe"))) {
-    if (Test-Path -LiteralPath $erpcBin -PathType Leaf) {
-      & $erpcBin skills install
-      if ($LASTEXITCODE -ne 0) { Write-Information "could not write the skills; run: erpc skills install" }
-      break erpcFound
-    }
-  }
-}
-`,
-};
-
-/**
- * The installer, with [`AFTER_INSTALL`] after it. `trimEnd`, not a `\s*$`
- * regex: on a body that is not ours a backtracking regex over runs of
- * whitespace is polynomial, and CodeQL says so.
- */
-export function withAfterInstall(body: string, flavor: "sh" | "ps1"): string {
-  return `${body.trimEnd()}\n${AFTER_INSTALL[flavor]}`;
-}
-
-/**
- * A sanity check, not a security control: it rejects markup and an empty
- * body, so a 404 page becomes a clear 502 rather than being piped into a
- * shell. A plain-text or markdown error body opening with `#` is accepted
- * for the PowerShell flavour, because the real installer opens that way too.
- *
- * The shapes are those of the installers cargo-dist actually generates, taken
- * from `dist build --artifacts=global` output rather than from the template:
- * the shell installer starts with `#!/bin/sh`, and the PowerShell one starts
- * with a run of `#` licence comments, reaching its `<#` block several lines
- * in. An earlier version of this function required `<#` at position 0 and
- * would have rejected every real PowerShell installer.
- */
-export function looksLikeInstaller(body: string, flavor: "sh" | "ps1"): boolean {
-  const head = body.slice(0, 512).trimStart();
-  if (head.length === 0) return false;
-  // Any markup is an error page, whatever it claims to be.
-  if (/^<(!|html|\?xml)/i.test(head)) return false;
-  if (flavor === "sh") return head.startsWith("#!");
-  return head.startsWith("#") || head.startsWith("<#");
 }
 
 /**

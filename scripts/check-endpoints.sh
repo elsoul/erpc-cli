@@ -15,6 +15,12 @@
 #   * DOCUMENTATION_HOSTS, allowed only in prose files (.md, .txt, NOTICE,
 #     CHANGELOG, AUTHORS) — link targets, never destinations.
 #
+# Two scoped lists sit beside them: NODE_HOSTS, allowed only in the
+# templates and catalogs a node runs, and WORKER_REPORT_HOST_PATTERNS, the
+# Sentry ingest hosts allowed only in installer/ files that are not prose,
+# where the installer Worker reports its errors. Only HOST_PATTERNS pairs
+# may pin a host that contains an expression.
+#
 # Earlier versions of this gate tried to tell a documentation link from an
 # instruction a reader might run, using fence tracking, code spans and a list
 # of command verbs. Every round of review found both a bypass and a false
@@ -238,8 +244,14 @@ all_consts=$(read_consts ALL)
 # allowed in code. An empty result is caught by the tripwire below instead.
 service_hosts=$(printf '%s\n' "$all_consts" | extract_hosts \
   | grep -vxF "$(printf '%s\n%s\n%s\n' "$doc_hosts" "$node_hosts" "$eth_validator_hosts")")
-patterns=$(printf '%s\n' "$all_consts" | grep -oE '\("[A-Za-z0-9.-]+",[[:space:]]*"[A-Za-z0-9.-]+"\)' \
-  | sed -E 's/^\("([^"]+)",[[:space:]]*"([^"]+)"\)$/\1	\2/')
+extract_pairs() { grep -oE '\("[A-Za-z0-9.-]+",[[:space:]]*"[A-Za-z0-9.-]+"\)' \
+  | sed -E 's/^\("([^"]+)",[[:space:]]*"([^"]+)"\)$/\1	\2/'; }
+# Pairs are read from their own lists, never from every const: a pair list
+# added for one place must not become a pattern allowed everywhere.
+# HOST_PATTERNS: anywhere. WORKER_REPORT_HOST_PATTERNS: only under installer/,
+# the Worker that reports to those hosts; erpc itself never contacts them.
+patterns=$(read_consts HOST_PATTERNS | extract_pairs)
+worker_patterns=$(read_consts WORKER_REPORT_HOST_PATTERNS | extract_pairs)
 
 # A broken extraction would make this gate reject everything, which looks
 # strict and is useless. Fail loudly instead.
@@ -315,9 +327,27 @@ EOF
   return 1
 }
 
-# $1 host, $2 "prose", "code" or "node"
+# $1 host, $2 pairs (prefix TAB suffix per line). True when the host is a
+# prefix, one label with no dot, and a suffix.
+host_matches_pairs() {
+  local host="$1" prefix suffix mid
+  while IFS=$'\t' read -r prefix suffix; do
+    [ -n "$prefix" ] || continue
+    case "$host" in
+      "$prefix"*"$suffix")
+        mid="${host#"$prefix"}"; mid="${mid%"$suffix"}"
+        case "$mid" in *.*|"") ;; *) return 0;; esac
+        ;;
+    esac
+  done <<EOF
+$2
+EOF
+  return 1
+}
+
+# $1 host, $2 "prose", "code", "node" or "worker"
 host_allowed() {
-  local host="$1" kind="$2" prefix suffix mid a
+  local host="$1" kind="$2" a
   host=$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')
   while [ "${host%.}" != "$host" ]; do host="${host%.}"; done
   while IFS= read -r a; do
@@ -335,17 +365,10 @@ EOF
 $doc_hosts
 EOF
   fi
-  while IFS=$'\t' read -r prefix suffix; do
-    [ -n "$prefix" ] || continue
-    case "$host" in
-      "$prefix"*"$suffix")
-        mid="${host#"$prefix"}"; mid="${mid%"$suffix"}"
-        case "$mid" in *.*|"") ;; *) return 0;; esac
-        ;;
-    esac
-  done <<EOF
-$patterns
-EOF
+  host_matches_pairs "$host" "$patterns" && return 0
+  if [ "$kind" = worker ] && host_matches_pairs "$host" "$worker_patterns"; then
+    return 0
+  fi
   return 1
 }
 
@@ -945,6 +968,7 @@ for f in "${files[@]}"; do
   is_excepted "$f" && continue
   if [[ "$f" =~ $prose_re ]]; then kind=prose
   elif [[ "$f" =~ $node_re ]]; then kind=node
+  elif [[ "$f" =~ ^installer/ ]]; then kind=worker
   else kind=code; fi
 
   # The file is read with cat, which passes every byte and fails only when

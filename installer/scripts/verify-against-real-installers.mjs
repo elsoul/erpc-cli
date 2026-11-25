@@ -23,7 +23,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..", "..");
 const distrib = resolve(repoRoot, "target", "distrib");
 
-const { looksLikeInstaller, withAfterInstall } = await import(resolve(here, "..", "src", "index.ts"));
+const { looksLikeInstaller, withAfterInstall } = await import(resolve(here, "..", "src", "body.ts"));
 
 const cases = [
   { file: "erpc-installer.sh", flavor: "sh" },
@@ -165,7 +165,7 @@ for (const [file, want] of Object.entries(endings)) {
     if (re.test(body)) {
       console.log(`ok   ${file} ${what} is as AFTER_INSTALL assumes`);
     } else {
-      fail(`${file}: its ${what} is not what AFTER_INSTALL assumes (${re}); read the tail in installer/src/index.ts again`);
+      fail(`${file}: its ${what} is not what AFTER_INSTALL assumes (${re}); read the tail in installer/src/body.ts again`);
     }
   }
   const served = withAfterInstall(body, want.flavor);
