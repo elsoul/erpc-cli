@@ -8,17 +8,28 @@
 # ties two chains together that should change on their own, so this gate
 # fails on one.
 #
-# What it reads: every .rs file under crates/erpc/src/chains/<chain>/, for
-# the text `chains::` followed by a path (as in `crate::chains::eth::rpc`,
-# or `chains::eth::rpc` inside a `use crate::{...}` group), and for
-# `chains as`, an alias of the chains module. It fails closed: `chains::{`,
-# `chains::*`, and a `chains::` it cannot read a path after are refused,
-# since none can be attributed to one chain. Comments are read like code.
+# What it reads: every .rs file under crates/erpc/src/chains/<chain>/, as
+# text (a NUL byte does not hide a file), for the word `chains`. It allows
+# the word only where it starts a path into the file's own chain
+# (`chains::<own>`, as in `crate::chains::eth::rpc` from chains/eth) or an
+# exception below, and refuses it everywhere else: a path to another chain,
+# `chains::{...}`, `chains::*`, an alias (`chains as`), space or a comment or
+# a line break between `chains` and `::`, and prose. Comments and string
+# literals are read like code. It also refuses a symlink anywhere under
+# chains/, which it would not read through, and a .rs file directly in
+# chains/ other than mod.rs, such as a chains/<chain>.rs it would not read.
 #
-# It reads text, not Rust. It does not resolve `super::` paths, so a path
-# that leaves the chain that way is not seen: one `super::` from a chain's
-# mod.rs, or more from a file below it. Nor does it follow `#[path]` or
-# `include!`.
+# It reads text, not Rust: it sees only the word `chains` as written in a
+# chain's own files. Any route to another chain that is not spelled that way
+# in the importing file is not seen. Some, and this list is not complete:
+# `super::` paths (one `super::` from a chain's mod.rs is the chains module,
+# and more leave the chain from a file below it); `#[path]` and `include!`;
+# a macro that expands to another chain's path, whether another chain
+# exports it or chains/mod.rs (which is not read) or code outside chains/
+# defines it; methods another chain adds to a shared type in an impl block;
+# and a re-export elsewhere in the crate that makes another chain's module
+# reachable by another name. It catches ordinary imports; it does not prove
+# that no chain depends on another.
 #
 # An exception names the importing chain, the path it may use (and anything
 # under it), and why, starting with the date it was written. An exception
@@ -42,6 +53,22 @@ fi
 
 fail=0
 used="|"
+
+# What the scan below would not read: a symlink (grep -r does not follow
+# one it meets) and a chain's root written as chains/<chain>.rs.
+links="$(find "$root" -type l)"
+if [ -n "$links" ]; then
+  printf '%s\n' "$links" | while IFS= read -r l; do
+    echo "check-chain-imports: $l is a symlink; chain files must be files of their own" >&2
+  done
+  fail=1
+fi
+for f in "$root"/*.rs; do
+  [ -e "$f" ] || continue
+  [ "$(basename "$f")" = "mod.rs" ] && continue
+  echo "check-chain-imports: $f is a .rs file directly in chains/; a chain's root is chains/<chain>/mod.rs" >&2
+  fail=1
+done
 
 while IFS='|' read -r who path why; do
   [ -n "$who" ] || continue
@@ -72,12 +99,27 @@ EOF
   return 1
 }
 
-word='(^|[^A-Za-z0-9_])'
-after='(\{|\*|[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)*)'
+# Each word `chains` on a line, as the path that follows it (`eth::rpc`
+# for `chains::eth::rpc`), or `-` when no path follows it directly.
+# shellcheck disable=SC2016 # an awk program: its $0 and $1 are awk's
+uses='
+{
+  s = $0
+  while (match(s, /chains/)) {
+    before = (RSTART > 1) ? substr(s, RSTART - 1, 1) : ""
+    s = substr(s, RSTART + 6)
+    if (before ~ /[A-Za-z0-9_]/ || s ~ /^[A-Za-z0-9_]/) continue
+    if (match(s, /^::[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)*/))
+      print substr(s, 3, RLENGTH - 2)
+    else
+      print "-"
+  }
+}'
 
 for dir in "$root"/*/; do
   own="$(basename "$dir")"
-  hits="$(grep -rnE --include='*.rs' "${word}chains(::|[[:space:]]+as[[:space:]])" "$dir")"
+  # -a: a file with a NUL byte in it is still read, not called binary.
+  hits="$(grep -arnE --include='*.rs' '(^|[^A-Za-z0-9_])chains([^A-Za-z0-9_]|$)' "$dir")"
   if [ "$?" -gt 1 ]; then
     echo "check-chain-imports: could not read $dir" >&2
     fail=1
@@ -88,35 +130,19 @@ for dir in "$root"/*/; do
     file="${hit%%:*}"
     rest="${hit#*:}"
     line="${rest%%:*}"
-    text="${rest#*:}"
-    if printf '%s\n' "$text" | grep -qE "${word}chains[[:space:]]+as[[:space:]]"; then
-      echo "$file:$line: chains/$own aliases the chains module; name each chain module on its own" >&2
-      fail=1
-    fi
-    seen="$(printf '%s\n' "$text" | grep -oE "${word}chains::" | wc -l)"
-    refs="$(printf '%s\n' "$text" | grep -oE "${word}chains::$after" | sed -E 's/^[^c]*chains:://')"
-    found=0
-    # $refs is split on whitespace, but must not be globbed: `*` is a ref.
-    set -f
-    for ref in $refs; do
-      found=$((found + 1))
-      case "$ref" in
-        "{" | "*")
-          echo "$file:$line: chains/$own imports chains::$ref; name each chain module on its own" >&2
-          fail=1
-          continue
-          ;;
-      esac
+    while IFS= read -r ref; do
+      if [ "$ref" = "-" ]; then
+        echo "$file:$line: chains/$own uses the word chains other than as a path into its own chain; name its own chain module as chains::$own, and share anything else through crate::node" >&2
+        fail=1
+        continue
+      fi
       [ "${ref%%::*}" = "$own" ] && continue
       allowed "$own" "$ref" && continue
       echo "$file:$line: chains/$own names chains::$ref; share it through crate::node instead" >&2
       fail=1
-    done
-    set +f
-    if [ "$found" -lt "$seen" ]; then
-      echo "$file:$line: chains/$own has a chains:: path this gate cannot read; write it as one path" >&2
-      fail=1
-    fi
+    done <<REFS
+$(printf '%s\n' "${rest#*:}" | awk "$uses")
+REFS
   done <<EOF
 $hits
 EOF

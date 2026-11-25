@@ -96,7 +96,7 @@ check "the base tree passes" allow "$chains/eth/extra.rs" '// nothing'
 check "a chain may name its own modules" allow "$chains/eth/ops.rs" \
   'use crate::chains::eth::rpc::{Facts, facts};'
 check "names that only end in chains are not chain paths" allow "$chains/eth/ops.rs" \
-  'let x = my_chains::arc::rpc();\nlet y = erpc_chains::arc::x;'
+  'let y = erpc_chains::arc::x;'
 
 check "a full path to another chain is refused" block "$chains/eth/ops.rs" \
   'let f = crate::chains::arc::rpc::facts(session)?;' \
@@ -112,28 +112,63 @@ check "a comment naming another chain is refused" block "$chains/arc/ops.rs" \
   "chains/arc names chains::eth::rpc::Facts"
 check "a chains brace import is refused" block "$chains/eth/ops.rs" \
   'use crate::chains::{arc, eth};' \
-  "chains/eth imports chains::{"
+  "chains/eth uses the word chains other than as a path into its own chain"
 check "a nested module is read too" block "$chains/nitro/rpc/deep.rs" \
   'use crate::chains::eth::rpc::Login;' \
   "chains/nitro names chains::eth::rpc::Login"
 
 check "a chains glob import is refused" block "$chains/eth/ops.rs" \
   'use crate::chains::*;\nfn f() { arc::rpc::facts(); }' \
-  "chains/eth imports chains::*"
+  "chains/eth uses the word chains other than as a path into its own chain"
 check "a capitalised name after chains is refused" block "$chains/eth/ops.rs" \
   'use crate::chains::ArcFacts;' \
   "chains/eth names chains::ArcFacts"
 check "an alias of the chains module is refused" block "$chains/eth/ops.rs" \
   'use crate::chains as c;\nfn f() { c::arc::rpc::facts(); }' \
-  "chains/eth aliases the chains module"
+  "chains/eth uses the word chains other than as a path into its own chain"
 check "an alias inside a use crate group is refused" block "$chains/eth/ops.rs" \
   'use crate::{\n    chains as c,\n    node::host::Login,\n};' \
-  "chains/eth aliases the chains module"
-check "a chains path the gate cannot read is refused" block "$chains/eth/ops.rs" \
+  "chains/eth uses the word chains other than as a path into its own chain"
+check "space after :: is refused" block "$chains/eth/ops.rs" \
   'let f = crate::chains:: arc::rpc::facts;' \
-  "chains/eth has a chains:: path this gate cannot read"
-check "prose about chains is not an import" allow "$chains/eth/ops.rs" \
-  '// chains, nodes and hosts as they were\nlet chains_as = 1;'
+  "chains/eth uses the word chains other than as a path into its own chain"
+check "space before :: is refused" block "$chains/eth/ops.rs" \
+  'use crate::chains ::arc::rpc;' \
+  "chains/eth uses the word chains other than as a path into its own chain"
+check "space before :: under rustfmt::skip is refused" block "$chains/eth/ops.rs" \
+  '#[rustfmt::skip] fn g() { crate::chains ::arc::rpc::facts(); }' \
+  "chains/eth uses the word chains other than as a path into its own chain"
+check "a comment between chains and :: is refused" block "$chains/eth/ops.rs" \
+  '#[rustfmt::skip] fn g() { crate::chains/**/::arc::rpc::facts(); }' \
+  "chains/eth uses the word chains other than as a path into its own chain"
+check "a path split after crate::chains is refused" block "$chains/eth/ops.rs" \
+  'use crate::chains\n    ::arc::rpc;' \
+  "chains/eth uses the word chains other than as a path into its own chain"
+check "a path split after a trailing comment is refused" block "$chains/eth/ops.rs" \
+  '#[rustfmt::skip] fn g() { crate::chains // x\n    ::arc::rpc::facts(); }' \
+  "chains/eth uses the word chains other than as a path into its own chain"
+check "a path split inside a use crate group is refused" block "$chains/eth/ops.rs" \
+  'use crate::{node, chains\n    ::arc};' \
+  "chains/eth uses the word chains other than as a path into its own chain"
+check "space before chains on a split path is refused" block "$chains/eth/ops.rs" \
+  '#[rustfmt::skip] fn g() { crate :: chains\n    ::arc::rpc::facts(); }' \
+  "chains/eth uses the word chains other than as a path into its own chain"
+check "a lone chains in a group is refused" block "$chains/eth/ops.rs" \
+  'use crate::{\n    chains\n        ::arc::rpc,\n};' \
+  "chains/eth uses the word chains other than as a path into its own chain"
+check "an alias split across lines is refused" block "$chains/eth/ops.rs" \
+  'use crate::chains as\n    c;' \
+  "chains/eth uses the word chains other than as a path into its own chain"
+check "prose using the word chains is refused" block "$chains/eth/ops.rs" \
+  '// the same holds for the other supported chains' \
+  "chains/eth uses the word chains other than as a path into its own chain"
+check "a string literal using the word chains is refused" block "$chains/eth/ops.rs" \
+  'const NOTE: &str = "all chains";' \
+  "chains/eth uses the word chains other than as a path into its own chain"
+check "look-alike words beside a real path are not the word" allow "$chains/eth/ops.rs" \
+  'let x = crate::chains::eth::rpc::f(my_chains::arc::y, chainset::arc::z);'
+check "words that only contain chains are not the word" allow "$chains/eth/ops.rs" \
+  'let chains_as = 1;\nlet chainset = 2;\nlet x = my_chains::arc::rpc();'
 
 check "the exception allows its path and what is under it" allow "$chains/robinhood/validator.rs" \
   'crate::chains::nitro::rpc::admission_session::inner();'
@@ -152,6 +187,40 @@ check "the exception runs one way only" block "$chains/nitro/rpc/back.rs" \
 check "an exception that matches nothing fails" block "$chains/robinhood/admission.rs" - \
   "the exception for robinhood -> nitro::rpc::admission_session no longer matches anything"
 
+# check_after NAME REPORT SETUP: runs SETUP (shell commands) on the base
+# tree, then expects the gate to block with REPORT. For trees that check's
+# single file cannot describe.
+check_after() {
+  local name="$1" want="$2" setup="$3"
+  base
+  eval "$setup"
+  local out rc
+  out="$("$sh" "$gate" 2>&1)"; rc=$?
+  if [ "$rc" -ne 0 ] && case "$out" in *"$want"*) true;; *) false;; esac; then
+    pass=$((pass + 1)); printf 'ok   %s\n' "$name"
+  else
+    fail=$((fail + 1))
+    printf 'FAIL %s (expected block, exit %s, wanted "%s")\n%s\n' "$name" "$rc" "$want" "$out"
+  fi
+}
+
+check "a NUL byte does not hide a file" block "$chains/eth/ops.rs" \
+  '// \0\nuse crate::chains::arc::rpc;' \
+  "chains/eth names chains::arc::rpc"
+check "a NUL byte on a later line does not hide a file" block "$chains/eth/ops.rs" \
+  'use crate::chains::arc::rpc;\nconst N: &str = "a\0b";' \
+  "chains/eth names chains::arc::rpc"
+# shellcheck disable=SC2016 # check_after evals the setup, so it expands there
+check_after "a symlinked file is refused" "$chains/eth/link.rs is a symlink" \
+  'printf "%s\n" "use crate::chains::arc::x;" > "$chains/arc/real.rs"; ln -s ../arc/real.rs "$chains/eth/link.rs"'
+# shellcheck disable=SC2016 # check_after evals the setup, so it expands there
+check_after "a symlinked directory is refused" "$chains/eth/sub is a symlink" \
+  'mkdir -p "$repo_root/outside"; printf "%s\n" "use crate::chains::arc::x;" > "$repo_root/outside/x.rs"; ln -s "$repo_root/outside" "$chains/eth/sub"'
+# shellcheck disable=SC2016 # check_after evals the setup, so it expands there
+check_after "a chain root written as chains/<chain>.rs is refused" \
+  "$chains/eth.rs is a .rs file directly in chains/" \
+  'printf "%s\n" "use crate::chains::arc::x;" > "$chains/eth.rs"'
+
 # An exception without a dated reason is refused. The scratch copy of the
 # gate is edited for this case and put back after it.
 cp "$gate" "$gate.orig"
@@ -159,6 +228,27 @@ sed 's/|2026-11-25: Robinhood/|Robinhood/' "$gate.orig" > "$gate"
 check "an exception without a dated reason is refused" block "$chains/eth/extra.rs" '// nothing' \
   "the exception for robinhood -> nitro::rpc::admission_session needs a reason starting with its date"
 mv "$gate.orig" "$gate"
+
+# A file the gate cannot read fails it. Root reads any file whatever its
+# mode, so the case is only meaningful, and only run, as another user.
+if [ "$(id -u)" -ne 0 ]; then
+  base
+  printf '%s\n' '// unreadable' > "$chains/eth/locked.rs"
+  chmod 000 "$chains/eth/locked.rs"
+  out="$("$sh" "$gate" 2>&1)"; rc=$?
+  chmod 644 "$chains/eth/locked.rs"
+  case "$out" in
+    *"could not read $chains/eth/"*)
+      if [ "$rc" -ne 0 ]; then
+        pass=$((pass + 1)); printf 'ok   %s\n' "a file the gate cannot read fails it"
+      else
+        fail=$((fail + 1)); printf 'FAIL %s (exit 0)\n%s\n' "a file the gate cannot read fails it" "$out"
+      fi;;
+    *) fail=$((fail + 1)); printf 'FAIL %s (exit %s)\n%s\n' "a file the gate cannot read fails it" "$rc" "$out";;
+  esac
+else
+  printf 'skip %s (running as root)\n' "a file the gate cannot read fails it"
+fi
 
 # The live tree must pass as it stands.
 out="$(cd "$source_root" && "$sh" scripts/check-chain-imports.sh 2>&1)"; rc=$?
