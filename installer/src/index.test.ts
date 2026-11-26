@@ -162,7 +162,10 @@ test("root selects a stable release and caches the GitHub installer", async t =>
   assert.equal(result.status, 200);
   assert.equal(result.headers.get("x-erpc-tag"), "v0.1.0");
   assert.equal(result.headers.get("x-erpc-tag-source"), "github-latest");
-  assert.ok((await result.text()).startsWith(REAL_SH));
+  const body = new Uint8Array(await result.arrayBuffer());
+  assert.ok(new TextDecoder().decode(body).startsWith(REAL_SH));
+  // A length, so the Sentry SDK does not pass the body through a stream of its own.
+  assert.equal(result.headers.get("content-length"), String(body.byteLength));
   assert.equal(result.headers.get("cache-control"), "public, max-age=300");
   assert.equal((await h.get("/?ignored=yes")).status, 200);
   assert.equal(h.requests.length, 2);

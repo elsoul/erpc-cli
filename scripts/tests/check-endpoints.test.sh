@@ -198,6 +198,26 @@ else
   fail=$((fail + 1)); printf 'FAIL --print-exceptions must report the skip list\n'
 fi
 
+# WORKER_REPORT_HOST_PATTERNS: the installer Worker's Sentry ingest hosts,
+# accepted in installer/ code only. A pair list must not become a pattern
+# allowed everywhere: a Sentry URL in an erpc crate is a new CLI destination.
+check "Sentry ingest host in the installer Worker" allow "installer/$sample_dir/probe.ts" \
+  'const DSN = "https://k@o1.ingest.sentry.io/1";'
+check "regional Sentry ingest host in the installer Worker" allow "installer/$sample_dir/probe.ts" \
+  'const DSN = "https://k@o1.ingest.de.sentry.io/1";'
+check_msg "Sentry ingest host refused in an erpc crate" "crates/erpc-core/src/$sample_dir.rs" \
+  'const URL: &str = "https://o1.ingest.sentry.io/api/1/envelope/";' "endpoint not in the allowlist"
+check_msg "Sentry ingest host refused outside installer/" "$sample_dir/probe.ts" \
+  'const DSN = "https://k@o1.ingest.sentry.io/1";' "endpoint not in the allowlist"
+check_msg "Sentry ingest host refused in installer prose" "installer/$sample_dir/README.md" \
+  'See https://o1.ingest.sentry.io/ for reports.' "endpoint not in the allowlist"
+check_msg "Sentry pattern cannot pin a templated host" "installer/$sample_dir/probe.ts" \
+  'const DSN = `https://o${ORG}.ingest.us.sentry.io/1`;' "expression in host"
+check_msg "Sentry pattern label cannot hold a dot" "installer/$sample_dir/probe.ts" \
+  'const DSN = "https://o1.evil.ingest.sentry.io/1";' "endpoint not in the allowlist"
+check_msg "Sentry lookalike refused in installer/" "installer/$sample_dir/probe.ts" \
+  'const DSN = "https://o1.ingest.sentry.io.evil.example/1";' "endpoint not in the allowlist"
+
 # Native source-build compiler artifacts remain node-only destinations.
 check "Agave compiler artifact in native templates" allow "crates/erpc-chain-solana-native/templates/probe.json" \
   '{"url":"https://static.rust-lang.org/dist/2026-07-16/rustc-1.97.1-x86_64-unknown-linux-gnu.tar.xz"}'

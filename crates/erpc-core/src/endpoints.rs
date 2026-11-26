@@ -85,6 +85,18 @@ pub const ADDRESS_ECHO_HOSTS: &[&str] = &[
     "ifconfig.me",
 ];
 
+/// Sentry ingest hosts the installer worker (`installer/`) may send its own
+/// error reports to, as `(prefix, suffix)` pairs like [`HOST_PATTERNS`]:
+/// `o<org id>` followed by Sentry's ingest domain, unregioned or regional.
+/// The worker refuses a DSN naming any other host. erpc itself never contacts
+/// them, so [`is_allowed_host`] does not read this list, and the endpoint
+/// gate accepts them only in `installer/` files that are not prose.
+pub const WORKER_REPORT_HOST_PATTERNS: &[(&str, &str)] = &[
+    ("o", ".ingest.sentry.io"),
+    ("o", ".ingest.de.sentry.io"),
+    ("o", ".ingest.us.sentry.io"),
+];
+
 /// Host prefixes allowed with any suffix label, for the snapshot mirror pool.
 /// An entry `("solana-snapshot-", ".erpc.global")` matches
 /// `solana-snapshot-ams.erpc.global` but not `evil-solana-snapshot-x.other`.
@@ -702,7 +714,10 @@ mod tests {
             .chain(super::ADDRESS_ECHO_HOSTS.iter().copied())
             .filter(|h| !doc.contains(&format!("`{h}`")))
             .collect();
-        for (prefix, suffix) in super::HOST_PATTERNS {
+        for (prefix, suffix) in super::HOST_PATTERNS
+            .iter()
+            .chain(super::WORKER_REPORT_HOST_PATTERNS)
+        {
             if !doc.contains(&format!("{prefix}*{suffix}")) {
                 missing.push(prefix);
             }
@@ -736,6 +751,19 @@ mod tests {
     #[test]
     fn echo_hosts_are_not_erpc_destinations() {
         for h in super::ADDRESS_ECHO_HOSTS {
+            assert!(
+                super::ensure_service_url(&format!("https://{h}/")).is_err(),
+                "{h} passes as an erpc destination"
+            );
+        }
+    }
+
+    /// The installer worker's Sentry hosts are its destinations, not erpc's.
+    #[test]
+    fn worker_report_hosts_are_not_erpc_destinations() {
+        for (prefix, suffix) in super::WORKER_REPORT_HOST_PATTERNS {
+            let h = format!("{prefix}0{suffix}");
+            assert!(!is_allowed_host(&h), "{h} is allowed for erpc");
             assert!(
                 super::ensure_service_url(&format!("https://{h}/")).is_err(),
                 "{h} passes as an erpc destination"

@@ -19,7 +19,7 @@ The convenience path (`curl | bash`) trusts DNS, TLS, the
 `install.erpc.global` worker and GitHub Releases. That worker serves the
 installer only from GitHub Releases, because it cannot verify a signature and
 the script it returns is executed. The one thing it adds is a fixed tail, kept
-in `installer/src/index.ts`, that runs the installed binary with
+in `installer/src/body.ts`, that runs the installed binary with
 `erpc skills install` to write the assistant's skills to `~/.erpc/skills`.
 It also counts what it serves: each `GET` of an installer writes the
 request's country, continent and Cloudflare data centre, the first language
