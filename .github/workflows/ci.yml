@@ -242,6 +242,10 @@ jobs:
         env:
           RUSTUP_TOOLCHAIN: 1.98.1
           CARGO_TARGET_DIR: ${{ github.workspace }}/template-ci/pumpfun-target
+          # Clippy looks for its config upward from here and would find this
+          # repository's (msrv 1.98, not the app's rust-version); an app made
+          # by init has none, so none is read.
+          CLIPPY_CONF_DIR: ${{ runner.temp }}
         run: |
           cargo clippy --all-targets --locked -- -D warnings
           cargo test --locked
@@ -250,6 +254,10 @@ jobs:
         env:
           RUSTUP_TOOLCHAIN: 1.98.1
           CARGO_TARGET_DIR: ${{ github.workspace }}/template-ci/pumpfun-target
+          # Clippy looks for its config upward from here and would find this
+          # repository's (msrv 1.98, not the app's rust-version); an app made
+          # by init has none, so none is read.
+          CLIPPY_CONF_DIR: ${{ runner.temp }}
         run: |
           cargo clippy --all-targets --locked --no-default-features -- -D warnings
           cargo test --locked --no-default-features
