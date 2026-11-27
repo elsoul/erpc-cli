@@ -30,16 +30,58 @@ const REPORT_LIMITS: JsonResponseLimits = JsonResponseLimits {
 };
 const MAXIMUM: u32 = BASE + MAX_IN * WEIGHT_IN + MAX_OUT * WEIGHT_OUT;
 
-fn expected_quote() -> Value {
-    json!({
-        "model": MODEL, "meterVersion": METER, "currency": "ai_credits", "baseCredits": BASE,
-        "weights": {"input": WEIGHT_IN, "output": WEIGHT_OUT},
-        "limits": {"input": MAX_IN, "output": MAX_OUT}, "maximumCredits": MAXIMUM,
-    })
+// Untagged struct variants accept JSON objects and reject repeated fields.
+#[derive(Deserialize, PartialEq, Eq)]
+#[serde(untagged, deny_unknown_fields)]
+enum Tokens {
+    Pair { input: u32, output: u32 },
+}
+
+#[derive(Deserialize)]
+#[serde(untagged, rename_all_fields = "camelCase", deny_unknown_fields)]
+enum Quote {
+    Fixed {
+        model: String,
+        meter_version: String,
+        currency: String,
+        base_credits: u32,
+        weights: Tokens,
+        limits: Tokens,
+        maximum_credits: u32,
+    },
 }
 
 pub(super) fn valid_quote(body: &str) -> bool {
-    body.len() <= 4096 && serde_json::from_str::<Value>(body).ok() == Some(expected_quote())
+    if body.len() > 4096 {
+        return false;
+    }
+    let Ok(Quote::Fixed {
+        model,
+        meter_version,
+        currency,
+        base_credits,
+        weights,
+        limits,
+        maximum_credits,
+    }) = serde_json::from_str(body)
+    else {
+        return false;
+    };
+    model == MODEL
+        && meter_version == METER
+        && currency == "ai_credits"
+        && base_credits == BASE
+        && weights
+            == (Tokens::Pair {
+                input: WEIGHT_IN,
+                output: WEIGHT_OUT,
+            })
+        && limits
+            == (Tokens::Pair {
+                input: MAX_IN,
+                output: MAX_OUT,
+            })
+        && maximum_credits == MAXIMUM
 }
 
 fn quote_prompt() -> String {
@@ -264,7 +306,7 @@ impl ReportSubmission {
                 SECURITY_CHECK_REPORT_URL,
                 &token,
                 self.body,
-                &self.idempotency_key,
+                Some(&self.idempotency_key),
                 REPORT_LIMITS,
             )
             .await
@@ -516,6 +558,6 @@ mod tests {
         let mut raw = example();
         raw["message"] = json!("untrusted text");
         assert!(!ok(raw));
-        assert_eq!(expected_quote()["maximumCredits"], 28160);
+        assert_eq!(MAXIMUM, 28160);
     }
 }

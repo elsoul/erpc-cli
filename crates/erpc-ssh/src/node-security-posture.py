@@ -66,6 +66,7 @@ PORT_LIMIT = 128
 PID_LIMIT = 64
 UNIT_LIMIT = 16
 PATH_LIMIT = 64
+CGROUP_BYTE_LIMIT = 4096
 SCOPES = ("wildcard", "interface", "loopback")
 PROTOCOLS = ("tcp", "udp")
 PROCESS_CATEGORY = {
@@ -87,6 +88,8 @@ FIXED_UNITS = (
     "caddy.service", "docker.service", "fail2ban.service",
 )
 ERPC_UNIT = re.compile(r"erpc-(?:worker|waf|backup)-[a-z0-9-]{1,64}\.service\Z")
+CGROUP_COMPONENT = re.compile(rb"[A-Za-z0-9_.@-]{1,255}\Z")
+CGROUP_CONTROLLERS = re.compile(rb"[A-Za-z0-9_=-]+(?:,[A-Za-z0-9_=-]+)*\Z")
 PROCESS = re.compile(rb'\("([^"\\]{1,40})",pid=([0-9]{1,10}),fd=[0-9]{1,10}\)')
 PROCESS_LIST = re.compile(rb"users:\(" + PROCESS.pattern + rb"(?:," + PROCESS.pattern + rb")*\)")
 
@@ -330,6 +333,29 @@ def sshd_jail():
     return "unknown"
 
 
+def systemd_owner(path):
+    if not path.startswith(b"/"):
+        return None, True
+    parts = path[1:].split(b"/")
+    if any(part in (b"", b".", b"..") for part in parts):
+        return None, True
+    for index, component in enumerate(parts):
+        if not CGROUP_COMPONENT.fullmatch(component):
+            return None, True
+        if component.endswith(b".slice"):
+            continue
+        if not component.endswith((b".service", b".scope")):
+            return None, True
+        # The outer service or scope is the manager-owned boundary. A child
+        # of a delegated cgroup can have an arbitrary service-looking name.
+        incomplete = any(
+            not CGROUP_COMPONENT.fullmatch(child) or child.endswith((b".service", b".scope"))
+            for child in parts[index + 1:]
+        )
+        return tuple(parts[:index + 1]), incomplete
+    return None, True
+
+
 def unit_names(pids):
     units = set(FIXED_UNITS)
     incomplete = False
@@ -337,25 +363,42 @@ def unit_names(pids):
     for pid in sorted(pids)[:PID_LIMIT]:
         try:
             with open(f"/proc/{pid}/cgroup", "rb") as cgroup:
-                data = cgroup.read(4097)
-            if len(data) > 4096:
+                data = cgroup.read(CGROUP_BYTE_LIMIT + 1)
+            if len(data) > CGROUP_BYTE_LIMIT:
                 truncated = True
-                data = data[:4096]
+                data = data[:CGROUP_BYTE_LIMIT]
             if not data.endswith(b"\n"):
                 incomplete = True
                 data = data[:data.rfind(b"\n") + 1]
-            for raw in data.splitlines():
+            seen = set()
+            owners = set()
+            for raw in data.split(b"\n")[:-1]:
                 try:
-                    hierarchy, _, path = raw.decode("ascii").split(":", 2)
-                    if (not hierarchy.isdecimal() or not path.startswith("/")
-                            or any(ord(char) < 32 or ord(char) == 127 for char in path)):
+                    hierarchy, controllers, path = raw.split(b":", 2)
+                    if (not re.fullmatch(rb"0|[1-9][0-9]{0,9}", hierarchy)
+                            or not path.startswith(b"/")
+                            or any(byte < 32 or byte == 127 for byte in path)
+                            or (hierarchy == b"0" and controllers)
+                            or (hierarchy != b"0" and not CGROUP_CONTROLLERS.fullmatch(controllers))):
                         raise ValueError()
-                except (UnicodeError, ValueError):
+                except ValueError:
                     incomplete = True
                     continue
-                unit = path.rsplit("/", 1)[-1]
+                if hierarchy != b"0" and b"name=systemd" not in controllers.split(b","):
+                    continue
+                manager = hierarchy == b"0"
+                if manager in seen:
+                    incomplete = True
+                seen.add(manager)
+                owner, uncertain = systemd_owner(path)
+                incomplete |= uncertain
+                if owner is None:
+                    continue
+                owners.add(owner)
+                unit = owner[-1].decode("ascii")
                 if ERPC_UNIT.fullmatch(unit):
                     units.add(unit)
+            incomplete |= not seen or len(owners) > 1
         except OSError:
             incomplete = True
     return sorted(units)[:UNIT_LIMIT], truncated or len(units) > UNIT_LIMIT, incomplete
@@ -424,6 +467,9 @@ def metadata_policy(pids, socket_attribution_incomplete):
                               absent_line=f"Call failed: Unit {unit} not loaded.".encode("ascii"))
         truncated |= capped
         if obj is NOT_LOADED and not capped:
+            # A fixed unit can simply be absent. A live membership referring
+            # to a discovered unit that PID 1 cannot resolve is inconclusive.
+            incomplete |= unit not in FIXED_UNITS
             continue
         if obj is None or capped:
             incomplete = True

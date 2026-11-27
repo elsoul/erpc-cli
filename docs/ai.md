@@ -101,14 +101,21 @@ network namespace and available system configuration.
   input filter evidence and fail2ban's sshd jail status, and may retry
   denied reads of those two sources with non-interactive sudo.
 - File mode counts for systemd environment and credential source references.
-  The collector counts distinct source values separately for
-  `LoadCredential` and `LoadCredentialEncrypted`, deduplicating repeated
-  values within each kind. Incomplete socket attribution, cgroup discovery
+  The collector checks a fixed systemd unit allowlist and eligible ERPC
+  units that own sockets in the sampled namespace. It follows nested
+  socket cgroups to their owning service. The collector counts distinct
+  source values separately for `LoadCredential` and
+  `LoadCredentialEncrypted`, deduplicating repeated values within each
+  kind. Incomplete socket attribution, cgroup discovery
   or systemd reads leave missing evidence unknown. An observed
   `EnvironmentFile` declaration produces a local SSH policy finding
   regardless of its file mode. JSON reports include that finding in
   `localFindings`, alongside any metered findings.
 - Security update counts from the local Debian or Ubuntu package cache.
+
+The inventory accepts up to 256 rentals and a 128 KiB reply. Quote and
+rental verification replies are capped at 4 KiB each. An oversized reply
+stops the check before SSH.
 
 The pricing prompt shows the model, maximum reservation of 28,160 ERPC AI
 tokens and rate for a completed report. The current rate is 512 tokens

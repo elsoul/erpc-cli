@@ -13,12 +13,14 @@ use posture_details::{
     Firewall, FirewallEvidence, Jail, Metadata, Ports, Ssh, Switch, UpdateStatus, Updates,
 };
 
+use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::net::Ipv4Addr;
 
 use erpc_ai::session::Access as _;
-use erpc_auth::AuthClient;
+use erpc_auth::client::{JsonResponseLimits, REQUEST_TIMEOUT};
 use erpc_auth::credential::Audience;
+use erpc_auth::{AuthClient, HttpError};
 use erpc_core::endpoints::{
     SECURITY_CHECK_QUOTE_URL, SECURITY_CHECK_SELECT_URL, SECURITY_CHECK_SERVERS_URL,
 };
@@ -67,7 +69,7 @@ impl Args {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
 enum Kind {
     Vps,
@@ -83,7 +85,7 @@ impl Kind {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 struct Server {
     kind: Kind,
     id: u64,
@@ -121,6 +123,18 @@ fn inventory_failed() -> Outcome {
 
 // The account API stores IDs as safe JavaScript integers.
 const MAX_RENTAL_ID: u64 = (1 << 53) - 1;
+const MAX_INVENTORY_SERVERS: usize = 256;
+const INVENTORY_LIMITS: JsonResponseLimits = preflight_limits(128 * 1024);
+const SELECTION_LIMITS: JsonResponseLimits = preflight_limits(4096);
+const QUOTE_LIMITS: JsonResponseLimits = preflight_limits(4096);
+
+const fn preflight_limits(ok_bytes: usize) -> JsonResponseLimits {
+    JsonResponseLimits {
+        timeout: REQUEST_TIMEOUT,
+        ok_bytes,
+        other_bytes: 1024,
+    }
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -186,11 +200,18 @@ struct EligibleReply {
 }
 
 fn parse_eligible(body: &str) -> Option<Vec<EligibleServer>> {
+    if body.len() > INVENTORY_LIMITS.ok_bytes {
+        return None;
+    }
     let EligibleReply { servers } = serde_json::from_str(body).ok()?;
-    let mut eligible: Vec<EligibleServer> = Vec::with_capacity(servers.len());
+    if servers.len() > MAX_INVENTORY_SERVERS {
+        return None;
+    }
+    let mut rentals = HashSet::with_capacity(servers.len());
+    let mut eligible = Vec::with_capacity(servers.len());
     for listed in servers {
         let server = listed.project()?;
-        if eligible.iter().any(|row| row.rental == server.rental) {
+        if !rentals.insert(server.rental) {
             return None;
         }
         eligible.push(server);
@@ -237,7 +258,7 @@ fn verify_selection(
 ) -> Result<AuthorizedServer, Outcome> {
     let refused = || Outcome::Failed(t!("node_check.preflight_failed"));
     match status {
-        200 => {}
+        200 if body.len() <= SELECTION_LIMITS.ok_bytes => {}
         401 => return Err(sign_in()),
         _ => return Err(refused()),
     }
@@ -278,18 +299,27 @@ impl Account {
         Ok(Self { client, access })
     }
 
-    async fn read_list(&self, url: &str) -> Result<Zeroizing<String>, Outcome> {
+    async fn read_list(
+        &self,
+        url: &str,
+        limits: JsonResponseLimits,
+    ) -> Result<Zeroizing<String>, Outcome> {
         let token = self.access.access_token().await.map_err(|_| sign_in())?;
         let (status, body) = self
             .client
-            .get_with_token(Audience::AuthApi, url, &token)
+            .get_with_token_bounded(Audience::AuthApi, url, &token, limits)
             .await
-            .map_err(|_| inventory_failed())?;
+            .map_err(|error| match error {
+                HttpError::ResponseLimit { status: 401, .. } => sign_in(),
+                _ => inventory_failed(),
+            })?;
         list_body(status, body)
     }
 
     async fn eligible(&self) -> Result<Vec<EligibleServer>, Outcome> {
-        let body = self.read_list(SECURITY_CHECK_SERVERS_URL).await?;
+        let body = self
+            .read_list(SECURITY_CHECK_SERVERS_URL, INVENTORY_LIMITS)
+            .await?;
         parse_eligible(&body).ok_or_else(inventory_failed)
     }
 
@@ -299,15 +329,19 @@ impl Account {
         let request = selection_body(server);
         let (status, body) = self
             .client
-            .post_with_token(
+            .post_with_token_bounded(
                 Audience::AuthApi,
                 SECURITY_CHECK_SELECT_URL,
                 &token,
                 request.to_string().into_bytes(),
                 None,
+                SELECTION_LIMITS,
             )
             .await
-            .map_err(|_| refused())?;
+            .map_err(|error| match error {
+                HttpError::ResponseLimit { status: 401, .. } => sign_in(),
+                _ => refused(),
+            })?;
         Ok((status, Zeroizing::new(body)))
     }
 }
@@ -616,7 +650,7 @@ async fn menu(
             let unavailable = || Outcome::Failed(t!("node_check.quote_unavailable"));
             tokio::time::timeout(
                 std::time::Duration::from_secs(45),
-                account.read_list(SECURITY_CHECK_QUOTE_URL),
+                account.read_list(SECURITY_CHECK_QUOTE_URL, QUOTE_LIMITS),
             )
             .await
             .map_err(|_| unavailable())?
@@ -856,6 +890,79 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn ambiguous_quotes_stop_before_price_approval_ssh_and_submission() {
+        use crate::account::commands::Outcome;
+        use zeroize::Zeroizing;
+
+        let listed = json!({ "servers": [{
+            "id": "bare_metal:7", "kind": "bare_metal", "label": "fixture",
+            "address": "8.8.4.4", "region": "tokyo",
+        }] });
+        let server = parse_eligible(&listed.to_string())
+            .expect("eligible fixture")
+            .pop()
+            .expect("fixture server");
+        let quote = r#"{"model":"claude-mythos-5-2","meterVersion":"posture1","currency":"ai_credits","baseCredits":512,"weights":{"input":3,"output":12},"limits":{"input":8192,"output":256},"maximumCredits":28160}"#;
+        assert!(super::billing::valid_quote(quote));
+        for (key, bad) in [
+            (
+                r#""maximumCredits":28160"#,
+                r#""maximumCredits":40000,"maximumCredits":28160"#,
+            ),
+            (
+                r#""maximumCredits":28160"#,
+                r#""maximum\u0043redits":40000,"maximumCredits":28160"#,
+            ),
+            (r#""output":12"#, r#""output":99,"output":12"#),
+            (r#""input":8192"#, r#""inp\u0075t":9999,"input":8192"#),
+            (r#"{"input":3,"output":12}"#, "[3,12]"),
+        ] {
+            let invalid = quote.replace(key, bad);
+            assert_ne!(invalid, quote);
+            let result = super::run_selected(
+                &server,
+                |prompt| {
+                    assert!(
+                        prompt.contains("authorized to assess"),
+                        "unexpected price prompt"
+                    );
+                    Ok(true)
+                },
+                async || Ok(Zeroizing::new(invalid)),
+                async |_| panic!("invalid quote reached assignment verification"),
+                async |_| panic!("invalid quote reached SSH"),
+                async |_| panic!("invalid quote reached report submission"),
+            )
+            .await;
+            assert!(matches!(result, Err(Outcome::Failed(_))));
+        }
+    }
+
+    #[test]
+    fn rental_inventory_limits_rows_bytes_and_duplicates() {
+        let row = |id| {
+            json!({
+                "id": format!("vps:{id}"), "kind": "vps", "label": "fixture",
+                "address": "8.8.8.4", "region": "tokyo",
+            })
+        };
+        let mut servers: Vec<_> = (1..=super::MAX_INVENTORY_SERVERS).map(row).collect();
+        let eligible = parse_eligible(&json!({ "servers": servers }).to_string())
+            .expect("inventory at supported capacity");
+        assert_eq!(eligible.len(), 256);
+        assert_eq!(eligible[0].rental.canonical_id(), "vps:1");
+        assert_eq!(eligible[255].rental.canonical_id(), "vps:256");
+        servers.push(row(257));
+        assert!(parse_eligible(&json!({ "servers": servers }).to_string()).is_none());
+        assert!(parse_eligible(&json!({ "servers": [row(1), row(1)] }).to_string()).is_none());
+        let oversized = format!(
+            "{{\"servers\":[]}}{}",
+            " ".repeat(super::INVENTORY_LIMITS.ok_bytes)
+        );
+        assert!(parse_eligible(&oversized).is_none());
+    }
+
     #[test]
     fn node_check_verifies_the_canonical_id_and_unchanged_public_assignment() {
         let wire_server = json!({
@@ -1039,11 +1146,13 @@ mod tests {
             .expect("eligible fixture")
             .pop()
             .expect("fixture server");
-        for (owner_only, unknown, expected) in [
-            (1, 0, "owner_only_modes_observed"),
-            (0, 1, "unknown"),
-            (1, 1, "unknown"),
-            (0, 0, "unknown"),
+        for (coverage, owner_only, unknown, expected) in [
+            ("observed", 1, 0, "owner_only_modes_observed"),
+            ("observed", 0, 0, "none_observed"),
+            ("partial", 1, 0, "owner_only_modes_observed"),
+            ("partial", 0, 1, "unknown"),
+            ("partial", 1, 1, "unknown"),
+            ("partial", 0, 0, "unknown"),
         ] {
             let observed_reference = owner_only + unknown > 0;
             let permission_counts =
@@ -1051,7 +1160,7 @@ mod tests {
             let wire = json!({
                 "listeners":"no_listener", "nftables":"not_observed",
                 "metadata":{
-                    "coverage":"partial", "units_with_evidence":1, "truncated":false,
+                    "coverage":coverage, "units_with_evidence":1, "truncated":false,
                     "environment_files": permission_counts,
                     "service_env":{"owner_only":0,"group_or_other_access":0,"unknown":0},
                     "credential_sources":{"owner_only":0,"group_or_other_access":0,"unknown":0},

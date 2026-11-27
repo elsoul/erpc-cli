@@ -242,8 +242,12 @@ class PostureTests(unittest.TestCase):
                     return data, capped
                 if "GetUnit" in args and args[-1] == "ssh.service":
                     return b'o "/org/freedesktop/systemd1/unit/ssh"\n', False
-                if "get-property" in args:
+                if "GetUnit" in args and args[-1] == "erpc-worker-example.service":
+                    return b'o "/org/freedesktop/systemd1/unit/worker"\n', False
+                if "/org/freedesktop/systemd1/unit/ssh" in args:
                     return b'a(sb) 1 "/fixture/.env" false\na(ss) 0\na(ss) 0\n', False
+                if "/org/freedesktop/systemd1/unit/worker" in args:
+                    return b"a(sb) 0\na(ss) 0\na(ss) 0\n", False
                 return POSTURE["NOT_LOADED"], False
 
             def open_cgroup(path, mode):
@@ -263,6 +267,77 @@ class PostureTests(unittest.TestCase):
             self.assertEqual(result["coverage"], expected, (data, proc, result))
             self.assertEqual(result["truncated"], truncated)
             self.assertEqual(result["environment_files"]["owner_only"], 1)
+
+    def test_discovered_unit_owns_its_nested_cgroup_without_losing_known_findings(self):
+        report_linux = POSTURE["report_linux"]
+        direct = b"0::/system.slice/erpc-worker-example.service"
+        nested = direct + b"/.control/child"
+        for proc, loaded, queried, coverage, capped in (
+            (direct + b"\n", True, True, "observed", False),
+            (nested + b"\n", True, True, "observed", False),
+            (b"9:cpu:/other\n4:name=systemd:/erpc.slice/erpc-worker-example.service/child\n",
+             True, True, "observed", False),
+            (nested + b"\n" + b"1:name=systemd:/system.slice/ssh.service\n",
+             True, True, "partial", False),
+            (nested + b"\n" + b"0::/unexpected\n", True, True, "partial", False),
+            (nested + b"\n" + b"0::/bad\xff\n", True, True, "partial", False),
+            (nested + b"\xff\n", True, True, "partial", False),
+            (nested + b"\n" + b"z" * 4096, True, True, "partial", True),
+            (nested + b"\n", False, True, "partial", False),
+            (b"0::/system.slice/docker.service/child\n", True, False, "observed", False),
+            (b"0::/system.slice/docker.service/erpc-worker-example.service\n",
+             True, False, "partial", False),
+            (b"0::/system.slice/erpc-worker-example.service/../sibling\n",
+             True, False, "partial", False),
+            (b"0::/../system.slice/erpc-worker-example.service\n", True, False, "partial", False),
+            (b"0::/system.slice//erpc-worker-example.service\n", True, False, "partial", False),
+            (b"9:cpu:/system.slice/erpc-worker-example.service\n", True, False, "partial", False),
+            (None, True, False, "partial", False),
+        ):
+            with self.subTest(cgroup=proc[:150] if proc else None, loaded=loaded):
+                discovered = "erpc-worker-example.service"
+                calls = []
+                examined = set()
+
+                def capture(args, **_):
+                    if args[0] == "/usr/bin/ss":
+                        return b'tcp LISTEN 0 0 *:80 *:* users:(("nginx",pid=27,fd=4))\n', False
+                    if "GetUnit" in args:
+                        calls.append(args[-1])
+                        if args[-1] == "ssh.service":
+                            return b'o "/org/freedesktop/systemd1/unit/ssh"\n', False
+                        if args[-1] == discovered and loaded:
+                            return b'o "/org/freedesktop/systemd1/unit/worker"\n', False
+                    if "/org/freedesktop/systemd1/unit/worker" in args:
+                        return b'a(sb) 1 "/fixture/.env" false\na(ss) 0\na(ss) 0\n', False
+                    if "/org/freedesktop/systemd1/unit/ssh" in args:
+                        return b"a(sb) 0\na(ss) 0\na(ss) 0\n", False
+                    return POSTURE["NOT_LOADED"], False
+
+                def open_cgroup(path, mode):
+                    self.assertEqual((path, mode), ("/proc/27/cgroup", "rb"))
+                    if proc is None:
+                        raise PermissionError
+                    return io.BytesIO(proc)
+
+                def modes(paths):
+                    examined.update(paths)
+                    return {"owner_only": len(paths), "group_or_other_access": 0, "unknown": 0}
+
+                with patch.dict(report_linux.__globals__, capture=capture, open=open_cgroup,
+                                listeners=lambda: "no_listener", ssh_default_config=lambda: {},
+                                control_read=lambda _: (b'{"nftables":[]}', False),
+                                sshd_jail=lambda: "unknown", file_modes=modes):
+                    report = report_linux()["metadata"]
+                positive = queried and loaded
+                self.assertEqual(calls.count(discovered), int(queried))
+                self.assertLessEqual(len(calls), POSTURE["UNIT_LIMIT"])
+                self.assertEqual(examined, {"/fixture/.env"} if positive else set())
+                self.assertEqual(report["coverage"], coverage)
+                self.assertEqual(report["truncated"], capped)
+                self.assertEqual(report["environment_files"]["owner_only"], int(positive))
+                self.assertEqual(report["service_env"]["owner_only"], int(positive))
+                self.assertNotIn("/fixture", json.dumps(report))
 
 
 if __name__ == "__main__":

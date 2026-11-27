@@ -19,6 +19,7 @@ fn limits(timeout: Duration) -> JsonResponseLimits {
 }
 
 async fn loopback_json(
+    method: reqwest::Method,
     limits: Option<JsonResponseLimits>,
     respond: impl FnOnce(&mut TcpStream) + Send + 'static,
 ) -> Result<(u16, String), HttpError> {
@@ -44,14 +45,14 @@ async fn loopback_json(
         .timeout(Duration::from_millis(200))
         .build()
         .expect("loopback fixture client");
-    let request = client.post(format!("http://127.0.0.1:{port}/"));
+    let request = client.request(method, format!("http://127.0.0.1:{port}/"));
     let response = send_json(request, "127.0.0.1", limits).await;
     server.join().expect("loopback fixture finished");
     response
 }
 
 async fn delayed_json(timeout: Option<Duration>) -> Result<(u16, String), HttpError> {
-    loopback_json(timeout.map(limits), |stream| {
+    loopback_json(reqwest::Method::POST, timeout.map(limits), |stream| {
         stream
             .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n")
             .expect("response headers");
@@ -64,9 +65,25 @@ async fn delayed_json(timeout: Option<Duration>) -> Result<(u16, String), HttpEr
 
 #[tokio::test]
 async fn json_request_caps_chunked_bodies_by_status_before_the_end_of_the_stream() {
-    for (status, maximum) in [(200, 16 * 1024), (403, 1024)] {
+    for (method, status, maximum) in [
+        (reqwest::Method::POST, 200, 16 * 1024),
+        (reqwest::Method::POST, 403, 1024),
+        (reqwest::Method::GET, 200, 128 * 1024),
+        (reqwest::Method::GET, 200, 4096),
+        (reqwest::Method::POST, 200, 4096),
+        (reqwest::Method::GET, 401, 1024),
+    ] {
         for overflow in [false, true] {
-            let received = loopback_json(Some(limits(Duration::from_secs(3))), move |stream| {
+            let response_limits = limits(Duration::from_secs(3));
+            let response_limits = if status == 200 {
+                JsonResponseLimits {
+                    ok_bytes: maximum,
+                    ..response_limits
+                }
+            } else {
+                response_limits
+            };
+            let received = loopback_json(method.clone(), Some(response_limits), move |stream| {
                 write!(
                     stream,
                     "HTTP/1.1 {status} Fixture\r\nTransfer-Encoding: chunked\r\n\r\n"
@@ -103,11 +120,15 @@ async fn json_request_caps_chunked_bodies_by_status_before_the_end_of_the_stream
 
 #[tokio::test]
 async fn json_request_reports_a_broken_bounded_body_as_transport_failure() {
-    let result = loopback_json(Some(limits(Duration::from_secs(3))), |stream| {
-        stream
-            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\n{}")
-            .expect("short fixture");
-    })
+    let result = loopback_json(
+        reqwest::Method::POST,
+        Some(limits(Duration::from_secs(3))),
+        |stream| {
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\n{}")
+                .expect("short fixture");
+        },
+    )
     .await;
     assert!(matches!(result, Err(HttpError::Transport { .. })));
 }

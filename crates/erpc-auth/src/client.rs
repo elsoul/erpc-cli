@@ -289,6 +289,32 @@ impl AuthClient {
         url: &str,
         access_token: &SecretString,
     ) -> Result<(u16, String), HttpError> {
+        self.get_json(audience, url, access_token, None).await
+    }
+
+    /// Sends an authenticated GET with a deadline and response byte cap.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::post_with_token_bounded`].
+    pub async fn get_with_token_bounded(
+        &self,
+        audience: Audience,
+        url: &str,
+        access_token: &SecretString,
+        limits: JsonResponseLimits,
+    ) -> Result<(u16, String), HttpError> {
+        self.get_json(audience, url, access_token, Some(limits))
+            .await
+    }
+
+    async fn get_json(
+        &self,
+        audience: Audience,
+        url: &str,
+        access_token: &SecretString,
+        limits: Option<JsonResponseLimits>,
+    ) -> Result<(u16, String), HttpError> {
         allowlist::ensure_token_destination(audience, url)?;
         // The destination, not the issuer. Naming the issuer here told an
         // operator whose user-api request failed that auth-api could not
@@ -297,19 +323,11 @@ impl AuthClient {
             .first()
             .copied()
             .unwrap_or_else(|| audience.issuer_host());
-        let response = self
+        let request = self
             .inner
             .get(url)
-            .bearer_auth(access_token.expose_secret())
-            .send()
-            .await
-            .map_err(|e| HttpError::Transport {
-                host,
-                reason: e.to_string(),
-            })?;
-        let status = response.status().as_u16();
-        let text = response.text().await.unwrap_or_default();
-        Ok((status, text))
+            .bearer_auth(access_token.expose_secret());
+        send_json(request, host, limits).await
     }
 
     /// POSTs `body` as JSON with the access token and returns the status and
@@ -346,7 +364,7 @@ impl AuthClient {
         .await
     }
 
-    /// POSTs authenticated JSON with an idempotency key, a per-request
+    /// POSTs authenticated JSON with an optional idempotency key, a per-request
     /// deadline and a byte cap checked as the body is received.
     ///
     /// # Errors
@@ -360,7 +378,7 @@ impl AuthClient {
         url: &str,
         access_token: &SecretString,
         body: Vec<u8>,
-        idempotency_key: &str,
+        idempotency_key: Option<&str>,
         limits: JsonResponseLimits,
     ) -> Result<(u16, String), HttpError> {
         self.send_with_token(
@@ -370,7 +388,7 @@ impl AuthClient {
             access_token,
             body,
             JsonOptions {
-                idempotency_key: Some(idempotency_key),
+                idempotency_key,
                 response_limits: Some(limits),
             },
         )
