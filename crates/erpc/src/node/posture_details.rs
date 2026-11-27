@@ -424,6 +424,14 @@ pub(super) struct Metadata {
 }
 
 impl Metadata {
+    fn environment_files(&self) -> &ModeCounts {
+        self.environment_files.as_ref().unwrap_or(&self.service_env)
+    }
+
+    pub(super) fn has_environment_reference(&self) -> bool {
+        self.environment_files().total() > 0 || self.service_env.total() > 0
+    }
+
     pub(super) fn valid(&self) -> bool {
         self.units_with_evidence <= 16
             && self
@@ -455,11 +463,11 @@ impl Metadata {
 
     pub(super) fn facts(&self) -> (&'static str, &'static str) {
         let complete = self.coverage == MetadataCoverage::Observed && !self.truncated;
+        let environment = self.environment_files();
         (
-            self.environment_files
-                .as_ref()
-                .unwrap_or(&self.service_env)
-                .fact(complete),
+            // Known owner-only counts describe the observed references. An
+            // unreadable mode still prevents a mode classification.
+            environment.fact(complete || environment.owner_only > 0),
             self.credential_sources.fact(complete),
         )
     }
@@ -476,13 +484,12 @@ impl Metadata {
             if self.coverage == MetadataCoverage::Partial {
                 let _ = writeln!(text, "{}", t!("node_check.metadata_partial"));
             }
-            let environment_files = self.environment_files.as_ref().unwrap_or(&self.service_env);
             if let Some(environment_files) = &self.environment_files {
                 environment_files.describe(text, &t!("node_check.environment_files"));
             }
             self.service_env
                 .describe(text, &t!("node_check.service_env"));
-            if environment_files.total() > 0 || self.service_env.total() > 0 {
+            if self.has_environment_reference() {
                 let _ = writeln!(text, "{}", t!("node_check.environment_reference_review"));
             }
             self.credential_sources

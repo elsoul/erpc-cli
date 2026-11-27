@@ -55,6 +55,14 @@ pub enum HttpError {
         /// The host that was being contacted.
         host: &'static str,
     },
+    /// A bounded JSON response exceeded its byte limit.
+    #[error("{host} returned a response exceeding its size limit (HTTP {status})")]
+    ResponseLimit {
+        /// The host that was being contacted.
+        host: &'static str,
+        /// The HTTP status received before the body.
+        status: u16,
+    },
     /// The server answered with something this client cannot read.
     #[error("{host} returned a reply this version cannot read: {reason}")]
     Malformed {
@@ -82,10 +90,21 @@ pub struct AuthClient {
     inner: reqwest::Client,
 }
 
+/// Per-request deadline and body limits for an authenticated JSON submission.
+#[derive(Clone, Copy)]
+pub struct JsonResponseLimits {
+    /// Deadline for both headers and body.
+    pub timeout: Duration,
+    /// Maximum bytes for an HTTP 200 response.
+    pub ok_bytes: usize,
+    /// Maximum bytes for any other response.
+    pub other_bytes: usize,
+}
+
 #[derive(Default)]
 struct JsonOptions<'a> {
     idempotency_key: Option<&'a str>,
-    timeout: Option<Duration>,
+    response_limits: Option<JsonResponseLimits>,
 }
 
 impl AuthClient {
@@ -327,20 +346,22 @@ impl AuthClient {
         .await
     }
 
-    /// POSTs authenticated JSON with an idempotency key and a deadline for
-    /// the request and response body, overriding the client's default timeout.
+    /// POSTs authenticated JSON with an idempotency key, a per-request
+    /// deadline and a byte cap checked as the body is received.
     ///
     /// # Errors
     ///
-    /// As [`Self::post_with_token`]. Expiry of the deadline returns [`HttpError::Timeout`].
-    pub async fn post_with_token_timeout(
+    /// As [`Self::post_with_token`]. A deadline, byte limit, or invalid UTF-8
+    /// returns [`HttpError::Timeout`], [`HttpError::ResponseLimit`], or
+    /// [`HttpError::Malformed`], respectively.
+    pub async fn post_with_token_bounded(
         &self,
         audience: Audience,
         url: &str,
         access_token: &SecretString,
         body: Vec<u8>,
         idempotency_key: &str,
-        timeout: Duration,
+        limits: JsonResponseLimits,
     ) -> Result<(u16, String), HttpError> {
         self.send_with_token(
             reqwest::Method::POST,
@@ -350,7 +371,7 @@ impl AuthClient {
             body,
             JsonOptions {
                 idempotency_key: Some(idempotency_key),
-                timeout: Some(timeout),
+                response_limits: Some(limits),
             },
         )
         .await
@@ -428,7 +449,7 @@ impl AuthClient {
             body,
             options.idempotency_key,
         );
-        send_json(request, host, options.timeout).await
+        send_json(request, host, options.response_limits).await
     }
 
     /// POSTs `body` as raw bytes with the access token, allowing `timeout`
@@ -814,10 +835,10 @@ fn json_request(
 async fn send_json(
     request: reqwest::RequestBuilder,
     host: &'static str,
-    timeout: Option<Duration>,
+    response_limits: Option<JsonResponseLimits>,
 ) -> Result<(u16, String), HttpError> {
     let transport = |error: reqwest::Error| {
-        if timeout.is_some() && error.is_timeout() {
+        if response_limits.is_some() && error.is_timeout() {
             HttpError::Timeout { host }
         } else {
             HttpError::Transport {
@@ -826,19 +847,39 @@ async fn send_json(
             }
         }
     };
-    let request = if let Some(timeout) = timeout {
-        request.timeout(timeout)
+    let request = if let Some(limits) = response_limits {
+        request.timeout(limits.timeout)
     } else {
         request
     };
-    let response = request.send().await.map_err(transport)?;
+    let mut response = request.send().await.map_err(transport)?;
     let status = response.status().as_u16();
-    let text = response.text().await;
-    let text = if timeout.is_some() {
-        text.map_err(transport)?
-    } else {
-        text.unwrap_or_default()
+    let Some(limits) = response_limits else {
+        return Ok((status, response.text().await.unwrap_or_default()));
     };
+    let maximum = if status == 200 {
+        limits.ok_bytes
+    } else {
+        limits.other_bytes
+    };
+    let exceeded = || HttpError::ResponseLimit { host, status };
+    if response
+        .content_length()
+        .is_some_and(|length| length > maximum as u64)
+    {
+        return Err(exceeded());
+    }
+    let mut bytes = Vec::with_capacity(maximum.min(16 * 1024));
+    while let Some(chunk) = response.chunk().await.map_err(transport)? {
+        if chunk.len() > maximum - bytes.len() {
+            return Err(exceeded());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let text = String::from_utf8(bytes).map_err(|_| HttpError::Malformed {
+        host,
+        reason: "response is not UTF-8".to_owned(),
+    })?;
     Ok((status, text))
 }
 

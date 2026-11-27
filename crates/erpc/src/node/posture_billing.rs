@@ -6,6 +6,7 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use erpc_ai::session::Access as _;
+use erpc_auth::client::JsonResponseLimits;
 use erpc_auth::credential::Audience;
 use erpc_core::endpoints::SECURITY_CHECK_REPORT_URL;
 use serde::{Deserialize, Serialize};
@@ -22,7 +23,11 @@ const WEIGHT_IN: u32 = 3;
 const WEIGHT_OUT: u32 = 12;
 const MAX_IN: u32 = 8192;
 const MAX_OUT: u32 = 256;
-const REPORT_TIMEOUT: Duration = Duration::from_secs(120);
+const REPORT_LIMITS: JsonResponseLimits = JsonResponseLimits {
+    timeout: Duration::from_secs(120),
+    ok_bytes: 16 * 1024,
+    other_bytes: 1024,
+};
 const MAXIMUM: u32 = BASE + MAX_IN * WEIGHT_IN + MAX_OUT * WEIGHT_OUT;
 
 fn expected_quote() -> Value {
@@ -158,14 +163,14 @@ impl ReportFailure {
         }
     }
 
-    fn from_response(status: u16, body: &str) -> Self {
+    pub(super) fn from_response(status: u16, body: &str) -> Self {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct ErrorBody {
             error: FailureCode,
         }
         use FailureCode as Code;
-        let code = if body.len() <= 1024 {
+        let code = if body.len() <= REPORT_LIMITS.other_bytes {
             serde_json::from_str::<ErrorBody>(body).map_or(Code::UnknownResponse, |reply| {
                 match (status, reply.error) {
                     (400, code @ Code::InvalidPostureReport)
@@ -254,17 +259,23 @@ impl ReportSubmission {
         eprintln!("{}", request_notice(&self.idempotency_key));
         let (status, body) = account
             .client
-            .post_with_token_timeout(
+            .post_with_token_bounded(
                 Audience::AuthApi,
                 SECURITY_CHECK_REPORT_URL,
                 &token,
                 self.body,
                 &self.idempotency_key,
-                REPORT_TIMEOUT,
+                REPORT_LIMITS,
             )
             .await
             .map_err(|error| match error {
                 erpc_auth::HttpError::Timeout { .. } => ReportFailure::timeout(),
+                erpc_auth::HttpError::ResponseLimit { status: 200, .. } => {
+                    ReportFailure::invalid_receipt()
+                }
+                erpc_auth::HttpError::ResponseLimit { status, .. } => {
+                    ReportFailure::from_response(status, "")
+                }
                 _ => ReportFailure::local(
                     SettlementState::Unconfirmed,
                     FailureCode::RequestTransport,
@@ -273,9 +284,6 @@ impl ReportSubmission {
         let body = Zeroizing::new(body);
         if status != 200 {
             return Err(ReportFailure::from_response(status, &body));
-        }
-        if body.len() > 16384 {
-            return Err(ReportFailure::invalid_receipt());
         }
         let receipt: Receipt =
             serde_json::from_str(&body).map_err(|_| ReportFailure::invalid_receipt())?;

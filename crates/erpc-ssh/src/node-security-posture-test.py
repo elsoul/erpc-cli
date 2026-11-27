@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+import io
 from pathlib import Path
 import runpy
 import sys
@@ -23,22 +24,25 @@ class PostureTests(unittest.TestCase):
             b'udp UNCONN 0 0 *:41195 *:*\n'
             b'udp UNCONN 0 0 *:0 *:*\n'
         )
-        report, pids = POSTURE["socket_report"](source, False)
+        report, pids, attribution_incomplete = POSTURE["socket_report"](source, False)
         self.assertEqual(report["tcp"]["wildcard"], [{"port": 16379, "services": ["redis"]}])
         self.assertEqual(report["tcp"]["loopback"], [{"port": 6379, "services": ["unknown"]}])
         self.assertEqual(report["udp"]["interface"], [{"port": 40535, "services": ["unclassified"]}])
         self.assertEqual(report["udp"]["wildcard"], [{"port": 41195, "services": ["unknown"]}])
         self.assertEqual(pids, {11, 31})
+        self.assertTrue(attribution_incomplete)
         rendered = json.dumps(report)
         for raw in ("198.51.100", "fe80", "test-daemon", "pid=", "2222"):
             self.assertNotIn(raw, rendered)
 
     def test_reports_cap_and_malformed_rows_without_clean_bill_of_health(self):
         rows = [f"tcp LISTEN 0 0 *:{port} *:*\n".encode() for port in range(1, 151)]
-        view, _ = POSTURE["socket_report"](b"".join(rows), False)
+        view, _, incomplete = POSTURE["socket_report"](b"".join(rows), False)
+        self.assertTrue(incomplete)
         self.assertTrue(view["truncated"])
         self.assertEqual(len(view["tcp"]["wildcard"]), 128)
-        partial, _ = POSTURE["socket_report"](rows[0] + b"unreadable row\ntruncated", True)
+        partial, _, incomplete = POSTURE["socket_report"](rows[0] + b"unreadable row\ntruncated", True)
+        self.assertTrue(incomplete)
         self.assertTrue(partial["truncated"])
         self.assertEqual(partial["tcp"]["coverage"], "partial")
         self.assertEqual(POSTURE["socket_report"](None, False)[0]["udp"]["coverage"], "unknown")
@@ -166,12 +170,12 @@ class PostureTests(unittest.TestCase):
             return {"owner_only": len(paths), "group_or_other_access": 0, "unknown": 0}
 
         with patch.dict(metadata.__globals__, capture=capture, file_modes=modes):
-            report = metadata(set())
+            report = metadata(set(), False)
         self.assertEqual(report["distinct_credential_sources"], {"as_is": 2, "encrypted": 2})
         self.assertEqual(observed_calls, [(), (), ("/fixture/dual", "/fixture/encrypted", "/fixture/raw")])
         self.assertNotIn("/fixture", json.dumps(report))
         with patch.dict(metadata.__globals__, capture=lambda *args, **kw: (None, False)):
-            unavailable = metadata(set())
+            unavailable = metadata(set(), False)
         self.assertEqual(unavailable["distinct_credential_sources"], {"as_is": None, "encrypted": None})
 
     def test_metadata_distinguishes_missing_units_from_failed_reads(self):
@@ -207,12 +211,58 @@ class PostureTests(unittest.TestCase):
                     return (first, False) if unit_path + "ssh" in args else second
 
                 with patch.dict(metadata.__globals__, capture=capture, file_modes=modes,
-                                unit_names=lambda _: (names, False)):
-                    report = metadata(set())
+                                unit_names=lambda _: (names, False, False)):
+                    report = metadata(set(), False)
                 self.assertEqual(report["coverage"], expected, report)
                 self.assertEqual(report["units_with_evidence"], 1)
                 self.assertEqual(report["environment_files"]["group_or_other_access"], int(first == positive))
                 self.assertNotIn("/fixture", json.dumps(report))
+
+    def test_report_metadata_carries_socket_and_cgroup_uncertainty(self):
+        report_linux = POSTURE["report_linux"]
+        socket = b'tcp LISTEN 0 0 *:80 *:* users:(("nginx",pid=27,fd=4))\n'
+        mixed = b'tcp LISTEN 0 0 *:80 *:* users:(("nginx",pid=27,fd=4),unknown)\n'
+        cgroup = b"0::/system.slice/erpc-worker-example.service\n"
+        for data, capped, proc, expected, truncated in (
+            (socket, False, cgroup, "observed", False),
+            (b"", False, cgroup, "observed", False),
+            (None, False, cgroup, "partial", False),
+            (socket, True, cgroup, "partial", False),
+            (socket + b"invalid\n", False, cgroup, "partial", False),
+            (mixed, False, cgroup, "partial", False),
+            (socket + b"udp UNCONN 0 0 *:53 *:*\n", False, cgroup, "partial", False),
+            (socket, False, None, "partial", False),
+            (socket, False, b"x" * 4097, "partial", True),
+            (socket, False, cgroup + b"\xff\n", "partial", False),
+            (socket, False, b"", "partial", False),
+            (socket, False, b"invalid\n", "partial", False),
+        ):
+            def capture(args, **_):
+                if args[0] == "/usr/bin/ss":
+                    return data, capped
+                if "GetUnit" in args and args[-1] == "ssh.service":
+                    return b'o "/org/freedesktop/systemd1/unit/ssh"\n', False
+                if "get-property" in args:
+                    return b'a(sb) 1 "/fixture/.env" false\na(ss) 0\na(ss) 0\n', False
+                return POSTURE["NOT_LOADED"], False
+
+            def open_cgroup(path, mode):
+                self.assertEqual((path, mode), ("/proc/27/cgroup", "rb"))
+                if proc is None:
+                    raise PermissionError
+                return io.BytesIO(proc)
+
+            with patch.dict(report_linux.__globals__, capture=capture, open=open_cgroup,
+                            listeners=lambda: "no_listener", ssh_default_config=lambda: {},
+                            control_read=lambda _: (b'{"nftables":[]}', False),
+                            sshd_jail=lambda: "unknown",
+                            file_modes=lambda paths: {
+                                "owner_only": len(paths), "group_or_other_access": 0, "unknown": 0,
+                            }):
+                result = report_linux()["metadata"]
+            self.assertEqual(result["coverage"], expected, (data, proc, result))
+            self.assertEqual(result["truncated"], truncated)
+            self.assertEqual(result["environment_files"]["owner_only"], 1)
 
 
 if __name__ == "__main__":

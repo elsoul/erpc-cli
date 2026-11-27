@@ -103,8 +103,11 @@ network namespace and available system configuration.
 - File mode counts for systemd environment and credential source references.
   The collector counts distinct source values separately for
   `LoadCredential` and `LoadCredentialEncrypted`, deduplicating repeated
-  values within each kind. Partial systemd reads preserve observed findings
-  and leave missing evidence unknown.
+  values within each kind. Incomplete socket attribution, cgroup discovery
+  or systemd reads leave missing evidence unknown. An observed
+  `EnvironmentFile` declaration produces a local SSH policy finding
+  regardless of its file mode. JSON reports include that finding in
+  `localFindings`, alongside any metered findings.
 - Security update counts from the local Debian or Ubuntu package cache.
 
 The pricing prompt shows the model, maximum reservation of 28,160 ERPC AI

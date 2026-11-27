@@ -474,13 +474,7 @@ fn observe_remote(
 ) -> Result<Posture, Outcome> {
     let target = target(server, explicit_key)
         .ok_or_else(|| Outcome::Failed(t!("node_check.remote_pin_required")))?;
-    collect_posture(&target).map_err(|failure| {
-        Outcome::Failed(format!(
-            "{}\n{failure} [{}]",
-            t!("node_check.remote_failed"),
-            failure.code()
-        ))
-    })
+    collect_posture(&target).map_err(|failure| Outcome::Failed(failure.message()))
 }
 
 #[derive(Debug)]
@@ -492,6 +486,15 @@ enum PostureFailure {
 }
 
 impl PostureFailure {
+    fn message(&self) -> String {
+        format!(
+            "{}\n{} [{}]",
+            t!("node_check.remote_failed"),
+            self.reason(),
+            self.code()
+        )
+    }
+
     fn code(&self) -> &'static str {
         match self {
             Self::HostConfig => "ssh_config",
@@ -500,18 +503,29 @@ impl PostureFailure {
             Self::InvalidPosture => "invalid_posture",
         }
     }
-}
 
-impl std::fmt::Display for PostureFailure {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn reason(&self) -> String {
+        use erpc_ssh::PrivateCaptureError as Capture;
+
         match self {
-            Self::HostConfig => {
-                formatter.write_str("The pinned SSH host configuration could not be verified.")
-            }
-            Self::Capture(error) => write!(formatter, "{error}."),
-            Self::InvalidJson => formatter.write_str("The collector response was not valid JSON."),
-            Self::InvalidPosture => formatter
-                .write_str("The collector response failed posture schema or range validation."),
+            Self::HostConfig => t!("node_check.diag_config"),
+            Self::InvalidJson => t!("node_check.diag_json"),
+            Self::InvalidPosture => t!("node_check.diag_posture"),
+            Self::Capture(error) => match error {
+                Capture::InvalidLimits => t!("node_check.diag_invalid_limits"),
+                Capture::Start => t!("node_check.diag_start"),
+                Capture::Io => t!("node_check.diag_io"),
+                Capture::Timeout => t!("node_check.diag_timeout"),
+                Capture::OutputLimit => t!("node_check.diag_output_limit"),
+                Capture::HostKey => t!("node_check.diag_host_key"),
+                Capture::AgentDenied => t!("node_check.diag_agent"),
+                Capture::AuthenticationDenied => t!("node_check.diag_authentication"),
+                Capture::TransportTimeout => t!("node_check.diag_transport_timeout"),
+                Capture::TransportFailure => t!("node_check.diag_transport_failure"),
+                Capture::SshExit => t!("node_check.diag_ssh_exit"),
+                Capture::Exit(status) => t!("node_check.diag_exit", status = status),
+                Capture::UnexpectedStderr => t!("node_check.diag_stderr"),
+            },
         }
     }
 }
@@ -613,35 +627,11 @@ async fn menu(
         async |submission| submission.submit(&account).await,
     )
     .await;
-    let Completed { id, result, model } = match completed {
-        Ok(Some(completed)) => completed,
-        Ok(None) => return Outcome::Done(String::new()),
-        Err(outcome) => return outcome,
-    };
-    if json {
-        let mut output = serde_json::json!({
-            "server": server.summary(), "source": "pinned_ssh", "posture": result, "requestId": id,
-        });
-        match model {
-            Ok(receipt) => output["modelReport"] = serde_json::json!(receipt),
-            Err(state) => {
-                output["reportSource"] = serde_json::json!("local_rules");
-                output["settlement"] = serde_json::json!(state.settlement);
-                output["settlementDetail"] = serde_json::json!(state);
-            }
-        }
-        return Said::Json(output).done();
+    match completed {
+        Ok(Some(completed)) => completed.render(&server, json).done(),
+        Ok(None) => Outcome::Done(String::new()),
+        Err(outcome) => outcome,
     }
-    let message = match model {
-        Ok(receipt) => receipt.summary(),
-        Err(state) => state.message(&id),
-    };
-    Outcome::Done(format!(
-        "{}\n{}\n{}",
-        server.label(),
-        result.report(),
-        message
-    ))
 }
 
 fn ask_confirmation(prompt: String) -> Result<bool, Outcome> {
@@ -656,6 +646,45 @@ struct Completed {
     id: String,
     result: Posture,
     model: Result<billing::Receipt, billing::ReportFailure>,
+}
+
+impl Completed {
+    fn render(&self, server: &EligibleServer, json: bool) -> Said {
+        let Self { id, result, model } = self;
+        if json {
+            let mut output = serde_json::json!({
+                "server": server.summary(), "source": "pinned_ssh", "posture": result, "requestId": id,
+            });
+            if result
+                .metadata
+                .as_ref()
+                .is_some_and(Metadata::has_environment_reference)
+            {
+                output["localFindings"] = serde_json::json!([
+                    { "id": "review_env_file_use", "source": "pinned_ssh" }
+                ]);
+            }
+            match model {
+                Ok(receipt) => output["modelReport"] = serde_json::json!(receipt),
+                Err(state) => {
+                    output["reportSource"] = serde_json::json!("local_rules");
+                    output["settlement"] = serde_json::json!(state.settlement);
+                    output["settlementDetail"] = serde_json::json!(state);
+                }
+            }
+            return Said::Json(output);
+        }
+        let message = match model {
+            Ok(receipt) => receipt.summary(),
+            Err(state) => state.message(id),
+        };
+        Said::Text(format!(
+            "{}\n{}\n{}",
+            server.label(),
+            result.report(),
+            message
+        ))
+    }
 }
 
 async fn run_selected(
@@ -995,6 +1024,103 @@ mod tests {
             if coverage == "partial" {
                 assert!(posture.report().contains("Partial systemd metadata"));
             }
+        }
+    }
+
+    #[test]
+    fn final_report_keeps_confirmed_environment_references_independent_of_file_modes() {
+        use crate::account::commands::Said;
+
+        let listed = json!({ "servers": [{
+            "id": "bare_metal:7", "kind": "bare_metal", "label": "fixture",
+            "address": "8.8.8.4", "region": "tokyo",
+        }] });
+        let server = parse_eligible(&listed.to_string())
+            .expect("eligible fixture")
+            .pop()
+            .expect("fixture server");
+        for (owner_only, unknown, expected) in [
+            (1, 0, "owner_only_modes_observed"),
+            (0, 1, "unknown"),
+            (1, 1, "unknown"),
+            (0, 0, "unknown"),
+        ] {
+            let observed_reference = owner_only + unknown > 0;
+            let modes =
+                json!({ "owner_only": owner_only, "group_or_other_access": 0, "unknown": unknown });
+            let wire = json!({
+                "listeners":"no_listener", "nftables":"not_observed",
+                "metadata":{
+                    "coverage":"partial", "units_with_evidence":1, "truncated":false,
+                    "environment_files": modes,
+                    "service_env":{"owner_only":0,"group_or_other_access":0,"unknown":0},
+                    "credential_sources":{"owner_only":0,"group_or_other_access":0,"unknown":0},
+                },
+            });
+            for settled in [true, false] {
+                let model = if settled {
+                    Ok(serde_json::from_value(json!({
+                        "status":"completed", "model":"claude-mythos-5-2", "findings":["review_ssh_jail"],
+                        "billing":{"meterVersion":"posture1","chargedCredits":527,
+                            "baseCredits":512,"inputTokens":1,"outputTokens":1},
+                    })).expect("receipt fixture"))
+                } else {
+                    Err(super::billing::ReportFailure::from_response(
+                        409,
+                        r#"{"error":"posture_report_no_actionable_candidates"}"#,
+                    ))
+                };
+                let result =
+                    decode_posture(wire.to_string().as_bytes()).expect("valid mixed evidence");
+                assert_eq!(result.billing_facts()["service_env"], expected);
+                let completed = super::Completed {
+                    id: "fixture-request".into(),
+                    result,
+                    model,
+                };
+                let Said::Text(text) = completed.render(&server, false) else {
+                    panic!("human report expected");
+                };
+                assert_eq!(
+                    text.contains("Local SSH finding · EnvironmentFile policy review"),
+                    observed_reference
+                );
+                assert_eq!(text.contains("ERPC AI tokens charged: 527"), settled);
+                assert_eq!(text.contains("No AI tokens were charged"), !settled);
+                let Said::Json(record) = completed.render(&server, true) else {
+                    panic!("JSON report expected");
+                };
+                if observed_reference {
+                    assert_eq!(
+                        record["localFindings"],
+                        json!([
+                            { "id":"review_env_file_use", "source":"pinned_ssh" }
+                        ])
+                    );
+                } else {
+                    assert!(record.get("localFindings").is_none());
+                }
+                assert_eq!(record["posture"]["metadata"]["environment_files"], modes);
+                assert_eq!(record.get("modelReport").is_some(), settled);
+                if !settled {
+                    assert_eq!(record["settlement"], "no_charge");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn collector_diagnostics_translate_the_reason_without_changing_the_code() {
+        use erpc_ssh::PrivateCaptureError;
+        let failure = PostureFailure::Capture(PrivateCaptureError::Exit(19));
+        let english = crate::cli::i18n::speaking(Lang::En, || failure.reason());
+        assert_eq!(english, "The collector exited with status 19.");
+        for lang in [Lang::Ja, Lang::Ru, Lang::Zh] {
+            let reason = crate::cli::i18n::speaking(lang, || failure.reason());
+            assert_ne!(reason, english);
+            assert!(reason.contains("19"));
+            let full = crate::cli::i18n::speaking(lang, || failure.message());
+            assert!(full.ends_with(&format!("{reason} [collector_exit]")));
         }
     }
 

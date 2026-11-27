@@ -88,6 +88,7 @@ FIXED_UNITS = (
 )
 ERPC_UNIT = re.compile(r"erpc-(?:worker|waf|backup)-[a-z0-9-]{1,64}\.service\Z")
 PROCESS = re.compile(rb'\("([^"\\]{1,40})",pid=([0-9]{1,10}),fd=[0-9]{1,10}\)')
+PROCESS_LIST = re.compile(rb"users:\(" + PROCESS.pattern + rb"(?:," + PROCESS.pattern + rb")*\)")
 
 
 DENIED = object()
@@ -187,6 +188,7 @@ def socket_report(data, input_truncated):
     observed = {protocol: {scope: {} for scope in SCOPES} for protocol in PROTOCOLS}
     pids = set()
     incomplete = input_truncated
+    unattributed = False
     if data is not None:
         if data and not data.endswith(b"\n"):
             incomplete = True
@@ -206,16 +208,22 @@ def socket_report(data, input_truncated):
             if endpoint is None:
                 continue
             scope, port = endpoint
-            processes = PROCESS.findall(fields[6]) if len(fields) == 7 else []
+            process_list = fields[6] if len(fields) == 7 else b""
+            matched = PROCESS.findall(process_list)
+            processes = [(name, int(pid)) for name, pid in matched if int(pid) > 0]
+            attributed = PROCESS_LIST.fullmatch(process_list) and len(processes) == len(matched)
+            unattributed |= not attributed
             categories = {
                 PROCESS_CATEGORY.get(name.decode("ascii", "replace"), "unclassified")
                 for name, _ in processes
             } or {"unknown"}
+            if not attributed:
+                categories.add("unknown")
             by_port = observed[fields[0].decode("ascii")][scope]
             by_port.setdefault(port, set()).update(categories)
             for _, pid in processes:
                 if len(pids) <= PID_LIMIT:
-                    pids.add(int(pid))
+                    pids.add(pid)
     total = sum(len(ports) for scopes in observed.values() for ports in scopes.values())
     left = PORT_LIMIT
     report = {"truncated": input_truncated or total > PORT_LIMIT}
@@ -227,7 +235,7 @@ def socket_report(data, input_truncated):
             left -= len(group)
             groups[scope] = group
         report[protocol] = groups
-    return report, pids
+    return report, pids, data is None or incomplete or unattributed or report["truncated"]
 
 
 def filter_evidence(data, truncated):
@@ -324,19 +332,33 @@ def sshd_jail():
 
 def unit_names(pids):
     units = set(FIXED_UNITS)
+    incomplete = False
+    truncated = len(pids) > PID_LIMIT
     for pid in sorted(pids)[:PID_LIMIT]:
         try:
             with open(f"/proc/{pid}/cgroup", "rb") as cgroup:
                 data = cgroup.read(4097)
             if len(data) > 4096:
-                continue
-            for line in data.decode("ascii").splitlines():
-                unit = line.rsplit("/", 1)[-1]
+                truncated = True
+                data = data[:4096]
+            if not data.endswith(b"\n"):
+                incomplete = True
+                data = data[:data.rfind(b"\n") + 1]
+            for raw in data.splitlines():
+                try:
+                    hierarchy, _, path = raw.decode("ascii").split(":", 2)
+                    if (not hierarchy.isdecimal() or not path.startswith("/")
+                            or any(ord(char) < 32 or ord(char) == 127 for char in path)):
+                        raise ValueError()
+                except (UnicodeError, ValueError):
+                    incomplete = True
+                    continue
+                unit = path.rsplit("/", 1)[-1]
                 if ERPC_UNIT.fullmatch(unit):
                     units.add(unit)
-        except (OSError, UnicodeError):
-            continue
-    return sorted(units)[:UNIT_LIMIT], len(units) > UNIT_LIMIT or len(pids) > PID_LIMIT
+        except OSError:
+            incomplete = True
+    return sorted(units)[:UNIT_LIMIT], truncated or len(units) > UNIT_LIMIT, incomplete
 
 
 def property_references():
@@ -388,13 +410,13 @@ def file_modes(paths):
     return counts
 
 
-def metadata_policy(pids):
-    units, truncated = unit_names(pids)
+def metadata_policy(pids, socket_attribution_incomplete):
+    units, truncated, incomplete = unit_names(pids)
     properties = property_references()
     service = "org.freedesktop.systemd1"
     base = ["/usr/bin/busctl", "--system", "--auto-start=no", "--allow-interactive-authorization=no"]
     units_with_evidence = 0
-    incomplete = False
+    incomplete |= socket_attribution_incomplete
     for unit in units:
         obj, capped = capture(base + ["call", service, "/org/freedesktop/systemd1",
                                       service + ".Manager", "GetUnit", "s", unit],
@@ -450,7 +472,7 @@ def metadata_policy(pids):
 
 def report_linux():
     sockets, capped = capture(["/usr/bin/ss", "-H", "-O", "-a", "-t", "-u", "-n", "-p"], limit=1 << 20)
-    ports, pids = socket_report(sockets, capped)
+    ports, pids, socket_attribution_incomplete = socket_report(sockets, capped)
     nft, nft_capped = control_read("ruleset")
     nftables, firewall = filter_evidence(nft, nft_capped)
     if nftables == "not_observed":
@@ -462,7 +484,7 @@ def report_linux():
         "listeners": listeners(), "nftables": nftables, "ports": ports,
         "ssh": {"source": "default_config_for_connection", **ssh_default_config()},
         "firewall": firewall, "fail2ban": sshd_jail(),
-        "metadata": metadata_policy(pids),
+        "metadata": metadata_policy(pids, socket_attribution_incomplete),
     }
 
 
