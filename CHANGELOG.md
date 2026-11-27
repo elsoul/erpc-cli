@@ -232,6 +232,12 @@ whose version has no entry below.
     no longer names among it) is refused before anyone is asked, by
     `status` and every command alike, and `status` shows the account's
     record alone then, leaving the pin as it was.
+- An `erpc worker` command given no app, run where there is no `erpc.toml`
+  in the current directory or above it, asks at a terminal which of the
+  apps erpc knows on this machine to act on, each shown by its name and
+  directory, and goes on with the one picked as with `--dir`. When erpc
+  knows no app on this machine, it says so and points to `erpc worker
+  init` first. Under `--json` or with no terminal it fails as before.
 
 ### Changed
 

@@ -960,6 +960,17 @@ that name, when there is one, wins); `secret put`, `secret rm`, `key import`,
 app by `--dir` only. `secret unlock` and `secret lock` are about this
 machine's keystore, not an app: they take neither, and no `--env`.
 
+A command given no app (no name, no `--dir`) run where there is no
+`erpc.toml` in the current directory or above it asks, at a terminal, which
+app: the apps erpc knows on this machine (`erpc worker list`) whose
+`erpc.toml` says a name, each by that name and its directory. The command
+then goes on with the app picked as if its directory had been given with
+`--dir`, and the commands its hints name carry that `--dir`. Esc ends it
+with nothing done. When erpc knows no app on this machine, or none it can
+read, it says so, and the hint starts with `erpc worker init`. Under
+`--json`, or with no terminal (a script, a pipe), nothing is asked: the
+command fails with `there is no erpc.toml in … or above it`, as before.
+
 At a terminal, results and failures are drawn with a mark on each line (✅
 done, ⚠️ to heed, 💡 a hint, 👉 the commands to run next) and progress with
 ›. Anywhere else (a pipe, a file, a script) the plain lines are as they were,

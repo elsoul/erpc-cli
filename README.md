@@ -337,6 +337,10 @@ erpc worker deploy --new-server  # a new hourly server, its price shown first, y
 erpc worker status               # running? which release? what it costs per hour, how long your credit lasts
 ```
 
+Run them in the app's directory, or name the app (`erpc worker status
+hft-bot`); at a terminal, one run where there is no app asks which of the apps
+on this machine you mean.
+
 `erpc worker` compiles your app to a native Linux binary and runs it on a
 latest-generation ERPC server, or a server of your own. No Docker and no runtime
 in between: the binary runs under a hardened systemd unit with the whole
