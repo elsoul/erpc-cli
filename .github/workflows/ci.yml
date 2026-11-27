@@ -373,6 +373,8 @@ jobs:
           tar -xzf gitleaks.tar.gz gitleaks
           install -m 0755 gitleaks "$RUNNER_TEMP/gitleaks"
           rm -f gitleaks gitleaks.tar.gz
+      - name: gitleaks rule self-test
+        run: scripts/tests/gitleaks-rules.test.sh "$RUNNER_TEMP/gitleaks"
       - name: gitleaks (full history)
         run: '"$RUNNER_TEMP/gitleaks" git --redact --config .gitleaks.toml --exit-code 1 .'
       # The self-tests run every case twice, in the C locale and in a

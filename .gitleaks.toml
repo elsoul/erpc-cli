@@ -77,7 +77,15 @@ keywords = ["service_account"]
 [[rules]]
 id = "onepassword-service-account-token"
 description = "1Password service account token"
-regex = '''ops_[A-Za-z0-9_-]{40,}'''
+# A service account token is ops_ followed by base64 (standard or URL-safe)
+# of a JSON object, so it starts ops_eyJ. The eyJ is what keeps identifiers
+# such as test names containing "stops_" from matching, which the earlier
+# ops_[A-Za-z0-9_-]{40,} did. There is no word boundary, and {37,} after eyJ
+# keeps the old minimum of 40 characters after ops_, so a token glued to
+# other text, or hard-wrapped or cut off with 44 of its characters on one
+# line, is still reported. scripts/tests/gitleaks-rules.test.sh checks these
+# cases and the identifiers.
+regex = '''ops_eyJ[A-Za-z0-9+/_=-]{37,}'''
 keywords = ["ops_"]
 
 [[rules]]

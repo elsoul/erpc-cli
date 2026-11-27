@@ -28,6 +28,8 @@ pre-push:
   commands:
     gitleaks-history:
       run: gitleaks git --redact --config .gitleaks.toml .
+    gitleaks-rules:
+      run: scripts/tests/gitleaks-rules.test.sh
     oss-hygiene-all:
       run: scripts/check-oss-hygiene.sh
     endpoints-all:
