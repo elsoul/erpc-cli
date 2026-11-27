@@ -682,15 +682,11 @@ impl RemoteCommand {
             Self::VpsAllowSsh(list) => crate::vps::allow(list),
             Self::VpsConfirmAllow => crate::vps::CONFIRM_ALLOW.to_owned(),
             Self::VpsOpenSsh => crate::vps::OPEN.to_owned(),
+            // The collector itself goes on standard input
+            // (NODE_SECURITY_POSTURE_SCRIPT): as one argument it would
+            // outgrow a Windows command line and come near Linux's limit.
             #[cfg(feature = "node-check-pilot")]
-            Self::NodeSecurityPosture => {
-                let script = concat!(
-                    include_str!("node-security-updates.py"),
-                    "\n",
-                    include_str!("node-security-posture.py"),
-                );
-                format!("/usr/bin/python3 -I -c '{}'", script.replace('\'', "'\\''"))
-            }
+            Self::NodeSecurityPosture => "/usr/bin/python3 -I -".to_owned(),
             Self::VpsController => "printf 'controller=%s\\n' \"${SSH_CLIENT%% *}\"".to_owned(),
             Self::NearControl { action, contract } => super::near::control(*action, contract),
             Self::NearLogs { lines, follow } => super::near::logs(*lines, *follow),
@@ -776,6 +772,53 @@ impl RemoteCommand {
         }
     }
 }
+
+/// The Security Check's collector, which [`RemoteCommand::NodeSecurityPosture`]
+/// runs from standard input: the package-cache count, the BIP-39 English
+/// word list, the plain-text key search, then the posture reads that print
+/// the report.
+//
+// bip39-english.txt is the BIP-39 English word list, unchanged, under this
+// notice:
+//
+// Copyright (c) 2013 Marek Palatinus, Pavol Rusnak, Aaron Voisine, Sean Bowe
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the
+// "Software"), to deal in the Software without restriction, including
+// without limitation the rights to use, copy, modify, merge, publish,
+// distribute, sublicense, and/or sell copies of the Software, and to
+// permit persons to whom the Software is furnished to do so, subject to
+// the following conditions:
+//
+// The above copyright notice and this permission notice shall be included
+// in all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+// IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+// TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+// SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+#[cfg(feature = "node-check-pilot")]
+pub const NODE_SECURITY_POSTURE_SCRIPT: &str = concat!(
+    include_str!("node-security-updates.py"),
+    "\n",
+    "BIP39_ENGLISH = \"\"\"\\\n",
+    include_str!("bip39-english.txt"),
+    "\"\"\"\n",
+    include_str!("node-security-keys.py"),
+    "\n",
+    include_str!("node-security-posture.py"),
+);
+
+/// The most [`NODE_SECURITY_POSTURE_SCRIPT`] may be. It is above the 64 KiB
+/// that private input is held to: the script is public and fixed when erpc
+/// is built, and the word list alone is 13 KiB of it. A test keeps the
+/// script under this bound.
+#[cfg(feature = "node-check-pilot")]
+pub const NODE_SECURITY_POSTURE_SCRIPT_LIMIT: usize = 96 * 1024;
 
 /// Write a validated path using the same private-directory policy as before.
 fn write_file(path: &RemotePath) -> String {
@@ -1024,5 +1067,62 @@ mod tests {
     fn the_read_only_commands_are_fixed() {
         assert_eq!(RemoteCommand::Uname.line(), "uname -srm");
         assert_eq!(RemoteCommand::OsRelease.line(), "cat /etc/os-release");
+    }
+
+    /// The collector goes on standard input, under its bound, and only the
+    /// interpreter is on the command line.
+    #[cfg(feature = "node-check-pilot")]
+    #[test]
+    fn the_security_check_collector_is_delivered_on_standard_input() {
+        use super::{NODE_SECURITY_POSTURE_SCRIPT as SCRIPT, NODE_SECURITY_POSTURE_SCRIPT_LIMIT};
+
+        assert_eq!(
+            RemoteCommand::NodeSecurityPosture.line(),
+            "/usr/bin/python3 -I -"
+        );
+        assert!(
+            SCRIPT.len() <= NODE_SECURITY_POSTURE_SCRIPT_LIMIT,
+            "{} bytes",
+            SCRIPT.len()
+        );
+        assert!(SCRIPT.is_ascii());
+        // The word list goes as it is, between its own quotes.
+        let list = include_str!("bip39-english.txt");
+        assert_eq!(list.lines().count(), 2048);
+        assert!(SCRIPT.contains(&format!("BIP39_ENGLISH = \"\"\"\\\n{list}\"\"\"\n")));
+        // The parts come in the order that each needs the ones before.
+        let at = |part: &str| SCRIPT.find(part).unwrap_or_else(|| panic!("{part}"));
+        assert!(at("def security_update_summary") < at("BIP39_ENGLISH = "));
+        assert!(at("BIP39_ENGLISH = ") < at("WORDS = frozenset(BIP39_ENGLISH"));
+        assert!(at("def start_key_search") < at("if __name__ == \"__main__\":"));
+    }
+
+    /// The exact bytes sent are a Python program. They are compiled, never
+    /// run: run here, the collector would search this machine.
+    #[cfg(all(feature = "node-check-pilot", unix))]
+    #[test]
+    fn the_delivered_collector_compiles() {
+        use std::io::Write as _;
+        let Ok(mut python) = std::process::Command::new("python3")
+            .args([
+                "-I",
+                "-c",
+                "import sys; compile(sys.stdin.buffer.read(), '<collector>', 'exec')",
+            ])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+        else {
+            return;
+        };
+        let mut input = python
+            .stdin
+            .take()
+            .unwrap_or_else(|| panic!("no standard input"));
+        input
+            .write_all(super::NODE_SECURITY_POSTURE_SCRIPT.as_bytes())
+            .unwrap_or_else(|e| panic!("{e}"));
+        drop(input);
+        let status = python.wait().unwrap_or_else(|e| panic!("{e}"));
+        assert!(status.success());
     }
 }

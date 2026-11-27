@@ -536,12 +536,43 @@ def report_linux():
     }
 
 
-if __name__ == "__main__":
-    if sys.platform == "linux":
+def collect():
+    """The Linux report, with the parts delivered before this code: the
+    package-cache count and the key search. The key search runs in a child
+    process beside the reads below, so it adds no time to theirs, and
+    anything wrong with it leaves its own section unreadable and nothing
+    else."""
+    start_keys = globals().get("start_key_search")
+    pending = None
+    if start_keys is not None:
+        try:
+            pending = start_keys()
+        except Exception:
+            pass
+    try:
         report = report_linux()
         updates = globals().get("security_update_summary")
         if updates is not None:
             report["updates"] = updates()
-        print(json.dumps(report, separators=(",", ":")))
+    except BaseException:
+        # No report will be printed: end the search rather than leave it.
+        stop_keys = globals().get("stop_key_search")
+        if pending is not None and stop_keys is not None:
+            try:
+                stop_keys(pending)
+            except Exception:
+                pass
+        raise
+    if start_keys is not None:
+        try:
+            report["keys"] = globals()["finish_key_search"](pending)
+        except Exception:
+            report["keys"] = {"coverage": "unreadable", "groups": []}
+    return report
+
+
+if __name__ == "__main__":
+    if sys.platform == "linux":
+        print(json.dumps(collect(), separators=(",", ":")))
     else:
         print(json.dumps({"listeners": "inconclusive", "nftables": "not_observed"}))
