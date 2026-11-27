@@ -24,7 +24,7 @@ make_archive complete "$scratch/complete-archive"
 "$BASH" "$gate" "$scratch/complete-archive"
 echo "ok   accepts an archive with help and all five completion scripts"
 
-for scenario in help bash zsh fish powershell elvish decoy-bash decoy-powershell; do
+for scenario in help bash zsh fish powershell elvish decoy-bash decoy-zsh decoy-fish decoy-powershell decoy-elvish; do
   missing="${scenario#decoy-}"
   base="$scratch/without-$scenario"
   make_archive "$scenario" "$base"

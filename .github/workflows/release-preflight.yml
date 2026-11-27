@@ -23,6 +23,8 @@ on:
       - rust-toolchain.toml
       - scripts/build-worker-agents.sh
       - scripts/release/check-security-check-archive.sh
+      - scripts/tests/check-security-check-archive.test.sh
+      - scripts/tests/fixtures/security-check-archive/**
   workflow_dispatch:
 
 permissions:

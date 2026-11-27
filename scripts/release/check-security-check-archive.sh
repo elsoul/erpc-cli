@@ -46,13 +46,29 @@ has_completion() {
       ' "$generated"
       ;;
     zsh)
-      awk -v quote="'" '
-        /^[[:space:]]*\(ai\)[[:space:]]*$/ { ai = 1; next }
-        /^[[:space:]]*;;[[:space:]]*$/ { ai = 0 }
-        ai && index($0, quote) == 1 {
-          line = substr($0, 2)
-          sub(/^\([^)]*\)/, "", line)
-          if (index(line, "--security-check[") == 1) found = 1
+      # The root switch follows the erpc-command context assignment.
+      # erpc help has its own switch and another arm named (ai).
+      # shellcheck disable=SC2016
+      awk -v quote="'" -v context='curcontext="${curcontext%:*:*}:erpc-command-$line[1]:"' '
+        {
+          sub(/^[[:space:]]*/, "")
+          sub(/[[:space:]]*$/, "")
+          if (/^case .* in$/) {
+            depth++
+            if (root_next && $0 == "case $line[1] in") root_depth = depth
+          } else if ($0 == "esac") {
+            if (depth == root_depth) { root_depth = 0; ai = 0 }
+            depth--
+          } else if (root_depth && depth == root_depth) {
+            if ($0 == "(ai)") ai = 1
+            if ($0 == ";;") ai = 0
+            if (ai && index($0, quote) == 1) {
+              line = substr($0, 2)
+              sub(/^\([^)]*\)/, "", line)
+              if (index(line, "--security-check[") == 1) found = 1
+            }
+          }
+          root_next = ($0 == context)
         }
         END { exit !found }
       ' "$generated"
