@@ -56,12 +56,14 @@ import re
 import subprocess
 
 PATH = ".github/workflows/installer-worker.yml"
-PINNED = "be0d4d999ce4e17ad1b335abb041bfce234b46b8e782c84fa15ab8f29c20a9b1"
+PINNED = "2c0fa3887f1e0fc59d11baf102ffc442f3a64f4bf8accb2ce730b14d633c9d7c"
 
 CHECKLIST = """\
 Before updating PINNED, read the whole diff of this workflow and confirm:
   - `deploy` installs only with `npm ci --ignore-scripts`, in any spelling,
     and runs `wrangler deploy --no-bundle` on the downloaded artifact;
+  - `deploy` runs only when `github.ref` starts with `refs/tags/v`, with no
+    `||` and no status function in its `if`;
   - every wrangler call passes --config wrangler.toml and --env-file;
   - no job other than `deploy` uses an environment or reads secrets, in any
     YAML or expression form;
