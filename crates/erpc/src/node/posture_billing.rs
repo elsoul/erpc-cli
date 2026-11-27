@@ -424,12 +424,29 @@ impl Terms {
         }
         headers
     }
+
+    fn receipt(self, status: u16, body: &str) -> Result<Receipt, ReportFailure> {
+        if status != 200 {
+            return Err(ReportFailure::from_response(status, body));
+        }
+        let receipt: Receipt =
+            serde_json::from_str(body).map_err(|_| ReportFailure::invalid_receipt())?;
+        if !receipt.valid(self) {
+            return Err(ReportFailure::invalid_receipt());
+        }
+        Ok(receipt)
+    }
 }
 
 impl ReportSubmission {
     #[cfg(test)]
     pub(super) fn headers(&self) -> Vec<(&str, &str)> {
         self.terms.headers(&self.idempotency_key)
+    }
+
+    #[cfg(test)]
+    pub(super) fn fixture_receipt(&self, body: &str) -> Result<Receipt, ReportFailure> {
+        self.terms.receipt(200, body)
     }
 
     pub(super) async fn submit(self, account: &Account) -> Result<Receipt, ReportFailure> {
@@ -464,15 +481,7 @@ impl ReportSubmission {
                 ),
             })?;
         let body = Zeroizing::new(body);
-        if status != 200 {
-            return Err(ReportFailure::from_response(status, &body));
-        }
-        let receipt: Receipt =
-            serde_json::from_str(&body).map_err(|_| ReportFailure::invalid_receipt())?;
-        if !receipt.valid(self.terms) {
-            return Err(ReportFailure::invalid_receipt());
-        }
-        Ok(receipt)
+        self.terms.receipt(status, &body)
     }
 }
 
@@ -680,6 +689,58 @@ mod tests {
                         .message(request)
                         .contains(request)
                 );
+            });
+        }
+    }
+
+    #[test]
+    fn customer_consent_discloses_provider_identifiers_and_audit_retention() {
+        use erpc_core::i18n::Lang;
+
+        let rental = Server {
+            kind: super::super::Kind::Vps,
+            id: 42,
+        };
+        for (language, profile, actor, provider, audit) in [
+            (
+                Lang::En,
+                "Anthropic customer profile ID",
+                "stable pseudonymous actor ID",
+                "Anthropic's standard retention",
+                "ERPC separately keeps",
+            ),
+            (
+                Lang::Ja,
+                "Anthropic の顧客プロファイル ID",
+                "実行をまたいで同じユーザーを識別する固定の仮名 ID",
+                "Anthropic の標準保持方針",
+                "ERPC は別途",
+            ),
+            (
+                Lang::Ru,
+                "идентификатор профиля клиента Anthropic",
+                "устойчивый псевдонимизированный идентификатор пользователя",
+                "стандартные условия хранения Anthropic",
+                "ERPC отдельно хранит",
+            ),
+            (
+                Lang::Zh,
+                "Anthropic 客户档案 ID",
+                "固定的操作者假名 ID",
+                "Anthropic 的标准保留政策",
+                "ERPC 会另外",
+            ),
+        ] {
+            crate::cli::i18n::speaking(language, || {
+                let internal = quote_prompt(Terms::default(), rental);
+                for terms in [EXTERNAL, WITH_FALLBACK] {
+                    let prompt = quote_prompt(terms, rental);
+                    for label in [profile, actor, provider, audit] {
+                        assert!(prompt.contains(label), "{prompt}");
+                        assert!(!internal.contains(label), "{internal}");
+                    }
+                    assert!(prompt.contains("90"), "{prompt}");
+                }
             });
         }
     }

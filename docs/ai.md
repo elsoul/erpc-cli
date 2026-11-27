@@ -129,8 +129,11 @@ observations in the operator's report. It shows the settled charge,
 reports when no tokens were charged, or flags an unconfirmed settlement.
 
 For customer access, the quote also asks for consent to inspect the
-selected rental and process the results. ERPC sends fixed finding IDs to
-Claude for ranking under Anthropic's standard retention policy. ERPC keeps
+selected rental and process the results. For each customer invocation,
+ERPC sends Claude fixed finding IDs for ranking, the Anthropic customer
+profile ID linked to the ERPC account, and a stable pseudonymous actor ID
+for the same user across runs. Anthropic's standard retention policy
+applies to the data it receives. ERPC separately keeps
 the account, individual user, invocation time and outcome for at least
 90 days for attribution and audit. The approval applies to that run only.
 If the quote offers Claude Sonnet as a fallback, the same approval covers

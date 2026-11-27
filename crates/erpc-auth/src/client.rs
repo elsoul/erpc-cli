@@ -382,14 +382,17 @@ impl AuthClient {
         idempotency_key: Option<&str>,
         limits: JsonResponseLimits,
     ) -> Result<(u16, String), HttpError> {
-        let header = idempotency_key.map(|key| ("idempotency-key", key));
-        self.post_with_token_bounded_and_headers(
+        self.send_with_token(
+            reqwest::Method::POST,
             audience,
             url,
             access_token,
             body,
-            header.as_slice(),
-            limits,
+            JsonOptions {
+                idempotency_key,
+                response_limits: Some(limits),
+                ..JsonOptions::default()
+            },
         )
         .await
     }
@@ -490,15 +493,13 @@ impl AuthClient {
             .first()
             .copied()
             .unwrap_or_else(|| audience.issuer_host());
-        let mut request = json_request(
+        let request = json_request(
             self.inner.request(method, url),
             access_token,
             body,
             options.idempotency_key,
+            options.headers,
         );
-        for &(name, value) in options.headers {
-            request = request.header(name, value);
-        }
         send_json(request, host, options.response_limits).await
     }
 
@@ -870,16 +871,19 @@ fn json_request(
     access_token: &SecretString,
     body: Vec<u8>,
     idempotency_key: Option<&str>,
+    headers: &[(&str, &str)],
 ) -> reqwest::RequestBuilder {
-    let request = request
+    let mut request = request
         .bearer_auth(access_token.expose_secret())
         .header("content-type", "application/json")
         .body(body);
     if let Some(key) = idempotency_key {
-        request.header("idempotency-key", key)
-    } else {
-        request
+        request = request.header("idempotency-key", key);
     }
+    for &(name, value) in headers {
+        request = request.header(name, value);
+    }
+    request
 }
 
 async fn send_json(

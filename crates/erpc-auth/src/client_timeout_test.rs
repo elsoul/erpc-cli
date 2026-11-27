@@ -159,6 +159,7 @@ fn json_post_attaches_the_supplied_idempotency_header_and_preserves_the_body() {
         &secrecy::SecretString::from("test-only"),
         br#"{"requestId":"fixture-id"}"#.to_vec(),
         Some("fixture-id"),
+        &[],
     )
     .build()
     .expect("JSON request");
@@ -175,4 +176,54 @@ fn json_post_attaches_the_supplied_idempotency_header_and_preserves_the_body() {
             .to_str()
             .expect("header")
     );
+}
+
+#[test]
+fn built_security_check_requests_carry_only_the_authorized_headers() {
+    let client = reqwest::Client::new();
+    let token = secrecy::SecretString::from("test-only");
+    let body = br#"{"requestId":"fixture-id"}"#;
+    let consent = "x-erpc-security-check-consent";
+    let fallback = "x-erpc-security-check-fallback";
+    for (consent_version, approved_fallback) in [
+        (None, None),
+        (Some("security-check-local-posture-v1"), None),
+        (
+            Some("security-check-local-posture-v1"),
+            Some("claude-sonnet-5-5"),
+        ),
+    ] {
+        let mut headers = vec![("idempotency-key", "fixture-id")];
+        headers.extend(consent_version.map(|value| (consent, value)));
+        headers.extend(approved_fallback.map(|value| (fallback, value)));
+        let request = json_request(
+            client.post(erpc_core::endpoints::SECURITY_CHECK_REPORT_URL),
+            &token,
+            body.to_vec(),
+            None,
+            &headers,
+        )
+        .build()
+        .expect("offline request construction");
+        let values = |name: &str| {
+            request
+                .headers()
+                .get_all(name)
+                .iter()
+                .map(|value| value.to_str().expect("header text"))
+                .collect::<Vec<_>>()
+        };
+        let bytes = request
+            .body()
+            .and_then(reqwest::Body::as_bytes)
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(bytes).expect("JSON request");
+        assert_eq!(
+            values("idempotency-key"),
+            [json["requestId"].as_str().expect("request ID")]
+        );
+        assert_eq!(values(consent), consent_version.as_slice());
+        assert_eq!(values(fallback), approved_fallback.as_slice());
+        assert_eq!(bytes, body);
+    }
 }

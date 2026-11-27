@@ -13,7 +13,10 @@ on:
       - Cargo.lock
       - crates/erpc-auth/src/client.rs
       - crates/erpc/Cargo.toml
+      - crates/erpc/locales/*/cli_ai.toml
       - crates/erpc/locales/*/node_check.toml
+      - crates/erpc/src/cli/i18n.rs
+      - crates/erpc/src/main.rs
       - crates/erpc/src/node/posture_billing.rs
       - crates/erpc/src/node/server_security.rs
       - dist-workspace.toml
@@ -49,6 +52,7 @@ jobs:
           - target: x86_64-pc-windows-msvc
             runner: windows-2022
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
     steps:
       - if: runner.os == 'Windows'
         run: git config --global core.longpaths true

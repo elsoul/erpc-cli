@@ -775,15 +775,24 @@ mod tests {
         parse_eligible, select_server, selection_body, verify_selection,
     };
 
-    fn quote_fixture(valid: bool, customer: bool) -> Zeroizing<String> {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum FixtureQuote {
+        Internal,
+        Customer,
+        WithFallback,
+    }
+
+    fn quote_fixture(valid: bool, terms: FixtureQuote) -> Zeroizing<String> {
         let mut quote = json!({
             "model":"claude-mythos-5-2", "meterVersion":"posture1", "currency":"ai_credits",
             "baseCredits":512, "weights":{"input":3,"output":12},
             "limits":{"input":8192,"output":256},
             "maximumCredits": if valid { 28160 } else { 28161 },
         });
-        if customer {
+        if terms != FixtureQuote::Internal {
             quote["consentVersion"] = json!("security-check-local-posture-v1");
+        }
+        if terms == FixtureQuote::WithFallback {
             quote["fallback"] = json!({
                 "model":"claude-sonnet-5-5", "meterVersion":"posture1", "currency":"ai_credits",
                 "baseCredits":512, "weights":{"input":1,"output":3},
@@ -793,16 +802,19 @@ mod tests {
         Zeroizing::new(quote.to_string())
     }
 
-    fn receipt_fixture(request: &billing::ReportSubmission, customer: bool) -> billing::Receipt {
+    fn receipt_fixture(
+        request: &billing::ReportSubmission,
+        terms: FixtureQuote,
+    ) -> billing::Receipt {
         let mut headers = vec![("idempotency-key", request.idempotency_key.as_str())];
-        if customer {
-            headers.extend([
-                (
-                    "x-erpc-security-check-consent",
-                    "security-check-local-posture-v1",
-                ),
-                ("x-erpc-security-check-fallback", "claude-sonnet-5-5"),
-            ]);
+        if terms != FixtureQuote::Internal {
+            headers.push((
+                "x-erpc-security-check-consent",
+                "security-check-local-posture-v1",
+            ));
+        }
+        if terms == FixtureQuote::WithFallback {
+            headers.push(("x-erpc-security-check-fallback", "claude-sonnet-5-5"));
         }
         assert_eq!(request.headers(), headers);
         let body: serde_json::Value =
@@ -811,17 +823,25 @@ mod tests {
         assert_eq!(body["server"], "bare_metal:7");
         assert_eq!(body["maximumCredits"], 28160);
         assert_eq!(body["posture"]["listeners"], "no_listener");
-        let (model, charge) = if customer {
-            ("claude-sonnet-5-5", 516)
-        } else {
-            ("claude-mythos-5-2", 527)
+        let wire = |model, charge| {
+            json!({
+                "status":"completed", "model":model, "findings":[],
+                "billing":{"meterVersion":"posture1","chargedCredits":charge,
+                    "baseCredits":512,"inputTokens":1,"outputTokens":1},
+            })
+            .to_string()
         };
-        serde_json::from_value(json!({
-            "status":"completed", "model":model, "findings":[],
-            "billing":{"meterVersion":"posture1","chargedCredits":charge,
-                "baseCredits":512,"inputTokens":1,"outputTokens":1},
-        }))
-        .expect("broker fixture")
+        let fallback = wire("claude-sonnet-5-5", 516);
+        if terms == FixtureQuote::WithFallback {
+            request
+                .fixture_receipt(&fallback)
+                .expect("approved fallback receipt")
+        } else {
+            assert!(request.fixture_receipt(&fallback).is_err());
+            request
+                .fixture_receipt(&wire("claude-mythos-5-2", 527))
+                .expect("approved primary receipt")
+        }
     }
 
     fn selection_fixture(
@@ -843,6 +863,7 @@ mod tests {
 
     #[tokio::test]
     async fn production_security_check_gates_ssh_and_metered_submission() {
+        use self::FixtureQuote::{Customer, Internal, WithFallback};
         use crate::account::commands::Outcome;
         use std::cell::RefCell;
 
@@ -853,37 +874,27 @@ mod tests {
         let mut eligible = parse_eligible(&json!({"servers": [listed.clone()]}).to_string())
             .expect("eligible fixture");
         let server = eligible.pop().expect("fixture server");
-        for (refusal, quote_valid, lease_valid, customer_quote, expected) in [
-            (Some("scope"), true, true, false, &["scope"][..]),
-            (None, false, true, false, &["scope", "quote"]),
+        let completed = &["scope", "quote", "price", "verify", "ssh", "submit"][..];
+        for (refusal, quote_valid, lease_valid, terms, expected) in [
+            (Some("scope"), true, true, Internal, &["scope"][..]),
+            (None, false, true, Internal, &["scope", "quote"]),
             (
                 Some("price"),
                 true,
                 true,
-                true,
+                WithFallback,
                 &["scope", "quote", "price"],
             ),
             (
                 None,
                 true,
                 false,
-                false,
+                Internal,
                 &["scope", "quote", "price", "verify"],
             ),
-            (
-                None,
-                true,
-                true,
-                false,
-                &["scope", "quote", "price", "verify", "ssh", "submit"],
-            ),
-            (
-                None,
-                true,
-                true,
-                true,
-                &["scope", "quote", "price", "verify", "ssh", "submit"],
-            ),
+            (None, true, true, Internal, completed),
+            (None, true, true, Customer, completed),
+            (None, true, true, WithFallback, completed),
         ] {
             let steps = RefCell::new(Vec::new());
             let result = super::run_selected(
@@ -893,9 +904,9 @@ mod tests {
                         "scope"
                     } else {
                         assert!(prompt.contains("28160"));
-                        if customer_quote {
+                        if terms != Internal {
                             assert!(prompt.contains("bare_metal:7"));
-                            assert!(prompt.contains("9472"));
+                            assert_eq!(prompt.contains("9472"), terms == WithFallback);
                         }
                         "price"
                     };
@@ -904,7 +915,7 @@ mod tests {
                 },
                 async || {
                     steps.borrow_mut().push("quote");
-                    Ok(quote_fixture(quote_valid, customer_quote))
+                    Ok(quote_fixture(quote_valid, terms))
                 },
                 async |rental| {
                     steps.borrow_mut().push("verify");
@@ -922,7 +933,7 @@ mod tests {
                 },
                 async |request| {
                     steps.borrow_mut().push("submit");
-                    Ok(receipt_fixture(&request, customer_quote))
+                    Ok(receipt_fixture(&request, terms))
                 },
             )
             .await;
@@ -989,7 +1000,7 @@ mod tests {
             (r#"{"input":3,"output":12}"#, "[3,12]"),
         ]
         .map(|(key, bad)| quote.replace(key, bad));
-        let external = quote_fixture(true, true);
+        let external = quote_fixture(true, FixtureQuote::WithFallback);
         let invalid_external = [
             (
                 r#""consentVersion":"security-check-local-posture-v1""#,
