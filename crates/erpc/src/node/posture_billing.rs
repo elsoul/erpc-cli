@@ -954,6 +954,8 @@ mod tests {
             response["model"] = json!("fixture-model-c");
             response["billing"]["chargedCredits"] = json!(charged);
             let unquoted: Receipt = serde_json::from_value(response.clone()).expect("receipt");
+            assert!(!unquoted.valid(&internal()));
+            assert!(!unquoted.valid(&external()));
             assert!(!unquoted.valid(&with_fallback()));
         }
     }
