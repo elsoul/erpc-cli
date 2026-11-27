@@ -202,6 +202,7 @@ pub fn facts(fields: &BTreeMap<String, String>) -> Result<Env, String> {
         })
         .transpose()?;
     Ok(Env {
+        account: false,
         inventory: None,
         resource,
         host: some("host"),
@@ -260,6 +261,7 @@ mod tests {
 
     fn env() -> Env {
         Env {
+            account: false,
             inventory: Some(Inventory {
                 // In two halves: the hygiene gate reads a 26-character
                 // lowercase token beside the word vault as a real identifier.

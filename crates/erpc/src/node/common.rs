@@ -27,6 +27,8 @@ impl Say {
         #[cfg(test)]
         heard::note(text);
         if !self.quiet {
+            #[cfg(test)]
+            heard::note_printed(text);
             eprintln!(
                 "{}",
                 crate::cli::ui::step_line(text, crate::cli::ui::stderr_drawn())
@@ -43,10 +45,21 @@ pub(crate) mod heard {
 
     thread_local! {
         static LINES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+        static PRINTED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     }
 
     pub(super) fn note(text: &str) {
         LINES.with(|lines| lines.borrow_mut().push(text.to_owned()));
+    }
+
+    pub(super) fn note_printed(text: &str) {
+        PRINTED.with(|lines| lines.borrow_mut().push(text.to_owned()));
+    }
+
+    /// The lines printed on this thread (not quiet) since the last time
+    /// this was asked, in order.
+    pub(crate) fn take_printed() -> Vec<String> {
+        PRINTED.with(|lines| core::mem::take(&mut *lines.borrow_mut()))
     }
 
     /// The lines said on this thread since the last time this was asked,

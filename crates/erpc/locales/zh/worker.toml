@@ -3,6 +3,7 @@
 
 # `erpc worker` 自身的消息：查找应用、check、init 和 list。
 
+account_facts_not_saved = "环境 {env} 保存在 ERPC 账户中：其服务器信息不会写入 erpc.toml"
 [chain]
 unknown = "erpc worker 提供以下链的模板：{chains}"
 
@@ -30,12 +31,14 @@ deploy_needs = "从本机部署之前：{what}"
 no_pubkey = "（未设置公钥）"
 no_server = "（尚无服务器）"
 in_1password = "服务器信息保存在 1Password"
+in_account = "服务器信息保存在 ERPC 账户中"
 build = "{command}  → {bin}（目标 {target}）"
 prebuilt = "{prebuilt}，原样部署  → 面向 {target} 的 {bin}"
 prebuilt_drawn = "{prebuilt}，原样部署  → {bin}"
 no_wallet = "无；`erpc worker key new{dir_scope}` 可创建一个"
 no_env = "暂无；`erpc worker deploy{scope}` 可添加一个"
 env_in_1password = "{name}：服务器信息保存在 1Password（保险库 {vault}）  服务 {service}"
+env_in_account = "{name}：服务器信息保存在 ERPC 账户中  服务 {service}"
 env = "{name}：{host}{resource}  服务 {service}"
 hourly = "，按小时计费"
 keystore_missing = "{at} 是 {reference}，但本机的密钥库中没有它：它保存在另一台机器上。请在本机重新保存，或把那台机器的整个密钥库目录及其口令带过来"

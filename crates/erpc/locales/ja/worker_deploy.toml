@@ -20,9 +20,9 @@ and_then = "{hint}。{next}"
 again_hint = "リクエストは記録に残ります。同じコマンドをもう一度実行すると、同じリクエストを送信し、別のリクエストは作成しません"
 in_progress_hint = "リクエストは記録に残ります。少し待ってから同じコマンドをもう一度実行すると、同じリクエストを送信し、別のリクエストは作成しません。いつまでも完了しない場合：{look}。何も開始されていないことを確認できたら、{remove}"
 not_known_hint = "リクエストは記録に残り、同じコマンドをもう一度実行すると、同じリクエストを送信し、別のリクエストは作成しません。手動で消す場合：{look}。何も開始されていないことを確認できたら、{remove}"
-exists_server_hint = "サーバーは以前のリクエストですでに開始されている可能性が高く、リクエストは記録に残ります。アカウントのサーバーをダッシュボードまたは `erpc ai` で確認してください。`erpc worker deploy --vps <ID>{scope}` で引き継げます。不要なものはダッシュボードで終了できます。そのあと、{remove}"
+exists_server_hint = "サーバーは以前のリクエストですでに開始されている可能性が高く、リクエストは記録に残ります。アカウントのサーバーをダッシュボードまたは `erpc ai` で確認してください。`erpc worker deploy --server <ID>{scope}` で引き継げます。不要なものはダッシュボードで終了できます。そのあと、{remove}"
 exists_line_hint = "回線は以前のリクエストですでに開始されている可能性が高く、リクエストは記録に残ります。アカウントの回線をダッシュボードまたは `erpc ai` で確認してください。記録にない回線をデプロイで引き継ぐことはできません。そこで終了してから、{remove}。次のデプロイで新しい回線を開始します"
-unnamed_server_hint = "user-api の応答によればサーバーは開始されており、リクエストは記録に残ります。アカウントのサーバーをダッシュボードまたは `erpc ai` で確認してください。`erpc worker deploy --vps <ID>{scope}` で引き継げます。不要なものはダッシュボードで終了できます。そのあと、{remove}"
+unnamed_server_hint = "user-api の応答によればサーバーは開始されており、リクエストは記録に残ります。アカウントのサーバーをダッシュボードまたは `erpc ai` で確認してください。`erpc worker deploy --server <ID>{scope}` で引き継げます。不要なものはダッシュボードで終了できます。そのあと、{remove}"
 unnamed_line_hint = "user-api の応答によれば回線は開始されており、リクエストは記録に残ります。アカウントの回線をダッシュボードまたは `erpc ai` で確認してください。記録にない回線をデプロイで引き継ぐことはできません。そこで終了してから、{remove}。次のデプロイで新しい回線を開始します"
 look = "アカウントの状況はダッシュボードで確認できます"
 look_status = "アカウントの状況はダッシュボードで、この環境の記録は `erpc worker status{scope}` で確認できます"
@@ -98,9 +98,10 @@ unbilled = "時間単位の課金ではなく、user-api の一覧にもあり�
 not_seen_yet = "開始済みですが、user-api の一覧にもアカウントの課金にもまだ表示されていません"
 
 [vps]
-not_kept = "VPS {id} は起動しましたが、記録できませんでした：{error}"
-not_kept_hint = "時間単位で課金されます。`erpc worker deploy --vps {id}{scope}` で引き継ぐか、ダッシュボードで終了してください"
-taking_up = "以前のデプロイで記録された VPS {id} を引き継ぎます"
+named = "サーバー {id}"
+not_kept = "サーバー {id} を開始しましたが、記録できませんでした：{error}"
+not_kept_hint = "時間単位で課金されます。`erpc worker deploy --server {id}{scope}` で引き継ぐか、ダッシュボードで終了してください"
+taking_up = "以前のデプロイで記録されたサーバー {id} を引き継ぎます"
 missing = "以前のデプロイで記録され一度も接続していない VPS {id} は、サインイン中のアカウント（{account}）にありません。終了済みか、別のアカウントのものです。記録から外してよいかは端末の前にいる人しか答えられません。何もデプロイしていません"
 missing_hint = "このデプロイか `{delete}` を、端末でご自身で `--json` を付けずに実行してください。どちらも、この VPS を終了せずに記録から外せます（delete は環境のデータ回線も終了します）。または、その VPS を持つアカウントでサインインしてください"
 missing_ask = "以前のデプロイで記録され一度も接続していない VPS {id} は、サインイン中のアカウント（{account}）にありません。終了済みか、別のアカウントのものです。記録から外して（何も終了しません）、サーバーを選びますか？"
@@ -112,8 +113,8 @@ udp_left_hint = "`erpc worker deploy --udp{scope}` で回線を新しいサー�
 
 [server]
 no_terminal = "erpc.toml に [env.{env}] がなく、ターミナルがないためサーバーを選べません"
-no_terminal_hint = "--vps <id>、--new-vps、--host <address> のいずれかを指定してください"
-new_vps = "新しい時間課金 VPS を起動する（{region} 付近の最安プラン。先に料金を表示）"
+no_terminal_hint = "--server <id>、--new-server、--host <address> のいずれかを指定してください"
+new_vps = "時間課金のサーバーを新しく開始する（{region} 付近の最安プラン。先に料金を表示）"
 which = "どのサーバーで実行しますか？"
 
 [failed]
@@ -147,4 +148,4 @@ udp_line_closed_hourly = "{name} の送信先はこのサーバーの UDP ポー
 udp_pending_charged = "{name} は記録にありますが、送信先がどのサーバーにも設定されていません。何も送信しておらず、`erpc worker delete --release-server{scope}` で終了するまで時間単位で課金されます。`erpc worker deploy{scope} --udp` でこのサーバーを送信先に設定できます。"
 udp_pending_uncharged = "{name} は記録にありますが、送信先がどのサーバーにも設定されていません。何も送信しておらず、アカウントの時間課金には現在含まれていません（Premium 回線は送信先が設定されてから課金されます）。`erpc worker deploy{scope} --udp` でこのサーバーを送信先に設定でき、`erpc worker delete --release-server{scope}` で終了できます。"
 udp_pending = "{name} は記録にありますが、送信先がどのサーバーにも設定されていません。何も送信していません。Standard 回線は開始時から、Premium 回線は送信先が設定されてから、`erpc worker delete --release-server{scope}` で終了するまで時間単位で課金されます。`erpc worker deploy{scope} --udp` でこのサーバーを送信先に設定できます。"
-hourly_vps = "これは時間課金の VPS です。`erpc worker delete --release-server{scope}` で終了するまで課金されます。"
+hourly_vps = "これは時間課金のサーバーです。`erpc worker delete --release-server{scope}` で終了するまで課金されます。"

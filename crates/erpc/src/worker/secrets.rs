@@ -34,7 +34,8 @@
 //!   alone; [`read`] is refused by the entry itself, whatever names it.
 //! - **In the keychain** nothing marks an entry, so it is the name that
 //!   says: an account that ends in `.wallet` is a key's, and [`read`]
-//!   refuses it.
+//!   refuses it, under any spelling a keychain that files an entry by one
+//!   name (Windows) takes for the same.
 //! - **In erpc.toml** a `[secrets]` line may name neither the entry
 //!   `[wallet]` names nor an account ending in `.wallet`
 //!   ([`erpc_worker::manifest`]).
@@ -48,14 +49,22 @@
 //! of `<app>.wallet` wherever case is ignored, so a setting of that name,
 //! in any case, is not kept in the keychain or the keystore ([`put`]), and
 //! is not removed from one ([`forget`]).
+//!
+//! A machine's sealing key ([`put_seal_key`]) is a third kind, and is
+//! marked in every store: in the keystore its entry is sealed as one; in
+//! the keychain and the keystore it is filed under the service
+//! `erpc-worker-seal`; in 1Password it is the field `erpc-worker-seal` of
+//! an item tagged for the ERPC account. [`read`] refuses each, in any case
+//! and under any spelling of the same entry, and [`read_seal_key`] reads
+//! nothing else.
 
 use erpc_auth::store::StoreKind;
 use erpc_auth::store::keychain::item;
 use erpc_auth::store::keystore::Kind;
-use erpc_auth::store::one_password::OpRunner as _;
+use erpc_auth::store::one_password::OpRunner;
 use erpc_chain_solana::identity::Keypair;
 use erpc_secret::gate::{Context, Decision, Operation, Profile, evaluate};
-use erpc_worker::manifest::{SecretRef, is_key_account};
+use erpc_worker::manifest::{SEAL_SERVICE, SecretRef, is_key_account};
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
@@ -266,7 +275,16 @@ pub(crate) fn kept_for(m: &erpc_worker::manifest::Manifest) -> Result<bool, Stri
 /// Runs `op`, and returns its standard output when it succeeds. A spinner
 /// turns while it waits on the 1Password app.
 fn op(args: &[&str], stdin: Option<&str>, doing: &str) -> Result<Zeroizing<String>, String> {
-    let runner = crate::node::common::op_runner()?;
+    op_in(&crate::node::common::op_runner()?, args, stdin, doing)
+}
+
+/// [`op`] through `runner`.
+fn op_in(
+    runner: &impl OpRunner,
+    args: &[&str],
+    stdin: Option<&str>,
+    doing: &str,
+) -> Result<Zeroizing<String>, String> {
     let spinner = crate::node::common::op_waiting(doing);
     let out = runner.run(args, stdin).map_err(|e| e.to_string());
     if let Some(spinner) = spinner {
@@ -289,6 +307,30 @@ fn op(args: &[&str], stdin: Option<&str>, doing: &str) -> Result<Zeroizing<Strin
 /// `fields`, the JSON of its fields with the secret already in it, and
 /// returns its id.
 fn create_item(vault: &str, head: &Value, fields: &str, doing: &str) -> Result<String, String> {
+    create_item_in(
+        &crate::node::common::op_runner()?,
+        vault,
+        head,
+        fields,
+        doing,
+    )
+}
+
+/// What `op item create` answers, read for its id only: the answer may
+/// carry the secret, which no other copy is made of.
+#[derive(serde::Deserialize)]
+struct Created {
+    id: Option<String>,
+}
+
+/// [`create_item`] through `runner`.
+fn create_item_in(
+    runner: &impl OpRunner,
+    vault: &str,
+    head: &Value,
+    fields: &str,
+    doing: &str,
+) -> Result<String, String> {
     // Built around the fields rather than through a serializer, so the one
     // copy of the secret in the template is the one that is wiped.
     let mut template = Zeroizing::new(String::new());
@@ -296,17 +338,15 @@ fn create_item(vault: &str, head: &Value, fields: &str, doing: &str) -> Result<S
     template.push_str(",\"fields\":");
     template.push_str(fields);
     template.push('}');
-    let created = op(
+    let created = op_in(
+        runner,
         &["item", "create", "-", "--vault", vault, "--format", "json"],
         Some(&template),
         doing,
     )?;
-    let created: Value =
+    let created: Created =
         serde_json::from_str(&created).map_err(|_| t!("worker_secrets.answer_not_json"))?;
-    created["id"]
-        .as_str()
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| t!("worker_secrets.no_id"))
+    created.id.ok_or_else(|| t!("worker_secrets.no_id"))
 }
 
 fn head(app: &str, what: &str) -> Value {
@@ -450,6 +490,240 @@ pub(crate) fn put_key(store: &Store, app: &str, keypair: &Keypair) -> Result<Sec
     Ok(made)
 }
 
+/// The entry this machine's sealing key for the ERPC account `tag` stands
+/// for is kept in, in the keychain and the keystore.
+pub(crate) fn seal_account(tag: &str) -> String {
+    format!("{tag}.seal")
+}
+
+/// The 1Password tag this machine's sealing key items carry, per account.
+fn seal_tag(tag: &str) -> String {
+    format!("erpc/worker/seal/{tag}")
+}
+
+/// The one item of `listed`, the JSON `op item list` answers, that carries
+/// the tag `tag` itself: some `op` versions list items whose tag only
+/// begins with it. None when no item does; two are refused, not chosen
+/// between.
+fn one_tagged(listed: &str, tag: &str) -> Result<Option<String>, String> {
+    let items: Vec<Value> =
+        serde_json::from_str(listed).map_err(|_| t!("worker_secrets.answer_not_json"))?;
+    // An item listed with no tags cannot be told apart: refused, not
+    // passed over, so a second key is never made beside one.
+    if items.iter().any(|i| !i["tags"].is_array()) {
+        return Err(t!("worker_secrets.seal_untagged"));
+    }
+    let tagged: Vec<&Value> = items
+        .iter()
+        .filter(|i| {
+            i["tags"]
+                .as_array()
+                .is_some_and(|tags| tags.iter().any(|t| t.as_str() == Some(tag)))
+        })
+        .collect();
+    // A tagged item with no id in its form is one this machine cannot
+    // read: refused, so a second key is never made beside it.
+    let ids: Vec<&str> = tagged.iter().filter_map(|i| i["id"].as_str()).collect();
+    if ids.len() != tagged.len() {
+        return Err(t!("worker_secrets.answer_not_json"));
+    }
+    match ids.as_slice() {
+        [] => Ok(None),
+        [id] => Ok(Some((*id).to_owned())),
+        _ => Err(t!("worker_secrets.seal_twice", tag)),
+    }
+}
+
+/// Whether the item `got`, as `op item get` answers it, keeps the field id
+/// `field`: a reference to the sealing key names that id, and what refuses
+/// such a reference as a setting reads it.
+fn keeps_field_id(got: &str, field: &str) -> bool {
+    // Read for the fields' ids only: the answer may carry the concealed
+    // value, which no other copy is made of.
+    #[derive(serde::Deserialize)]
+    struct Item {
+        fields: Vec<Field>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Field {
+        id: Option<String>,
+    }
+    serde_json::from_str::<Item>(got)
+        .is_ok_and(|item| item.fields.iter().any(|f| f.id.as_deref() == Some(field)))
+}
+
+/// Refuses the 1Password item `id` in `vault` unless it keeps the field
+/// id [`SEAL_SERVICE`] ([`keeps_field_id`]).
+fn field_kept(runner: &impl OpRunner, vault: &str, id: &str) -> Result<(), String> {
+    let got = op_in(
+        runner,
+        &["item", "get", id, "--vault", vault, "--format", "json"],
+        None,
+        &t!("worker_secrets.doing.check_seal"),
+    )?;
+    if keeps_field_id(&got, SEAL_SERVICE) {
+        Ok(())
+    } else {
+        Err(t!(
+            "worker_secrets.seal_field_moved",
+            reference = format!("op://{vault}/{id}"),
+            field = SEAL_SERVICE
+        ))
+    }
+}
+
+/// The sealing key kept for `tag` in `store`, with its reference, when one
+/// is there: a key kept before this machine's record of it was written,
+/// taken up again rather than made twice. In 1Password, found by the item's
+/// tag for the account; two such items are refused, not chosen between.
+pub(crate) fn seal_key_there(
+    store: &Store,
+    tag: &str,
+) -> Result<Option<(SecretRef, Zeroizing<String>)>, String> {
+    let account = seal_account(tag);
+    let raw = match store {
+        Store::OnePassword { vault } => {
+            match seal_item_there(&crate::node::common::op_runner()?, vault, tag)? {
+                None => return Ok(None),
+                Some(raw) => raw,
+            }
+        }
+        Store::Keychain => {
+            if item::read(SEAL_SERVICE, &account)?.is_none() {
+                return Ok(None);
+            }
+            format!("keychain:{SEAL_SERVICE}/{account}")
+        }
+        Store::Keystore { .. } => {
+            if !crate::worker::keystore::has(SEAL_SERVICE, &account)? {
+                return Ok(None);
+            }
+            format!("keystore:{SEAL_SERVICE}/{account}")
+        }
+    };
+    let made = reference(&raw)?;
+    let key = read_seal_key(&made)?;
+    Ok(Some((made, key)))
+}
+
+/// The reference to the sealing key kept for `tag` in the 1Password vault
+/// `vault`, through `runner`, when an item tagged for the account is there:
+/// two such items are refused, and so is one that does not keep the field
+/// id [`SEAL_SERVICE`], so one refused when it was made is not taken up
+/// later either.
+fn seal_item_there(
+    runner: &impl OpRunner,
+    vault: &str,
+    tag: &str,
+) -> Result<Option<String>, String> {
+    let listed = op_in(
+        runner,
+        &[
+            "item",
+            "list",
+            "--vault",
+            vault,
+            "--tags",
+            &seal_tag(tag),
+            "--format",
+            "json",
+        ],
+        None,
+        &t!("worker_secrets.doing.find_seal"),
+    )?;
+    let Some(id) = one_tagged(&listed, &seal_tag(tag))? else {
+        return Ok(None);
+    };
+    field_kept(runner, vault, &id)?;
+    Ok(Some(format!("op://{vault}/{id}/{SEAL_SERVICE}")))
+}
+
+/// Keeps `key` in a new item of the 1Password vault `vault`, through
+/// `runner`, tagged for the account `tag` stands for, in the field
+/// [`SEAL_SERVICE`]; refused when the item made does not keep that field
+/// id. Returns the reference.
+fn put_seal_item(
+    runner: &impl OpRunner,
+    vault: &str,
+    tag: &str,
+    key: &str,
+) -> Result<String, String> {
+    let mut fields = Zeroizing::new(format!(
+        "[{{\"id\":\"{SEAL_SERVICE}\",\"label\":\"{SEAL_SERVICE}\",\"type\":\"CONCEALED\",\"value\":\""
+    ));
+    fields.push_str(key);
+    fields.push_str("\"}]");
+    let head = json!({
+        "title": format!("erpc worker sealing key {tag}"),
+        "category": "API_CREDENTIAL",
+        "tags": ["erpc", "erpc/worker/seal", seal_tag(tag)],
+    });
+    let id = create_item_in(
+        runner,
+        vault,
+        &head,
+        &fields,
+        &t!("worker_secrets.doing.keep_seal"),
+    )?;
+    // The field is named by the id erpc gave it: an item that does not keep
+    // that id could be read as a setting by another.
+    field_kept(runner, vault, &id)?;
+    Ok(format!("op://{vault}/{id}/{SEAL_SERVICE}"))
+}
+
+/// Keeps `key`, this machine's sealing key for the ERPC account `tag`
+/// stands for (its 32 bytes as unpadded base64url), in `store`, and returns
+/// its reference after reading it back. In the keystore it is filed as a
+/// sealing key, which opens as nothing else; in 1Password, in the field
+/// [`SEAL_SERVICE`] of an item tagged for the account. Nothing kept there
+/// already is written over: [`seal_key_there`] is asked first.
+pub(crate) fn put_seal_key(store: &Store, tag: &str, key: &str) -> Result<SecretRef, String> {
+    let account = seal_account(tag);
+    let made = match store {
+        Store::OnePassword { vault } => reference(&put_seal_item(
+            &crate::node::common::op_runner()?,
+            vault,
+            tag,
+            key,
+        )?)?,
+        Store::Keychain => {
+            if item::read(SEAL_SERVICE, &account)?.is_some() {
+                return Err(t!(
+                    "worker_secrets.seal_exists",
+                    reference = format!("keychain:{SEAL_SERVICE}/{account}")
+                ));
+            }
+            item::write(SEAL_SERVICE, &account, key)?;
+            reference(&format!("keychain:{SEAL_SERVICE}/{account}"))?
+        }
+        Store::Keystore { by_default } => {
+            if crate::worker::keystore::has(SEAL_SERVICE, &account)? {
+                return Err(t!(
+                    "worker_secrets.seal_exists",
+                    reference = format!("keystore:{SEAL_SERVICE}/{account}")
+                ));
+            }
+            crate::worker::keystore::write(SEAL_SERVICE, &account, Kind::Seal, key, *by_default)?;
+            reference(&format!("keystore:{SEAL_SERVICE}/{account}"))?
+        }
+    };
+    if *read_seal_key(&made)? != *key {
+        return Err(t!("worker_secrets.seal_not_read_back", reference = made));
+    }
+    Ok(made)
+}
+
+/// This machine's sealing key, as kept at `reference`, which must be a
+/// place a sealing key is kept ([`SecretRef::is_seal_entry`]): no other
+/// reference is read as one. In the keystore it is read as a sealing key,
+/// so an entry of another kind is not taken for one.
+pub(crate) fn read_seal_key(reference: &SecretRef) -> Result<Zeroizing<String>, String> {
+    if !reference.is_seal_entry() {
+        return Err(t!("worker_secrets.not_a_seal_place", reference));
+    }
+    read_as(reference, Kind::Seal)
+}
+
 /// The secret a reference points at: a `[secrets]` setting, or a URL
 /// `bench` was given by reference. Never a trading key: an entry filed as
 /// one (an account ending in `.wallet`) is refused by its name, and a
@@ -458,6 +732,11 @@ pub(crate) fn put_key(store: &Store, app: &str, keypair: &Keypair) -> Result<Sec
 pub(crate) fn read(reference: &SecretRef) -> Result<Zeroizing<String>, String> {
     if reference.is_key_entry() {
         return Err(t!("worker_secrets.key_not_a_setting", reference));
+    }
+    // A machine's sealing key: filed under its own service, or, in
+    // 1Password, the item this machine recorded it in.
+    if reference.is_seal_entry() || crate::worker::seal_keys::holds_a_seal_key(reference) {
+        return Err(t!("worker_secrets.seal_not_a_setting", reference));
     }
     read_as(reference, Kind::Secret)
 }
@@ -495,6 +774,8 @@ pub(crate) enum Fate {
     Shared(String),
     /// It stays in the keystore: it is a trading key's entry.
     Key,
+    /// It stays where it is: it is a machine's sealing key.
+    Seal,
     /// Its keystore entry could not be removed, for this reason.
     NotDeleted(String),
 }
@@ -517,6 +798,9 @@ pub(crate) fn forget(
     }
     if is_key_account(account) {
         return Fate::Key;
+    }
+    if reference.is_seal_entry() {
+        return Fate::Seal;
     }
     if let Some((other, _)) = m
         .secrets
@@ -605,6 +889,7 @@ mod tests {
 
     const VAULT: &str = "abcdefghijklmnopqrstuvwxyz";
     const OTHER_VAULT: &str = "zyxwvutsrqponmlkjihgfedcba";
+    const ITEM: &str = concat!("abcdefghijklm", "nopqrstuvwxy0");
 
     #[test]
     fn a_vault_is_named_by_its_id() {
@@ -1112,7 +1397,7 @@ mod tests {
         for (rest, said) in [
             (
                 "[wallet]\nsource = \"keystore:erpc-worker/bot.API_TOKEN\"\n",
-                "erpc-worker/bot.API_TOKEN is kept as a secret, and a trading key is not read",
+                "erpc-worker/bot.API_TOKEN is kept as a secret, and is read as nothing else",
             ),
             (
                 "[secrets]\nHAND = \"keystore:erpc-worker/bot.hand\"\n",
@@ -1216,5 +1501,140 @@ mod tests {
             assert_ne!(text, english);
             assert!(!text.contains('{'), "{text}");
         }
+    }
+
+    #[test]
+    fn a_1password_listing_is_read_by_the_tag_itself() {
+        let tag = "erpc/worker/seal/0123456789abcdef";
+        assert_eq!(super::one_tagged("[]", tag), Ok(None));
+        let one = r#"[{"id":"aaa","tags":["erpc","erpc/worker/seal/0123456789abcdef"]}]"#;
+        assert_eq!(super::one_tagged(one, tag), Ok(Some("aaa".to_owned())));
+        // A longer tag that begins with it is another account's.
+        let longer = r#"[{"id":"bbb","tags":["erpc/worker/seal/0123456789abcdef0"]}]"#;
+        assert_eq!(super::one_tagged(longer, tag), Ok(None));
+        let two = r#"[{"id":"aaa","tags":["erpc/worker/seal/0123456789abcdef"]},
+                      {"id":"ccc","tags":["erpc/worker/seal/0123456789abcdef"]}]"#;
+        assert!(super::one_tagged(two, tag).is_err());
+        assert!(super::one_tagged("not json", tag).is_err());
+        // An item listed with no tags cannot be told apart: refused.
+        let untagged = r#"[{"id":"ddd"}]"#;
+        assert!(super::one_tagged(untagged, tag).is_err());
+        // A tagged item with no id is not passed over: refused.
+        let no_id = r#"[{"tags":["erpc/worker/seal/0123456789abcdef"]}]"#;
+        assert!(super::one_tagged(no_id, tag).is_err());
+    }
+
+    #[test]
+    fn a_1password_item_keeps_the_field_id_erpc_gave_or_is_refused() {
+        let kept =
+            r#"{"id":"aaa","fields":[{"id":"erpc-worker-seal","label":"erpc-worker-seal"}]}"#;
+        assert!(super::keeps_field_id(kept, "erpc-worker-seal"));
+        let moved = r#"{"id":"aaa","fields":[{"id":"x7f2","label":"erpc-worker-seal"}]}"#;
+        assert!(!super::keeps_field_id(moved, "erpc-worker-seal"));
+        assert!(!super::keeps_field_id("not json", "erpc-worker-seal"));
+    }
+
+    #[test]
+    fn a_sealing_key_is_not_read_as_a_trading_key_by_its_kind_at_a_desk() {
+        let desk = FakeDesk::typing(&[PASSPHRASE, PASSPHRASE]);
+        let (_home, _store) = set_up(&desk);
+        let store = Store::Keystore { by_default: false };
+        let key = "A".repeat(43);
+        let made = super::put_seal_key(&store, "0123456789abcdef", &key).expect("kept");
+        // Past the gate (a person at a terminal), the kind refuses it.
+        let e = super::read_key_in(at_a_desk(), &made, None).expect_err("refused");
+        assert!(e.contains("sealing key"), "{e}");
+        // And a secret's removal leaves it where it is.
+        let m = manifest("name = \"bot\"\nchain = \"solana\"\n");
+        assert_eq!(super::forget(&m, "X", &made), Fate::Seal);
+    }
+
+    /// A 1Password vault in memory that answers `op item list`, `create`
+    /// and `get` with what a test sets, and logs what it was asked.
+    struct SealOp {
+        listed: &'static str,
+        got: &'static str,
+        log: std::cell::RefCell<Vec<String>>,
+    }
+
+    impl erpc_auth::store::one_password::OpRunner for SealOp {
+        fn run(
+            &self,
+            args: &[&str],
+            _stdin: Option<&str>,
+        ) -> Result<erpc_auth::store::one_password::OpOutput, erpc_auth::store::StoreError>
+        {
+            self.log.borrow_mut().push(args[..2].join(" "));
+            let stdout = match args {
+                ["item", "list", ..] => self.listed.to_owned(),
+                ["item", "create", ..] => format!("{{\"id\":\"{ITEM}\"}}"),
+                ["item", "get", ..] => self.got.to_owned(),
+                _ => String::new(),
+            };
+            Ok(erpc_auth::store::one_password::OpOutput {
+                success: true,
+                stdout,
+                stderr: String::new(),
+            })
+        }
+    }
+
+    const KEPT_ID: &str = r#"{"fields":[{"id":"erpc-worker-seal","label":"erpc-worker-seal"}]}"#;
+    const ID_LOST: &str = r#"{"fields":[{"id":"x3fk2a","label":"erpc-worker-seal"}]}"#;
+
+    #[test]
+    fn a_sealing_key_item_that_does_not_keep_its_field_id_is_refused_when_made_and_found() {
+        const TAG: &str = "0123456789abcdef";
+        let listed: &'static str = Box::leak(
+            format!(
+                r#"[{{"id":"{ITEM}","tags":["erpc","erpc/worker/seal","{}"]}}]"#,
+                super::seal_tag(TAG)
+            )
+            .into_boxed_str(),
+        );
+        // Made, and the item keeps the id: its reference.
+        let op = SealOp {
+            listed: "[]",
+            got: KEPT_ID,
+            log: std::cell::RefCell::default(),
+        };
+        let made = super::put_seal_item(&op, VAULT, TAG, "k").expect("kept");
+        assert_eq!(made, format!("op://{VAULT}/{ITEM}/erpc-worker-seal"));
+        assert_eq!(*op.log.borrow(), ["item create", "item get"]);
+        // Made, and the item lost the id: refused.
+        let op = SealOp {
+            listed: "[]",
+            got: ID_LOST,
+            log: std::cell::RefCell::default(),
+        };
+        let e = super::put_seal_item(&op, VAULT, TAG, "k").expect_err("refused");
+        assert!(e.contains("erpc-worker-seal"), "{e}");
+        // Found, keeping the id: taken up.
+        let op = SealOp {
+            listed,
+            got: KEPT_ID,
+            log: std::cell::RefCell::default(),
+        };
+        assert_eq!(
+            super::seal_item_there(&op, VAULT, TAG)
+                .expect("found")
+                .as_deref(),
+            Some(format!("op://{VAULT}/{ITEM}/erpc-worker-seal").as_str())
+        );
+        // Found, not keeping it: refused, not taken up.
+        let op = SealOp {
+            listed,
+            got: ID_LOST,
+            log: std::cell::RefCell::default(),
+        };
+        assert!(super::seal_item_there(&op, VAULT, TAG).is_err());
+        // None there: nothing asked of an item.
+        let op = SealOp {
+            listed: "[]",
+            got: KEPT_ID,
+            log: std::cell::RefCell::default(),
+        };
+        assert_eq!(super::seal_item_there(&op, VAULT, TAG).expect("read"), None);
+        assert_eq!(*op.log.borrow(), ["item list"]);
     }
 }

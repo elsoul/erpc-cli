@@ -20,7 +20,9 @@
 //! server or a line in carries no revision: the same request sent again is
 //! a success, and one that would move it is refused. A write sent again
 //! with the same content after its reply was lost is answered as a success.
-//! No route here starts or ends anything that is paid for.
+//! No route in this module starts or ends anything that is paid for:
+//! starting, switching, ending and repointing are [`money`]'s, and an app's
+//! sealed secrets and the keys they are sealed to are [`seal`]'s.
 //!
 //! A closed account is refused on every route with [`Code::AccountClosed`],
 //! not taken for a session that has ended.
@@ -72,6 +74,10 @@ pub enum WorkerError {
     /// The account refused the request and said why.
     #[error(transparent)]
     Refused(#[from] Refusal),
+    /// No access token could be had for the request: the sign-in could not
+    /// be renewed, for the reason given.
+    #[error("no access token for the request: {0}")]
+    Session(String),
     /// An app or environment name that cannot be one, caught before it
     /// was put in a path.
     #[error("{what} name {name:?} is not one erpc can send: {rule}")]
@@ -107,6 +113,15 @@ pub enum WorkerError {
         /// How many characters were given.
         chars: usize,
     },
+    /// A start key that is not 32 lowercase hexadecimal digits, caught
+    /// before it was sent. The key is not kept.
+    #[error("a start key is 32 lowercase hexadecimal digits")]
+    StartKey,
+    /// An id that is not one the account gives (a lowercase UUID), or a
+    /// slot this version does not know, caught before it was put in a
+    /// path. The id is not kept.
+    #[error("not an id or slot the account gives")]
+    Id,
 }
 
 fn newer_format_line(found: u64, after_write: bool) -> String {
@@ -187,8 +202,10 @@ impl Refusal {
             .and_then(|l| one_line(l, DETAIL_MAX))
     }
 
-    /// The environments that hold a start not yet on record, on
-    /// [`Code::StartPending`]. Cleaned like the message: safe to print.
+    /// The environments the refusal is about: those holding a start not yet
+    /// settled, on [`Code::StartPending`], and those with servers or lines
+    /// on record, when an app's delete is [`Code::ServersAttached`].
+    /// Cleaned like the message: safe to print.
     #[must_use]
     pub fn envs(&self) -> Vec<String> {
         self.data
@@ -201,6 +218,18 @@ impl Refusal {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// How many servers are on record, on [`Code::ServersAttached`].
+    #[must_use]
+    pub fn servers(&self) -> Option<u64> {
+        self.data.get("servers").and_then(Value::as_u64)
+    }
+
+    /// How many lines are on record, on [`Code::ServersAttached`].
+    #[must_use]
+    pub fn lines(&self) -> Option<u64> {
+        self.data.get("lines").and_then(Value::as_u64)
     }
 }
 
@@ -328,8 +357,13 @@ open_enum! {
         /// The record moved since it was read
         /// ([`Refusal::current_revision`]).
         RevisionConflict = "revision_conflict",
-        /// An environment holds a start not yet on record
-        /// ([`Refusal::envs`]).
+        /// A start is open. On a delete: the environments holding one
+        /// ([`Refusal::envs`]). On a start, a retry or a take-in: with
+        /// [`Refusal::retry`], this start may have bought what it was for
+        /// (the same key is sent again, or the start retried); without it,
+        /// another start of the environment is open ([`Refusal::start_id`])
+        /// and this request bought nothing: that start is settled first.
+        /// [`Refusal::reason`] may give the refusal a start met.
         StartPending = "start_pending",
         /// A sealing key that cannot be used.
         SealKeyUnusable = "seal_key_unusable",
@@ -337,7 +371,8 @@ open_enum! {
         SealKeyRevoked = "seal_key_revoked",
         /// A fingerprint that does not match the key.
         FingerprintMismatch = "fingerprint_mismatch",
-        /// The account is closed. Every route answers it, with status 401,
+        /// The account is closed. Every route answers it, with status 401
+        /// (or 409, when it closed while the request was being answered),
         /// and it is a refusal, not an ended session: signing in again
         /// does not help.
         AccountClosed = "ACCOUNT_CLOSED",
@@ -347,10 +382,123 @@ open_enum! {
         LimitExceeded = "limit_exceeded",
         /// The server or line is already in another environment or slot.
         AlreadyAttached = "already_attached",
+        /// The account does not take that product into an environment
+        /// ([`Refusal::reason`]: `bundle_part`, a line bought as part of a
+        /// Bundle, which stays with the Bundle).
+        NotAdoptable = "not_adoptable",
         /// That slot of the environment holds another server.
         SlotOccupied = "slot_occupied",
         /// Another slot of the environment already runs the app.
         AppRunningElsewhere = "app_running_elsewhere",
+        /// A delete found servers or lines still on record
+        /// ([`Refusal::servers`], [`Refusal::lines`], and for an app
+        /// [`Refusal::envs`]). Nothing was deleted or ended.
+        ServersAttached = "servers_attached",
+        /// The same start key came with another request.
+        IdempotencyConflict = "IDEMPOTENCY_CONFLICT",
+        /// A start could not be settled now ([`Refusal::start_id`]).
+        /// Whatever the reason, **the key is never sent to a start again**.
+        /// What comes next depends on the request it answered, and on its
+        /// [`Refusal::reason`]. Whether a start is still open is what the
+        /// list of open starts ([`money::list_starts`]) says. "Later" is
+        /// within a limit, after which the start's id goes to support.
+        ///
+        /// On a start, or on a retry of a start that is still open (which
+        /// sends the start again under the same purchase):
+        /// - `start_mismatch`: it bought what cannot be put on the
+        ///   environment's record, and this does not clear by waiting. When
+        ///   the environment holds all the lines it may, one is ended and
+        ///   the start retried; otherwise its id goes to support.
+        /// - `lookup_unavailable`: whether it bought anything is not known.
+        ///   The start is not retried; once it is an hour old, it is
+        ///   resolved.
+        /// - Any other: nothing is sent again or retried; the reason and the
+        ///   start's id go to support.
+        ///
+        /// On a retry of a start that is no longer open, which only looks up
+        /// what it bought and records it, buying nothing:
+        /// - `released`: it bought nothing; a new start may be made, with a
+        ///   new key.
+        /// - `row_unsettled`, `commit_failed`, `lookup_unavailable`: the same
+        ///   retry is sent again later.
+        /// - `slot_occupied`: the slot the server would take is held; it is
+        ///   freed, then the retry sent again.
+        /// - `start_mismatch`: as on a start.
+        /// - `ACCOUNT_CLOSED`: nothing more is done.
+        /// - `IDEMPOTENCY_CONFLICT`, `start_not_found`, `resource_not_found`,
+        ///   and any other: the records disagree; the start's id goes to
+        ///   support.
+        ///
+        /// On a resolve, which buys nothing:
+        /// - `not_stale`: it is not an hour old yet; it is resolved later.
+        /// - `row_unsettled`, `commit_failed`, `lookup_unavailable`: the same
+        ///   resolve is sent again later.
+        /// - `start_mismatch`: as on a start.
+        /// - Any other: the start's id goes to support.
+        ///
+        /// A resolve answered [`Code::StartNotFound`] for a start these
+        /// steps sent to it does not mean nothing was bought: the open starts
+        /// and the environment are read again, and when the environment
+        /// holds nothing more, the start's id goes to support, with no new
+        /// start for that purchase.
+        StartUnsettled = "start_unsettled",
+        /// What the start was buying was ended while it was being bought.
+        /// Unlike [`Code::StartPending`], sending the same key again is not
+        /// the way on: it could buy a new one.
+        StartEnded = "start_ended",
+        /// The start may have bought something and its outcome is not
+        /// known: send the same key again, or retry it
+        /// ([`Refusal::start_id`]).
+        PurchaseUnavailable = "purchase_unavailable",
+        /// No such start in the environment.
+        StartNotFound = "start_not_found",
+        /// No such server in the environment.
+        ServerNotFound = "server_not_found",
+        /// The server has no first login to read ([`Refusal::reason`]:
+        /// `server_gone`, the server is gone or not the person's; `no_box`,
+        /// it has no machine attached).
+        CredentialUnavailable = "credential_unavailable",
+        /// No such line in the environment.
+        LineNotFound = "line_not_found",
+        /// The card has to be authenticated first, in the dashboard.
+        PaymentAuthRequired = "PAYMENT_AUTH_REQUIRED",
+        /// The account needs a billing address first
+        /// ([`Refusal::missing_fields`]).
+        BillingAddressRequired = "billing_address_required",
+        /// The purchase was refused; nothing was bought.
+        PurchaseRefused = "purchase_refused",
+        /// The ERPC Credit balance does not cover the start.
+        InsufficientCredit = "insufficient_credit",
+        /// Nothing of that kind is free in that region now.
+        OutOfStock = "OUT_OF_STOCK",
+        /// The region is down.
+        RegionDown = "REGION_DOWN",
+        /// UDP Forwarding Premium is not on sale.
+        UdpPremiumNotOnSale = "UDP_FORWARDING_PREMIUM_NOT_ON_SALE",
+        /// That line is not sold to this account through an environment.
+        UnsupportedForAccount = "unsupported_for_account",
+        /// Too many requests: wait, then send the same request again
+        /// ([`Refusal::retry_after`] when it says how long).
+        RateLimited = "rate_limited",
+        /// The server or line was not ended ([`Refusal::reason`]). On a
+        /// delete, the reason `operation_in_progress` says another operation
+        /// holds the environment: some of what the request was to end may
+        /// already be ended, and it is sent again after
+        /// [`Refusal::retry_after`] ([`Refusal::current_revision`]).
+        EndRefused = "end_refused",
+        /// A delete ended as many as one request may; send it again
+        /// ([`Refusal::remaining`], [`Refusal::current_revision`]).
+        EndInProgress = "end_in_progress",
+        /// A delete found a server or line it cannot end; nothing was ended
+        /// ([`Refusal::reason`], [`Refusal::servers`], [`Refusal::lines`]).
+        ServersNotEndable = "servers_not_endable",
+        /// The environment is not ready to switch servers.
+        SwitchNotReady = "switch_not_ready",
+        /// Some lines are left to point at the new server
+        /// ([`Refusal::repoint_lines`], [`Refusal::retry_after`]).
+        RepointIncomplete = "repoint_incomplete",
+        /// Nothing was repointed ([`Refusal::reason`]).
+        RepointNotReady = "repoint_not_ready",
     }
 }
 
@@ -598,10 +746,10 @@ pub struct SecretSummary {
     pub version: u64,
     /// Who set it: `browser` or `erpc-cli`.
     #[serde(default)]
-    pub set_via: Option<String>,
+    pub set_via: Option<seal::SetVia>,
     /// How it was sealed: `base` or `auth`.
     #[serde(default)]
-    pub seal_mode: Option<String>,
+    pub seal_mode: Option<seal::SealMode>,
     /// The key of the machine that sealed it, in `auth` mode.
     #[serde(default)]
     pub sender_seal_key_id: Option<String>,
@@ -718,7 +866,10 @@ pub struct Server {
     /// Its region.
     #[serde(default)]
     pub region: Option<String>,
-    /// Whether it is paid by the hour.
+    /// Whether it is paid by the hour: the account reads it from the
+    /// product's billing now, and keeps the value recorded when it was
+    /// attached or started when it cannot read the product (gone, or not
+    /// the person's).
     #[serde(default)]
     pub hourly: bool,
     /// Whether the app runs on it, as erpc last wrote.
@@ -726,6 +877,18 @@ pub struct Server {
     pub app_running: bool,
     /// Its state in the account.
     pub state: State,
+    /// Its public address: the account's text as sent, not checked here. A
+    /// caller parses it as an IPv4 address before it uses or prints it.
+    /// Only when one environment is read whole, and once the account gives
+    /// it; `None` otherwise.
+    #[serde(default)]
+    pub address: Option<String>,
+    /// Whether the account reads it as ready (in use, running, set up, and
+    /// with an address). Not that SSH answers yet: a connection is still
+    /// tried again, within a limit. Once the account gives it; `None`
+    /// otherwise, which is not a yes.
+    #[serde(default)]
+    pub ready: Option<bool>,
 }
 
 /// A data line in an environment, by kind, without its number.
@@ -737,9 +900,19 @@ pub struct Line {
     pub id: String,
     /// What kind of line.
     pub kind: LineKind,
-    /// Whether it is paid by the hour.
+    /// Whether it is paid by the hour: the account reads it from the
+    /// product's billing now, and keeps the value recorded when it was
+    /// attached or started when it cannot read the product (gone, or not
+    /// the person's).
     #[serde(default)]
     pub hourly: bool,
+    /// Whether it was bought as part of a Bundle (`bundlePart`): its
+    /// billing follows the Bundle's. Deleting the environment with its
+    /// servers ended takes it off the environment without ending it,
+    /// whatever its state. `false` when the account does not say, and for
+    /// a line the person no longer has.
+    #[serde(default)]
+    pub bundle_part: bool,
     /// Whether its endpoint is not ready yet.
     #[serde(default)]
     pub pending: bool,
@@ -748,6 +921,14 @@ pub struct Line {
     /// Where the app reaches it, when one environment is read whole.
     #[serde(default)]
     pub endpoint: Option<String>,
+    /// The addresses a UDP Forwarding line sends from (an empty list for
+    /// the other kinds): the account's text as sent, not checked here. A
+    /// caller parses each as an IPv4 address before it lets one in or
+    /// prints it, and reads them again whenever it reads the environment
+    /// (on a deploy, a status, a repoint), since they change. Once the
+    /// account gives them; `None` otherwise.
+    #[serde(default)]
+    pub sources: Option<Vec<String>>,
 }
 
 /// The state of what the facts refer to.
@@ -786,30 +967,140 @@ impl Deployed {
 
 /// What a deploy shipped: the app's definition at that moment, without a
 /// value or a reference to one.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+///
+/// One read from the account also keeps the record as it was sent, which
+/// [`PutEnv::keeping_deploy`] sends back unchanged as long as none of the
+/// fields here was changed: a newer erpc may have recorded a field this
+/// version does not read, or a value it keeps only as
+/// [`Other`](Service::Other), cleaned, and keeping the last deploy keeps
+/// both as they were rather than dropping or rewriting them. A new deploy
+/// ([`PutEnv::with_deploy`]) is sent as its fields say. Equality is the
+/// fields alone.
+#[derive(Clone, Default)]
 #[non_exhaustive]
 pub struct DeployedApp {
     /// The chain.
     pub chain: String,
     /// The template.
-    #[serde(default)]
     pub template: Option<String>,
     /// The port the app listens on.
-    #[serde(default)]
     pub run_port: Option<u16>,
     /// The web application firewall in front of it.
-    #[serde(default)]
     pub waf: Option<DeployedWaf>,
     /// The services beside it.
-    #[serde(default)]
     pub services: Vec<Service>,
     /// The names of its plain settings.
-    #[serde(default)]
     pub var_names: Vec<String>,
     /// Its secrets, by name and where each came from.
-    #[serde(default)]
     pub secrets: Vec<DeployedSecret>,
+    /// The record as the account sent it, when it was read from there.
+    as_read: Option<Value>,
+}
+
+/// The fields of a [`DeployedApp`] on the wire: the derived reading and
+/// writing, kept private so that the only public way in and out is the one
+/// that keeps the record as read.
+mod deployed_app_wire {
+    use serde::{Deserialize, Serialize};
+    use serde_json::Value;
+
+    use super::{DeployedApp, DeployedSecret, DeployedWaf, Service};
+
+    #[derive(Serialize, Deserialize)]
+    #[serde(remote = "DeployedApp", rename_all = "camelCase")]
+    pub(super) struct Fields {
+        chain: String,
+        #[serde(default)]
+        template: Option<String>,
+        #[serde(default)]
+        run_port: Option<u16>,
+        #[serde(default)]
+        waf: Option<DeployedWaf>,
+        #[serde(default)]
+        services: Vec<Service>,
+        #[serde(default)]
+        var_names: Vec<String>,
+        #[serde(default)]
+        secrets: Vec<DeployedSecret>,
+        #[serde(skip)]
+        as_read: Option<Value>,
+    }
+}
+
+impl DeployedApp {
+    /// Whether the fields alone are the same. Every field is named, so one
+    /// added later is not left out without the compiler saying so.
+    fn same_fields(&self, other: &Self) -> bool {
+        let Self {
+            chain,
+            template,
+            run_port,
+            waf,
+            services,
+            var_names,
+            secrets,
+            as_read: _,
+        } = self;
+        *chain == other.chain
+            && *template == other.template
+            && *run_port == other.run_port
+            && *waf == other.waf
+            && *services == other.services
+            && *var_names == other.var_names
+            && *secrets == other.secrets
+    }
+
+    /// The same fields, without the record as read: what a new deploy
+    /// sends.
+    fn fresh(mut self) -> Self {
+        self.as_read = None;
+        self
+    }
+}
+
+impl fmt::Debug for DeployedApp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DeployedApp")
+            .field("chain", &self.chain)
+            .field("template", &self.template)
+            .field("run_port", &self.run_port)
+            .field("waf", &self.waf)
+            .field("services", &self.services)
+            .field("var_names", &self.var_names)
+            .field("secrets", &self.secrets)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for DeployedApp {
+    fn eq(&self, other: &Self) -> bool {
+        self.same_fields(other)
+    }
+}
+
+impl Eq for DeployedApp {}
+
+impl<'de> Deserialize<'de> for DeployedApp {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let as_read = Value::deserialize(deserializer)?;
+        let mut app =
+            deployed_app_wire::Fields::deserialize(&as_read).map_err(serde::de::Error::custom)?;
+        app.as_read = Some(as_read);
+        Ok(app)
+    }
+}
+
+impl Serialize for DeployedApp {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // The record as read, when its fields read back as they are now.
+        let unchanged = self.as_read.as_ref().filter(|read| {
+            deployed_app_wire::Fields::deserialize(*read).is_ok_and(|was| was.same_fields(self))
+        });
+        match unchanged {
+            Some(read) => read.serialize(serializer),
+            None => deployed_app_wire::Fields::serialize(self, serializer),
+        }
+    }
 }
 
 /// The web application firewall of a deploy.
@@ -1040,7 +1331,7 @@ pub struct PutEnv {
     /// The last deploy. Left out when `None`, which the account takes as
     /// `null`: no deploy on record. A put replaces the whole environment,
     /// so a write that is not a deploy sends the last one again to keep it
-    /// ([`PutEnv::with_deploy`]).
+    /// ([`PutEnv::keeping_deploy`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deployed: Option<Deployed>,
     /// What the last deploy shipped, the same way.
@@ -1062,12 +1353,24 @@ impl PutEnv {
         }
     }
 
-    /// The same write, with `deployed` on record: a new deploy, or the last
-    /// one sent again to keep it.
+    /// The same write, with a new deploy on record: `deployed_app` is what
+    /// this deploy shipped, sent as its fields say, even when it was read
+    /// from the account.
     #[must_use]
     pub fn with_deploy(mut self, deployed: Deployed, deployed_app: DeployedApp) -> Self {
         self.deployed = Some(deployed);
-        self.deployed_app = Some(deployed_app);
+        self.deployed_app = Some(deployed_app.fresh());
+        self
+    }
+
+    /// The same write, keeping the last deploy `env` has on record, as a
+    /// write that is not a deploy does: what it shipped is sent back as it
+    /// was read, with what this version does not read
+    /// ([`DeployedApp`]). With no deploy on record, none is sent.
+    #[must_use]
+    pub fn keeping_deploy(mut self, env: &EnvDetail) -> Self {
+        self.deployed.clone_from(&env.deployed);
+        self.deployed_app.clone_from(&env.deployed_app);
         self
     }
 }
@@ -1136,6 +1439,15 @@ pub struct Written<T> {
     pub created: bool,
     /// The record after the write.
     pub record: T,
+}
+
+impl<T> Written<T> {
+    /// A write's outcome: `created` when it made the record, and the record
+    /// after it. For a stand-in for the account in a test.
+    #[must_use]
+    pub const fn new(created: bool, record: T) -> Self {
+        Self { created, record }
+    }
 }
 
 /// What deleting an app or an environment answers.
@@ -1264,6 +1576,21 @@ fn env_reply(
     reply(status, text)
 }
 
+/// Reads an environment's record carried inside a reply's `data` (a
+/// settled start's, a repoint's), with the same check of its format as
+/// [`env_reply`]. Each of those replies answers a write.
+fn env_in(record: &Value) -> Result<EnvDetail, WorkerError> {
+    if let Some(found) = record.get("factsFormat").and_then(Value::as_u64)
+        && found > u64::from(FACTS_FORMAT)
+    {
+        return Err(WorkerError::NewerFormat {
+            found,
+            after_write: true,
+        });
+    }
+    EnvDetail::deserialize(record).map_err(|e| ApiError::Malformed(e.to_string()).into())
+}
+
 fn encode<T: Serialize>(body: &T) -> Result<Vec<u8>, WorkerError> {
     serde_json::to_vec(body).map_err(|e| ApiError::Malformed(e.to_string()).into())
 }
@@ -1381,17 +1708,21 @@ pub async fn put_app(
     reply(status, &text)
 }
 
-/// Deletes the app `app`'s record: its environments, lines and secrets
-/// with it. Nothing it runs on is stopped or ended.
+/// Deletes the app `app`'s record: its environments, secrets and seals
+/// with it.
+/// Nothing it runs on is stopped or ended, and the record is not deleted
+/// while a server or a line is on it.
 ///
 /// # Errors
 ///
-/// [`Code::StartPending`] while an environment holds a start not yet on
-/// record, [`Code::RevisionConflict`] when the app moved since
-/// `expected_revision`, [`Code::WorkerNotFound`] when there is no such app,
-/// and [`WorkerError`] when the request fails or is refused otherwise. An
-/// `expected_revision` of 0 does not mean "whatever it is at": it matches
-/// no app, so it is a conflict when the app is there.
+/// [`Code::StartPending`] while an environment holds a start not yet
+/// settled, [`Code::ServersAttached`] while an environment still has a
+/// server or a line on record, whatever its state, [`Code::RevisionConflict`]
+/// when the app moved since `expected_revision`, [`Code::WorkerNotFound`]
+/// when there is no such app, and [`WorkerError`] when the request fails or
+/// is refused otherwise. An `expected_revision` of 0 does not mean
+/// "whatever it is at": it matches no app, so it is a conflict when the app
+/// is there.
 pub async fn delete_app(
     client: &AuthClient,
     access_token: &SecretString,
@@ -1450,15 +1781,17 @@ pub async fn put_env(
 }
 
 /// Deletes the environment `env` of `app`'s record. Nothing it runs on is
-/// stopped or ended.
+/// stopped or ended, and the record is not deleted while a server or a line
+/// is on it.
 ///
 /// # Errors
 ///
-/// [`Code::StartPending`] while it holds a start not yet on record,
-/// [`Code::RevisionConflict`] when it moved since `expected_revision`,
-/// [`Code::WorkerNotFound`] or [`Code::EnvNotFound`] when there is no such
-/// app or environment, and [`WorkerError`] when the request fails or is
-/// refused otherwise.
+/// [`Code::StartPending`] while it holds a start not yet settled,
+/// [`Code::ServersAttached`] while a server or a line is on record, whatever
+/// its state, [`Code::RevisionConflict`] when it moved since
+/// `expected_revision`, [`Code::WorkerNotFound`] or [`Code::EnvNotFound`]
+/// when there is no such app or environment, and [`WorkerError`] when the
+/// request fails or is refused otherwise.
 pub async fn delete_env(
     client: &AuthClient,
     access_token: &SecretString,
@@ -1503,6 +1836,8 @@ pub async fn adopt_server(
 ///
 /// [`Code::ResourceNotFound`] when the line is not this account's,
 /// [`Code::AlreadyAttached`] when another environment has it,
+/// [`Code::NotAdoptable`] when the account does not take it into an
+/// environment ([`Refusal::reason`] `bundle_part`: part of a Bundle),
 /// [`Code::LimitExceeded`] when the environment has as many lines as it
 /// may, [`WorkerError::NewerFormat`] when the environment comes back in a
 /// newer format than this version reads (the line may already have been
@@ -1519,6 +1854,10 @@ pub async fn adopt_line(
     let (status, text) = post(client, access_token, &url, body).await?;
     written_env(status, &text)
 }
+
+pub mod login;
+pub mod money;
+pub mod seal;
 
 #[cfg(test)]
 mod tests {
@@ -1665,6 +2004,8 @@ mod tests {
             env.lines[0].endpoint.as_deref(),
             Some("grpc.example.net:443")
         );
+        // Not said: not a Bundle's part.
+        assert!(!env.lines[0].bundle_part);
         assert_eq!(env.ref_states.backup, None);
         // A record written before the deploying machine stopped being kept
         // still names it; the name is not read, so it is never sent back.
@@ -1675,19 +2016,73 @@ mod tests {
                 "2026-10-29T15:40:37.000Z"
             ))
         );
-        let resent = PutEnv::new(env.revision, Facts::default()).with_deploy(
-            env.deployed.clone().expect("deployed"),
-            DeployedApp::default(),
-        );
+        let resent = PutEnv::new(env.revision, Facts::default()).keeping_deploy(&env);
         let resent = serde_json::to_value(&resent).expect("encodes");
         assert_eq!(
             resent["deployed"],
             json!({ "release": "20261029T154037Z-6914df5f", "at": "2026-10-29T15:40:37.000Z" })
         );
+        assert_eq!(resent["deployedApp"], env_detail_json()["deployedApp"]);
         assert!(!resent.to_string().contains("deploy-laptop"));
         let app = env.deployed_app.expect("deployed app");
         assert_eq!(app.services, [Service::Redis]);
         assert_eq!(app.secrets[1].kind, SecretSource::Erpc);
+    }
+
+    #[test]
+    fn the_last_deploy_sent_again_keeps_what_this_version_does_not_read() {
+        // A newer erpc recorded a field this version does not read and
+        // values it keeps only as `Other`, one of them cleaned for printing.
+        let mut detail = env_detail_json();
+        detail["deployedApp"]["somethingNew"] = json!({ "x": 1 });
+        detail["deployedApp"]["services"] = json!(["redis", "kafka streams"]);
+        detail["deployedApp"]["secrets"][1]["kind"] = json!("vault");
+        let as_sent = detail["deployedApp"].clone();
+        let env: EnvDetail = serde_json::from_value(detail).expect("reads");
+        let app = env.deployed_app.clone().expect("app");
+        assert_eq!(app.services[1], Service::Other("kafka?streams".to_owned()));
+        let sent =
+            |body: &PutEnv| serde_json::to_value(body).expect("encodes")["deployedApp"].clone();
+        // Kept: sent back as it was read, the field kept, the values as
+        // they were.
+        let kept = PutEnv::new(env.revision, Facts::default()).keeping_deploy(&env);
+        assert_eq!(sent(&kept), as_sent);
+        // Kept, then changed: sent as its fields say.
+        let mut changed = kept.clone();
+        if let Some(app) = changed.deployed_app.as_mut() {
+            app.var_names.push("NEW_VAR".to_owned());
+        }
+        let changed = sent(&changed);
+        assert_eq!(
+            changed["varNames"],
+            json!(["API_PORT", "RUST_LOG", "NEW_VAR"])
+        );
+        assert!(changed.get("somethingNew").is_none());
+        // A new deploy is sent as its fields say, even with the very
+        // fields that were read: nothing of the old record goes with it.
+        let new = PutEnv::new(env.revision, Facts::default())
+            .with_deploy(env.deployed.clone().expect("deployed"), app.clone());
+        assert!(sent(&new).get("somethingNew").is_none());
+        assert_eq!(sent(&new)["services"], json!(["redis", "kafka?streams"]));
+        // With no deploy on record, keeping it sends none.
+        let mut none = env.clone();
+        none.deployed = None;
+        none.deployed_app = None;
+        let body = serde_json::to_value(PutEnv::new(1, Facts::default()).keeping_deploy(&none))
+            .expect("encodes");
+        assert!(body.get("deployed").is_none() && body.get("deployedApp").is_none());
+        // What was read is not printed twice: Debug names the fields.
+        assert!(!format!("{app:?}").contains("somethingNew"));
+        // Equal is the fields alone, read or built.
+        let mut built = DeployedApp::default();
+        built.chain.clone_from(&app.chain);
+        built.template.clone_from(&app.template);
+        built.run_port = app.run_port;
+        built.services.clone_from(&app.services);
+        built.var_names.clone_from(&app.var_names);
+        built.secrets.clone_from(&app.secrets);
+        assert_eq!(built, app);
+        assert_ne!(serde_json::to_value(&built).expect("encodes"), as_sent);
     }
 
     #[test]
@@ -1759,7 +2154,7 @@ mod tests {
                 "activeCores": null,
                 "coreOptions": [],
                 "host": "203.0.113.10",
-                "lines": [{ "id": LINE_ID, "kind": "shreds", "hourly": true, "pending": true, "state": "active" }],
+                "lines": [{ "id": LINE_ID, "kind": "shreds", "hourly": false, "bundlePart": true, "pending": true, "state": "active" }],
                 "startPending": false,
                 "deployed": { "release": "20261029T154037Z-6914df5f", "at": "2026-10-29T15:40:37.000Z" }
             }]
@@ -1776,6 +2171,7 @@ mod tests {
         let env = &app.envs[0];
         assert_eq!(env.host.as_deref(), Some("203.0.113.10"));
         assert!(env.lines[0].pending);
+        assert!(env.lines[0].bundle_part && !env.lines[0].hourly);
         assert_eq!(env.lines[0].endpoint, None);
         assert_eq!(
             env.deployed,
@@ -1940,6 +2336,7 @@ mod tests {
                     DeployedSecret::new("ERPC_API_KEY", SecretSource::Keychain),
                     DeployedSecret::new("API_TOKEN", SecretSource::Erpc),
                 ],
+                ..DeployedApp::default()
             },
         );
         assert_eq!(
@@ -2096,8 +2493,10 @@ mod tests {
             (409, "fingerprint_mismatch", Code::FingerprintMismatch),
             (401, "ACCOUNT_CLOSED", Code::AccountClosed),
             (409, "already_attached", Code::AlreadyAttached),
+            (409, "not_adoptable", Code::NotAdoptable),
             (409, "slot_occupied", Code::SlotOccupied),
             (409, "app_running_elsewhere", Code::AppRunningElsewhere),
+            (409, "servers_attached", Code::ServersAttached),
             (422, "limit_exceeded", Code::LimitExceeded),
         ];
         for (status, text, code) in cases {
@@ -2133,11 +2532,18 @@ mod tests {
                      "data": { "envs": ["prod", "staging"] } }),
         );
         assert_eq!(pending.envs(), ["prod", "staging"]);
-        let new = refusal(
+        // An app's delete with lines still on record: the environments by
+        // name, the servers and lines as counts.
+        let attached = refusal(
             409,
-            &json!({ "success": false, "code": "switch_not_ready" }),
+            &json!({ "success": false, "code": "servers_attached", "message": "no",
+                     "data": { "envs": ["prod"], "servers": 1, "lines": 2 } }),
         );
-        assert_eq!(new.code, Some(Code::Other("switch_not_ready".to_owned())));
+        assert_eq!(attached.envs(), ["prod"]);
+        assert_eq!((attached.servers(), attached.lines()), (Some(1), Some(2)));
+        assert_eq!((pending.servers(), pending.lines()), (None, None));
+        let new = refusal(409, &json!({ "success": false, "code": "something_new" }));
+        assert_eq!(new.code, Some(Code::Other("something_new".to_owned())));
     }
 
     #[test]

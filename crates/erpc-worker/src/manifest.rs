@@ -111,6 +111,26 @@ pub fn is_key_account(account: &str) -> bool {
     account.to_ascii_lowercase().ends_with(".wallet")
 }
 
+/// The keychain and keystore service a machine's sealing key is kept
+/// under, and the 1Password field it is kept in, and nothing else: an
+/// entry there is never a setting or a key.
+pub const SEAL_SERVICE: &str = "erpc-worker-seal";
+
+/// Whether `service` is [`SEAL_SERVICE`], in any case (a keychain may fold
+/// case).
+#[must_use]
+pub fn is_seal_service(service: &str) -> bool {
+    service.eq_ignore_ascii_case(SEAL_SERVICE)
+}
+
+/// The one name a keychain that files an entry by one name gives it:
+/// Windows names a credential `<account>.<service>`, so `keychain:b.c/a`
+/// and `keychain:c/a.b` are the same entry there. In lowercase, as such a
+/// keychain compares names.
+fn keychain_target(service: &str, account: &str) -> String {
+    format!("{account}.{service}").to_ascii_lowercase()
+}
+
 /// Whether `s` may be the service or the account of a `keychain:` or
 /// `keystore:` reference.
 fn is_ref_part(s: &str) -> bool {
@@ -181,16 +201,41 @@ impl SecretRef {
         matches!(self, Self::Keychain { .. } | Self::Keystore { .. })
     }
 
+    /// Whether this names an entry filed as a machine's sealing key: a
+    /// keychain or keystore entry under [`SEAL_SERVICE`]. A 1Password item
+    /// is named by its id, which says nothing of what it holds.
+    ///
+    /// In 1Password, the field [`SEAL_SERVICE`] names, in any case: 1Password
+    /// reads a reference without regard to case. In the keychain, also any
+    /// other spelling of the same entry where a keychain files it by one
+    /// name ([`keychain_target`]).
+    #[must_use]
+    pub fn is_seal_entry(&self) -> bool {
+        match self {
+            Self::OnePassword(r) => r.field().eq_ignore_ascii_case(SEAL_SERVICE),
+            Self::Keychain { service, account } => {
+                is_seal_service(service)
+                    || keychain_target(service, account).ends_with(&format!(".{SEAL_SERVICE}"))
+            }
+            Self::Keystore { service, .. } => is_seal_service(service),
+        }
+    }
+
     /// Whether this names an entry filed as a trading key: a keychain or
     /// keystore account that [`is_key_account`]. A 1Password item is
     /// named by its id, which says nothing of what it holds.
+    ///
+    /// In the keychain, also any other spelling of such an entry where a
+    /// keychain files it by one name ([`keychain_target`]): one whose name
+    /// there has `.wallet.` in it.
     #[must_use]
     pub fn is_key_entry(&self) -> bool {
         match self {
             Self::OnePassword(_) => false,
-            Self::Keychain { account, .. } | Self::Keystore { account, .. } => {
-                is_key_account(account)
+            Self::Keychain { service, account } => {
+                is_key_account(account) || keychain_target(service, account).contains(".wallet.")
             }
+            Self::Keystore { account, .. } => is_key_account(account),
         }
     }
 }
@@ -804,7 +849,9 @@ impl StartOf {
 /// which could buy a second. What the request was for is kept beside the
 /// key, so that a command that asks for another plan, region or address
 /// does not send this key for another purchase. The entry leaves the record
-/// with the purchase it made, or once nothing was made under it.
+/// with the purchase it made, once nothing was made under it, or once
+/// user-api refuses its key because what was bought under it has been
+/// ended.
 /// The key is no secret: it names a request, and buys nothing without the
 /// account's session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -869,11 +916,17 @@ pub struct Inventory {
 ///
 /// Its server facts -- `resource`, `host`, `ssh_user`, `ssh_port`,
 /// `host_key`, `firewall`, `lines`, `starting`, `backup` -- are written
-/// here, or kept in 1Password when `inventory` is set, never both: two
-/// copies drift, and nobody can tell which is right.
+/// here, kept in 1Password when `inventory` is set, or kept in the ERPC
+/// account when `account` is set: one of the three, never two. Two copies
+/// drift, and nobody can tell which is right.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Env {
+    /// Whether the server facts are kept in the ERPC account (`account =
+    /// true`) rather than here or in 1Password. The account then also holds the environment's server
+    /// and lines, which it names by its own ids and not by product number.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub account: bool,
     /// Where the server facts are kept, when not in this file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inventory: Option<Inventory>,
@@ -1189,6 +1242,12 @@ impl Manifest {
                 "{reference} is wallet.source, the trading key: {WHY}"
             ));
         }
+        if reference.is_seal_entry() {
+            return Some(format!(
+                "{reference} is filed as a machine's sealing key (under the name \
+                 {SEAL_SERVICE}), which is never read as a setting"
+            ));
+        }
         reference.is_key_entry().then(|| {
             format!(
                 "{reference} is an entry filed as a trading key (its account ends in \
@@ -1380,6 +1439,15 @@ impl Manifest {
                 out.push(format!("secrets.{name}: {problem}; remove the line"));
             }
         }
+        if let Some(w) = self.wallet.as_ref()
+            && w.source.is_seal_entry()
+        {
+            out.push(format!(
+                "wallet.source {} is filed as a machine's sealing key (under the name \
+                 {SEAL_SERVICE}), not a trading key",
+                w.source
+            ));
+        }
         if let Some(pubkey) = self.wallet.as_ref().and_then(|w| w.pubkey.as_deref())
             && !is_pubkey(self.chain, pubkey)
         {
@@ -1568,8 +1636,31 @@ impl Manifest {
     }
 }
 
+/// What is wrong with where environment `name`'s server facts are kept,
+/// when they are kept in the ERPC account.
+fn account_problems(name: &str, env: &Env, out: &mut Vec<String>) {
+    if env.account {
+        if env.inventory.is_some() {
+            out.push(format!(
+                "env.{name}: its server facts are kept in the ERPC account (account = true), so \
+                 they cannot also be kept in 1Password; remove inventory or account"
+            ));
+        }
+        let written = env.written_facts();
+        if !written.is_empty() {
+            out.push(format!(
+                "env.{name}: its server facts are kept in the ERPC account (account = true), so \
+                 {} must not also be written here; remove {}",
+                written.join(", "),
+                if written.len() == 1 { "it" } else { "them" }
+            ));
+        }
+    }
+}
+
 fn env_problems(name: &str, env: &Env, out: &mut Vec<String>) {
     let at = |field: &str| format!("env.{name}.{field}");
+    account_problems(name, env, out);
     if let Some(inventory) = &env.inventory {
         if !is_vault_id(&inventory.vault) {
             out.push(format!(
@@ -2777,6 +2868,39 @@ ssh_allow = ["198.51.100.7"]
     }
 
     #[test]
+    fn an_environment_kept_in_the_account_writes_no_server_fact_here() {
+        let with = |env: &str| format!("name = \"bot\"\nchain = \"solana\"\n[env.prod]\n{env}\n");
+        let m = Manifest::parse(&with("account = true")).expect("valid");
+        let env = &m.env["prod"];
+        assert!(env.account);
+        // Written back as it was read, and not at all when unset.
+        let text = toml::to_string(env).expect("writes");
+        assert!(text.contains("account = true"), "{text}");
+        assert!(
+            !toml::to_string(&super::Env::default())
+                .expect("writes")
+                .contains("account")
+        );
+        // A fact written here as well: refused, naming it.
+        let both = problems(&with("account = true\nhost = \"203.0.113.10\""));
+        assert!(
+            both.iter()
+                .any(|p| p.contains("kept in the ERPC account") && p.contains("host")),
+            "{both:?}"
+        );
+        // Kept in 1Password as well: refused.
+        let vault = concat!("abcdefghijklm", "nopqrstuvwxyz");
+        let two = problems(&with(&format!(
+            "account = true\ninventory = {{ vault = \"{vault}\" }}"
+        )));
+        assert!(
+            two.iter()
+                .any(|p| p.contains("cannot also be kept in 1Password")),
+            "{two:?}"
+        );
+    }
+
+    #[test]
     fn a_prebuilt_binary_is_a_path_inside_the_app_and_takes_the_place_of_the_command() {
         let with = |build: &str| format!("name = \"mine\"\nchain = \"solana\"\n[build]\n{build}\n");
         let m = Manifest::parse(&with("prebuilt = \"dist/mine-linux\"")).expect("valid");
@@ -3009,6 +3133,33 @@ ssh_allow = ["198.51.100.7"]
         assert!(is_key_account("bot.wallet") && is_key_account("bot.WaLLeT"));
         assert!(!is_key_account("bot.wallet2") && !is_key_account("wallet"));
         assert!(!reference(&op).is_key_entry());
+        // A machine's sealing key is never a setting either, in any case,
+        // nor under another spelling a keychain files as the same entry.
+        let in_op = format!("op://{VAULT}/{ITEM}/erpc-worker-seal");
+        let in_op_cased = format!("op://{VAULT}/{ITEM}/ERPC-Worker-SEAL");
+        for sealed in [
+            "keystore:erpc-worker-seal/0123abcd.seal",
+            "keychain:ERPC-Worker-Seal/0123abcd.seal",
+            "keychain:seal.erpc-worker-seal/0123abcd",
+            "keychain:SEAL.Erpc-Worker-Seal/0123abcd",
+            in_op.as_str(),
+            in_op_cased.as_str(),
+        ] {
+            let why = m.key_as_setting(&reference(sealed)).expect("refused");
+            assert!(why.contains("sealing key"), "{sealed}: {why}");
+        }
+        assert!(!reference(&op).is_seal_entry());
+        // The trading key's entry under the other spelling is a key too.
+        assert!(reference("keychain:wallet.erpc-worker/bot").is_key_entry());
+        assert!(reference("keychain:WALLET.erpc-worker/bot").is_key_entry());
+        assert!(!reference("keychain:erpc-worker/bot.API_TOKEN").is_key_entry());
+    }
+
+    #[test]
+    fn a_wallet_filed_as_a_sealing_key_is_refused() {
+        let text = "name = \"bot\"\nchain = \"solana\"\n[wallet]\nsource = \"keychain:seal.erpc-worker-seal/0123abcd\"\n";
+        let e = Manifest::parse(text).expect_err("refused");
+        assert!(e.to_string().contains("sealing key"), "{e}");
     }
 
     #[test]
@@ -3126,6 +3277,25 @@ ssh_allow = ["198.51.100.7", "198.51.100.7/32"]
         // Without the table there is no config.
         let plain = Manifest::parse("name = \"bot\"\nchain = \"solana\"\n").expect("valid");
         assert_eq!(plain.waf_config("prod"), None);
+    }
+
+    #[test]
+    fn the_wafs_config_follows_run_port_as_well_as_its_own_table() {
+        // So a deploy after a change to `run.port` alone writes the WAF's
+        // config, as one after a change to `[waf]` does: behind a note no
+        // apply can remove, both fail (the hint of a port held there says so).
+        let m = Manifest::parse(&behind_waf("port = 8080", "")).expect("valid");
+        let moved = Manifest::parse(
+            &behind_waf("port = 8080", "").replace("[run]\nport = 3000", "[run]\nport = 3001"),
+        )
+        .expect("valid");
+        let (before, after) = (
+            m.waf_config("prod").expect("a config"),
+            moved.waf_config("prod").expect("a config"),
+        );
+        assert_eq!(before.upstream, "127.0.0.1:3000".parse().expect("upstream"));
+        assert_eq!(after.upstream, "127.0.0.1:3001".parse().expect("upstream"));
+        assert_ne!(before, after);
     }
 
     #[test]

@@ -479,6 +479,92 @@ impl AuthClient {
         .await
     }
 
+    /// POSTs `body` as JSON with the access token, as
+    /// [`Self::post_with_token`] does, allowing `timeout` for the whole
+    /// request instead of [`REQUEST_TIMEOUT`]. For a request the server
+    /// answers only once it has called other services: a start or an end
+    /// of a product, which an answer cut short leaves unknown.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::post_with_token`].
+    pub async fn post_with_token_waiting(
+        &self,
+        audience: Audience,
+        url: &str,
+        access_token: &SecretString,
+        body: Vec<u8>,
+        idempotency_key: Option<&str>,
+        timeout: Duration,
+    ) -> Result<(u16, String), HttpError> {
+        let (request, host) =
+            self.token_request(reqwest::Method::POST, audience, url, access_token)?;
+        let mut request = request
+            .header("content-type", "application/json")
+            .timeout(timeout)
+            .body(body);
+        if let Some(key) = idempotency_key {
+            request = request.header("idempotency-key", key);
+        }
+        Self::answer(request, host).await
+    }
+
+    /// DELETEs `url` with the access token, as [`Self::delete_with_token`]
+    /// does without a body, allowing `timeout` for the whole request
+    /// instead of [`REQUEST_TIMEOUT`], for the reason
+    /// [`Self::post_with_token_waiting`] gives.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::delete_with_token`].
+    pub async fn delete_with_token_waiting(
+        &self,
+        audience: Audience,
+        url: &str,
+        access_token: &SecretString,
+        timeout: Duration,
+    ) -> Result<(u16, String), HttpError> {
+        let (request, host) =
+            self.token_request(reqwest::Method::DELETE, audience, url, access_token)?;
+        Self::answer(request.timeout(timeout), host).await
+    }
+
+    /// A request to `url` with the access token, once `url` is a
+    /// destination this audience's token may go to, and the host a failure
+    /// names.
+    fn token_request(
+        &self,
+        method: reqwest::Method,
+        audience: Audience,
+        url: &str,
+        access_token: &SecretString,
+    ) -> Result<(reqwest::RequestBuilder, &'static str), HttpError> {
+        allowlist::ensure_token_destination(audience, url)?;
+        let host = allowlist::destinations(audience)
+            .first()
+            .copied()
+            .unwrap_or_else(|| audience.issuer_host());
+        let request = self
+            .inner
+            .request(method, url)
+            .bearer_auth(access_token.expose_secret());
+        Ok((request, host))
+    }
+
+    /// Sends `request` and returns the status and body.
+    async fn answer(
+        request: reqwest::RequestBuilder,
+        host: &'static str,
+    ) -> Result<(u16, String), HttpError> {
+        let response = request.send().await.map_err(|e| HttpError::Transport {
+            host,
+            reason: e.to_string(),
+        })?;
+        let status = response.status().as_u16();
+        let text = response.text().await.unwrap_or_default();
+        Ok((status, text))
+    }
+
     async fn send_with_token(
         &self,
         method: reqwest::Method,
@@ -945,10 +1031,100 @@ mod timeout_test;
 mod tests {
     use core::time::Duration;
 
-    use super::{AuthorizationBody, HttpError, TokenBody};
+    use secrecy::SecretString;
+
+    use super::{AuthClient, AuthorizationBody, HttpError, TokenBody};
+    use crate::allowlist::AllowlistError;
+    use crate::credential::Audience;
     use crate::device_flow::PollOutcome;
 
     const HOST: &str = "auth-api.erpc.global";
+
+    /// Every way of sending with a token refuses a host the token is not
+    /// for, with `HostNotAllowed`: the waiting and the bounded ones as the
+    /// others. Whether the check comes before the request is sent is not
+    /// seen here; each sending body makes it its first step.
+    #[tokio::test]
+    async fn every_request_with_a_token_refuses_a_host_it_is_not_for() {
+        let client = AuthClient::new().expect("a client");
+        let token = SecretString::from("not-a-token");
+        let url = "https://dashboard.erpc.global/v3/worker/apps";
+        let wait = Duration::from_secs(1);
+        let audience = Audience::AuthApi;
+        let ok = |_| ();
+        let limits = || super::JsonResponseLimits {
+            timeout: wait,
+            ok_bytes: 1024,
+            other_bytes: 1024,
+        };
+        let answers = [
+            client.get_with_token(audience, url, &token).await.map(ok),
+            client
+                .post_with_token(audience, url, &token, Vec::new(), Some("k"))
+                .await
+                .map(ok),
+            client
+                .put_with_token(audience, url, &token, Vec::new())
+                .await
+                .map(ok),
+            client
+                .patch_with_token(audience, url, &token, Vec::new())
+                .await
+                .map(ok),
+            client
+                .delete_with_token(audience, url, &token, None)
+                .await
+                .map(ok),
+            client
+                .post_with_token_waiting(audience, url, &token, Vec::new(), Some("k"), wait)
+                .await
+                .map(ok),
+            client
+                .delete_with_token_waiting(audience, url, &token, wait)
+                .await
+                .map(ok),
+            client
+                .post_bytes_with_token(audience, url, &token, Vec::new(), wait)
+                .await
+                .map(ok),
+            client
+                .get_streaming(audience, url, &token, None, wait)
+                .await
+                .map(|_| ()),
+            client
+                .post_json_streaming(audience, url, &token, Vec::new())
+                .await
+                .map(|_| ()),
+            client
+                .get_with_token_bounded(audience, url, &token, limits())
+                .await
+                .map(ok),
+            client
+                .post_with_token_bounded(audience, url, &token, Vec::new(), Some("k"), limits())
+                .await
+                .map(ok),
+            client
+                .post_with_token_bounded_and_headers(
+                    audience,
+                    url,
+                    &token,
+                    Vec::new(),
+                    &[],
+                    limits(),
+                )
+                .await
+                .map(ok),
+        ];
+        for answer in answers {
+            assert!(
+                matches!(
+                    answer,
+                    Err(HttpError::Allowlist(AllowlistError::HostNotAllowed { .. }))
+                ),
+                "{answer:?}"
+            );
+        }
+    }
 
     fn jwt(tag: &str) -> String {
         format!("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ{tag}In0.c2ln")

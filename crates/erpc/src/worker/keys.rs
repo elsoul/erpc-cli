@@ -1256,6 +1256,7 @@ pub(crate) fn remove(json: bool, dir: &Dir, name: &str) -> Outcome {
         Fate::Absent => done.info(t!("worker_keys.rm.absent", source)).text(),
         Fate::Shared(other) => done.info(t!("worker_keys.rm.shared", source, other)).text(),
         Fate::Key => done.info(t!("worker_keys.rm.is_key", source)).text(),
+        Fate::Seal => done.info(t!("worker_keys.rm.is_seal", source)).text(),
         Fate::NotDeleted(error) => done
             .warning(t!("worker_keys.rm.not_deleted", source, error))
             .text(),

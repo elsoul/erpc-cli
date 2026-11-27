@@ -220,6 +220,14 @@ pub fn waf_config_path(id: &str) -> String {
     format!("{WAF_DIR}/{id}.json")
 }
 
+/// The note beside a worker's WAF config that `waf-apply` is changing it
+/// or its unit ([`WAF_DIR`]). Only root can put anything there or take
+/// it away.
+#[must_use]
+pub fn waf_note_path(id: &str) -> String {
+    format!("{WAF_DIR}/{id}.applying")
+}
+
 /// Where a worker's WAF writes its [`crate::waf::WafStats`]: in its own
 /// runtime directory, which is gone when it stops.
 #[must_use]
@@ -1274,13 +1282,19 @@ mod tests {
 
     #[test]
     fn the_waf_is_a_unit_of_its_own_with_nothing_of_the_workers() {
-        use super::{WAF_DIR, waf_config_path, waf_stats_path, waf_unit, waf_unit_name};
+        use super::{
+            WAF_DIR, waf_config_path, waf_note_path, waf_stats_path, waf_unit, waf_unit_name,
+        };
         assert_eq!(waf_unit_name("bot-prod"), "erpc-waf-bot-prod.service");
         assert_eq!(
             waf_config_path("bot-prod"),
             "/etc/erpc/worker-waf/bot-prod.json"
         );
         assert!(waf_config_path("bot-prod").starts_with(WAF_DIR));
+        assert_eq!(
+            waf_note_path("bot-prod"),
+            "/etc/erpc/worker-waf/bot-prod.applying"
+        );
         assert_eq!(
             waf_stats_path("bot-prod"),
             "/run/erpc-waf-bot-prod/stats.json"

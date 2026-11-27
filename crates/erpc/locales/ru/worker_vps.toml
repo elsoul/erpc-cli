@@ -31,12 +31,14 @@ not_known = "из ответа user-api не ясно, было ли что-то
 unmatched = "у user-api есть покупка по этому запросу, но этой команде он её не отдаёт (HTTP {status}, IDEMPOTENCY_CONFLICT); ничего не запущено и ничего не отправлено повторно"
 unnamed = "user-api ответил, что запуск выполнен, но не сообщил, что именно запущено (HTTP {status})"
 other_purchase = "user-api сообщает, что ключ этого запроса принадлежит другой покупке; ничего не запущено и ничего не отправлено повторно"
+ended = "user-api сообщает, что купленное по ключу этого запуска уже завершено, и больше этот ключ не принимает: с запуска до завершения могли списывать оплату почасово, не меньше чем за один час, это видно в панели управления. erpc убирает запрос из записей и больше не отправляет его ключ; новый запуск — это новая покупка с новым ключом, и цена будет названа снова"
+ended_stays = "user-api сообщает, что купленное по ключу этого запуска уже завершено, и больше этот ключ не принимает: с запуска до завершения могли списывать оплату почасово, не меньше чем за один час, это видно в панели управления. erpc не удалось убрать запрос из записей ({error}): при следующем запуске той же команды его ключ будет отправлен ещё раз"
 
 [vps]
-none = "у аккаунта нет VPS {id}"
-no_address = "у VPS {id} ещё нет адреса"
-not_key_only = "VPS {id} не переведён на вход только по ключу"
-bad_id = "{id} — не ID VPS"
+none = "у аккаунта нет VPS {id}, а --server принимает ID VPS (сервер bare metal указывается через --host)"
+no_address = "у сервера {id} ещё нет адреса"
+not_key_only = "сервер {id} не переведён на вход только по ключу"
+bad_id = "{id} — не ID сервера"
 
 [plan]
 not_offered = "{id} сейчас не входит в тарифы {family} с почасовой оплатой"
@@ -45,17 +47,17 @@ as_asked = "как указано"
 cheapest = "самый дешёвый"
 
 [buy]
-bad_region = "`{region}` — не регион VPS; доступны {regions}"
-buying = "Новый VPS с почасовой оплатой: {name} ({product}; {how}, €{price} в час), регион {region} ({why})"
+bad_region = "`{region}` — не регион для серверов; доступны {regions}"
+buying = "Новый сервер с почасовой оплатой: {name} ({product}; {how}, €{price} в час), регион {region} ({why})"
 region_asked = "как указано"
 region_nearest = "ближайший по часовому поясу этой машины"
 not_started = "user-api не запустил его (HTTP {status}): {reason}"
 other_region_hint = "в другом регионе (--region) он может быть в наличии; `erpc worker deploy --region <name>{scope}`"
-started = "VPS {id} запущен"
+started = "сервер {id} запущен"
 
 [ready]
-waiting = "ожидание готовности VPS {id} (до пяти минут)"
-failed = "VPS {id} так и не перешёл в состояние готовности: {reason}"
+waiting = "ожидание готовности сервера {id} (до пяти минут)"
+failed = "сервер {id} так и не перешёл в состояние готовности: {reason}"
 
 [end]
 not_hourly = "сервер этого окружения — не сервер ERPC с почасовой оплатой; ничего не завершено"
@@ -71,7 +73,7 @@ no_list = "в состоянии VPS от user-api нет списка, поэт
 no_status = "erpc не умеет получать статус линий {kind}"
 no_list = "в статусе линий {kind} от user-api нет списка; ничего не изменено"
 no_region = "Unlimited RPC запускается в том же регионе ERPC, что и сервер, а регион этого сервера не записан"
-no_region_hint = "разверните приложение на ERPC VPS (`--vps <id>` или `--new-vps`)"
+no_region_hint = "разверните приложение на сервере ERPC (`--server <id>` или `--new-server`)"
 buying = "Новая линия {kind} с почасовой оплатой: {name} ({product}; {how}, €{price} в час), для {ip}"
 not_started = "user-api не запустил линию {kind} (HTTP {status}): {reason}"
 made_anyway = "user-api всё же создал линию {id}, и она записана; плата может взиматься, пока её не завершат через `erpc worker delete --release-server{scope}` или в панели управления"
@@ -94,7 +96,7 @@ ending = "Завершение почасовой линии {kind} {id}"
 end_failed = "user-api не завершил линию {kind} {id}: {answer}"
 udp_no_port = "линия UDP Forwarding отправляет на UDP-порт сервера, а порт не указан"
 udp_no_region = "линия UDP Forwarding отправляет из региона ERPC, а регион этого сервера не записан"
-udp_no_region_hint = "разверните приложение на ERPC VPS (`--vps <id>` или `--new-vps`) или укажите регион через `--udp-region`"
+udp_no_region_hint = "разверните приложение на сервере ERPC (`--server <id>` или `--new-server`) или укажите регион через `--udp-region`"
 udp_bad_region = "`{region}` — не регион {name}; отправка ведётся из {regions}"
 udp_region_elsewhere = "{name} отправляет из {region}: его выбирает `--udp-plan {product}`"
 buying_udp = "Новая линия UDP Forwarding с почасовой оплатой: {name} ({product}; {how}, €{price} в час), отправка на {ip}:{port} из {region}"

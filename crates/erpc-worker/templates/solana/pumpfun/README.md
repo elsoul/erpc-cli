@@ -52,7 +52,7 @@ erpc worker secret put API_TOKEN --generate          # the bot's API token, made
 erpc worker secret put ERPC_API_KEY --from-account   # the account's RPC key, read from your account, or SOLANA_RPC_ENDPOINT in [vars]
 erpc worker check                      # what erpc.toml describes, and what is missing
 erpc worker run --grpc --ip <IPV4>     # build and run here, with an hourly gRPC line letting this machine in
-erpc worker deploy --new-vps --grpc    # build for Linux, run it on a new hourly VPS with a gRPC line
+erpc worker deploy --new-server --grpc # build for Linux, run it on a new hourly server with a gRPC line
 ```
 
 The same order `erpc worker init` prints. `GRPC_ENDPOINT` is not a secret:

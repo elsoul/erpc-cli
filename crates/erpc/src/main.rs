@@ -531,7 +531,7 @@ async fn run() -> ExitCode {
         }
         Err(e) => e.exit(),
     };
-    dispatch(cli).await
+    Box::pin(dispatch(cli)).await
 }
 
 async fn dispatch(cli: Cli) -> ExitCode {

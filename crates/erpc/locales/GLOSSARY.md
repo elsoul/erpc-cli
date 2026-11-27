@@ -33,6 +33,8 @@ paths, ERPC, VPS, Unlimited RPC, Shreds, gRPC, ERPC Global Storage,
 | vault (1Password) | 保管庫 | 保险库 | хранилище |
 | 1Password item | アイテム | 项目 | элемент |
 | keychain | キーチェーン | 钥匙串 | связка ключей |
+| sealing key (a machine's key the account's secrets are sealed to) | 封緘鍵 | 封装密钥 | ключ запечатывания |
+| seal, sealed (a secret) | 封じる、封じた | 封装 | запечатать, запечатанный |
 | keystore (erpc's encrypted file) | キーストア | 密钥库 | хранилище ключей |
 | passphrase | パスフレーズ | 口令 | парольная фраза |
 | unlock / lock (the keystore) | ロック解除 / ロック | 解锁 / 锁定 | разблокировать / заблокировать |

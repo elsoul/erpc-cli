@@ -11,20 +11,29 @@
 //! half of a file it could not read. A verb whose step is not done yet
 //! says which step it waits for.
 
+pub(crate) mod account;
 pub(crate) mod backup;
 pub(crate) mod bench;
 pub(crate) mod build;
 pub(crate) mod charges;
+pub(crate) mod delete_account;
 pub(crate) mod deploy;
+pub(crate) mod deploy_account;
 pub(crate) mod elf;
 pub(crate) mod firewall;
+pub(crate) mod first_login;
 pub(crate) mod import;
 pub(crate) mod inventory;
 pub(crate) mod keys;
 pub(crate) mod keystore;
+pub(crate) mod move_account;
 pub(crate) mod remote;
 pub(crate) mod run;
+pub(crate) mod seal;
+pub(crate) mod seal_keys;
 pub(crate) mod secrets;
+pub(crate) mod server;
+pub(crate) mod server_end;
 pub(crate) mod vps;
 pub(crate) mod waf;
 
@@ -214,6 +223,18 @@ impl From<AppFlag> for App {
 }
 
 impl App {
+    /// Environment `env` of the app in `dir`, for a test.
+    #[cfg(test)]
+    pub(crate) fn at(dir: impl Into<PathBuf>, env: &str) -> Self {
+        Self {
+            dir: Dir {
+                name: None,
+                dir: Some(dir.into()),
+            },
+            env: env.to_owned(),
+        }
+    }
+
     /// What a hint adds to an `erpc worker` command so that following it
     /// acts on this app and environment, never another: ` --env <name>`,
     /// and ` --dir <dir>` when one was given.
@@ -298,6 +319,16 @@ pub(crate) enum Action {
         #[command(subcommand)]
         action: SecretAction,
     },
+    /// This machine's sealing key in the ERPC account, which the app's secrets kept there are to be sealed to.
+    Seal {
+        #[command(subcommand)]
+        action: SealAction,
+    },
+    /// The servers of an environment kept in the ERPC account.
+    Server {
+        #[command(subcommand)]
+        action: ServerAction,
+    },
     /// Build the app for this machine and run it here, with its key on a pipe.
     Run {
         #[command(flatten)]
@@ -351,16 +382,24 @@ pub(crate) enum Action {
         /// The SSH host key fingerprint --host should offer, instead of being asked.
         #[arg(long, value_name = "SHA256:…", requires = "host")]
         fingerprint: Option<String>,
-        /// An ERPC VPS of the account, by its id.
-        #[arg(long, value_name = "ID", conflicts_with = "host")]
+        // `--vps` and `--new-vps` are the names these two had before, and
+        // still work.
+        /// A server of the account, by its VPS id (a bare-metal server goes in with --host).
+        #[arg(
+            long = "server",
+            id = "server",
+            alias = "vps",
+            value_name = "ID",
+            conflicts_with = "host"
+        )]
         vps: Option<i64>,
-        /// Start a new hourly ERPC VPS for it (its price is shown first).
-        #[arg(long, conflicts_with_all = ["host", "vps"])]
+        /// Start a new hourly ERPC server for it (its price is shown first).
+        #[arg(long = "new-server", alias = "new-vps", conflicts_with_all = ["host", "server"])]
         new_vps: bool,
-        /// The region of a new VPS (default: nearest by this machine's time zone).
+        /// The region of a new server (default: nearest by this machine's time zone).
         #[arg(long, value_name = "REGION")]
         region: Option<String>,
-        /// The hourly plan of a new VPS, by product id (default: the cheapest).
+        /// The hourly plan of a new server, by product id (default: the cheapest).
         #[arg(long, value_name = "PRODUCT_ID")]
         plan: Option<String>,
         /// Start an hourly gRPC line that lets in the server, and set
@@ -419,10 +458,11 @@ pub(crate) enum Action {
         /// start nothing; the next deploy hands them over and starts it.
         #[arg(long)]
         prepare: bool,
-        /// Go ahead without asking: a new VPS's or line's price is said, not
+        /// Go ahead without asking: a new server's or line's price is said, not
         /// asked (it is paid from ERPC Credit; a line the deploy offers to end
-        /// is still asked about, and so is a VPS on record, never reached,
-        /// that is not on the account signed in to).
+        /// is still asked about, and so are a server on record, never reached,
+        /// that is not on the account signed in to, and the first login to a
+        /// server kept in the ERPC account, at a terminal).
         #[arg(long, short = 'y')]
         yes: bool,
     },
@@ -561,10 +601,21 @@ pub(crate) enum Action {
         /// one ended outside erpc. Repeatable.
         #[arg(long, value_name = "LINE_ID")]
         forget_line: Vec<String>,
-        /// Go ahead without asking: with `--release-server`, the app's lines
-        /// and its hourly server are ended too, and each is said (a VPS never
-        /// reached, or one passed with `--forget`, that is not on the account
-        /// signed in to is still asked about, at a terminal).
+        /// Go ahead without asking: with `--release-server`, the app's hourly
+        /// lines and its hourly server are ended too, and each is said (a server
+        /// never reached, or one passed with `--forget`, that is not on the
+        /// account signed in to is still asked about, at a terminal).
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+    /// Move an environment's server facts from erpc.toml into the ERPC account: its server and lines are taken in there, and erpc.toml keeps only `account = true`. One way: the account does not give the product ids back. Some commands do not work on a moved environment yet; the move says which before it starts.
+    Move {
+        #[command(flatten)]
+        app: App,
+        /// Where to: the ERPC account.
+        #[arg(long, value_name = "PLACE")]
+        to: MovePlace,
+        /// Go ahead without asking.
         #[arg(long, short = 'y')]
         yes: bool,
     },
@@ -575,6 +626,113 @@ pub(crate) enum Action {
         #[arg(long)]
         prune: bool,
     },
+}
+
+/// `erpc worker deploy` of an environment kept in the account, through
+/// `api`, with this machine's pins at `pins`: refused, or what changed in
+/// its app's list said and agreed to ([`crate::worker::deploy_account::ready_shown`]),
+/// before the deploy acts.
+async fn deploy_kept<A: crate::worker::account::Account>(
+    json: bool,
+    app: &App,
+    at: deploy::Where,
+    yes: bool,
+    (api, kept): (&A, &crate::worker::account::Kept),
+    pins: &Path,
+) -> Outcome {
+    match crate::worker::deploy_account::ready_shown(app, kept, pins, yes) {
+        Ok(m) => {
+            let at = deploy::Where {
+                kept: Some(m),
+                ..at
+            };
+            Box::pin(deploy::deploy(json, app, &at, yes, Some((api, kept)))).await
+        }
+        Err(e) => e.into(),
+    }
+}
+
+/// The app, and what `erpc worker firewall` was asked to do of it.
+fn firewall_ask(action: FirewallAction) -> (App, firewall::FirewallAsk) {
+    use firewall::FirewallAsk;
+    match action {
+        FirewallAction::List { app } => (app, FirewallAsk::List),
+        FirewallAction::Sync { app, yes } => (app, FirewallAsk::Sync { yes }),
+        FirewallAction::Allow {
+            app,
+            to,
+            addresses,
+            yes,
+        } => (
+            app.into(),
+            FirewallAsk::Change {
+                to,
+                addresses,
+                allow: true,
+                yes,
+            },
+        ),
+        FirewallAction::Deny {
+            app,
+            to,
+            addresses,
+            yes,
+        } => (
+            app.into(),
+            FirewallAsk::Change {
+                to,
+                addresses,
+                allow: false,
+                yes,
+            },
+        ),
+    }
+}
+
+/// `erpc worker firewall`: for an environment kept in the ERPC account,
+/// through the account's lists; else through erpc.toml's.
+async fn firewall(json: bool, action: FirewallAction) -> Outcome {
+    let (app, ask) = firewall_ask(action);
+    let held = match crate::worker::account::held(json, &app).await {
+        Ok(held) => held,
+        Err(e) => return e.into(),
+    };
+    let pins = match &held {
+        Some(_) => match crate::worker::account::pins_path() {
+            Ok(pins) => pins,
+            Err(e) => return CliError::new(Code::Failed, e).into(),
+        },
+        None => PathBuf::new(),
+    };
+    let held = held.as_ref().map(|(signed, kept)| (signed, kept));
+    firewall_held(json, &app, ask, held, pins).await
+}
+
+/// `erpc worker firewall` of `app`, by what `held` found of it: an
+/// environment kept in the account (through `api`, with this machine's
+/// pins at `pins`) through the account's lists, else through erpc.toml's.
+async fn firewall_held<A: crate::worker::account::Account>(
+    json: bool,
+    app: &App,
+    ask: firewall::FirewallAsk,
+    held: Option<(&A, &crate::worker::account::Kept)>,
+    pins: PathBuf,
+) -> Outcome {
+    use firewall::FirewallAsk;
+    let app = app.clone();
+    match held {
+        Some(account) => firewall::account_kept(json, &app, ask, account, pins).await,
+        None => match ask {
+            FirewallAsk::List => firewall::list(json, &app),
+            FirewallAsk::Sync { yes } => firewall::sync_verb(json, &app, yes),
+            FirewallAsk::Change {
+                to,
+                addresses,
+                allow,
+                yes,
+            } => firewall::change(json, &app, to, &addresses, allow, yes),
+        },
+    }
 }
 
 /// What `erpc worker key` does.
@@ -674,6 +832,63 @@ impl ValueArgs {
     }
 }
 
+/// What `erpc worker seal` does.
+#[derive(Subcommand, Debug)]
+pub(crate) enum SealAction {
+    /// Show this machine's sealing key by its fingerprint, making it and registering it in the ERPC account first when there is none.
+    Show {
+        #[command(flatten)]
+        store: StoreArgs,
+    },
+    /// List the ERPC account's sealing keys, this machine's and the ones trusted here marked.
+    List,
+    /// Trust another machine's sealing key here, by the fingerprint it shows: only at a terminal, after a yes.
+    Trust {
+        /// The key's fingerprint, as `erpc worker seal show` printed it on that machine.
+        fingerprint: String,
+    },
+    /// Stop trusting a key here, by its fingerprint or id: only this machine's record changes.
+    Untrust {
+        /// The key's fingerprint or id.
+        key: String,
+    },
+    /// Revoke a sealing key in the ERPC account, by its fingerprint or id: for good, with what was sealed to it.
+    Revoke {
+        /// The key's fingerprint or id.
+        key: String,
+        /// Go ahead without asking.
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+/// What `erpc worker server` does.
+#[derive(Subcommand, Debug)]
+pub(crate) enum ServerAction {
+    /// Start a new server, paid for by the hour, for an environment kept in the ERPC account whose record names no server and no address yet: its price is said first.
+    Start {
+        #[command(flatten)]
+        app: App,
+        /// Its cores: one of the sizes the ERPC account offers the environment, each said with its price when another is asked for.
+        #[arg(long, value_name = "N")]
+        cores: u16,
+        /// Its region, as the ERPC account names it: amsterdam, frankfurt, ny, tokyo, london, singapore or sydney.
+        #[arg(long, value_name = "REGION")]
+        region: String,
+        /// Start it without asking: the price is said on stderr instead.
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+    /// End the server an environment kept in the ERPC account uses, when it is the only server on the environment's record and the environment has no line that is not ended, and clear its address from the record: its billing by the hour stops, and what is on it is lost.
+    End {
+        #[command(flatten)]
+        app: App,
+        /// End it without asking; refused when this machine's list of apps names others on the server, which are asked about at a terminal only.
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+}
+
 /// What `erpc worker secret` does.
 #[derive(Subcommand, Debug)]
 pub(crate) enum SecretAction {
@@ -707,6 +922,13 @@ pub(crate) enum SecretAction {
     Unlock,
     /// Lock this machine's keystore: drop the unlock, so the next command that needs it asks for the passphrase.
     Lock,
+}
+
+/// Where `erpc worker move` takes an environment's server facts.
+#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MovePlace {
+    /// The ERPC account.
+    Account,
 }
 
 /// Which firewall list an address goes in.
@@ -757,7 +979,7 @@ pub(crate) enum BackupAction {
 /// What `erpc worker firewall` does.
 #[derive(Subcommand, Debug)]
 pub(crate) enum FirewallAction {
-    /// Show who may reach the server, as erpc.toml says and as the server has it.
+    /// Show who may reach the server, as erpc.toml or the ERPC account says and as the server has it.
     List {
         #[command(flatten)]
         app: App,
@@ -790,7 +1012,7 @@ pub(crate) enum FirewallAction {
         #[arg(long, short = 'y')]
         yes: bool,
     },
-    /// Make the server's firewall what erpc.toml says.
+    /// Make the server's firewall what erpc.toml, or the ERPC account, says.
     Sync {
         #[command(flatten)]
         app: App,
@@ -876,6 +1098,30 @@ pub(crate) async fn run(json: bool, action: Action) -> Outcome {
                 all,
                 rpc,
             } => keys::send(json, &dir, &to, sol, all, rpc.as_deref()).await,
+        },
+        Action::Seal { action } => match action {
+            SealAction::Show { store } => {
+                crate::worker::seal_keys::show(json, store.store, store.vault).await
+            }
+            SealAction::List => crate::worker::seal_keys::list(json).await,
+            SealAction::Trust { fingerprint } => {
+                crate::worker::seal_keys::trust(json, &fingerprint).await
+            }
+            SealAction::Untrust { key } => crate::worker::seal_keys::untrust(json, &key).await,
+            SealAction::Revoke { key, yes } => {
+                crate::worker::seal_keys::revoke(json, &key, yes).await
+            }
+        },
+        Action::Server { action } => match action {
+            ServerAction::Start {
+                app,
+                cores,
+                region,
+                yes,
+            } => crate::worker::server::start(json, &app, cores, &region, yes).await,
+            ServerAction::End { app, yes } => {
+                crate::worker::server_end::end_server(json, &app, yes).await
+            }
         },
         Action::Secret { action } => match action {
             SecretAction::Put {
@@ -980,8 +1226,48 @@ pub(crate) async fn run(json: bool, action: Action) -> Outcome {
                 forget_lines: forget_line,
                 starts: deploy::Starts::from_yes(yes),
                 upto: deploy::Upto::from_prepare(prepare),
+                kept: None,
             };
-            deploy::deploy(json, &app, &at, yes).await
+            // The options a deploy there does not take are refused before
+            // the account or the server is reached.
+            if let Ok((_, m)) = crate::worker::load(&app.dir)
+                && crate::worker::account::kept_there(&m, &app.env)
+                && let Err(e) = crate::worker::deploy_account::refuse_options(&at, &app)
+            {
+                return e.into();
+            }
+            // A server in use with no host key on the account's record (one
+            // `server start` started) is logged in to first, at a terminal.
+            if let Ok((_, m)) = crate::worker::load(&app.dir)
+                && crate::worker::account::kept_there(&m, &app.env)
+                && let Err(e) = Box::pin(crate::worker::first_login::before_deploy(
+                    json, &app, &m.name,
+                ))
+                .await
+            {
+                return e.into();
+            }
+            match crate::worker::account::held(json, &app).await {
+                Ok(None) => {
+                    // Boxed: a deploy's state is large, and this future
+                    // would hold it.
+                    Box::pin(deploy::deploy(
+                        json,
+                        &app,
+                        &at,
+                        yes,
+                        None::<(&crate::worker::account::Signed, _)>,
+                    ))
+                    .await
+                }
+                Ok(Some((signed, kept))) => match crate::worker::account::pins_path() {
+                    Ok(pins) => {
+                        Box::pin(deploy_kept(json, &app, at, yes, (&signed, &kept), &pins)).await
+                    }
+                    Err(e) => CliError::new(Code::Failed, e).into(),
+                },
+                Err(e) => e.into(),
+            }
         }
         Action::Bench {
             app,
@@ -1006,7 +1292,10 @@ pub(crate) async fn run(json: bool, action: Action) -> Outcome {
             follow,
             lines,
             waf,
-        } => remote::logs(&app, lines, follow, waf),
+        } => match crate::worker::account::held(json, &app).await {
+            Ok(held) => remote::logs(&app, (lines, follow), waf, held.as_ref().map(|(_, k)| k)),
+            Err(e) => e.into(),
+        },
         Action::Api {
             path,
             app,
@@ -1023,11 +1312,32 @@ pub(crate) async fn run(json: bool, action: Action) -> Outcome {
             },
             None,
         ),
-        Action::Start { app, yes } => remote::start(json, &app, yes, false),
-        Action::Stop { app, lock, yes } => remote::stop(json, &app, lock, yes),
-        Action::Restart { app, yes } => remote::start(json, &app, yes, true),
+        Action::Start { app, yes } => match crate::worker::account::held(json, &app).await {
+            Ok(held) => {
+                let held = held.as_ref().map(|(signed, kept)| (signed, kept));
+                remote::start(json, &app, (yes, false), held).await
+            }
+            Err(e) => e.into(),
+        },
+        Action::Stop { app, lock, yes } => match crate::worker::account::held(json, &app).await {
+            Ok(held) => {
+                let held = held.as_ref().map(|(signed, kept)| (signed, kept));
+                remote::stop(json, &app, (lock, yes), held).await
+            }
+            Err(e) => e.into(),
+        },
+        Action::Restart { app, yes } => match crate::worker::account::held(json, &app).await {
+            Ok(held) => {
+                let held = held.as_ref().map(|(signed, kept)| (signed, kept));
+                remote::start(json, &app, (yes, true), held).await
+            }
+            Err(e) => e.into(),
+        },
         Action::Rollback { app, to, yes } => remote::rollback(json, &app, to.as_deref(), yes),
-        Action::Releases { app } => remote::releases(json, &app),
+        Action::Releases { app } => match crate::worker::account::held(json, &app).await {
+            Ok(held) => remote::releases(json, &app, held.as_ref().map(|(_, k)| k)),
+            Err(e) => e.into(),
+        },
         Action::Delete {
             app,
             release_server,
@@ -1041,29 +1351,27 @@ pub(crate) async fn run(json: bool, action: Action) -> Outcome {
                 forget_lines: forget_line,
                 yes,
             };
-            remote::delete(json, &app, &ask).await
+            match crate::worker::load(&app.dir) {
+                Ok((_, m)) if crate::worker::account::kept_there(&m, &app.env) => {
+                    crate::worker::delete_account::delete(json, &app, &ask).await
+                }
+                _ => remote::delete(json, &app, &ask).await,
+            }
         }
-        Action::Firewall { action } => match action {
-            FirewallAction::List { app } => firewall::list(json, &app),
-            FirewallAction::Allow {
-                app,
-                to,
-                addresses,
-                yes,
-            } => firewall::change(json, &app.into(), to, &addresses, true, yes),
-            FirewallAction::Deny {
-                app,
-                to,
-                addresses,
-                yes,
-            } => firewall::change(json, &app.into(), to, &addresses, false, yes),
-            FirewallAction::Sync { app, yes } => firewall::sync_verb(json, &app, yes),
-        },
+        Action::Firewall { action } => Box::pin(firewall(json, action)).await,
         Action::Backup { action } => match action {
             BackupAction::On { app, at, yes } => backup::on(json, &app, &at, yes).await,
             BackupAction::Off { app, yes } => backup::off(json, &app, yes).await,
             BackupAction::Status { app } => backup::status(json, &app),
             BackupAction::Now { app } => backup::now(json, &app),
+        },
+        Action::Move {
+            app,
+            to: MovePlace::Account,
+            yes,
+        } => match Box::pin(crate::worker::move_account::run(json, &app, yes)).await {
+            Ok((answer, text)) => crate::worker::remote::done(json, &answer, text),
+            Err(e) => e.into(),
         },
         Action::List { prune } => list(json, prune),
     }
@@ -1083,6 +1391,12 @@ pub(crate) fn load(dir: &Dir) -> Result<(PathBuf, Manifest), CliError> {
 /// one.
 pub(crate) fn load_env(app: &App) -> Result<(PathBuf, Manifest), CliError> {
     let (path, mut m) = load(&app.dir)?;
+    // An environment kept in the ERPC account has none of its facts here,
+    // and read as one with no server it would be bought one: only the
+    // commands that read it from the account take it.
+    if crate::worker::account::kept_there(&m, &app.env) {
+        return Err(crate::worker::account::not_yet(app));
+    }
     if let Some(env) = m.env.get(&app.env).cloned()
         && let Some(inventory) = &env.inventory
     {
@@ -1113,6 +1427,12 @@ impl EnvRecord<'_> {
         env: &manifest::Env,
         deployed: Option<&erpc_worker::inventory::Deployed>,
     ) -> Result<(), String> {
+        // An environment kept in the ERPC account keeps nothing here but
+        // `account = true`: its server facts, as the account gives them to
+        // a command, are never written to erpc.toml or an item.
+        if env.account && *env != Self::kept_in_account() {
+            return Err(t!("worker.account_facts_not_saved", env = self.env));
+        }
         let in_file = if let Some(inventory) = &env.inventory {
             crate::worker::inventory::write(&inventory.vault, self.app, self.env, env, deployed)?;
             erpc_worker::inventory::stripped(env)
@@ -1123,6 +1443,14 @@ impl EnvRecord<'_> {
             .map_err(|e| e.to_string())
             .and_then(|text| erpc_worker::edit::set_env(&text, self.env, &in_file))
             .and_then(|text| erpc_worker::edit::save(self.path, &text))
+    }
+
+    /// What erpc.toml keeps of an environment kept in the ERPC account.
+    pub(crate) fn kept_in_account() -> manifest::Env {
+        manifest::Env {
+            account: true,
+            ..manifest::Env::default()
+        }
     }
 
     /// Removes the environment: from erpc.toml, and its item, archived (it
@@ -1476,7 +1804,9 @@ fn describe_drawn(
         ));
     }
     for (name, env) in &m.env {
-        let place = if env.inventory.is_some() {
+        let place = if env.account {
+            t!("worker.check.in_account")
+        } else if env.inventory.is_some() {
             t!("worker.check.in_1password")
         } else {
             env.host
@@ -1549,6 +1879,26 @@ fn built_as(m: &Manifest) -> String {
     }
 }
 
+/// What `check` says of environment `name` when its server facts are kept
+/// elsewhere than in erpc.toml: in the ERPC account, or in 1Password.
+fn kept_elsewhere(m: &Manifest, name: &str, env: &manifest::Env) -> Option<String> {
+    if env.account {
+        return Some(t!(
+            "worker.check.env_in_account",
+            name,
+            service = m.unit_id(name)
+        ));
+    }
+    env.inventory.as_ref().map(|inventory| {
+        t!(
+            "worker.check.env_in_1password",
+            name,
+            vault = inventory.vault,
+            service = m.unit_id(name)
+        )
+    })
+}
+
 /// The human-readable summary `check` prints.
 fn describe(path: &Path, m: &Manifest, warnings: &[String]) -> String {
     let dir_scope = manifest_scope(path);
@@ -1594,16 +1944,8 @@ fn describe(path: &Path, m: &Manifest, warnings: &[String]) -> String {
         lines.push(format!("  env       {}", t!("worker.check.no_env", scope)));
     }
     for (name, env) in &m.env {
-        if let Some(inventory) = &env.inventory {
-            lines.push(format!(
-                "  env       {}",
-                t!(
-                    "worker.check.env_in_1password",
-                    name,
-                    vault = inventory.vault,
-                    service = m.unit_id(name)
-                )
-            ));
+        if let Some(kept) = kept_elsewhere(m, name, env) {
+            lines.push(format!("  env       {kept}"));
             continue;
         }
         let host = env
@@ -2064,6 +2406,7 @@ fn list(json: bool, prune: bool) -> Outcome {
                         "name": name,
                         "host": env.host,
                         "inventory_vault": env.inventory.as_ref().map(|i| &i.vault),
+                        "account": env.account,
                         "service": m.unit_id(name),
                     })).collect::<Vec<_>>(),
                 }),
@@ -2140,7 +2483,9 @@ fn list_plain(rows: &[serde_json::Value]) -> Vec<String> {
                             e["name"].as_str().unwrap_or_default(),
                             e["host"]
                                 .as_str()
-                                .unwrap_or(if e["inventory_vault"].is_string() {
+                                .unwrap_or(if e["account"].as_bool() == Some(true) {
+                                    "erpc"
+                                } else if e["inventory_vault"].is_string() {
                                     "1password"
                                 } else {
                                     "-"
@@ -2418,19 +2763,34 @@ mod tests {
     fn named_sources() -> Vec<(&'static str, &'static str)> {
         vec![
             ("worker/mod.rs", include_str!("mod.rs")),
+            ("worker/account.rs", include_str!("account.rs")),
             ("worker/backup.rs", include_str!("backup.rs")),
             ("worker/bench.rs", include_str!("bench.rs")),
             ("worker/build.rs", include_str!("build.rs")),
             ("worker/charges.rs", include_str!("charges.rs")),
+            (
+                "worker/delete_account.rs",
+                include_str!("delete_account.rs"),
+            ),
             ("worker/deploy.rs", include_str!("deploy.rs")),
+            (
+                "worker/deploy_account.rs",
+                include_str!("deploy_account.rs"),
+            ),
             ("worker/firewall.rs", include_str!("firewall.rs")),
+            ("worker/first_login.rs", include_str!("first_login.rs")),
             ("worker/import.rs", include_str!("import.rs")),
             ("worker/inventory.rs", include_str!("inventory.rs")),
             ("worker/keys.rs", include_str!("keys.rs")),
             ("worker/keystore.rs", include_str!("keystore.rs")),
+            ("worker/move_account.rs", include_str!("move_account.rs")),
             ("worker/remote.rs", include_str!("remote.rs")),
             ("worker/run.rs", include_str!("run.rs")),
+            ("worker/seal.rs", include_str!("seal.rs")),
+            ("worker/seal_keys.rs", include_str!("seal_keys.rs")),
             ("worker/secrets.rs", include_str!("secrets.rs")),
+            ("worker/server.rs", include_str!("server.rs")),
+            ("worker/server_end.rs", include_str!("server_end.rs")),
             ("worker/vps.rs", include_str!("vps.rs")),
             ("worker/waf.rs", include_str!("waf.rs")),
             ("node/common.rs", include_str!("../node/common.rs")),
@@ -2531,12 +2891,12 @@ mod tests {
 
     /// The `erpc worker` verbs that act on one environment, the ones that
     /// act on an app as a whole, and the ones about no one app.
-    const ENV_VERBS: [&str; 14] = [
+    const ENV_VERBS: [&str; 16] = [
         "deploy", "delete", "logs", "rollback", "firewall", "status", "start", "stop", "restart",
-        "releases", "bench", "backup", "api", "trades",
+        "releases", "bench", "backup", "api", "trades", "move", "server",
     ];
     const DIR_VERBS: [&str; 5] = ["check", "key", "secret", "run", "build"];
-    const NO_APP_VERBS: [&str; 3] = ["init", "import", "list"];
+    const NO_APP_VERBS: [&str; 4] = ["init", "import", "list", "seal"];
     /// The verbs under `secret` that act on this machine's keystore, not
     /// on an app: they take no `--dir`.
     const MACHINE_VERBS: [&str; 2] = ["secret unlock", "secret lock"];
@@ -2706,7 +3066,11 @@ mod tests {
         let up = super::manifest_scope(std::path::Path::new("../erpc.toml"));
         for verb in [
             "deploy",
+            "deploy --server 100001",
+            "deploy --new-server",
+            // The names these had before still parse.
             "deploy --vps 100001",
+            "deploy --new-vps",
             "delete --release-server --forget --forget-line 100002",
             "logs",
             "logs --waf",
@@ -2744,6 +3108,52 @@ mod tests {
         assert!(parses("erpc worker init"));
         assert!(!parses(&format!("erpc worker init{}", app.dir.scope())));
         assert!(parses("erpc worker list"));
+    }
+
+    #[test]
+    fn the_server_flags_and_their_old_names_do_the_same() {
+        let parse =
+            |line: &str| <crate::Cli as clap::Parser>::try_parse_from(line.split_whitespace());
+        let deploy = |line: &str| {
+            let cli = parse(line).expect("parses");
+            let Some(crate::Command::Worker { action }) = cli.command else {
+                panic!("a worker command");
+            };
+            let super::Action::Deploy { vps, new_vps, .. } = *action else {
+                panic!("a deploy");
+            };
+            (vps, new_vps)
+        };
+        for flag in ["--server", "--vps"] {
+            assert_eq!(
+                deploy(&format!("erpc worker deploy {flag} 100001")),
+                (Some(100_001), false),
+                "{flag}"
+            );
+        }
+        for flag in ["--new-server", "--new-vps"] {
+            assert_eq!(
+                deploy(&format!("erpc worker deploy {flag}")),
+                (None, true),
+                "{flag}"
+            );
+        }
+        // Whichever name is used, the same conflicts hold.
+        for line in [
+            "--server 1 --host 203.0.113.10",
+            "--vps 1 --host 203.0.113.10",
+            "--new-server --host 203.0.113.10",
+            "--new-vps --host 203.0.113.10",
+            "--new-server --server 1",
+            "--new-vps --vps 1",
+            "--new-vps --server 1",
+            "--vps 1 --server 2",
+        ] {
+            assert!(
+                parse(&format!("erpc worker deploy {line}")).is_err(),
+                "{line}"
+            );
+        }
     }
 
     #[test]
@@ -3290,5 +3700,219 @@ mod tests {
             assert!(!said.contains("LOG_LEVEL carries"), "{said}");
         }
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn each_firewall_verb_is_asked_as_given() {
+        use super::firewall::FirewallAsk;
+        let flag = || super::AppFlag {
+            dir: super::DirFlag { dir: None },
+            env: "prod".to_owned(),
+        };
+        let addresses = vec!["198.51.100.20".to_owned()];
+        let (_, ask) = super::firewall_ask(super::FirewallAction::Deny {
+            app: flag(),
+            to: super::Port::App,
+            addresses: addresses.clone(),
+            yes: false,
+        });
+        assert!(
+            matches!(
+                ask,
+                FirewallAsk::Change {
+                    allow: false,
+                    yes: false,
+                    to: super::Port::App,
+                    ..
+                }
+            ),
+            "{ask:?}"
+        );
+        let (_, ask) = super::firewall_ask(super::FirewallAction::Allow {
+            app: flag(),
+            to: super::Port::Ssh,
+            addresses,
+            yes: true,
+        });
+        assert!(
+            matches!(
+                ask,
+                FirewallAsk::Change {
+                    allow: true,
+                    yes: true,
+                    to: super::Port::Ssh,
+                    ..
+                }
+            ),
+            "{ask:?}"
+        );
+        let app = super::App::at("apps/bot", "prod");
+        let (_, ask) = super::firewall_ask(super::FirewallAction::Sync { app, yes: false });
+        assert!(matches!(ask, FirewallAsk::Sync { yes: false }), "{ask:?}");
+        let app = super::App::at("apps/bot", "prod");
+        let (_, ask) = super::firewall_ask(super::FirewallAction::Sync { app, yes: true });
+        assert!(matches!(ask, FirewallAsk::Sync { yes: true }), "{ask:?}");
+        let (_, ask) = super::firewall_ask(super::FirewallAction::Deny {
+            app: flag(),
+            to: super::Port::Ssh,
+            addresses: vec!["198.51.100.20".to_owned()],
+            yes: true,
+        });
+        assert!(
+            matches!(
+                ask,
+                FirewallAsk::Change {
+                    allow: false,
+                    yes: true,
+                    ..
+                }
+            ),
+            "{ask:?}"
+        );
+        let app = super::App::at("apps/bot", "prod");
+        let (_, ask) = super::firewall_ask(super::FirewallAction::List { app });
+        assert!(matches!(ask, FirewallAsk::List), "{ask:?}");
+    }
+
+    /// An environment kept in the account, its app's list `app_allow`, as
+    /// `held` carries it.
+    fn kept_with(app_allow: &[&str]) -> crate::worker::account::Kept {
+        let record: erpc_api::worker::EnvDetail = serde_json::from_value(serde_json::json!({
+            "name": "prod", "revision": 7, "factsFormat": 2,
+            "facts": { "desiredCores": null, "host": "203.0.113.10", "sshUser": null,
+                "sshPort": null, "hostKey": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGtest",
+                "firewall": { "sshAllow": ["198.51.100.7/32"], "appAllow": app_allow },
+                "starting": {}, "backup": null },
+            "servers": [{ "id": "0b8e7c52-91d4-4f6a-8e23-7d1a5c9b3e60", "slot": "active",
+                "cores": 2, "memoryGb": 8, "region": "amsterdam", "hourly": true,
+                "appRunning": true, "state": "active" }],
+            "desiredCores": null, "activeCores": 2, "coreOptions": [], "lines": [],
+            "refStates": { "backup": null }, "deployed": null, "deployedApp": null,
+            "updatedAt": "2026-10-29T15:40:37.000Z"
+        }))
+        .expect("an environment");
+        let mut m = erpc_worker::manifest::Manifest::parse(
+            "name = \"bot\"\nchain = \"solana\"\n[run]\nport = 3000\n[waf]\nport = 8080\n\
+             [env.prod]\naccount = true\n",
+        )
+        .expect("valid");
+        let mut env = crate::worker::account::facts_env(&record);
+        env.account = true;
+        m.env.insert("prod".to_owned(), env);
+        crate::worker::account::Kept {
+            manifest: m,
+            record,
+            app_id: "6f1c2b9e-4d3a-4e8b-9a71-2c5d8e0f4b13".to_owned(),
+            uid: "user-100001".to_owned(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_deploy_kept_in_the_account_shows_the_apps_list_and_asks_before_it_acts() {
+        use crate::worker::account::stand_in::Fake;
+        let dir = tempfile::tempdir().expect("a directory");
+        let pins = dir.path().join("worker_account.json");
+        let kept = kept_with(&["198.51.100.30/32"]);
+        let fake = Fake::new(kept.record.clone());
+        let app = super::App::at(dir.path().join("bot").to_str().expect("a path"), "prod");
+        // The app's list was never put on the server from here: said, and
+        // with no --yes and no terminal, refused before the deploy acts.
+        let said = super::deploy_kept(
+            false,
+            &app,
+            super::deploy::Where::default(),
+            false,
+            (&fake, &kept),
+            &pins,
+        )
+        .await;
+        assert!(
+            matches!(&said, Outcome::Error(e) if e.code == crate::cli::error::Code::NeedsTerminal),
+            "{said:?}"
+        );
+        assert!(fake.log.borrow().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_environment_kept_in_the_account_takes_the_accounts_firewall_path() {
+        use crate::worker::account::stand_in::Fake;
+        let dir = tempfile::tempdir().expect("a directory");
+        let pins = dir.path().join("worker_account.json");
+        let kept = kept_with(&[]);
+        let fake = Fake::new(kept.record.clone());
+        let app = super::App::at(dir.path().join("bot").to_str().expect("a path"), "prod");
+        // Kept in the account: the account's path asks, and with no --yes
+        // and no terminal it is refused before anything.
+        let said = super::firewall_held(
+            false,
+            &app,
+            super::firewall::FirewallAsk::Sync { yes: false },
+            Some((&fake, &kept)),
+            pins,
+        )
+        .await;
+        assert!(
+            matches!(&said, Outcome::Error(e) if e.code == crate::cli::error::Code::NeedsTerminal),
+            "{said:?}"
+        );
+        assert!(fake.log.borrow().is_empty());
+        // Kept in erpc.toml (none here): erpc.toml's path, which finds no
+        // erpc.toml.
+        let said = super::firewall_held(
+            false,
+            &app,
+            super::firewall::FirewallAsk::Sync { yes: false },
+            None::<(&Fake, &crate::worker::account::Kept)>,
+            std::path::PathBuf::new(),
+        )
+        .await;
+        assert!(
+            !matches!(&said, Outcome::Error(e) if e.code == crate::cli::error::Code::NeedsTerminal),
+            "{said:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_environment_kept_in_erpc_toml_takes_erpc_tomls_firewall_path_for_each_verb() {
+        use super::firewall::FirewallAsk;
+        use crate::worker::account::stand_in::Fake;
+        let dir = tempfile::tempdir().expect("a directory");
+        let at = dir.path().join("bot");
+        std::fs::create_dir_all(&at).expect("a directory");
+        std::fs::write(
+            at.join("erpc.toml"),
+            "name = \"bot\"\nchain = \"solana\"\n[run]\nport = 3000\n[env.prod]\n",
+        )
+        .expect("written");
+        let app = super::App::at(at.to_str().expect("a path"), "prod");
+        let ask = |ask| async {
+            super::firewall_held(
+                true,
+                &app,
+                ask,
+                None::<(&Fake, &crate::worker::account::Kept)>,
+                std::path::PathBuf::new(),
+            )
+            .await
+        };
+        // Every verb takes erpc.toml's path, which needs the server's
+        // address first, and refuses as that path does; the account is not
+        // asked (none is given).
+        for verb in [
+            FirewallAsk::List,
+            FirewallAsk::Sync { yes: true },
+            FirewallAsk::Change {
+                to: super::Port::Ssh,
+                addresses: vec!["198.51.100.9".to_owned()],
+                allow: true,
+                yes: true,
+            },
+        ] {
+            let said = ask(verb).await;
+            assert!(
+                matches!(&said, Outcome::Error(e) if e.message.contains("has no host yet")),
+                "{said:?}"
+            );
+        }
     }
 }

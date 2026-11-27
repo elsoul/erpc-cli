@@ -12,7 +12,7 @@ SPDX-License-Identifier: Apache-2.0
 **Your nodes, your apps, your ERPC account. One command line.**
 
 Run RPC nodes across 18 chains, validators on supported networks, and your own
-apps on ERPC VPSs or servers you manage. Use the commands directly, automate
+apps on ERPC servers or servers you manage. Use the commands directly, automate
 them in scripts, or work with ERPC AI in your terminal.
 
 [Quick start](#quick-start) · [Choose your workflow](#choose-your-workflow) ·
@@ -333,12 +333,12 @@ powershell and elvish).
 ```bash
 erpc worker init                 # a HelloWorld API in Rust, a pump.fun bot, ... or `erpc worker import` for an app you have
 erpc worker run                  # build it and run it here first
-erpc worker deploy --new-vps     # a new hourly VPS, its price shown first, your app on it
+erpc worker deploy --new-server  # a new hourly server, its price shown first, your app on it
 erpc worker status               # running? which release? what it costs per hour, how long your credit lasts
 ```
 
 `erpc worker` compiles your app to a native Linux binary and runs it on a
-latest-generation ERPC VPS, or a server of your own. No Docker and no runtime
+latest-generation ERPC server, or a server of your own. No Docker and no runtime
 in between: the binary runs under a hardened systemd unit with the whole
 machine to itself, which is what a trading bot's latency budget asks for. A
 release that does not come up healthy is rolled back to the one before, and
@@ -550,7 +550,7 @@ The rules for these, and for writing a message, are in
 | `~/.erpc/state/` | The session and locks (`erpc doctor` says how the session is stored) |
 | `~/.erpc/conversations/` | Saved conversations |
 | `~/.erpc/memory.json` | What the assistant remembers |
-| `~/.erpc/vps_hosts.json` | Host keys of VPSs the assistant logged in to |
+| `~/.erpc/vps_hosts.json` | Host keys of VPSs the assistant logged in to, and of servers kept in the ERPC account that `erpc worker deploy` logged in to first |
 | `~/.erpc/skills/` | Skills written by `erpc skills install` |
 | `~/.erpc/storage-key` | The storage encryption key, when `erpc login` keeps the session in a file |
 | `~/.erpc/backup-password`, `~/.erpc/backup-admin-key` | The backup master password and `read_write` key, when `erpc login` keeps the session in a file |

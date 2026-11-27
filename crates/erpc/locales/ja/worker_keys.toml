@@ -91,6 +91,7 @@ absent = "このマシンのキーストアには {source} の値がありませ
 shared = "値はキーストアの {source} に残ります。{other} も同じ値を参照しています。"
 is_key = "値はキーストアの {source} に残ります。これは取引用の鍵のエントリで、erpc は削除しません。"
 not_deleted = "値をキーストアから削除できませんでした（{source}）：{error}"
+is_seal = "値は {source} にそのまま残ります。これはマシンの封緘鍵で、erpc は削除しません。"
 
 [send]
 bad_pubkey = "{to} は Solana のアドレスではありません"

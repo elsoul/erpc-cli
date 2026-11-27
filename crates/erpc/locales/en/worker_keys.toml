@@ -91,6 +91,7 @@ absent = "This machine's keystore held no value under {source}."
 shared = "Its value stays in the keystore under {source}: {other} names it too."
 is_key = "Its value stays in the keystore under {source}: that is a trading key's entry, which erpc does not delete."
 not_deleted = "its value could not be deleted from the keystore ({source}): {error}"
+is_seal = "Its value stays where it is, under {source}: that is a machine's sealing key, which erpc does not delete."
 
 [send]
 bad_pubkey = "{to} is not a Solana address"
