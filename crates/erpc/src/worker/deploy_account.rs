@@ -8,7 +8,10 @@
 //! record once the app runs.
 //!
 //! So far a deploy there ships a release to the server the account names,
-//! and buys nothing and changes no line. Every write replaces the whole
+//! and changes no line. It buys nothing here: a server the account names
+//! none for is started before, by the first deploy
+//! ([`crate::worker::first_deploy`]) or `erpc worker server start`. Every
+//! write replaces the whole
 //! environment, so each is built from the record the account last answered
 //! with, changing only what this deploy changed, and expects that record's
 //! revision: a write another sign-in made in between is refused, not
@@ -36,10 +39,14 @@ pub(crate) const NAMES_MAX: usize = 128;
 /// The most addresses the account keeps in each firewall list.
 const ALLOW_MAX: usize = crate::worker::firewall::ACCOUNT_SSH_MAX;
 
-/// Refuses, before the account or the server is reached, the options a
-/// deploy to an environment kept in the account does not take yet: choose
-/// or buy a server, add, change or forget a line, or keep the environment
-/// elsewhere.
+/// Refuses the options a deploy to an environment kept in the account
+/// does not take yet: choose a server, add, change or forget a line, or
+/// keep the environment elsewhere, each before the account or the server
+/// is reached; and `--new-server` and `--region`, which the first deploy's
+/// start takes while the account's record names nothing for the
+/// environment ([`crate::worker::first_deploy`], which clears them once
+/// it started the server), only once that record was read and names
+/// something.
 pub(crate) fn refuse_options(at: &Where, app: &App) -> Result<(), CliError> {
     let asked = at.host.is_some()
         || at.user.is_some()

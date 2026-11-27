@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+question = "{app} を ERPC のアカウントの ERPC Worker にし、環境 {env} に新しいサーバーを開始しますか: {cores} コア、{memory} GB、リージョン {region}、ERPC クレジットから 1 時間 €{price}。終了するまで時間単位で課金され、少なくとも 1 時間分は課金されます。yes のあと、erpc.toml は環境 {env} を以後 ERPC のアカウントに保管し（`account = true`）、このデプロイが、サーバーの準備ができるのを待ち、ここで yes を受けてから一度ログインして、デプロイします。erpc から終了するには、端末で `erpc worker delete --release-server{scope}` を実行します。環境の記録も一緒に消えます。"
+note = "{app} を ERPC のアカウントの ERPC Worker にし、環境 {env} に新しいサーバーを開始します: {cores} コア、{memory} GB、リージョン {region}、ERPC クレジットから 1 時間 €{price}。終了するまで時間単位で課金され、少なくとも 1 時間分は課金されます。erpc.toml は環境 {env} を以後 ERPC のアカウントに保管し（`account = true`）、このデプロイが、サーバーの準備ができるのを待ち、この端末で yes を受けてから一度ログインして、デプロイします。erpc から終了するには、端末で `erpc worker delete --release-server{scope}` を実行します。環境の記録も一緒に消えます。"
+new_option = "ERPC のアカウントに時間課金の新しいサーバーを開始し、アプリをそこで ERPC Worker にする（最安のサイズ、{region} の近く）。先に価格を表示します"
+as_before = "環境 {env} は、これまでどおり erpc.toml に保管し、ERPC のアカウントには保管しません: {why}"
+why_lines = "ERPC のアカウントに保管された環境は、デプロイからのデータ回線をまだ受け付けません"
+why_plan = "--plan は商品を指定しますが、ERPC のアカウントのサーバーはサイズで開始します"
+why_wallet = "erpc.toml がウォレットを指定しており、この erpc は、ウォレットを持つアプリの記録を ERPC のアカウントにまだ作りません"
+needs_terminal = "環境 {env} の新しいサーバーは、アプリを ERPC のアカウントの ERPC Worker にします。erpc はそのサーバーに、端末で yes を受けてからでないと一度ログインしません（--yes では足りず、--json では誰にも尋ねません）。何も開始せず、何も書き込んでいません"
+needs_terminal_hint = "端末で、--json を付けずに `erpc worker deploy --new-server{scope}` を実行してください。端末が無い場合は、--server <id> か --host <address> で手持ちのサーバーを指定するか、--new-server --inline でこれまでどおり環境を erpc.toml に保管します。そこでは --yes が最初のログインにも答えます"
+resume_needs_terminal = "環境 {env} は ERPC のアカウントに保管されていますが、そこにはまだサーバーがありません。このデプロイはそこにサーバーを開始し、erpc は端末で yes を受けてからでないとそれに一度ログインしません（--yes では足りず、--json では誰にも尋ねません）。何も開始していません"
+resume_needs_terminal_hint = "端末で、--json を付けずに `erpc worker deploy{scope}` を実行してください"
+not_written = "erpc.toml に、環境 {env} を ERPC のアカウントに保管させられませんでした（`account = true`）: {error}。何も開始していません"
+file_changed = "そこの [env.{env}] に、いまは別の設定があります"
+kept_now_hint = "erpc.toml は、いま環境 {env} を ERPC のアカウントに保管しています。`erpc worker deploy{scope}` は止まったところから続け、先に ERPC のアカウントを読み、開始が未完了の間や記録にサーバーがある間は新しい開始をしません"
+started_hint = "環境 {env} はいま ERPC のアカウントに保管され、そのサーバーは時間単位で課金されています。`erpc worker deploy{scope}` で続けます"
+holds_hint = "erpc.toml の [env.{env}] に `account = true` があれば、`erpc worker deploy{scope}` はアカウントの記録にあるサーバーにデプロイします"
+differs_hint = "`erpc worker deploy{scope}` を --region なしで、または --region {region} を付けて実行すると、ERPC のアカウントが保管した開始だけを未完了として示し、環境の記録にサーバーが無い間、それをもう一度送ります"
+no_record = "サインイン中の ERPC のアカウントには、erpc.toml が ERPC のアカウントに保管しているアプリ {app} の環境 {env} の記録がありません。何も開始していません"
+no_record_hint = "別の ERPC のアカウントで作った場合は、そのアカウントで `erpc login` してください。`erpc worker deploy --new-server{scope}` は、サインイン中のアカウントにこの環境の新しいサーバーを開始します（先に料金を確認します）"

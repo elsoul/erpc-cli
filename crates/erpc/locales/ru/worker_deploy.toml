@@ -117,7 +117,7 @@ udp_left_hint = "`erpc worker deploy --udp{scope}` направит линию �
 
 [server]
 no_terminal = "в erpc.toml нет [env.{env}], а выбрать сервер в терминале некому"
-no_terminal_hint = "укажите --server <id>, --new-server или --host <address>"
+no_terminal_hint = "укажите --server <id> или --host <address> либо --new-server --inline: новый сервер с почасовой оплатой вне аккаунта ERPC, на цену и первый вход которого отвечает --yes"
 new_vps = "Запустить новый сервер с почасовой оплатой (самый дешёвый тариф, рядом с {region}), сначала показав цену"
 which = "На каком сервере его запустить?"
 

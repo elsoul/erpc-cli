@@ -21,6 +21,7 @@ pub(crate) mod deploy;
 pub(crate) mod deploy_account;
 pub(crate) mod elf;
 pub(crate) mod firewall;
+pub(crate) mod first_deploy;
 pub(crate) mod first_login;
 pub(crate) mod import;
 pub(crate) mod inventory;
@@ -394,6 +395,10 @@ pub(crate) enum Action {
         )]
         vps: Option<i64>,
         /// Start a new hourly ERPC server for it (its price is shown first).
+        /// For an environment erpc.toml has nothing for yet, it is started in
+        /// the ERPC account, which keeps the environment from then on, and
+        /// needs a terminal; --inline, --vault, --plan, a data line or a
+        /// wallet keep the environment out of the account, as before.
         #[arg(long = "new-server", alias = "new-vps", conflicts_with_all = ["host", "server"])]
         new_vps: bool,
         /// The region of a new server (default: nearest by this machine's time zone).
@@ -442,11 +447,13 @@ pub(crate) enum Action {
         #[arg(long, requires = "udp")]
         udp_any_source: bool,
         /// For a new environment: keep its server facts in this 1Password
-        /// vault (default: the one `erpc login` keeps the session in, when
-        /// that is 1Password).
+        /// vault, not in the ERPC account (default, for a new environment not
+        /// started in the ERPC account: the one `erpc login` keeps the
+        /// session in, when that is 1Password).
         #[arg(long, value_name = "VAULT_ID", conflicts_with = "inline")]
         vault: Option<String>,
-        /// For a new environment: keep its server facts in erpc.toml.
+        /// For a new environment: keep its server facts in erpc.toml, not in
+        /// the ERPC account.
         #[arg(long)]
         inline: bool,
         /// Take a data line off the record first, by its id: one ended
@@ -461,8 +468,10 @@ pub(crate) enum Action {
         /// Go ahead without asking: a new server's or line's price is said, not
         /// asked (it is paid from ERPC Credit; a line the deploy offers to end
         /// is still asked about, and so are a server on record, never reached,
-        /// that is not on the account signed in to, and the first login to a
-        /// server kept in the ERPC account, at a terminal).
+        /// that is not on the account signed in to, a new server for an
+        /// environment kept in the ERPC account that the command line does
+        /// not ask for with --new-server, and the first login to a server
+        /// kept in the ERPC account, at a terminal).
         #[arg(long, short = 'y')]
         yes: bool,
     },
@@ -1199,7 +1208,7 @@ pub(crate) async fn run(json: bool, action: Action) -> Outcome {
             prepare,
             yes,
         } => {
-            let at = deploy::Where {
+            let mut at = deploy::Where {
                 host,
                 user,
                 port,
@@ -1228,13 +1237,36 @@ pub(crate) async fn run(json: bool, action: Action) -> Outcome {
                 upto: deploy::Upto::from_prepare(prepare),
                 kept: None,
             };
+            // The first deploy that starts a new server makes the app an
+            // ERPC Worker in the account, and its server is started there:
+            // the deploy then goes on as one to an environment kept there.
+            let started =
+                match Box::pin(crate::worker::first_deploy::first(json, &app, &at, yes)).await {
+                    Ok(crate::worker::first_deploy::First::AsBefore) => false,
+                    Ok(crate::worker::first_deploy::First::Picked(id)) => {
+                        at.vps = Some(id);
+                        false
+                    }
+                    Ok(crate::worker::first_deploy::First::Started) => {
+                        crate::worker::first_deploy::after_started(&mut at);
+                        true
+                    }
+                    Err(e) => return e.into(),
+                };
+            let then = |e: CliError| {
+                if started {
+                    crate::worker::first_deploy::after_start(e, &app)
+                } else {
+                    e
+                }
+            };
             // The options a deploy there does not take are refused before
             // the account or the server is reached.
             if let Ok((_, m)) = crate::worker::load(&app.dir)
                 && crate::worker::account::kept_there(&m, &app.env)
                 && let Err(e) = crate::worker::deploy_account::refuse_options(&at, &app)
             {
-                return e.into();
+                return then(e).into();
             }
             // A server in use with no host key on the account's record (one
             // `server start` started) is logged in to first, at a terminal.
@@ -1245,9 +1277,14 @@ pub(crate) async fn run(json: bool, action: Action) -> Outcome {
                 ))
                 .await
             {
-                return e.into();
+                return then(e).into();
             }
-            match crate::worker::account::held(json, &app).await {
+            // erpc.toml keeps it in the account once its server was started:
+            // never read as one with no server, which would buy one as before.
+            let held = Box::pin(crate::worker::account::held(json, &app))
+                .await
+                .and_then(|held| crate::worker::first_deploy::held_after(started, held, &app));
+            match held {
                 Ok(None) => {
                     // Boxed: a deploy's state is large, and this future
                     // would hold it.
@@ -1262,11 +1299,18 @@ pub(crate) async fn run(json: bool, action: Action) -> Outcome {
                 }
                 Ok(Some((signed, kept))) => match crate::worker::account::pins_path() {
                     Ok(pins) => {
-                        Box::pin(deploy_kept(json, &app, at, yes, (&signed, &kept), &pins)).await
+                        match Box::pin(deploy_kept(json, &app, at, yes, (&signed, &kept), &pins))
+                            .await
+                        {
+                            done @ (Outcome::Done(_) | Outcome::Problems(_)) => done,
+                            failed => failed
+                                .error()
+                                .map_or(Outcome::Done(String::new()), |e| then(e).into()),
+                        }
                     }
-                    Err(e) => CliError::new(Code::Failed, e).into(),
+                    Err(e) => then(CliError::new(Code::Failed, e)).into(),
                 },
-                Err(e) => e.into(),
+                Err(e) => then(e).into(),
             }
         }
         Action::Bench {
@@ -2778,6 +2822,7 @@ mod tests {
                 include_str!("deploy_account.rs"),
             ),
             ("worker/firewall.rs", include_str!("firewall.rs")),
+            ("worker/first_deploy.rs", include_str!("first_deploy.rs")),
             ("worker/first_login.rs", include_str!("first_login.rs")),
             ("worker/import.rs", include_str!("import.rs")),
             ("worker/inventory.rs", include_str!("inventory.rs")),

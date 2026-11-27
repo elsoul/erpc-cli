@@ -91,12 +91,17 @@ directory.
   command again takes it up.
 - **Starting hourly products yourself:** when the user asked for a server or a line, and the
   build is done, run the deploy with the flags that name them and `--yes` (`erpc worker
-  deploy <app> --new-server --yes`, `--server <ID>`, `--grpc`, …). Say first what each costs per
-  hour (`hourly_catalog`) and what the credit is; read the price lines the command prints
-  back to the user after. Without `--yes` the command refuses from `run_command` and says
-  so. Never add `--yes` to a start the user did not ask for. `--yes` also answers the first
-  login to a server erpc has not made key-only yet (a new one, or `--server <ID>`): its key
-  goes in and password logins go off.
+  deploy <app> --new-server --inline --yes`, `--server <ID>`, `--grpc`, …). Say first what each
+  costs per hour (`hourly_catalog`) and what the credit is; read the price lines the command
+  prints back to the user after. Without `--yes` the command refuses from `run_command` and
+  says so. Never add `--yes` to a start the user did not ask for. `--yes` also answers the
+  first login to a server erpc has not made key-only yet (a new one, or `--server <ID>`): its
+  key goes in and password logins go off. A new server for an environment erpc.toml has
+  nothing for yet is started in the ERPC account instead, which makes the app an ERPC Worker
+  there, unless the deploy has `--inline` or `--vault`, `--plan`, a line's flag, or the app a
+  `[wallet]`; its first login is asked at a terminal only, so from `run_command` that deploy
+  is refused before anything is bought. Hand the user `erpc worker deploy <app>` to run at a
+  terminal for that, or add `--inline` to keep the environment in erpc.toml as before.
 - **A start with no outcome:** when a deploy says a start "may or may not have gone
   through", that the purchase "is still being made", or that the answer "says nothing
   about the earlier one", its request stays on record. Run the same command again, with
@@ -128,9 +133,12 @@ erpc worker delete hello-world --release-server   # removes it and ends the hour
 
 - It has no `[wallet]`, so the key gate does not apply: you can run `run --check`, `status`,
   `logs` and `api` for it yourself, and the whole deploy too: after `erpc worker build
-  <app>`, `erpc worker deploy <app> --new-server --yes` (or `--server <ID> --yes`) buys the
-  server, logs in to it and starts the app with nobody at a terminal, printing the price it
-  accepted. It takes about two minutes.
+  <app>`, `erpc worker deploy <app> --new-server --inline --yes` (or `--server <ID> --yes`)
+  buys the server, logs in to it and starts the app with nobody at a terminal, printing the
+  price it accepted, and keeps the environment in erpc.toml. It takes about two minutes.
+  Without `--inline` the new server is started in the ERPC account, which makes the app an
+  ERPC Worker there and asks its first login at a terminal: the user runs `erpc worker
+  deploy <app>` for that.
 - `erpc worker api <PATH>` sends no token for an app with no `API_TOKEN` in `[secrets]`.
 - Suggest it as the first step to a beginner who asks for a bot: the bot is deployed with the
   same commands, plus its key, its settings and its lines.

@@ -327,7 +327,9 @@ first of the set is the one `init` suggests.
    name before, still works; a bare-metal server goes in with `--host`);
 3. `--new-server` (before, `--new-vps`), the cheapest hourly server in the
    region nearest this machine (by its time zone; `--region` and `--plan`
-   choose otherwise);
+   choose otherwise). For an environment `erpc.toml` has nothing for yet,
+   it is started in the ERPC account, which makes the app an ERPC Worker
+   there (**The first deploy** below);
 4. `--host <address>`, a server of your own: Ubuntu or Debian with systemd,
    nftables, `sudo` and Python 3 at `/usr/bin/python3`, reached as root or a
    user with passwordless sudo; the worker's firewall then drops every inbound
@@ -335,7 +337,8 @@ first of the set is the one `init` suggests.
    `firewall.app_allow` lists someone and, with `--udp`, the UDP Forwarding
    line's port, so a server that serves anything else is not the one to use;
 5. otherwise, at a terminal, a list of the account's running VPSs, with "start
-   a new one" at the end.
+   a new one" at the end (for an environment `erpc.toml` has nothing for
+   yet, started in the ERPC account as with `--new-server`).
 
 Anything that costs money is shown with its hourly price, the balance, and how
 long the credit lasts. At a terminal it starts only after a yes. With `--yes`
@@ -352,7 +355,7 @@ A script, or an agent such as `erpc ai` or another coding agent, has no
 terminal to answer at. Two flags let it do the work all the same:
 
 ```bash
-erpc worker deploy hello-world --new-server --yes                  # no key: all the way, unattended
+erpc worker deploy hello-world --new-server --inline --yes         # no key: all the way, unattended, kept in erpc.toml
 erpc worker deploy pump-sniper --new-server --grpc --yes --prepare # a bot: everything but its key
 erpc worker deploy pump-sniper                                     # then you, at a terminal: the key, and the start
 ```
@@ -369,7 +372,13 @@ erpc worker deploy pump-sniper                                     # then you, a
   and without a terminal, a start, or that login, is refused before anything
   is bought or changed, and the refusal says to pass it. Choosing among the
   account's servers still needs a person: name the server (`--new-server`,
-  `--server <ID>`, `--host`).
+  `--server <ID>`, `--host`). A new server for an environment `erpc.toml`
+  has nothing for yet is started in the ERPC account (**The first deploy**
+  below), whose first login is asked at a terminal only: without one, or
+  under `--json`, that deploy is refused before anything is bought or
+  written, and `--inline` keeps the environment in `erpc.toml` as before,
+  where `--yes` answers the first login too. A data line asked for keeps it
+  there too, as the bot's line above does.
 - **`--prepare`** does everything that needs neither the trading key nor a
   secret, and starts, stops and restarts nothing: the server, its firewall,
   the lines, and a release uploaded and installed. An app that already runs
@@ -1354,8 +1363,11 @@ encrypted by restic. A storage plan is needed (`erpc storage buy 5`).
   - **Taking over:** any machine signed in to that vault, with the app's
     repository, can run every command.
   - **Which environments:** a new one is an inventory environment when
-    `erpc login` keeps the session in 1Password. `deploy --vault <vault-id>`
-    names another vault, and `deploy --inline` keeps the facts in `erpc.toml`.
+    `erpc login` keeps the session in 1Password, unless the first deploy
+    starts its server in the ERPC account (**The first deploy** below),
+    which then keeps it. `deploy --vault <vault-id>` names another vault,
+    and `deploy --inline` keeps the facts in `erpc.toml`; either keeps a
+    new environment out of the ERPC account.
   - **Writes:** each one checks that the item has not changed since it was
     read.
   - **Delete:** archives the item.
@@ -1373,8 +1385,9 @@ encrypted by restic. A storage plan is needed (`erpc storage buy 5`).
     account. `logs`, `start`, `stop`, `restart`, `releases` and `deploy`
     reach its server with what the account says of it, trusted as below, and
     write nothing to `erpc.toml`; the server must have an address and a host
-    key in the account first (for a server `server start` started, `deploy`
-    logs in to it once and writes them: **The first login** below). Only a
+    key in the account first (for a server `server start` or the first
+    deploy started, `deploy` logs in to it once and writes them: **The
+    first login** below). Only a
     server in use that the account has as
     active is reached: one gone, given back or held, and a server in use
     this machine pinned that the record no longer names (ended, or no longer
@@ -1473,6 +1486,55 @@ encrypted by restic. A storage plan is needed (`erpc storage buy 5`).
       `erpc.toml`'s record before the move is run again. A stop before the
       first write that the account answers (a refusal, or no answer) is
       said as not moved.
+  - **The first deploy:** the first `erpc worker deploy` that starts a new
+    server makes the app an ERPC Worker in the account, in that one
+    command. It is the way for an environment `erpc.toml` has nothing for
+    yet (no `[env.<name>]`, or an empty one) when `--new-server` asks for a
+    new server or the person picks "start a new one" at the terminal:
+    - Before anything is written or bought: a terminal and no `--json`
+      (the first login is asked there only; without one it is refused,
+      saying so), `--region` one the account names (amsterdam, frankfurt,
+      ny, tokyo, london, singapore or sydney), what any deploy checks on
+      this machine first (the app's settings, key and secrets, the build's
+      tools, the key to log in with), no more settings or secrets than the
+      account keeps the names of, and the sign-in.
+    - Then the start, as `server start` makes it (below): the app's and the
+      environment's records made when the account has none (free, said on
+      stderr), the cheapest size the account offers, in `--region` or the
+      region nearest this machine by its time zone, its price asked at the
+      terminal (`--yes` says it on stderr instead). On a yes, `erpc.toml`
+      gets `account = true` for the environment, and only then is the start
+      sent, under a key kept on this machine. A no leaves `erpc.toml` as it
+      was.
+    - Then the deploy goes on as one to an environment kept there: it waits
+      for the server, logs in to it once after a yes at the terminal (**The
+      first login** below), asks whether to trust what the account then
+      has, and deploys.
+    - A run that stopped is run again: `erpc worker deploy` of an
+      environment `erpc.toml` keeps in the account whose record names no
+      server, no address, no line and no deploy starts one the same way, a
+      start kept on this machine or open in the account first, and never a
+      second server while one is open or on the record. There the price is
+      asked at the terminal even with `--yes`, unless `--new-server` is on
+      the command line too. A first deploy makes the records before it
+      writes `account = true`, so an environment the account you are signed
+      in to has no record of at all is another account's, or deleted: it
+      is refused as before, saying so (`erpc login` with the account it was
+      made in), and only `--new-server` starts a server for it in the
+      account you are signed in to, its price asked as for a first deploy
+      (said under `--yes`). An
+      environment whose record names a server, an address, a line or a
+      deploy (as one deployed to before keeps it once `server end` ended its
+      server) is deployed to, or refused, as before.
+    - It goes as before, keeping the environment in `erpc.toml` (or its
+      1Password item), for an environment that has anything in `erpc.toml`,
+      for `--host`, `--server`, a server of the account picked at the
+      terminal, `--inline` and `--vault`. It goes as before too, with a
+      note on stderr saying why, for a deploy that asks for a data line
+      (`--grpc`, `--shreds`, `--udp` and its options, `--unlimited`) or
+      `--forget-line`, or `--plan`, which a
+      deploy there does not take yet, and for an app whose `erpc.toml` names
+      a wallet, whose record in the account this erpc does not make yet.
   - **A server for one that has none:** `erpc worker server start [--env
     <name>] --cores <N> --region <REGION> [--yes]` buys a server, paid for
     by the hour, for an environment kept in the account whose record names
@@ -1663,12 +1725,14 @@ encrypted by restic. A storage plan is needed (`erpc storage buy 5`).
         not check its ports and lists, which are in the account.
     - **Deploy.**
       - It no longer takes `--host`, `--user`, `--port`, `--fingerprint`,
-        `--server`, `--new-server`, `--region`, `--plan`, `--grpc`,
-        `--shreds`, `--unlimited`, `--udp`, `--udp-port`, `--udp-region`,
-        `--udp-any-source`, `--forget-line`, `--vault` or `--inline`: its
-        server cannot be chosen or bought, no line added or taken off the
-        record, and a deploy cannot bring it back into `erpc.toml` or
-        1Password. A setting that comes from a line erpc does not start
+        `--server`, `--plan`, `--grpc`, `--shreds`, `--unlimited`, `--udp`,
+        `--udp-port`, `--udp-region`, `--udp-any-source`, `--forget-line`,
+        `--vault` or `--inline`, and takes `--new-server` and `--region`
+        only while the account's record names no server, address, line or
+        deploy for it (as after `server end` of a server moved in, with no
+        deploy since), when it starts a server as the first deploy does: its
+        server cannot be chosen, no line added or taken off the record, and a
+        deploy cannot bring it back into `erpc.toml` or 1Password. A setting that comes from a line erpc does not start
         there says so.
       - It is refused while the account's record holds a server coming in
         or going out, a UDP line, a line not active or with no endpoint
@@ -1818,13 +1882,18 @@ encrypted by restic. A storage plan is needed (`erpc storage buy 5`).
       were not handed over.
     - The app is handed the endpoints of the lines the account names that
       are in use (active), one of each kind; an ended line is left out.
-    - So far a deploy there buys nothing and changes no line: `--server`,
-      `--new-server`, `--host`, a line's flag, `--forget-line` and a place
-      to keep a new environment are refused, and so is a record with a
-      server coming in or going out, a UDP Forwarding line, or a line with
-      no endpoint yet, a line that is not active, two lines of one kind,
-      or an endpoint not in its form. The options are refused before the
-      account or the server is reached; the record's refusals before the
+    - So far a deploy there changes no line. While the account's record
+      names no server, address, line or deploy, it starts a server first,
+      as the first deploy does (**The first deploy**), taking
+      `--new-server` and `--region`. `--server`, `--host`, `--plan`, a
+      line's flag, `--forget-line` and a place to keep a new environment
+      (`--vault`, `--inline`) are refused before the account or the server
+      is reached;
+      `--new-server` and `--region` once the record is read (signed in
+      first) and names something. A record with a server coming in or
+      going out is refused too, and so is a UDP Forwarding line, a line
+      with no endpoint yet, a line that is not active, two lines of one
+      kind, or an endpoint not in its form: the record's refusals before the
       server is reached, each with what `status` shows and the way out:
       ERPC support for each, and the dashboard for a suspended line or one
       with no address registered. The app is handed a line's

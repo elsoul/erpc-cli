@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
 # SPDX-License-Identifier: Apache-2.0
 
-not_yet = "环境 {env} 保存在 ERPC 账户中，向其部署暂不支持选择或购买服务器、添加、更改或从记录中移除线路，或改存到别处；请不带这些选项进行部署"
+not_yet = "环境 {env} 保存在 ERPC 账户中，向其部署仅在账户中没有该环境的服务器、地址、线路或部署记录时才接受 --new-server 和 --region，且暂不支持选择服务器、添加、更改或从记录中移除线路，或改存到别处；请不带这些选项进行部署"
 moving = "ERPC 账户中环境 {env} 的服务器正在更换"
 udp = "环境 {env} 在 ERPC 账户中有一条 UDP Forwarding 线路，而在那里的部署暂时还不能处理它"
 line_pending = "ERPC 账户中环境 {env} 的 {kind} 线路还没有端点"

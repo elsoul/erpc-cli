@@ -113,7 +113,7 @@ udp_left_hint = "`erpc worker deploy --udp{scope}` で回線を新しいサー�
 
 [server]
 no_terminal = "erpc.toml に [env.{env}] がなく、ターミナルがないためサーバーを選べません"
-no_terminal_hint = "--server <id>、--new-server、--host <address> のいずれかを指定してください"
+no_terminal_hint = "--server <id> か --host <address>、または --new-server --inline を指定してください。後者は ERPC のアカウントの外に置く時間課金の新しいサーバーで、その料金と最初のログインには --yes が答えます"
 new_vps = "時間課金のサーバーを新しく開始する（{region} 付近の最安プラン。先に料金を表示）"
 which = "どのサーバーで実行しますか？"
 

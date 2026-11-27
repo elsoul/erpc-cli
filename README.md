@@ -334,7 +334,7 @@ powershell and elvish).
 erpc worker init                 # a HelloWorld API in Rust, a pump.fun bot, ... or `erpc worker import` for an app you have
 erpc worker run                  # build it and run it here first
 erpc worker deploy --new-server  # a new hourly server, its price shown first, your app on it
-erpc worker status               # running? which release? what it costs per hour, how long your credit lasts
+erpc worker status               # running? which release? on which server?
 ```
 
 `erpc worker` compiles your app to a native Linux binary and runs it on a
@@ -343,7 +343,10 @@ in between: the binary runs under a hardened systemd unit with the whole
 machine to itself, which is what a trading bot's latency budget asks for. A
 release that does not come up healthy is rolled back to the one before, and
 several apps can share one server, each on a port of its own. You can also
-build one by talking to `erpc ai`.
+build one by talking to `erpc ai`. For a new environment, `deploy
+--new-server` starts the server in your ERPC account, which keeps the app as
+an ERPC Worker (the [Worker guide](docs/worker.md) says when it stays in
+`erpc.toml` instead).
 
 | | |
 |---|---|

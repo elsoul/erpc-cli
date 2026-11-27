@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
 # SPDX-License-Identifier: Apache-2.0
 
-not_yet = "environment {env} is kept in the ERPC account, and a deploy there does not yet choose or buy a server, add, change or forget a line, or keep it elsewhere; deploy without those options"
+not_yet = "environment {env} is kept in the ERPC account, and a deploy there takes --new-server and --region only while the account names no server, address, line or deploy for it, and does not yet choose a server, add, change or forget a line, or keep it elsewhere; deploy without those options"
 moving = "the ERPC account has a server coming in or going out for environment {env}"
 udp = "environment {env} has a UDP Forwarding line in the ERPC account, and a deploy there does not handle one yet"
 line_pending = "the {kind} line of environment {env} in the ERPC account has no endpoint yet"

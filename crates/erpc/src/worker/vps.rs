@@ -1182,7 +1182,8 @@ pub(crate) fn nearest_region() -> &'static str {
     region_for_zone(zone.as_deref().unwrap_or(""))
 }
 
-fn region_for_zone(zone: &str) -> &'static str {
+/// The region nearest a machine in time zone `zone`.
+pub(crate) fn region_for_zone(zone: &str) -> &'static str {
     let city = zone.rsplit('/').next().unwrap_or(zone);
     match zone.split('/').next().unwrap_or("") {
         "Asia" => match city {

@@ -209,8 +209,12 @@ whose version has no entry below.
     refused before the server's firewall changes. What it says of the
     firewall and the WAF names the account's lists. Only lines in use are
     handed to the app, one of each kind. It
-    buys nothing and changes no line yet, and refuses the options that
-    would before the account or the server is reached.
+    changes no line yet. It refuses `--server`, `--host`, `--plan`, a
+    line's flag, `--forget-line`, `--vault` and `--inline` before the
+    account or the server is reached, and `--new-server` and `--region` once the account's
+    record is read (signed in first) and names a server, an address, a line
+    or a deploy; while it names none of them, the deploy starts a server
+    first, as the first deploy does (under Changed).
   - `start` and `restart` reach the server first, then record in the
     account that the app runs, before the key and secrets are handed over
     and the app is started; they start nothing when the account does not
@@ -235,6 +239,33 @@ whose version has no entry below.
 
 ### Changed
 
+- The first `erpc worker deploy` that starts a new server makes the app an
+  ERPC Worker in the ERPC account, in that one command. For an environment
+  `erpc.toml` has nothing for yet (no `[env.<name>]`, or an empty one),
+  `--new-server`, or "start a new one" picked at the terminal, makes the
+  app's and the environment's records in the account when it has none,
+  starts the cheapest size the account offers in `--region` (one the
+  account names) or the region nearest this machine, with its price asked
+  (said on stderr under `--yes`), writes `account = true` for the
+  environment after the yes and before the start is sent, then waits for
+  the server, logs in to it once at the terminal, asks whether to trust
+  what the account then has, and deploys. It needs a terminal and no
+  `--json`, since the first login is asked there only, and without one it
+  is refused before anything is bought or written; `--new-server --inline`
+  keeps the environment in `erpc.toml` as before. A run that stopped is run
+  again: a deploy of an environment kept in the account whose record names
+  no server, address, line or deploy starts one the same way, a start kept
+  on this machine or open in the account first, and never a second while
+  one is open or on the record; there `--yes` answers the price only with
+  `--new-server`. One the account signed in to has no record of at all
+  (another account's, or deleted) is refused as before unless
+  `--new-server` asks for a new server in that account. `--host`,
+  `--server`, a server of the account picked at the terminal, `--inline`,
+  `--vault` and an environment with anything in `erpc.toml` go as before;
+  so do a deploy that asks for a data line or `--plan`, and an app whose
+  `erpc.toml` names a wallet, each with a note on stderr saying why. Before,
+  that first deploy bought a VPS through user-api and wrote its facts into
+  `erpc.toml`, and the account had no record of the app.
 - `erpc worker deploy` names the server it deploys to as a server, not a
   VPS: `--server <ID>` and `--new-server`, in every language's help and
   message. `--vps` and `--new-vps`, the names before, still work, so a

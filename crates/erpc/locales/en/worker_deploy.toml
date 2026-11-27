@@ -115,7 +115,7 @@ udp_left_hint = "`erpc worker deploy --udp{scope}` points the line at the new se
 
 [server]
 no_terminal = "erpc.toml has no [env.{env}], and no one is at a terminal to choose a server"
-no_terminal_hint = "pass --server <id>, --new-server, or --host <address>"
+no_terminal_hint = "pass --server <id> or --host <address>, or --new-server --inline: a new hourly server kept out of the ERPC account, whose price and first login --yes answers"
 new_vps = "Start a new hourly server (the cheapest plan, near {region}), with its price shown first"
 which = "Which server should it run on?"
 

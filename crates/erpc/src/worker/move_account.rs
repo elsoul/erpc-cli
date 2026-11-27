@@ -1888,7 +1888,8 @@ mod tests {
                         "worker_move.loses_deploy",
                         &[
                             "deploy no longer takes --host",
-                            "its server cannot be chosen or bought, no line can be added or taken off the record",
+                            "takes --new-server and --region only while the account's record names no server, address, line or deploy for it",
+                            "its server cannot be chosen, no line can be added or taken off the record",
                             "a deploy cannot bring it back into erpc.toml or 1Password",
                             "a deploy is refused while a line on the account's record that has not ended is not active",
                         ],
@@ -1958,8 +1959,8 @@ mod tests {
                     (
                         "worker_move.loses_deploy",
                         &[
-                            "を受けなくなります",
-                            "サーバーを選ぶことや買うことも、回線を足すことや記録から外すこともできず",
+                            "を受けなくなり",
+                            "サーバーを選ぶことも、回線を足すことや記録から外すこともできず",
                             "deploy で erpc.toml や 1Password に戻すこともできません",
                             "アカウントの記録に、終了しておらず active でもない回線がある間は、deploy は断られます",
                         ],
@@ -2032,7 +2033,7 @@ mod tests {
                         "worker_move.loses_deploy",
                         &[
                             "deploy 不再接受 --host",
-                            "无法选择或购买其服务器，无法添加线路或将线路从记录中移除",
+                            "无法选择其服务器，无法添加线路或将线路从记录中移除",
                             "deploy 也无法再把它改回由 erpc.toml 或 1Password 保管",
                             "账户记录中有尚未终止且不处于 active 的线路时，deploy 会被拒绝",
                         ],
@@ -2103,7 +2104,7 @@ mod tests {
                         "worker_move.loses_deploy",
                         &[
                             "deploy больше не принимает --host",
-                            "сервер нельзя выбрать или купить, линию нельзя добавить или убрать из записей",
+                            "сервер нельзя выбрать, линию нельзя добавить или убрать из записей",
                             "а deploy не может вернуть окружение в erpc.toml или 1Password",
                             "deploy отклоняется, пока в записи аккаунта есть незавершённая линия не в состоянии active",
                         ],
