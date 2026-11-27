@@ -77,7 +77,9 @@ keywords = ["service_account"]
 [[rules]]
 id = "onepassword-service-account-token"
 description = "1Password service account token"
-regex = '''ops_[A-Za-z0-9_-]{40,}'''
+# The token starts a word: "ops_" inside one (drops_, stops_, props_ in a long
+# identifier) is not a token. scripts/tests/gitleaks-rules.test.sh holds this.
+regex = '''\bops_[A-Za-z0-9_-]{40,}'''
 keywords = ["ops_"]
 
 [[rules]]

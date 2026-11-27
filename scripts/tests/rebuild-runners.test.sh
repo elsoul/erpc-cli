@@ -154,5 +154,25 @@ else
   bad "Intel macOS releases are cross-compiled on macos-15" "$intel_runner"
 fi
 
+smoke_targets=$(awk '
+  /^  smoke-archives:/ { inside = 1; next }
+  inside && /^  [a-z]/ { exit }
+  inside && /- target:/ { print $NF }
+' "$custom" | sort)
+dist_targets=$(printf '%s\n' "$plan" | jq -r '.ci.github.artifacts_matrix.include[].targets[]' | sort)
+if [ -n "$dist_targets" ] && [ "$smoke_targets" = "$dist_targets" ]; then
+  ok "the release smoke test covers every archive in the dist plan"
+else
+  bad "the release smoke test covers every archive in the dist plan" "smoke and dist target sets differ"
+fi
+
+preflight="$repo_root/.github/workflows/release-preflight.yml"
+preflight_targets=$(awk '/- target:/ { print $NF }' "$preflight" | sort)
+if [ -n "$dist_targets" ] && [ "$preflight_targets" = "$dist_targets" ]; then
+  ok "the untagged preflight builds and smokes every target in the dist plan"
+else
+  bad "the untagged preflight builds and smokes every target in the dist plan" "preflight and dist target sets differ"
+fi
+
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

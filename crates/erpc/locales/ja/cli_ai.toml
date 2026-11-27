@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 "ai" = "ERPC アシスタントと話す。-m を付けなければ対話になる"
+"ai @heading Server Security Check" = "サーバーのセキュリティ点検"
 "ai --message" = "質問を 1 つして回答を表示する"
 "ai --continue" = "最新の会話を続ける：コンソールで、または `-m` やパイプで渡した質問で続け、その質問も会話に保存される"
 "ai --model" = "すべての回答を 1 つのモデルサイズにする: small、medium、large、またはいちばん高性能でトークンを 2 倍消費する xlarge。指定しなければ回答ごとに自動で選ぶ"
@@ -10,4 +11,4 @@
 "ai --id" = "--list に表示された ERPC レンタル ID の数字部分を使用する"
 "ai --host-key" = "別途検証した Ed25519 ホスト公開鍵で SSH ホストを確認する"
 "ai --ssh-user" = "別途検証したホスト公開鍵とともに指定した SSH ログイン名を使用する"
-"ai --security-check" = "所有する ERPC サーバーで従量課金の Security Check を実行する"
+"ai --security-check" = "対象の ERPC レンタルで読み取り専用の従量課金セキュリティ設定点検を実行する"

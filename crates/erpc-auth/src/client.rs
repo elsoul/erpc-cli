@@ -105,6 +105,7 @@ pub struct JsonResponseLimits {
 struct JsonOptions<'a> {
     idempotency_key: Option<&'a str>,
     response_limits: Option<JsonResponseLimits>,
+    headers: &'a [(&'a str, &'a str)],
 }
 
 impl AuthClient {
@@ -390,6 +391,37 @@ impl AuthClient {
             JsonOptions {
                 idempotency_key,
                 response_limits: Some(limits),
+                ..JsonOptions::default()
+            },
+        )
+        .await
+    }
+
+    /// POSTs authenticated JSON with route-specific headers, a deadline,
+    /// and a response byte cap.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::post_with_token_bounded`]. Invalid headers are transport errors.
+    pub async fn post_with_token_bounded_and_headers(
+        &self,
+        audience: Audience,
+        url: &str,
+        access_token: &SecretString,
+        body: Vec<u8>,
+        headers: &[(&str, &str)],
+        limits: JsonResponseLimits,
+    ) -> Result<(u16, String), HttpError> {
+        self.send_with_token(
+            reqwest::Method::POST,
+            audience,
+            url,
+            access_token,
+            body,
+            JsonOptions {
+                response_limits: Some(limits),
+                headers,
+                ..JsonOptions::default()
             },
         )
         .await
@@ -466,6 +498,7 @@ impl AuthClient {
             access_token,
             body,
             options.idempotency_key,
+            options.headers,
         );
         send_json(request, host, options.response_limits).await
     }
@@ -838,16 +871,19 @@ fn json_request(
     access_token: &SecretString,
     body: Vec<u8>,
     idempotency_key: Option<&str>,
+    headers: &[(&str, &str)],
 ) -> reqwest::RequestBuilder {
-    let request = request
+    let mut request = request
         .bearer_auth(access_token.expose_secret())
         .header("content-type", "application/json")
         .body(body);
     if let Some(key) = idempotency_key {
-        request.header("idempotency-key", key)
-    } else {
-        request
+        request = request.header("idempotency-key", key);
     }
+    for &(name, value) in headers {
+        request = request.header(name, value);
+    }
+    request
 }
 
 async fn send_json(

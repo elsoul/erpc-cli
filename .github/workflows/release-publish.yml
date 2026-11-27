@@ -136,9 +136,40 @@ jobs:
           echo "original: $ha"; echo "rebuilt:  $hb"
           [ "$ha" = "$hb" ] || { echo "binary hash mismatch for ${{ matrix.target }}"; exit 1; }
 
+  smoke-archives:
+    name: smoke release archive (${{ matrix.target }})
+    needs: release-gate
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-22.04
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-22.04-arm
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
+          - target: aarch64-apple-darwin
+            runner: macos-15
+          - target: x86_64-pc-windows-msvc
+            runner: windows-2022
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: artifacts-build-local-${{ matrix.target }}
+          path: artifacts
+      - name: check the packaged command and shell completions
+        shell: bash
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+        run: scripts/release/check-security-check-archive.sh "artifacts/erpc-$RELEASE_TARGET"
+
   sign:
     name: manifest + sign (approval)
-    needs: [release-gate, rebuild-compare]
+    needs: [release-gate, rebuild-compare, smoke-archives]
     runs-on: ubuntu-latest
     environment: release
     steps:

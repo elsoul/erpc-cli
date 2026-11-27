@@ -1,0 +1,86 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+name: release preflight
+
+on:
+  pull_request:
+    paths:
+      - .github/build-setup.yml
+      - .github/workflows/release*.yml
+      - .cargo/config.toml
+      - Cargo.toml
+      - Cargo.lock
+      - crates/erpc-auth/src/client.rs
+      - crates/erpc/Cargo.toml
+      - crates/erpc/locales/*/cli_ai.toml
+      - crates/erpc/locales/*/node_check.toml
+      - crates/erpc/src/cli/i18n.rs
+      - crates/erpc/src/main.rs
+      - crates/erpc/src/node/posture_billing.rs
+      - crates/erpc/src/node/server_security.rs
+      - dist-workspace.toml
+      - rust-toolchain.toml
+      - scripts/build-worker-agents.sh
+      - scripts/release/check-security-check-archive.sh
+      - scripts/tests/check-security-check-archive.test.sh
+      - scripts/tests/fixtures/security-check-archive/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-preflight-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  archive:
+    name: build and smoke (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      # Smoke natively on Intel macOS. The tagged build cross-compiles the same
+      # target on Apple Silicon, and its archive is independently smoke-tested.
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-22.04
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-22.04-arm
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
+          - target: aarch64-apple-darwin
+            runner: macos-15
+          - target: x86_64-pc-windows-msvc
+            runner: windows-2022
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - if: runner.os == 'Windows'
+        run: git config --global core.longpaths true
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: 1.98.0
+          targets: ${{ matrix.target }}
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: 0.14.1
+          use-cache: false
+      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
+        with:
+          tool: cargo-dist@0.32.0,cargo-auditable,cargo-zigbuild@0.24.0
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update -q && sudo apt-get install -y -q musl-tools
+      - name: build the embedded worker agents
+        shell: bash
+        run: scripts/build-worker-agents.sh
+      - name: build and smoke the local dist archive
+        shell: bash
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+        run: |
+          dist build --artifacts=local --target "$RELEASE_TARGET"
+          scripts/release/check-security-check-archive.sh "target/distrib/erpc-$RELEASE_TARGET"

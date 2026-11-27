@@ -64,12 +64,14 @@ More about conversations:
   After an upgrade `erpc doctor` warns while the copies on disk are older,
   and the next command says so once.
 
-## ERPC server Security Check (pilot builds)
+## ERPC Server Security Check
 
-Standard releases omit Security Check. Build the pilot with
-`cargo build --locked -p erpc --features security-check-pilot`. The older
-`node-check-pilot` feature name also enables this pilot. The ERPC service
-determines eligibility for the signed-in account and its rentals.
+Official binary releases built with the Security Check feature expose
+`--security-check` in `erpc ai --help` and include it in generated shell
+completions. The ERPC service determines whether the signed-in account and
+its rentals are eligible. For a source build or `cargo install erpc`, add
+`--features security-check-pilot`. The older `node-check-pilot` feature
+name is also supported.
 
 After `erpc login`, run `erpc ai --security-check` from your terminal to
 select an eligible VPS or bare-metal rental. The selector starts on
@@ -77,7 +79,7 @@ select an eligible VPS or bare-metal rental. The selector starts on
 or add `--kind vps --id 123` or `--kind bare-metal --id 456` to select one
 directly. Inspection requires a terminal. In every build, input whose first
 word is `/security-check` stays local in the console, with `--message`, and
-on standard input. In pilot builds it points to the terminal command.
+on standard input. In builds with the feature it points to the terminal command.
 `/node-check` locally displays the migration message.
 
 Before inspection, confirm that you own the selected server or have
@@ -86,7 +88,7 @@ it. ERPC then revalidates the rental, provisioning state and public IPv4
 assignment before any SSH connection. The CLI uses the SSH identity in
 `ssh_key` and the saved VPS host key pin for that rental. You can supply
 an independently verified Ed25519 host public key with
-`--host-key '<public-key>' --ssh-user '<login>'` instead.
+`--host-key '<public-key>' --ssh-user '<login>'` for this check.
 
 The collector reads bounded evidence from the remote Linux SSH login's
 network namespace and available system configuration.
@@ -125,6 +127,20 @@ request contains fixed posture classifications, the rental and request
 IDs, and billing parameters. The CLI keeps detailed socket and file-mode
 observations in the operator's report. It shows the settled charge,
 reports when no tokens were charged, or flags an unconfirmed settlement.
+
+For customer access, the quote also asks for consent to inspect the
+selected rental and process the results. For each customer invocation,
+ERPC sends Claude fixed finding IDs for ranking, the Anthropic customer
+profile ID linked to the ERPC account, and a stable pseudonymous actor ID
+for the same user across runs. Anthropic's standard retention policy
+applies to the data it receives. ERPC separately keeps
+the account, individual user, invocation time and outcome for at least
+90 days for attribution and audit. The approval applies to that run only.
+If the quote offers Claude Sonnet as a fallback, the same approval covers
+that rate of 512 tokens plus 1 per input token and 3 per output token, up
+to 9,472 tokens. ERPC may use it if the request could not be sent to the
+primary model. The overall reservation remains at most 28,160 tokens.
+A completed report identifies the single model used for billing.
 
 ## Wallet: `erpc wallet`
 

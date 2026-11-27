@@ -52,6 +52,8 @@ create-release = true
 pr-run-mode = "plan"
 # The worker agents erpc embeds are built before each build (crates/erpc/build.rs).
 github-build-setup = "../build-setup.yml"
+# Official archives include the operator command. Ordinary Cargo builds still opt in.
+features = ["erpc/security-check-pilot"]
 # Keep the `dist` cargo profile defined in Cargo.toml.
 precise-builds = false
 

@@ -432,18 +432,18 @@ impl Words {
         if let Some(long) = self.lookup(path, &format!("{about_key} @long")) {
             c = c.long_about(long);
         }
-        let ids: Vec<(String, Option<String>, bool, bool)> = c
+        let ids: Vec<(String, Option<String>, bool, Option<String>)> = c
             .get_arguments()
             .map(|a| {
                 (
                     a.get_id().to_string(),
                     a.get_long().map(str::to_owned),
                     a.is_positional(),
-                    a.get_help_heading().is_some(),
+                    a.get_help_heading().map(str::to_owned),
                 )
             })
             .collect();
-        for (id, long, positional, headed) in ids {
+        for (id, long, positional, heading) in ids {
             let arg_key = long
                 .as_ref()
                 .map_or_else(|| format!("<{id}>"), |l| format!("--{l}"));
@@ -455,13 +455,11 @@ impl Words {
                     .or_else(|| self.lookup(&[], &arg_key)),
             };
             let long_help = self.lookup(path, &at(&format!(" {arg_key} @long")));
-            let heading = (!headed).then(|| {
-                if positional {
-                    self.arguments.clone()
-                } else {
-                    self.options.clone()
-                }
-            });
+            let heading = match heading {
+                Some(english) => self.lookup(path, &at(&format!(" @heading {english}"))),
+                None if positional => Some(self.arguments.clone()),
+                None => Some(self.options.clone()),
+            };
             c = c.mut_arg(id, |mut a| {
                 if let Some(help) = translated {
                     a = a.help(help);
@@ -556,6 +554,27 @@ mod tests {
     /// The English help in `cli_*.toml` is clap's own, and a translated
     /// command has help for itself and each of its arguments in every
     /// language.
+    #[test]
+    #[cfg(feature = "security-check-pilot")]
+    fn security_check_help_uses_the_localized_heading() {
+        for (language, heading) in [
+            (Lang::En, "Server Security Check"),
+            (Lang::Ja, "サーバーのセキュリティ点検"),
+            (Lang::Ru, "Проверка безопасности сервера"),
+            (Lang::Zh, "服务器安全检查"),
+        ] {
+            let root = <crate::Cli as clap::CommandFactory>::command();
+            let mut command = super::localized(root, language);
+            let help = command
+                .find_subcommand_mut("ai")
+                .expect("AI command")
+                .render_long_help()
+                .to_string();
+            assert!(help.lines().any(|line| line.starts_with(heading)), "{help}");
+            assert!(help.contains("--security-check"), "{help}");
+        }
+    }
+
     #[test]
     fn translated_help_matches_the_commands() {
         let mut problems = Vec::new();

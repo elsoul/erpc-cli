@@ -184,7 +184,7 @@ jobs:
           # The script exported ERPC_WORKER_AGENTS_DIR and
           # ERPC_REQUIRE_WORKER_AGENTS=1 for the steps after it; a build of
           # erpc here embeds them, as the release build does.
-          cargo check -p erpc --locked
+          cargo check -p erpc --locked --features security-check-pilot
       # The Intel macOS release is cross-compiled on this image
       # (dist-workspace.toml), and a pull request runs only `dist plan`, so
       # the cross build is done here too: a pull request finds out before a
@@ -195,7 +195,7 @@ jobs:
         run: |
           set -euo pipefail
           rustup target add x86_64-apple-darwin
-          cargo build -p erpc --locked --target x86_64-apple-darwin
+          cargo build -p erpc --locked --features security-check-pilot --target x86_64-apple-darwin
           bin=target/x86_64-apple-darwin/debug/erpc
           archs=$(lipo -archs "$bin")
           [ "$archs" = x86_64 ] || { echo "built for '$archs', not x86_64"; exit 1; }
@@ -400,9 +400,12 @@ jobs:
           scripts/tests/check-chain-imports.test.sh
           scripts/tests/build-manifest.test.sh
           scripts/tests/release-wiring.test.sh
+          scripts/tests/check-security-check-archive.test.sh
+          scripts/tests/release-smoke-wiring.test.sh
           scripts/tests/workflow-audit.test.sh
           scripts/tests/installer-deploy.test.sh
           scripts/tests/self-hosted-routing.test.sh
+          GITLEAKS="$RUNNER_TEMP/gitleaks" scripts/tests/gitleaks-rules.test.sh
       - name: hygiene gate (all tracked files)
         run: scripts/check-oss-hygiene.sh
       - name: endpoint allowlist (all tracked files)
@@ -434,6 +437,8 @@ jobs:
           /bin/bash scripts/tests/check-chain-imports.test.sh
           /bin/bash scripts/tests/build-manifest.test.sh
           /bin/bash scripts/tests/release-wiring.test.sh
+          /bin/bash scripts/tests/check-security-check-archive.test.sh
+          /bin/bash scripts/tests/release-smoke-wiring.test.sh
           /bin/bash scripts/tests/workflow-audit.test.sh
           /bin/bash scripts/tests/installer-deploy.test.sh
           /bin/bash scripts/tests/self-hosted-routing.test.sh
