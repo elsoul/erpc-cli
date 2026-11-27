@@ -1,8 +1,8 @@
 # SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
 # SPDX-License-Identifier: Apache-2.0
 
-question = "将 {app} 设为你的 ERPC 账户中的 ERPC Worker，并为环境 {env} 开通一台新服务器：{cores} 核、{memory} GB、区域 {region}，从 ERPC 积分中每小时 €{price}？在终止之前一直按小时计费，至少一个小时。确认后，erpc.toml 从此将环境 {env} 保存在 ERPC 账户中（`account = true`），本次部署会等待服务器就绪，在此处得到确认后登录一次，然后部署到它。若要在 erpc 中终止它：在终端运行 `erpc worker delete --release-server{scope}`，环境的记录也会一并删除。"
-note = "正在将 {app} 设为你的 ERPC 账户中的 ERPC Worker，并为环境 {env} 开通一台新服务器：{cores} 核、{memory} GB、区域 {region}，从 ERPC 积分中每小时 €{price}。在终止之前一直按小时计费，至少一个小时。erpc.toml 从此将环境 {env} 保存在 ERPC 账户中（`account = true`），本次部署会等待服务器就绪，在此终端得到确认后登录一次，然后部署到它。若要在 erpc 中终止它：在终端运行 `erpc worker delete --release-server{scope}`，环境的记录也会一并删除。"
+question = "将 {app} 设为你的 ERPC 账户中的 ERPC Worker，并为环境 {env} 开通一台新服务器：{cores} 核、{memory} GB、区域 {region}，从 ERPC 积分中每小时 €{price}？在终止之前一直按小时计费，至少一个小时。确认后，erpc.toml 从此将环境 {env} 保存在 ERPC 账户中（`account = true`），本次部署会等待服务器就绪，在此处得到确认后登录一次，然后部署到它。若要在 erpc 中终止它：在终端运行 `erpc worker delete --release-server{scope}`，环境的记录也会一并删除；若它是应用在那里的最后一个环境，应用的记录也会删除。"
+note = "正在将 {app} 设为你的 ERPC 账户中的 ERPC Worker，并为环境 {env} 开通一台新服务器：{cores} 核、{memory} GB、区域 {region}，从 ERPC 积分中每小时 €{price}。在终止之前一直按小时计费，至少一个小时。erpc.toml 从此将环境 {env} 保存在 ERPC 账户中（`account = true`），本次部署会等待服务器就绪，在此终端得到确认后登录一次，然后部署到它。若要在 erpc 中终止它：在终端运行 `erpc worker delete --release-server{scope}`，环境的记录也会一并删除；若它是应用在那里的最后一个环境，应用的记录也会删除。"
 new_option = "在你的 ERPC 账户中开通一台按小时计费的新服务器，应用由此成为那里的 ERPC Worker（最便宜的规格，靠近 {region}），先显示价格"
 as_before = "环境 {env} 仍像以前一样保存在 erpc.toml 中，而不保存在 ERPC 账户中：{why}"
 why_lines = "保存在 ERPC 账户中的环境还不接受由部署开通的数据线路"

@@ -50,6 +50,13 @@ cannot_tell_note = "本机无法判断{which}上是否还有其他应用或环�
 moving_servers = "正在更换中的各台服务器（账户的记录未将它们与任何地址关联）"
 server_shared_unread_hint = "请在终端运行 `erpc worker delete --release-server{scope}`（不加 --yes 或 --json）：问题会列出它们，由你决定；也可以修复无法读取的 erpc.toml 或 1Password 项目"
 sentence_sep = ""
+last_note = "环境 {env} 是应用 {app} 在 ERPC 账户中的最后一个环境：应用的记录会随之删除，账户为该应用保存的设置和机密也随该记录一并删除。"
+ending_app = "同时从 ERPC 账户中删除应用 {app} 的记录，以及账户为该应用保存的设置和机密：环境 {env} 是它在那里的最后一个环境"
+app_deleted = "应用 {app} 的记录也已从 ERPC 账户中删除，账户为该应用保存的设置和机密也一并删除。"
+app_stays = "应用 {app} 的记录保留在 ERPC 账户中：账户中现在有该应用的另一个环境，或有同名的另一个应用。"
+app_not_deleted = "环境 {env} 已从 ERPC 账户中删除，但应用 {app} 的记录尚未删除：{why}"
+app_again = "再次运行 `erpc worker delete --release-server{scope}` 即可删除它；在此之前，erpc.toml 和本机的记录会保留该环境"
+app_moving = "删除期间其记录一直在变化"
 
 [servers]
 other = "{n} 台服务器"

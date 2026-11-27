@@ -236,7 +236,7 @@
 "worker delete --release-server" = "Also end the hourly ERPC server it runs on"
 "worker delete --forget" = "Do not reach the server: the worker no longer runs there (the server is gone, say), and the record goes without it"
 "worker delete --forget-line" = "Take a data line off the record without ending it, by its id: one ended outside erpc. Repeatable"
-"worker delete --yes" = "Go ahead without asking: with `--release-server`, the app's hourly lines and its hourly server are ended too, and each is said (a server never reached, or one passed with `--forget`, that is not on the account signed in to is still asked about, at a terminal)"
+"worker delete --yes" = "Go ahead without asking: with `--release-server`, the app's hourly lines and its hourly server are ended too, and each is said (a server never reached, or one passed with `--forget`, that is not on the account signed in to is still asked about, at a terminal); the app's last environment kept in the ERPC account takes the app's record there with it, and the settings and secrets the account keeps for the app, which is said too"
 "worker move" = "Move an environment's server facts from erpc.toml into the ERPC account: its server and lines are taken in there, and erpc.toml keeps only `account = true`. One way: the account does not give the product ids back. Some commands do not work on a moved environment yet; the move says which before it starts"
 "worker move <app_name>" = "The app, by the name erpc knows it by (`erpc worker list`) (default: the app the current directory is in)"
 "worker move --dir" = "The app's directory, or a directory inside it; an app's name works too (default: the current directory)"

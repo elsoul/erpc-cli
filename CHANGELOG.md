@@ -152,7 +152,9 @@ whose version has no entry below.
     the environment holds, a Bundle's line aside (below), and delete its
     record, then drops this
     machine's record of what it trusts for it and the table in
-    `erpc.toml`; the app's record in the account stays, with its secrets.
+    `erpc.toml`; the app's record in the account stays, with its secrets,
+    while the app has another environment there (with its last one it goes
+    too: under Changed).
     It asks first at a terminal, sends the first delete at the revision
     asked about, and says "nothing was ended" only when the account's
     answers and its record show it. A record with an address and no server
@@ -266,6 +268,20 @@ whose version has no entry below.
   `erpc.toml` names a wallet, each with a note on stderr saying why. Before,
   that first deploy bought a VPS through user-api and wrote its facts into
   `erpc.toml`, and the account had no record of the app.
+- `erpc worker delete --release-server` of an environment kept in the ERPC
+  account that is the app's last one there deletes the app's record too,
+  with the settings and secrets the account keeps for the app, so that what
+  the first deploy made goes as a whole. The question says so (under `--yes`
+  it is said on stderr). The app's record is deleted only after the
+  environment's, read again first and only when it is the app the person
+  was asked about with no environment left, with the account's
+  `DELETE /v3/worker/apps/<app>` at the revision read, which ends nothing;
+  a record that moved meanwhile is read and sent again. A run that stops
+  there says the environment is deleted and the app's record not yet, and
+  keeps `erpc.toml` and this machine's records until the same command
+  finishes it. While another environment remains, the app's record stays
+  as before. `--json` says `app_deleted`, and the help of `delete --yes`
+  says the app's record goes with its last environment kept there.
 - `erpc worker deploy` names the server it deploys to as a server, not a
   VPS: `--server <ID>` and `--new-server`, in every language's help and
   message. `--vps` and `--new-vps`, the names before, still work, so a

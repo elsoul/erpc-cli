@@ -1803,8 +1803,9 @@ encrypted by restic. A storage plan is needed (`erpc storage buy 5`).
         after a question that `--yes` answers. Signed in to another
         account, the account that has it keeps it running.
       - The app's record stays in the account, with the names of its
-        settings and secret settings; the `--json` answer has its own
-        shape.
+        settings and secret settings, while another environment of the
+        app is there; with the app's last environment it goes too (below,
+        **Ending it**). The `--json` answer has its own shape.
     - **A line bought as part of a Bundle.** The account refuses to take
       one in; the move stops there, what was already written to the
       account staying there. Until its Bundle is on the account's record
@@ -1993,9 +1994,26 @@ encrypted by restic. A storage plan is needed (`erpc storage buy 5`).
     end every server and line the environment holds, a few in each
     request, a Bundle's line aside (taken off, not ended: below), and
     delete its record; then this machine's record of what it
-    trusts for it, and its table in `erpc.toml`, go. The app's record in
-    the account stays, with the names of its settings and secret
-    settings.
+    trusts for it, and its table in `erpc.toml`, go. While the app has
+    another environment in the account, the app's record stays there,
+    with the names of its settings and secret settings.
+    - When it is the app's last environment in the account (the account's
+      record of the app lists it alone, as it lists the environment the
+      first deploy made), the question says so, and
+      that the app's record goes too, with the settings and secrets the
+      account keeps for the app; under `--yes` that is said on stderr as
+      the delete starts. Once the environment's record is gone, the app's
+      is read again and deleted at its revision when it is the app asked
+      about and names no environment; one that has an environment again
+      (another sign-in made one meanwhile) stays, and so does one whose
+      last environment was not the one the question named. It is deleted
+      with `delete_app`, which ends nothing and is refused while an
+      environment of the app holds a server, a line or an open start: the
+      environment's own delete ended what was asked about. A run that
+      stops there says the environment is deleted and the app's record
+      not yet, and leaves `erpc.toml` and this machine's records as they
+      were, so the same command finishes it. The `--json` answer says
+      `app_deleted`.
     - The account decides what is ended, from its own record, and checks
       first that it can end all of it; one end can still fail part way,
       and then what is left stays on record and the same command finishes

@@ -50,6 +50,13 @@ cannot_tell_note = "{which}に、ほかのアプリや環境が載っている�
 moving_servers = "入れ替わりの途中の複数のサーバー（アカウントの記録では、どのアドレスにも結び付いていません）"
 server_shared_unread_hint = "端末で --yes も --json も付けずに `erpc worker delete --release-server{scope}` を実行してください。質問にそれらの名前が出るので、そこで決めてください。読めなかった erpc.toml や 1Password のアイテムを直す手もあります"
 sentence_sep = ""
+last_note = "環境 {env} は、ERPC のアカウントにあるアプリ {app} の最後の環境です。アプリの記録も一緒に削除され、その記録と共に、アカウントがこのアプリのために保管している設定とシークレットも消えます。"
+ending_app = "ERPC のアカウントからアプリ {app} の記録も、アカウントがこのアプリのために保管している設定とシークレットと共に削除します。環境 {env} がそこでの最後の環境です"
+app_deleted = "アプリ {app} の記録も、アカウントがこのアプリのために保管していた設定とシークレットと共に、ERPC のアカウントから消えました。"
+app_stays = "アプリ {app} の記録は ERPC のアカウントに残ります。アカウントにはいま、このアプリの別の環境があるか、同じ名前の別のアプリがあります。"
+app_not_deleted = "環境 {env} は ERPC のアカウントから削除しましたが、アプリ {app} の記録はまだ削除していません: {why}"
+app_again = "`erpc worker delete --release-server{scope}` をもう一度実行すると削除します。それまで erpc.toml とこのマシンの記録はこの環境を残します"
+app_moving = "削除している間、その記録が変わり続けました"
 
 [servers]
 other = "サーバー {n} 台"

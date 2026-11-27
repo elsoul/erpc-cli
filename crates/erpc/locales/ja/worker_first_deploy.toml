@@ -1,8 +1,8 @@
 # SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
 # SPDX-License-Identifier: Apache-2.0
 
-question = "{app} を ERPC のアカウントの ERPC Worker にし、環境 {env} に新しいサーバーを開始しますか: {cores} コア、{memory} GB、リージョン {region}、ERPC クレジットから 1 時間 €{price}。終了するまで時間単位で課金され、少なくとも 1 時間分は課金されます。yes のあと、erpc.toml は環境 {env} を以後 ERPC のアカウントに保管し（`account = true`）、このデプロイが、サーバーの準備ができるのを待ち、ここで yes を受けてから一度ログインして、デプロイします。erpc から終了するには、端末で `erpc worker delete --release-server{scope}` を実行します。環境の記録も一緒に消えます。"
-note = "{app} を ERPC のアカウントの ERPC Worker にし、環境 {env} に新しいサーバーを開始します: {cores} コア、{memory} GB、リージョン {region}、ERPC クレジットから 1 時間 €{price}。終了するまで時間単位で課金され、少なくとも 1 時間分は課金されます。erpc.toml は環境 {env} を以後 ERPC のアカウントに保管し（`account = true`）、このデプロイが、サーバーの準備ができるのを待ち、この端末で yes を受けてから一度ログインして、デプロイします。erpc から終了するには、端末で `erpc worker delete --release-server{scope}` を実行します。環境の記録も一緒に消えます。"
+question = "{app} を ERPC のアカウントの ERPC Worker にし、環境 {env} に新しいサーバーを開始しますか: {cores} コア、{memory} GB、リージョン {region}、ERPC クレジットから 1 時間 €{price}。終了するまで時間単位で課金され、少なくとも 1 時間分は課金されます。yes のあと、erpc.toml は環境 {env} を以後 ERPC のアカウントに保管し（`account = true`）、このデプロイが、サーバーの準備ができるのを待ち、ここで yes を受けてから一度ログインして、デプロイします。erpc から終了するには、端末で `erpc worker delete --release-server{scope}` を実行します。環境の記録も一緒に消え、それがアプリの最後の環境ならアプリの記録も消えます。"
+note = "{app} を ERPC のアカウントの ERPC Worker にし、環境 {env} に新しいサーバーを開始します: {cores} コア、{memory} GB、リージョン {region}、ERPC クレジットから 1 時間 €{price}。終了するまで時間単位で課金され、少なくとも 1 時間分は課金されます。erpc.toml は環境 {env} を以後 ERPC のアカウントに保管し（`account = true`）、このデプロイが、サーバーの準備ができるのを待ち、この端末で yes を受けてから一度ログインして、デプロイします。erpc から終了するには、端末で `erpc worker delete --release-server{scope}` を実行します。環境の記録も一緒に消え、それがアプリの最後の環境ならアプリの記録も消えます。"
 new_option = "ERPC のアカウントに時間課金の新しいサーバーを開始し、アプリをそこで ERPC Worker にする（最安のサイズ、{region} の近く）。先に価格を表示します"
 as_before = "環境 {env} は、これまでどおり erpc.toml に保管し、ERPC のアカウントには保管しません: {why}"
 why_lines = "ERPC のアカウントに保管された環境は、デプロイからのデータ回線をまだ受け付けません"

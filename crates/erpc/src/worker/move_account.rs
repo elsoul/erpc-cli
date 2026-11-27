@@ -1134,6 +1134,10 @@ mod tests {
             Ok(written(self.detail()))
         }
 
+        async fn delete_app(&self, _: &str, _: u64) -> Result<account::Deleted, WorkerError> {
+            unreachable!("a move deletes no app")
+        }
+
         async fn delete_env_ending(
             &self,
             _: &str,

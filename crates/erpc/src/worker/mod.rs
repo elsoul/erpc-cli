@@ -613,7 +613,10 @@ pub(crate) enum Action {
         /// Go ahead without asking: with `--release-server`, the app's hourly
         /// lines and its hourly server are ended too, and each is said (a server
         /// never reached, or one passed with `--forget`, that is not on the
-        /// account signed in to is still asked about, at a terminal).
+        /// account signed in to is still asked about, at a terminal); the
+        /// app's last environment kept in the ERPC account takes the app's
+        /// record there with it, and the settings and secrets the account
+        /// keeps for the app, which is said too.
         #[arg(long, short = 'y')]
         yes: bool,
     },

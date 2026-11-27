@@ -557,6 +557,11 @@ pub(crate) trait Account {
         env: &str,
         body: &account::AdoptLine,
     ) -> Result<account::Written<EnvDetail>, WorkerError>;
+    /// Deletes the record of the app named `name`, expecting it at
+    /// `revision`: its environments, secrets and seals with it. Nothing is
+    /// ended, and the account refuses while an environment of it still has
+    /// a server, a line or an open start on record.
+    async fn delete_app(&self, name: &str, revision: u64) -> Result<account::Deleted, WorkerError>;
     /// Ends every server and line of the environment (a line bought as part
     /// of a Bundle is taken off instead, not ended), then deletes its
     /// record, expecting it at `revision`.
@@ -649,6 +654,10 @@ impl Account for Signed {
         body: &account::AdoptLine,
     ) -> Result<account::Written<EnvDetail>, WorkerError> {
         account::adopt_line(&self.client, &self.token().await?, name, env, body).await
+    }
+
+    async fn delete_app(&self, name: &str, revision: u64) -> Result<account::Deleted, WorkerError> {
+        account::delete_app(&self.client, &self.token().await?, name, revision).await
     }
 
     async fn delete_env_ending(
@@ -1386,6 +1395,16 @@ pub(crate) mod stand_in {
         /// How many starts of the environment are open, read in turn
         /// (the last one stays).
         pub(crate) open: RefCell<Vec<usize>>,
+        /// The app's environments by name, this one among them until it is
+        /// deleted: by default it has another, so its record stays.
+        pub(crate) app_envs: RefCell<Vec<&'static str>>,
+        /// What the next deletes of the app answer, in turn.
+        pub(crate) app_answers: RefCell<Vec<WorkerError>>,
+        /// The app's record was deleted.
+        pub(crate) app_gone: RefCell<bool>,
+        /// The id of the app by that name once the environment is deleted,
+        /// as when another app took the name meanwhile.
+        pub(crate) app_id_after: RefCell<Option<&'static str>>,
     }
 
     impl Fake {
@@ -1404,6 +1423,10 @@ pub(crate) mod stand_in {
                 read_count: RefCell::new(0),
                 changes_at: RefCell::new(None),
                 open: RefCell::new(vec![0]),
+                app_envs: RefCell::new(vec!["prod", "staging"]),
+                app_answers: RefCell::new(Vec::new()),
+                app_gone: RefCell::new(false),
+                app_id_after: RefCell::new(None),
             }
         }
     }
@@ -1427,9 +1450,25 @@ pub(crate) mod stand_in {
         }
 
         async fn app(&self, name: &str) -> Result<account::App, WorkerError> {
+            if *self.app_gone.borrow() {
+                return Err(refused(404, "worker_not_found", Value::Null));
+            }
+            // The environment deleted is no longer among the app's.
+            let this = self.env.borrow().name.clone();
+            let envs: Vec<Value> = self
+                .app_envs
+                .borrow()
+                .iter()
+                .filter(|e| !(*self.gone.borrow() && **e == this))
+                .map(|e| json!({ "name": e, "revision": 1 }))
+                .collect();
+            let id = match *self.app_id_after.borrow() {
+                Some(other) if *self.gone.borrow() => other,
+                _ => "6f1c2b9e-4d3a-4e8b-9a71-2c5d8e0f4b13",
+            };
             Ok(
-                serde_json::from_value(json!({ "id": "6f1c2b9e-4d3a-4e8b-9a71-2c5d8e0f4b13", "name": name, "chain": "solana",
-                "template": null, "wallet": null, "revision": 1 }))
+                serde_json::from_value(json!({ "id": id, "name": name, "chain": "solana",
+                "template": null, "wallet": null, "revision": 1, "envs": envs }))
                 .expect("an app"),
             )
         }
@@ -1528,6 +1567,22 @@ pub(crate) mod stand_in {
             _: &account::AdoptLine,
         ) -> Result<account::Written<EnvDetail>, WorkerError> {
             unreachable!("not asked of this stand-in")
+        }
+
+        async fn delete_app(
+            &self,
+            name: &str,
+            revision: u64,
+        ) -> Result<account::Deleted, WorkerError> {
+            self.log
+                .borrow_mut()
+                .push(format!("delete app at {revision}"));
+            let mut answers = self.app_answers.borrow_mut();
+            if !answers.is_empty() {
+                return Err(answers.remove(0));
+            }
+            *self.app_gone.borrow_mut() = true;
+            Ok(serde_json::from_value(json!({ "name": name, "deleted": true })).expect("deleted"))
         }
 
         async fn delete_env_ending(

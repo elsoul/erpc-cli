@@ -50,6 +50,13 @@ cannot_tell_note = "This machine cannot tell whether another app or environment 
 moving_servers = "the servers coming in and going out (the account's record ties them to no address)"
 server_shared_unread_hint = "run `erpc worker delete --release-server{scope}` at a terminal, without --yes or --json: the question names them, and you decide; or fix the erpc.toml or 1Password item that could not be read"
 sentence_sep = " "
+last_note = "Environment {env} is app {app}'s last environment in the ERPC account: the app's record is deleted with it, and with that record the settings and secrets the account keeps for the app."
+ending_app = "deleting app {app}'s record from the ERPC account too, with the settings and secrets it keeps for the app: environment {env} is its last environment there"
+app_deleted = "App {app}'s record is gone from the ERPC account too, with the settings and secrets it kept for the app."
+app_stays = "App {app}'s record stays in the ERPC account: the account now names another environment of it, or another app by that name."
+app_not_deleted = "environment {env} is deleted from the ERPC account, and app {app}'s record is not yet: {why}"
+app_again = "run `erpc worker delete --release-server{scope}` again to delete it; until then erpc.toml and this machine's records keep the environment"
+app_moving = "its record kept changing while it was being deleted"
 
 [servers]
 one = "{n} server"

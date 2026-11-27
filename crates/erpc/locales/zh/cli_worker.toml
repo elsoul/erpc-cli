@@ -236,7 +236,7 @@
 "worker delete --release-server" = "同时终止其所在的按小时计费 ERPC 服务器"
 "worker delete --forget" = "不连接服务器：worker 已不在那里运行（例如服务器已不存在），直接删除记录"
 "worker delete --forget-line" = "按 ID 将一条数据线路从记录中移除而不终止它：即已在 erpc 之外终止的线路。可重复指定"
-"worker delete --yes" = "不询问，直接继续：使用 `--release-server` 时，也不询问地结束应用按小时计费的线路和服务器，并逐一显示（从未连接过、或加了 `--forget` 的服务器，若不在当前登录的账户中，仍会在终端中询问）"
+"worker delete --yes" = "不询问，直接继续：使用 `--release-server` 时，也不询问地结束应用按小时计费的线路和服务器，并逐一显示（从未连接过、或加了 `--forget` 的服务器，若不在当前登录的账户中，仍会在终端中询问）；若是应用保存在 ERPC 账户中的最后一个环境，账户中应用的记录以及账户为该应用保存的设置和机密也会随之删除，这一点也会显示"
 "worker move" = "把环境的服务器信息从 erpc.toml 移到 ERPC 账户：其服务器和线路被纳入账户，erpc.toml 只保留 `account = true`。不可撤回：账户不会交还产品 ID。有些命令暂时还不能用于已移动的环境；移动开始前会说明是哪些"
 "worker move <app_name>" = "应用名称，即 `erpc worker list` 中显示的名称（默认：当前目录所在的应用）"
 "worker move --dir" = "应用目录或其中的子目录；也可以用应用名称（默认：当前目录）"
