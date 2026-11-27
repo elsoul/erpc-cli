@@ -1392,10 +1392,11 @@ fn vps_id(resource: &Resource) -> Result<i64, CliError> {
 
 /// Waits, up to five minutes, for VPS `resource` (one just bought, or one
 /// on record from a deploy that stopped before it was ready) to be up. It
-/// asks nothing, so it can run beside a build.
+/// asks nothing, so it can run beside a build; at a terminal the two share
+/// one spinner with tips ([`crate::worker::tips`]).
 pub(crate) async fn wait(api: &Api, resource: &Resource, say: &Say) -> Result<(), CliError> {
     let id = vps_id(resource)?;
-    say.line(&t!("worker_vps.ready.waiting", id));
+    let _waiting = crate::worker::tips::busy(say, t!("worker_vps.ready.waiting", id));
     let ready = erpc_ai::ready::wait_until_ready(
         &api.client,
         &api.token,

@@ -973,8 +973,18 @@ command fails with `there is no erpc.toml in … or above it`, as before.
 
 At a terminal, results and failures are drawn with a mark on each line (✅
 done, ⚠️ to heed, 💡 a hint, 👉 the commands to run next) and progress with
-›. Anywhere else (a pipe, a file, a script) the plain lines are as they were,
-and `--json` is unchanged, with these exceptions:
+›. Three steps that can take minutes are a spinner there instead: the build
+(`erpc worker build`, and a deploy's), a deploy's wait for a new server to
+be ready, and its wait for a server kept in the ERPC account to be ready for
+its first login. The spinner shows the step, the time taken so far, and a
+short trading tip in the language erpc speaks, the next one every eight
+seconds; a deploy that builds while its new server gets ready shows both
+steps on one spinner. When a step ends, on success or failure, the spinner
+goes and the step's › line is printed in its place (the first-login wait's
+once, where it said it every round before). Under `--json`, off a
+terminal, or with `TERM=dumb`, there is no spinner and these steps print
+what they printed before. Anywhere else (a pipe, a file, a script) the plain
+lines are as they were, and `--json` is unchanged, with these exceptions:
 
 - `init`'s next steps name the app (`erpc worker check hft-bot`, and `cd`
   relative to where it was run) when that name finds it, in the text and in

@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
+# SPDX-License-Identifier: Apache-2.0
+
+# Below the spinner of a long step (a build, a wait for a server): one tip
+# at a time, with this label.
+tip = "Tip: {tip}"
+
+# Short trading tips, each said the same in every language.
+[tips]
+t01 = "Slots are now 200ms. Code that turns slot counts into time with 400ms is wrong; use getBlockTime or fetch the current slot time."
+t02 = "A blockhash still expires after 150 blocks, but with 200ms slots that is now about 30 seconds instead of 60."
+t03 = "Handle Geyser gRPC ping/pong and resume with from_slot after reconnecting. Without them, ~30s disconnects or data gaps can occur."
+t04 = "Rough ping by distance: same network ~0.1ms, same city ~1ms, neighboring country 5–10ms, intercontinental 100–300ms."
+t05 = "TCP streams such as gRPC cost about 5x ping, a single POST 2–3x, so place your bot closest to the stream source, not the send target."
+t06 = "Leaders rotate around the world. Receive near the leader, send from near the leader, and keep small footholds in several regions."
+t07 = "ERPC's getLeaderSlots returns upcoming leaders with estimated location and reference RTT from 7 regions, to help pick a send route."
+t08 = "In getLeaderSlots, icmpReplied=false means 'not measurable via ICMP', not 'far away'. The validator may still serve TPU/QUIC."
+t09 = "Same city doesn't mean close on the network: traffic can detour through outside networks. Measure RTT to the actual data source."
+t10 = "If the gRPC region probe shows 9999ms, check that inbound ICMP is allowed from the probe sources listed in the official quickstart."
+t11 = "Shared nodes queue many users' work, which shows up as jitter. Start shared, and add dedicated nodes where speed must never drop."
+t12 = "Shared Geyser gRPC (Standard) and Direct Shreds Connect offer HTTP (no TLS work) or HTTPS (hides which addresses you watch)."
+t13 = "Data appears first in Shreds, then Geyser gRPC, then RPC/WebSocket. UDP Shreds are fastest, but you must handle loss and reordering."
+t14 = "A common pattern: use Shreds to spot opportunities early, and Geyser gRPC to verify blocks and logs and drive your main logic."
+t15 = "Filter at the provider, not after receipt. Updates you discard still cost bandwidth and CPU, and can delay the ones you need."
+t16 = "In Yellowstone transaction filters, account_include matches any listed address, while account_required needs all of them."
+t17 = "ERPC Shared gRPC rejects blocks subscriptions and empty filters. Name the specific accounts or addresses you actually need."
+t18 = "A swap instruction seen in Shreds shows the limit the trader set, not the fill. Get what actually filled from Geyser gRPC or RPC."
+t19 = "Watch the age of your oldest unprocessed update, not just counts. With a steady shortfall, a bigger buffer only holds more old data."
+t20 = "Keep the hot path short: hand analytics logs and non-critical DB writes to a bounded queue so the next price doesn't wait."
+t21 = "Reconnecting doesn't bring back missed updates. Pause decisions that use that state until it is recovered and checked."
+t22 = "After a gRPC disconnect, save the first error and any x-erpc-retry-at before reconnecting. Never resend a rejected request unchanged."
+t23 = "Updates at processed commitment can be rolled back. Keep provisional and finalized state apart, or use only finalized."
+t24 = "A successful sendTransaction means the RPC accepted it, not that it executed. Check the signature status separately."
+t25 = "SWQoS acts before priority fees are weighed. Raising the priority fee alone won't help a transaction that never enters the priority lane."
+t26 = "To send one transaction through several fast RPCs at once, use a durable nonce so only one copy can execute."
+t27 = "Average CPU can hide a saturated core: one of 8 logical CPUs at 100% averages about 12.5%. Check per-core load."
+t28 = "Working gRPC doesn't prove UDP reception works. Ask your host about PPS limits, bursts and DDoS rules for inbound UDP."
+t29 = "For Shreds UDP Forwarding, register a public IPv4 and port, allow inbound UDP from every source IP the dashboard lists, and confirm arrival."
+t30 = "For backtests, add history=true to your edge.erpc.global URL to read old blocks and transactions. History lookups can take seconds."

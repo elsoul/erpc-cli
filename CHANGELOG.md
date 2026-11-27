@@ -238,6 +238,13 @@ whose version has no entry below.
   directory, and goes on with the one picked as with `--dir`. When erpc
   knows no app on this machine, it says so and points to `erpc worker
   init` first. Under `--json` or with no terminal it fails as before.
+- At a terminal, the steps of `erpc worker build` and `erpc worker deploy`
+  that can take minutes (the build, the wait for a new server to be ready,
+  the wait for a server kept in the ERPC account to be ready for its first
+  login) are a spinner that shows the time taken and a short trading tip
+  in the language erpc speaks, the next one every eight seconds. When the
+  step ends, the spinner gives way to the line the step printed before.
+  Under `--json` or off a terminal nothing changes.
 
 ### Changed
 

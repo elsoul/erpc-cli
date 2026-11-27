@@ -34,6 +34,7 @@ pub(crate) mod seal_keys;
 pub(crate) mod secrets;
 pub(crate) mod server;
 pub(crate) mod server_end;
+pub(crate) mod tips;
 pub(crate) mod vps;
 pub(crate) mod waf;
 
@@ -3184,6 +3185,7 @@ mod tests {
             ("worker/secrets.rs", include_str!("secrets.rs")),
             ("worker/server.rs", include_str!("server.rs")),
             ("worker/server_end.rs", include_str!("server_end.rs")),
+            ("worker/tips.rs", include_str!("tips.rs")),
             ("worker/vps.rs", include_str!("vps.rs")),
             ("worker/waf.rs", include_str!("waf.rs")),
             ("node/common.rs", include_str!("../node/common.rs")),
