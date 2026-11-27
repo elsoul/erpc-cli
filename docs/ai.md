@@ -64,12 +64,14 @@ More about conversations:
   After an upgrade `erpc doctor` warns while the copies on disk are older,
   and the next command says so once.
 
-## ERPC server Security Check (pilot builds)
+## ERPC Server Security Check
 
-Standard releases omit Security Check. Build the pilot with
-`cargo build --locked -p erpc --features security-check-pilot`. The older
-`node-check-pilot` feature name also enables this pilot. The ERPC service
-determines eligibility for the signed-in account and its rentals.
+Official binary releases built with the Security Check feature expose
+`--security-check` in `erpc ai --help` and include it in generated shell
+completions. The ERPC service determines whether the signed-in account and
+its rentals are eligible. For a source build or `cargo install erpc`, add
+`--features security-check-pilot`. The older `node-check-pilot` feature
+name is also supported.
 
 After `erpc login`, run `erpc ai --security-check` from your terminal to
 select an eligible VPS or bare-metal rental. The selector starts on
@@ -86,7 +88,7 @@ it. ERPC then revalidates the rental, provisioning state and public IPv4
 assignment before any SSH connection. The CLI uses the SSH identity in
 `ssh_key` and the saved VPS host key pin for that rental. You can supply
 an independently verified Ed25519 host public key with
-`--host-key '<public-key>' --ssh-user '<login>'` instead.
+`--host-key '<public-key>' --ssh-user '<login>'` for this check.
 
 The collector reads bounded evidence from the remote Linux SSH login's
 network namespace and available system configuration.

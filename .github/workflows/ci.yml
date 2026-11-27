@@ -184,7 +184,7 @@ jobs:
           # The script exported ERPC_WORKER_AGENTS_DIR and
           # ERPC_REQUIRE_WORKER_AGENTS=1 for the steps after it; a build of
           # erpc here embeds them, as the release build does.
-          cargo check -p erpc --locked
+          cargo check -p erpc --locked --features security-check-pilot
       # The Intel macOS release is cross-compiled on this image
       # (dist-workspace.toml), and a pull request runs only `dist plan`, so
       # the cross build is done here too: a pull request finds out before a
@@ -195,7 +195,7 @@ jobs:
         run: |
           set -euo pipefail
           rustup target add x86_64-apple-darwin
-          cargo build -p erpc --locked --target x86_64-apple-darwin
+          cargo build -p erpc --locked --features security-check-pilot --target x86_64-apple-darwin
           bin=target/x86_64-apple-darwin/debug/erpc
           archs=$(lipo -archs "$bin")
           [ "$archs" = x86_64 ] || { echo "built for '$archs', not x86_64"; exit 1; }

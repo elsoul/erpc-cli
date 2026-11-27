@@ -30,8 +30,9 @@ use zeroize::Zeroizing;
 use crate::account::commands::{Outcome, Said};
 
 #[derive(clap::Args)]
+#[command(next_help_heading = "Server Security Check")]
 pub(crate) struct Args {
-    /// Run the metered Security Check for an owned ERPC server.
+    /// Run a metered, read-only posture check for an eligible ERPC rental.
     #[arg(long, conflicts_with_all = ["message", "continue_last", "model"])]
     security_check: bool,
     /// List eligible server rentals from the signed-in ERPC account.

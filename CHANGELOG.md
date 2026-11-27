@@ -12,6 +12,12 @@ whose version has no entry below.
 
 ## [Unreleased]
 
+### Added
+
+- Official Linux, macOS and Windows archives include the opt-in Server
+  Security Check command, `erpc ai --security-check`, for eligible ERPC
+  rentals.
+
 ## [0.1.0-rc.7] - 2026-11-18
 
 ### Added
