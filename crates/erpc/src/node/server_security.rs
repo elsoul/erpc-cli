@@ -1046,13 +1046,13 @@ mod tests {
             (0, 0, "unknown"),
         ] {
             let observed_reference = owner_only + unknown > 0;
-            let modes =
+            let permission_counts =
                 json!({ "owner_only": owner_only, "group_or_other_access": 0, "unknown": unknown });
             let wire = json!({
                 "listeners":"no_listener", "nftables":"not_observed",
                 "metadata":{
                     "coverage":"partial", "units_with_evidence":1, "truncated":false,
-                    "environment_files": modes,
+                    "environment_files": permission_counts,
                     "service_env":{"owner_only":0,"group_or_other_access":0,"unknown":0},
                     "credential_sources":{"owner_only":0,"group_or_other_access":0,"unknown":0},
                 },
@@ -1100,7 +1100,10 @@ mod tests {
                 } else {
                     assert!(record.get("localFindings").is_none());
                 }
-                assert_eq!(record["posture"]["metadata"]["environment_files"], modes);
+                assert_eq!(
+                    record["posture"]["metadata"]["environment_files"],
+                    permission_counts
+                );
                 assert_eq!(record.get("modelReport").is_some(), settled);
                 if !settled {
                     assert_eq!(record["settlement"], "no_charge");
