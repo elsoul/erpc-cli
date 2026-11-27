@@ -12,7 +12,8 @@ rules:
   secrets-inherit:
     ignore:
       # The generated workflow calls release-publish.yml and installer-worker.yml.
-      # Both are repository-owned workflows with protected release environments.
+      # Both are repository-owned workflows; their `release` environment is open
+      # to v* tags only, which only admins may push (a tag ruleset).
       - release.yml
   unpinned-images:
     ignore:
