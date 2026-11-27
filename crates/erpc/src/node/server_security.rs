@@ -320,6 +320,34 @@ impl Account {
         list_body(status, body)
     }
 
+    /// The price quote, or why there is none: the HTTP status and the
+    /// service's allowlisted error code, a timeout or a failed request.
+    async fn read_quote(&self) -> Result<Zeroizing<String>, Outcome> {
+        use billing::QuoteFailure as Failure;
+        let token = self.access.access_token().await.map_err(|_| sign_in())?;
+        let (status, body) = self
+            .client
+            .get_with_token_bounded(
+                Audience::AuthApi,
+                SECURITY_CHECK_QUOTE_URL,
+                &token,
+                QUOTE_LIMITS,
+            )
+            .await
+            .map_err(|error| match error {
+                HttpError::ResponseLimit { status: 401, .. } => sign_in(),
+                HttpError::ResponseLimit { status, .. } => Failure::Oversized(status).outcome(),
+                HttpError::Timeout { .. } => Failure::Timeout.outcome(),
+                _ => Failure::Transport.outcome(),
+            })?;
+        let body = Zeroizing::new(body);
+        match status {
+            200 => Ok(body),
+            401 => Err(sign_in()),
+            _ => Err(Failure::refused(status, &body).outcome()),
+        }
+    }
+
     async fn eligible(&self) -> Result<Vec<EligibleServer>, Outcome> {
         let body = self
             .read_list(SECURITY_CHECK_SERVERS_URL, INVENTORY_LIMITS)
@@ -677,14 +705,9 @@ async fn menu(
         &server,
         ask_confirmation,
         || async {
-            let unavailable = || Outcome::Failed(t!("node_check.quote_unavailable"));
-            tokio::time::timeout(
-                std::time::Duration::from_secs(45),
-                account.read_list(SECURITY_CHECK_QUOTE_URL, QUOTE_LIMITS),
-            )
-            .await
-            .map_err(|_| unavailable())?
-            .map_err(|_| unavailable())
+            tokio::time::timeout(std::time::Duration::from_secs(45), account.read_quote())
+                .await
+                .map_err(|_| billing::QuoteFailure::Timeout.outcome())?
         },
         async |rental| account.select_rental(rental).await,
         async |verified| collect_selected(verified, explicit_key).await,

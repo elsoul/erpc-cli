@@ -214,6 +214,11 @@ lower-case letter followed by up to 63 lower-case letters, digits, dots
 and hyphens); a
 completed report must name a model the quote offered, at that model's
 rate. The check requires approval of a verified quote before opening SSH.
+When there is none, the message says why: the HTTP status with the
+service's error code (`not_found`, `security_check_target_unavailable`,
+`posture_report_not_funded`, `posture_report_denied` or
+`posture_report_unavailable`), a timeout, a failed request, or a quote
+that did not verify. Nothing else from the reply is shown.
 The billed request contains fixed posture classifications, the rental and
 request IDs, and billing parameters. The CLI keeps detailed socket and
 file-mode observations in the operator's report. It shows the settled
