@@ -1,8 +1,12 @@
 # SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
 # SPDX-License-Identifier: Apache-2.0
 #
-# Deploys the install.erpc.global Worker. Typecheck on PRs; deploy only from
-# main through the protected `release` environment (human approval).
+# Deploys the install.erpc.global Worker. Typecheck on PRs and on main; deploy
+# only for a release: when release.yml, run by a v* tag, calls this workflow,
+# or when a person runs it by hand on a v* tag. The `release` environment is
+# open to v* tags only, and only admins may push a v* tag (a tag ruleset), so
+# the tag is the release's one approval: there is no approval to wait for on
+# main, and none mid-release.
 # Secrets: CLOUDFLARE_API_TOKEN (Workers Scripts:Edit on this account only),
 # CLOUDFLARE_ACCOUNT_ID. Neither is committed.
 #
@@ -97,7 +101,7 @@ jobs:
       # bundling deploy does. Nothing else: in --no-bundle mode wrangler can
       # upload other files in dist as modules (a dry run with 4.151.3
       # attached .wasm, .txt, .html, .sql and .bin files).
-      # Kept 7 days so a deploy approved late can still fetch it.
+      # Kept 7 days so a deploy run late can still fetch it.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: installer-worker-bundle
@@ -111,7 +115,7 @@ jobs:
     concurrency:
       group: installer-production
       cancel-in-progress: false
-    if: github.event_name != 'pull_request'
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: [typecheck, against-real-installers, bundle]
     runs-on: ubuntu-latest
     environment: release

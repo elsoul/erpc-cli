@@ -9,11 +9,14 @@ SPDX-License-Identifier: Apache-2.0
 
 - **Maintainers** (ELSOUL LABO B.V. engineering) review and merge pull
   requests, triage issues and security reports, and own the roadmap.
-- **Release approvers** are the required reviewers of the GitHub environment
-  `release`. A release is published only after an approver accepts the
-  release checklist: CI green, dependency audit, SBOM diff review, changelog,
-  secret scan, and a reproducible-build comparison that currently covers the
-  two Linux targets only.
+- **Release approvers** are the repository's admins. Only an admin may
+  create, update or delete a `v*` tag (a tag ruleset), and the GitHub
+  environment `release`, which holds the release's secrets, is open to `v*`
+  tags only. Pushing the tag is the release's approval: the admin who pushes
+  it accepts the release checklist first (CI green, dependency audit, SBOM
+  diff review, changelog, secret scan, and a reproducible-build comparison
+  that currently covers the two Linux targets only), and the release then
+  runs to the end with no approval to wait for.
 - **Contributors** are anyone who opens a pull request under the terms of
   `CONTRIBUTING.md`.
 

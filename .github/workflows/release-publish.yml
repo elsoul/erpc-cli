@@ -168,7 +168,7 @@ jobs:
         run: scripts/release/check-security-check-archive.sh "artifacts/erpc-$RELEASE_TARGET"
 
   sign:
-    name: manifest + sign (approval)
+    name: manifest + sign
     needs: [release-gate, rebuild-compare, smoke-archives]
     runs-on: ubuntu-latest
     environment: release
