@@ -76,7 +76,7 @@ fn model_name(name: &str) -> bool {
         && name
             .bytes()
             .next()
-            .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+            .is_some_and(|byte| byte.is_ascii_lowercase())
         && name
             .bytes()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"-.".contains(&byte))
@@ -738,7 +738,7 @@ mod tests {
             (
                 Lang::En,
                 "ERPC sends its AI model provider",
-                "customer profile ID that the provider links to your ERPC account",
+                "the provider's customer profile ID linked to your ERPC account",
                 "stable pseudonymous actor ID",
                 "The provider's standard retention",
                 "ERPC separately keeps",
@@ -762,7 +762,7 @@ mod tests {
             (
                 Lang::Zh,
                 "ERPC 会向其 AI 模型提供方发送",
-                "该提供方与您的 ERPC 账户关联的客户档案 ID",
+                "提供方处与您的 ERPC 账户关联的客户档案 ID",
                 "固定的操作者假名 ID",
                 "提供方的标准保留政策",
                 "ERPC 会另外",
@@ -851,10 +851,12 @@ mod tests {
             Some(with_fallback())
         );
         let named = |name: &str| internal.replace(PRIMARY, name);
-        assert_eq!(
-            parse_quote(&named("model-5.2")).map(|terms| terms.model),
-            Some("model-5.2".to_owned())
-        );
+        for name in ["model-5.2", "m", &"m".repeat(64)] {
+            assert_eq!(
+                parse_quote(&named(name)).map(|terms| terms.model),
+                Some(name.to_owned())
+            );
+        }
         for invalid in [
             with(r#""consentVersion":"security-check-local-posture-v2""#),
             with(r#""consentVersion":null"#),
@@ -877,6 +879,9 @@ mod tests {
             named(""),
             named("Model"),
             named("-model"),
+            named("0"),
+            named("9472"),
+            named("5-model"),
             named("model a"),
             named("model\\u001b[31m"),
             named("model\\u202e"),
@@ -943,8 +948,9 @@ mod tests {
         assert!(summary.contains("1090"), "{summary}");
         let primary: Receipt = serde_json::from_value(example()).expect("receipt");
         assert!(primary.valid(&with_fallback()));
-        // A model the quote did not name is refused at either rate.
-        for charged in [1090, 527] {
+        // A model the quote did not name is refused at either rate:
+        // 1090 is the fallback's charge for this usage, 2411 the primary's.
+        for charged in [1090, 2411] {
             response["model"] = json!("fixture-model-c");
             response["billing"]["chargedCredits"] = json!(charged);
             let unquoted: Receipt = serde_json::from_value(response.clone()).expect("receipt");

@@ -124,7 +124,8 @@ reservation of 28,160 ERPC AI tokens and the rate for a completed report.
 The current rate is 512 tokens plus 3 per model input token and 12 per
 model output token. The CLI checks every rate and limit in the quote
 against its own copy and shows the model name as the quote gives it (a
-lower-case name of up to 64 letters, digits, dots and hyphens); a
+lower-case letter followed by up to 63 lower-case letters, digits, dots
+and hyphens); a
 completed report must name a model the quote offered, at that model's
 rate. The check requires approval of a verified quote before opening SSH.
 The billed request contains fixed posture classifications, the rental and
@@ -136,8 +137,8 @@ settlement.
 For customer access, the quote also asks for consent to inspect the
 selected rental and process the results. For each customer invocation,
 ERPC sends its AI model provider fixed finding IDs for ranking, the
-customer profile ID that the provider links to the ERPC account, and a
-stable pseudonymous actor ID for the same user across runs. The
+provider's customer profile ID linked to the ERPC account, and a stable
+pseudonymous actor ID for the same user across runs. The
 provider's standard retention policy applies to the data it receives.
 ERPC separately keeps the account, individual user, invocation time and
 outcome for at least 90 days for attribution and audit. The approval
