@@ -119,28 +119,35 @@ The inventory accepts up to 256 rentals and a 128 KiB reply. Quote and
 rental verification replies are capped at 4 KiB each. An oversized reply
 stops the check before SSH.
 
-The pricing prompt shows the model, maximum reservation of 28,160 ERPC AI
-tokens and rate for a completed report. The current rate is 512 tokens
-plus 3 per model input token and 12 per model output token. The check
-requires approval of a verified quote before opening SSH. The billed
-request contains fixed posture classifications, the rental and request
-IDs, and billing parameters. The CLI keeps detailed socket and file-mode
-observations in the operator's report. It shows the settled charge,
-reports when no tokens were charged, or flags an unconfirmed settlement.
+The pricing prompt shows the model named in the quote, the maximum
+reservation of 28,160 ERPC AI tokens and the rate for a completed report.
+The current rate is 512 tokens plus 3 per model input token and 12 per
+model output token. The CLI checks every rate and limit in the quote
+against its own copy and shows the model name as the quote gives it (a
+lower-case letter followed by up to 63 lower-case letters, digits, dots
+and hyphens); a
+completed report must name a model the quote offered, at that model's
+rate. The check requires approval of a verified quote before opening SSH.
+The billed request contains fixed posture classifications, the rental and
+request IDs, and billing parameters. The CLI keeps detailed socket and
+file-mode observations in the operator's report. It shows the settled
+charge, reports when no tokens were charged, or flags an unconfirmed
+settlement.
 
 For customer access, the quote also asks for consent to inspect the
 selected rental and process the results. For each customer invocation,
-ERPC sends Claude fixed finding IDs for ranking, the Anthropic customer
-profile ID linked to the ERPC account, and a stable pseudonymous actor ID
-for the same user across runs. Anthropic's standard retention policy
-applies to the data it receives. ERPC separately keeps
-the account, individual user, invocation time and outcome for at least
-90 days for attribution and audit. The approval applies to that run only.
-If the quote offers Claude Sonnet as a fallback, the same approval covers
-that rate of 512 tokens plus 1 per input token and 3 per output token, up
-to 9,472 tokens. ERPC may use it if the request could not be sent to the
-primary model. The overall reservation remains at most 28,160 tokens.
-A completed report identifies the single model used for billing.
+ERPC sends its AI model provider fixed finding IDs for ranking, the
+provider's customer profile ID linked to the ERPC account, and a stable
+pseudonymous actor ID for the same user across runs. The
+provider's standard retention policy applies to the data it receives.
+ERPC separately keeps the account, individual user, invocation time and
+outcome for at least 90 days for attribution and audit. The approval
+applies to that run only. If the quote offers a fallback model, the same
+approval covers that rate of 512 tokens plus 1 per input token and 3 per
+output token, up to 9,472 tokens. ERPC may use it if the request could
+not be sent to the primary model. The overall reservation remains at
+most 28,160 tokens. A completed report identifies the single model used
+for billing.
 
 ## Wallet: `erpc wallet`
 

@@ -784,7 +784,7 @@ mod tests {
 
     fn quote_fixture(valid: bool, terms: FixtureQuote) -> Zeroizing<String> {
         let mut quote = json!({
-            "model":"claude-mythos-5-2", "meterVersion":"posture1", "currency":"ai_credits",
+            "model":"fixture-model-a", "meterVersion":"posture1", "currency":"ai_credits",
             "baseCredits":512, "weights":{"input":3,"output":12},
             "limits":{"input":8192,"output":256},
             "maximumCredits": if valid { 28160 } else { 28161 },
@@ -794,7 +794,7 @@ mod tests {
         }
         if terms == FixtureQuote::WithFallback {
             quote["fallback"] = json!({
-                "model":"claude-sonnet-5-5", "meterVersion":"posture1", "currency":"ai_credits",
+                "model":"fixture-model-b", "meterVersion":"posture1", "currency":"ai_credits",
                 "baseCredits":512, "weights":{"input":1,"output":3},
                 "limits":{"input":8192,"output":256}, "maximumCredits":9472,
             });
@@ -814,7 +814,7 @@ mod tests {
             ));
         }
         if terms == FixtureQuote::WithFallback {
-            headers.push(("x-erpc-security-check-fallback", "claude-sonnet-5-5"));
+            headers.push(("x-erpc-security-check-fallback", "fixture-model-b"));
         }
         assert_eq!(request.headers(), headers);
         let body: serde_json::Value =
@@ -831,7 +831,7 @@ mod tests {
             })
             .to_string()
         };
-        let fallback = wire("claude-sonnet-5-5", 516);
+        let fallback = wire("fixture-model-b", 516);
         if terms == FixtureQuote::WithFallback {
             request
                 .fixture_receipt(&fallback)
@@ -839,7 +839,7 @@ mod tests {
         } else {
             assert!(request.fixture_receipt(&fallback).is_err());
             request
-                .fixture_receipt(&wire("claude-mythos-5-2", 527))
+                .fixture_receipt(&wire("fixture-model-a", 527))
                 .expect("approved primary receipt")
         }
     }
@@ -984,7 +984,7 @@ mod tests {
             .expect("eligible fixture")
             .pop()
             .expect("fixture server");
-        let quote = r#"{"model":"claude-mythos-5-2","meterVersion":"posture1","currency":"ai_credits","baseCredits":512,"weights":{"input":3,"output":12},"limits":{"input":8192,"output":256},"maximumCredits":28160}"#;
+        let quote = r#"{"model":"fixture-model-a","meterVersion":"posture1","currency":"ai_credits","baseCredits":512,"weights":{"input":3,"output":12},"limits":{"input":8192,"output":256},"maximumCredits":28160}"#;
         assert!(billing::ApprovedReport::from_quote(quote, server.rental, |_| Ok(false)).is_ok());
         let invalid_internal = [
             (
@@ -1260,8 +1260,8 @@ mod tests {
                 },
             });
             for receipt in [
-                Some(("claude-mythos-5-2", 527)),
-                Some(("claude-sonnet-5-5", 516)),
+                Some(("fixture-model-a", 527)),
+                Some(("fixture-model-b", 516)),
                 None,
             ] {
                 let model = if let Some((model, charged)) = receipt {

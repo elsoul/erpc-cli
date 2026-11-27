@@ -190,7 +190,7 @@ fn built_security_check_requests_carry_only_the_authorized_headers() {
         (Some("security-check-local-posture-v1"), None),
         (
             Some("security-check-local-posture-v1"),
-            Some("claude-sonnet-5-5"),
+            Some("fixture-model-b"),
         ),
     ] {
         let mut headers = vec![("idempotency-key", "fixture-id")];
