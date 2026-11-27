@@ -105,6 +105,7 @@ pub struct JsonResponseLimits {
 struct JsonOptions<'a> {
     idempotency_key: Option<&'a str>,
     response_limits: Option<JsonResponseLimits>,
+    headers: &'a [(&'a str, &'a str)],
 }
 
 impl AuthClient {
@@ -381,6 +382,33 @@ impl AuthClient {
         idempotency_key: Option<&str>,
         limits: JsonResponseLimits,
     ) -> Result<(u16, String), HttpError> {
+        let header = idempotency_key.map(|key| ("idempotency-key", key));
+        self.post_with_token_bounded_and_headers(
+            audience,
+            url,
+            access_token,
+            body,
+            header.as_slice(),
+            limits,
+        )
+        .await
+    }
+
+    /// POSTs authenticated JSON with route-specific headers, a deadline,
+    /// and a response byte cap.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::post_with_token_bounded`]. Invalid headers are transport errors.
+    pub async fn post_with_token_bounded_and_headers(
+        &self,
+        audience: Audience,
+        url: &str,
+        access_token: &SecretString,
+        body: Vec<u8>,
+        headers: &[(&str, &str)],
+        limits: JsonResponseLimits,
+    ) -> Result<(u16, String), HttpError> {
         self.send_with_token(
             reqwest::Method::POST,
             audience,
@@ -388,8 +416,9 @@ impl AuthClient {
             access_token,
             body,
             JsonOptions {
-                idempotency_key,
                 response_limits: Some(limits),
+                headers,
+                ..JsonOptions::default()
             },
         )
         .await
@@ -461,12 +490,15 @@ impl AuthClient {
             .first()
             .copied()
             .unwrap_or_else(|| audience.issuer_host());
-        let request = json_request(
+        let mut request = json_request(
             self.inner.request(method, url),
             access_token,
             body,
             options.idempotency_key,
         );
+        for &(name, value) in options.headers {
+            request = request.header(name, value);
+        }
         send_json(request, host, options.response_limits).await
     }
 

@@ -79,7 +79,7 @@ select an eligible VPS or bare-metal rental. The selector starts on
 or add `--kind vps --id 123` or `--kind bare-metal --id 456` to select one
 directly. Inspection requires a terminal. In every build, input whose first
 word is `/security-check` stays local in the console, with `--message`, and
-on standard input. In pilot builds it points to the terminal command.
+on standard input. In builds with the feature it points to the terminal command.
 `/node-check` locally displays the migration message.
 
 Before inspection, confirm that you own the selected server or have
@@ -127,6 +127,17 @@ request contains fixed posture classifications, the rental and request
 IDs, and billing parameters. The CLI keeps detailed socket and file-mode
 observations in the operator's report. It shows the settled charge,
 reports when no tokens were charged, or flags an unconfirmed settlement.
+
+For customer access, the quote also asks for consent to inspect the
+selected rental and process the results. ERPC sends fixed finding IDs to
+Claude for ranking under Anthropic's standard retention policy. ERPC keeps
+the account, individual user, invocation time and outcome for at least
+90 days for attribution and audit. The approval applies to that run only.
+If the quote offers Claude Sonnet as a fallback, the same approval covers
+that rate of 512 tokens plus 1 per input token and 3 per output token, up
+to 9,472 tokens. ERPC may use it if the request could not be sent to the
+primary model. The overall reservation remains at most 28,160 tokens.
+A completed report identifies the single model used for billing.
 
 ## Wallet: `erpc wallet`
 

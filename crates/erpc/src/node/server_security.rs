@@ -735,14 +735,16 @@ async fn run_selected(
     if !confirm(inspection_scope(server))? {
         return Ok(None);
     }
-    let Some(approved) = billing::ApprovedReport::from_quote(&quote().await?, confirm)? else {
+    let Some(approved) =
+        billing::ApprovedReport::from_quote(&quote().await?, server.rental, confirm)?
+    else {
         return Ok(None);
     };
     // Resolve the assignment again after consent and before opening SSH.
     let (status, body) = select(server.rental).await?;
     let verified = verify_selection(status, &body, server)?;
     let result = observe(verified).await?;
-    let submission = approved.submission(server.rental, &result);
+    let submission = approved.submission(&result);
     let id = submission.idempotency_key.clone();
     let model = submit(submission).await;
     Ok(Some(Completed { id, result, model }))
@@ -766,17 +768,83 @@ async fn collect_selected(
 mod tests {
     use erpc_core::i18n::Lang;
     use serde_json::json;
+    use zeroize::Zeroizing;
 
     use super::{
-        Kind, Posture, PostureFailure, decode_posture, inspection_scope, list_body, parse_eligible,
-        select_server, selection_body, verify_selection,
+        Kind, Posture, PostureFailure, billing, decode_posture, inspection_scope, list_body,
+        parse_eligible, select_server, selection_body, verify_selection,
     };
+
+    fn quote_fixture(valid: bool, customer: bool) -> Zeroizing<String> {
+        let mut quote = json!({
+            "model":"claude-mythos-5-2", "meterVersion":"posture1", "currency":"ai_credits",
+            "baseCredits":512, "weights":{"input":3,"output":12},
+            "limits":{"input":8192,"output":256},
+            "maximumCredits": if valid { 28160 } else { 28161 },
+        });
+        if customer {
+            quote["consentVersion"] = json!("security-check-local-posture-v1");
+            quote["fallback"] = json!({
+                "model":"claude-sonnet-5-5", "meterVersion":"posture1", "currency":"ai_credits",
+                "baseCredits":512, "weights":{"input":1,"output":3},
+                "limits":{"input":8192,"output":256}, "maximumCredits":9472,
+            });
+        }
+        Zeroizing::new(quote.to_string())
+    }
+
+    fn receipt_fixture(request: &billing::ReportSubmission, customer: bool) -> billing::Receipt {
+        let mut headers = vec![("idempotency-key", request.idempotency_key.as_str())];
+        if customer {
+            headers.extend([
+                (
+                    "x-erpc-security-check-consent",
+                    "security-check-local-posture-v1",
+                ),
+                ("x-erpc-security-check-fallback", "claude-sonnet-5-5"),
+            ]);
+        }
+        assert_eq!(request.headers(), headers);
+        let body: serde_json::Value =
+            serde_json::from_slice(&request.body).expect("prepared report");
+        assert_eq!(body["requestId"], request.idempotency_key);
+        assert_eq!(body["server"], "bare_metal:7");
+        assert_eq!(body["maximumCredits"], 28160);
+        assert_eq!(body["posture"]["listeners"], "no_listener");
+        let (model, charge) = if customer {
+            ("claude-sonnet-5-5", 516)
+        } else {
+            ("claude-mythos-5-2", 527)
+        };
+        serde_json::from_value(json!({
+            "status":"completed", "model":model, "findings":[],
+            "billing":{"meterVersion":"posture1","chargedCredits":charge,
+                "baseCredits":512,"inputTokens":1,"outputTokens":1},
+        }))
+        .expect("broker fixture")
+    }
+
+    fn selection_fixture(
+        mut selected: serde_json::Value,
+        lease_valid: bool,
+    ) -> (u16, Zeroizing<String>) {
+        if !lease_valid {
+            selected["address"] = json!("8.8.8.5");
+        }
+        let body = json!({
+            "server": selected,
+            "report": { "status": "preflight-only", "checks": {
+                "session": "verified", "rental": "active",
+                "provisioning": "ready", "listeners": "not-observed",
+            } },
+        });
+        (200, Zeroizing::new(body.to_string()))
+    }
 
     #[tokio::test]
     async fn production_security_check_gates_ssh_and_metered_submission() {
         use crate::account::commands::Outcome;
         use std::cell::RefCell;
-        use zeroize::Zeroizing;
 
         let listed = json!({
             "id": "bare_metal:7", "kind": "bare_metal", "label": "fixture",
@@ -785,13 +853,33 @@ mod tests {
         let mut eligible = parse_eligible(&json!({"servers": [listed.clone()]}).to_string())
             .expect("eligible fixture");
         let server = eligible.pop().expect("fixture server");
-        for (refusal, quote_valid, lease_valid, expected) in [
-            (Some("scope"), true, true, &["scope"][..]),
-            (None, false, true, &["scope", "quote"]),
-            (Some("price"), true, true, &["scope", "quote", "price"]),
-            (None, true, false, &["scope", "quote", "price", "verify"]),
+        for (refusal, quote_valid, lease_valid, customer_quote, expected) in [
+            (Some("scope"), true, true, false, &["scope"][..]),
+            (None, false, true, false, &["scope", "quote"]),
+            (
+                Some("price"),
+                true,
+                true,
+                true,
+                &["scope", "quote", "price"],
+            ),
             (
                 None,
+                true,
+                false,
+                false,
+                &["scope", "quote", "price", "verify"],
+            ),
+            (
+                None,
+                true,
+                true,
+                false,
+                &["scope", "quote", "price", "verify", "ssh", "submit"],
+            ),
+            (
+                None,
+                true,
                 true,
                 true,
                 &["scope", "quote", "price", "verify", "ssh", "submit"],
@@ -805,6 +893,10 @@ mod tests {
                         "scope"
                     } else {
                         assert!(prompt.contains("28160"));
+                        if customer_quote {
+                            assert!(prompt.contains("bare_metal:7"));
+                            assert!(prompt.contains("9472"));
+                        }
                         "price"
                     };
                     steps.borrow_mut().push(stage);
@@ -812,48 +904,25 @@ mod tests {
                 },
                 async || {
                     steps.borrow_mut().push("quote");
-                    Ok(Zeroizing::new(json!({
-                        "model":"claude-mythos-5-2", "meterVersion":"posture1", "currency":"ai_credits",
-                        "baseCredits":512, "weights":{"input":3,"output":12},
-                        "limits":{"input":8192,"output":256},
-                        "maximumCredits": if quote_valid { 28160 } else { 28161 },
-                    }).to_string()))
+                    Ok(quote_fixture(quote_valid, customer_quote))
                 },
                 async |rental| {
                     steps.borrow_mut().push("verify");
                     assert_eq!(rental.canonical_id(), "bare_metal:7");
-                    let mut selected = listed.clone();
-                    if !lease_valid {
-                        selected["address"] = json!("8.8.8.5");
-                    }
-                    Ok((200, Zeroizing::new(json!({
-                        "server": selected,
-                        "report": { "status": "preflight-only", "checks": {
-                            "session": "verified", "rental": "active",
-                            "provisioning": "ready", "listeners": "not-observed",
-                        } },
-                    }).to_string())))
+                    Ok(selection_fixture(listed.clone(), lease_valid))
                 },
                 async |verified| {
                     steps.borrow_mut().push("ssh");
                     assert_eq!(verified.rental.canonical_id(), "bare_metal:7");
                     assert_eq!(verified.address.to_string(), "8.8.8.4");
-                    Ok(decode_posture(br#"{"listeners":"no_listener","nftables":"not_observed"}"#)
-                        .expect("fixed SSH fixture"))
+                    Ok(
+                        decode_posture(br#"{"listeners":"no_listener","nftables":"not_observed"}"#)
+                            .expect("fixed SSH fixture"),
+                    )
                 },
                 async |request| {
                     steps.borrow_mut().push("submit");
-                    let body: serde_json::Value =
-                        serde_json::from_slice(&request.body).expect("prepared report");
-                    assert_eq!(body["requestId"], request.idempotency_key);
-                    assert_eq!(body["server"], "bare_metal:7");
-                    assert_eq!(body["maximumCredits"], 28160);
-                    assert_eq!(body["posture"]["listeners"], "no_listener");
-                    Ok(serde_json::from_value(json!({
-                        "status":"completed", "model":"claude-mythos-5-2", "findings":[],
-                        "billing":{"meterVersion":"posture1","chargedCredits":527,
-                            "baseCredits":512,"inputTokens":1,"outputTokens":1},
-                    })).expect("broker fixture"))
+                    Ok(receipt_fixture(&request, customer_quote))
                 },
             )
             .await;
@@ -905,8 +974,8 @@ mod tests {
             .pop()
             .expect("fixture server");
         let quote = r#"{"model":"claude-mythos-5-2","meterVersion":"posture1","currency":"ai_credits","baseCredits":512,"weights":{"input":3,"output":12},"limits":{"input":8192,"output":256},"maximumCredits":28160}"#;
-        assert!(super::billing::valid_quote(quote));
-        for (key, bad) in [
+        assert!(billing::ApprovedReport::from_quote(quote, server.rental, |_| Ok(false)).is_ok());
+        let invalid_internal = [
             (
                 r#""maximumCredits":28160"#,
                 r#""maximumCredits":40000,"maximumCredits":28160"#,
@@ -918,9 +987,21 @@ mod tests {
             (r#""output":12"#, r#""output":99,"output":12"#),
             (r#""input":8192"#, r#""inp\u0075t":9999,"input":8192"#),
             (r#"{"input":3,"output":12}"#, "[3,12]"),
-        ] {
-            let invalid = quote.replace(key, bad);
-            assert_ne!(invalid, quote);
+        ]
+        .map(|(key, bad)| quote.replace(key, bad));
+        let external = quote_fixture(true, true);
+        let invalid_external = [
+            (
+                r#""consentVersion":"security-check-local-posture-v1""#,
+                r#""consent\u0056ersion":"unknown","consentVersion":"security-check-local-posture-v1""#,
+            ),
+            (
+                r#""maximumCredits":9472"#,
+                r#""maximum\u0043redits":9999,"maximumCredits":9472"#,
+            ),
+        ]
+        .map(|(key, bad)| external.replace(key, bad));
+        for invalid in invalid_internal.into_iter().chain(invalid_external) {
             let result = super::run_selected(
                 &server,
                 |prompt| {
@@ -1167,13 +1248,18 @@ mod tests {
                     "credential_sources":{"owner_only":0,"group_or_other_access":0,"unknown":0},
                 },
             });
-            for settled in [true, false] {
-                let model = if settled {
+            for receipt in [
+                Some(("claude-mythos-5-2", 527)),
+                Some(("claude-sonnet-5-5", 516)),
+                None,
+            ] {
+                let model = if let Some((model, charged)) = receipt {
                     Ok(serde_json::from_value(json!({
-                        "status":"completed", "model":"claude-mythos-5-2", "findings":["review_ssh_jail"],
-                        "billing":{"meterVersion":"posture1","chargedCredits":527,
+                        "status":"completed", "model":model, "findings":["review_ssh_jail"],
+                        "billing":{"meterVersion":"posture1","chargedCredits":charged,
                             "baseCredits":512,"inputTokens":1,"outputTokens":1},
-                    })).expect("receipt fixture"))
+                    }))
+                    .expect("receipt fixture"))
                 } else {
                     Err(super::billing::ReportFailure::from_response(
                         409,
@@ -1195,8 +1281,11 @@ mod tests {
                     text.contains("Local SSH finding · EnvironmentFile policy review"),
                     observed_reference
                 );
-                assert_eq!(text.contains("ERPC AI tokens charged: 527"), settled);
-                assert_eq!(text.contains("No AI tokens were charged"), !settled);
+                if let Some((model, charged)) = receipt {
+                    assert!(text.contains(&format!("ERPC AI tokens charged: {charged} ({model},")));
+                } else {
+                    assert!(text.contains("No AI tokens were charged"));
+                }
                 let Said::Json(record) = completed.render(&server, true) else {
                     panic!("JSON report expected");
                 };
@@ -1214,8 +1303,11 @@ mod tests {
                     record["posture"]["metadata"]["environment_files"],
                     permission_counts
                 );
-                assert_eq!(record.get("modelReport").is_some(), settled);
-                if !settled {
+                if let Some((model, charged)) = receipt {
+                    assert_eq!(record["modelReport"]["model"], model);
+                    assert_eq!(record["modelReport"]["billing"]["chargedCredits"], charged);
+                } else {
+                    assert!(record.get("modelReport").is_none());
                     assert_eq!(record["settlement"], "no_charge");
                 }
             }
