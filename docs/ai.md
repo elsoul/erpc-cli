@@ -163,10 +163,10 @@ among them), or a directory, file, environment or identity file this login
 may not read. As an ordinary user it cannot read other users' processes, so
 it is partial there. It reports no result when it could read none of its
 starting directories, nor found anything. When it fails or stalls, it
-reports what it had found so far as partial, or no result if that was
+reports what it had found so far as partial, or no result if it had read
 nothing: the child gets one second past its deadline to report, and the
-rest of the report does not wait on it. A child still running five seconds
-past its deadline is ended by an alarm, and one whose report cannot be
+rest of the report does not wait on it. A child still running four to five
+seconds past its deadline is ended by an alarm, and one whose report cannot be
 delivered exits at once; only a read the kernel will not interrupt (a hung
 network filesystem) can keep it longer.
 

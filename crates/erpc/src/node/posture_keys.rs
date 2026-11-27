@@ -394,10 +394,11 @@ fn decode(place: &str) -> Option<Vec<u8>> {
 }
 
 /// A place as the operator reads it: its characters, with `\` doubled,
-/// control, bidirectional and invisible formatting characters escaped as
-/// `\u{…}`, and each byte that is not UTF-8 as `\xHH`. So a file's name
-/// cannot rewrite the terminal or hide part of itself. Characters that
-/// merely look alike (a Cyrillic `а` for a Latin `a`) are shown as they are.
+/// control and bidirectional characters and the formatting characters
+/// listed below escaped as `\u{…}`, and each byte that is not UTF-8 as
+/// `\xHH`. So a file's name cannot drive the terminal. Other characters are
+/// shown as they are, including look-alike letters and invisible ones not
+/// listed here (tag characters, variation selectors).
 fn shown(place: &str) -> String {
     let hidden = |c: char| {
         matches!(
