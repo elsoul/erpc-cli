@@ -28,7 +28,7 @@ use crate::allowlist::{self, AllowlistError};
 use crate::credential::{Audience, Credential};
 use crate::device_flow::{CLIENT_ID, DeviceAuthorization, PollOutcome, SCOPE, endpoint};
 
-/// How long any single request may take.
+/// Default deadline for a single request.
 ///
 /// The poll loop has its own schedule, so a request that hangs must not be
 /// allowed to stall it past the device code's lifetime.
@@ -48,6 +48,12 @@ pub enum HttpError {
         host: &'static str,
         /// What went wrong.
         reason: String,
+    },
+    /// The request's explicit deadline elapsed.
+    #[error("request to {host} timed out")]
+    Timeout {
+        /// The host that was being contacted.
+        host: &'static str,
     },
     /// The server answered with something this client cannot read.
     #[error("{host} returned a reply this version cannot read: {reason}")]
@@ -74,6 +80,12 @@ pub enum HttpError {
 #[derive(Debug, Clone)]
 pub struct AuthClient {
     inner: reqwest::Client,
+}
+
+#[derive(Default)]
+struct JsonOptions<'a> {
+    idempotency_key: Option<&'a str>,
+    timeout: Option<Duration>,
 }
 
 impl AuthClient {
@@ -307,7 +319,39 @@ impl AuthClient {
             url,
             access_token,
             body,
-            idempotency_key,
+            JsonOptions {
+                idempotency_key,
+                ..JsonOptions::default()
+            },
+        )
+        .await
+    }
+
+    /// POSTs authenticated JSON with an idempotency key and a deadline for
+    /// the request and response body, overriding the client's default timeout.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::post_with_token`]. Expiry of the deadline returns [`HttpError::Timeout`].
+    pub async fn post_with_token_timeout(
+        &self,
+        audience: Audience,
+        url: &str,
+        access_token: &SecretString,
+        body: Vec<u8>,
+        idempotency_key: &str,
+        timeout: Duration,
+    ) -> Result<(u16, String), HttpError> {
+        self.send_with_token(
+            reqwest::Method::POST,
+            audience,
+            url,
+            access_token,
+            body,
+            JsonOptions {
+                idempotency_key: Some(idempotency_key),
+                timeout: Some(timeout),
+            },
         )
         .await
     }
@@ -333,7 +377,7 @@ impl AuthClient {
             url,
             access_token,
             body,
-            None,
+            JsonOptions::default(),
         )
         .await
     }
@@ -359,7 +403,7 @@ impl AuthClient {
             url,
             access_token,
             body,
-            None,
+            JsonOptions::default(),
         )
         .await
     }
@@ -371,29 +415,20 @@ impl AuthClient {
         url: &str,
         access_token: &SecretString,
         body: Vec<u8>,
-        idempotency_key: Option<&str>,
+        options: JsonOptions<'_>,
     ) -> Result<(u16, String), HttpError> {
         allowlist::ensure_token_destination(audience, url)?;
         let host = allowlist::destinations(audience)
             .first()
             .copied()
             .unwrap_or_else(|| audience.issuer_host());
-        let mut request = self
-            .inner
-            .request(method, url)
-            .bearer_auth(access_token.expose_secret())
-            .header("content-type", "application/json")
-            .body(body);
-        if let Some(key) = idempotency_key {
-            request = request.header("idempotency-key", key);
-        }
-        let response = request.send().await.map_err(|e| HttpError::Transport {
-            host,
-            reason: e.to_string(),
-        })?;
-        let status = response.status().as_u16();
-        let text = response.text().await.unwrap_or_default();
-        Ok((status, text))
+        let request = json_request(
+            self.inner.request(method, url),
+            access_token,
+            body,
+            options.idempotency_key,
+        );
+        send_json(request, host, options.timeout).await
     }
 
     /// POSTs `body` as raw bytes with the access token, allowing `timeout`
@@ -758,6 +793,58 @@ impl TokenBody {
         })
     }
 }
+
+fn json_request(
+    request: reqwest::RequestBuilder,
+    access_token: &SecretString,
+    body: Vec<u8>,
+    idempotency_key: Option<&str>,
+) -> reqwest::RequestBuilder {
+    let request = request
+        .bearer_auth(access_token.expose_secret())
+        .header("content-type", "application/json")
+        .body(body);
+    if let Some(key) = idempotency_key {
+        request.header("idempotency-key", key)
+    } else {
+        request
+    }
+}
+
+async fn send_json(
+    request: reqwest::RequestBuilder,
+    host: &'static str,
+    timeout: Option<Duration>,
+) -> Result<(u16, String), HttpError> {
+    let transport = |error: reqwest::Error| {
+        if timeout.is_some() && error.is_timeout() {
+            HttpError::Timeout { host }
+        } else {
+            HttpError::Transport {
+                host,
+                reason: error.to_string(),
+            }
+        }
+    };
+    let request = if let Some(timeout) = timeout {
+        request.timeout(timeout)
+    } else {
+        request
+    };
+    let response = request.send().await.map_err(transport)?;
+    let status = response.status().as_u16();
+    let text = response.text().await;
+    let text = if timeout.is_some() {
+        text.map_err(transport)?
+    } else {
+        text.unwrap_or_default()
+    };
+    Ok((status, text))
+}
+
+#[cfg(test)]
+#[path = "client_timeout_test.rs"]
+mod timeout_test;
 
 #[cfg(test)]
 mod tests {

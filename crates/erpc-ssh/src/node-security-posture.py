@@ -91,6 +91,7 @@ PROCESS = re.compile(rb'\("([^"\\]{1,40})",pid=([0-9]{1,10}),fd=[0-9]{1,10}\)')
 
 
 DENIED = object()
+NOT_LOADED = object()
 NFT_DENIED = (b"Operation not permitted (you must be root)",
               b"cache initialization failed: Operation not permitted",
               b"Could not receive more data: Operation not permitted")
@@ -102,12 +103,12 @@ CONTROL_READS = {
 }
 
 
-def capture(argv, limit=65536, seconds=3, denial_markers=()):
+def capture(argv, limit=65536, seconds=3, denial_markers=(), absent_line=None):
     """Run a fixed local read with bounded time and output."""
     try:
         process = subprocess.Popen(
             argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE if denial_markers else subprocess.DEVNULL,
+            stderr=subprocess.PIPE if denial_markers or absent_line else subprocess.DEVNULL,
             env={"LC_ALL": "C", "PATH": "/usr/sbin:/usr/bin", "SYSTEMD_PAGER": "cat"},
         )
     except OSError:
@@ -139,6 +140,8 @@ def capture(argv, limit=65536, seconds=3, denial_markers=()):
             return bytes(data), True
         if status == 0:
             return bytes(data), False
+        if absent_line and not data and diagnostics.strip() == absent_line:
+            return NOT_LOADED, False
         if any(marker in diagnostics or marker in data for marker in denial_markers):
             return DENIED, False
         return None, False
@@ -281,7 +284,7 @@ def ssh_settings(data):
     return report
 
 
-def effective_ssh_settings():
+def ssh_default_config():
     user = os.environ.get("USER", "")
     connection = os.environ.get("SSH_CONNECTION", "").split()
     if len(connection) != 4 or not re.fullmatch("[a-zA-Z0-9_.-]{1,32}", user):
@@ -295,7 +298,8 @@ def effective_ssh_settings():
         return ssh_settings(None)
     # Older OpenSSH needs -T to accept -C. The accompanying -G takes the
     # config-dump exit before host keys are loaded. We never fall back to -T
-    # alone. A numeric source avoids name lookups.
+    # alone. A numeric source avoids name lookups. This evaluates the default
+    # file for this connection; the running daemon can use other options.
     data, truncated = capture(["/usr/sbin/sshd", "-T", "-G", "-C",
                                f"user={user},addr={source},host={source},laddr={local},lport={port}"])
     if truncated or data is None or b"usedns no" not in data.splitlines():
@@ -390,33 +394,45 @@ def metadata_policy(pids):
     service = "org.freedesktop.systemd1"
     base = ["/usr/bin/busctl", "--system", "--auto-start=no", "--allow-interactive-authorization=no"]
     units_with_evidence = 0
+    incomplete = False
     for unit in units:
         obj, capped = capture(base + ["call", service, "/org/freedesktop/systemd1",
-                                      service + ".Manager", "GetUnit", "s", unit], limit=4096, seconds=1)
+                                      service + ".Manager", "GetUnit", "s", unit],
+                              limit=4096, seconds=1,
+                              absent_line=f"Call failed: Unit {unit} not loaded.".encode("ascii"))
         truncated |= capped
+        if obj is NOT_LOADED and not capped:
+            continue
         if obj is None or capped:
+            incomplete = True
             continue
         match = re.fullmatch(rb'o "(/org/freedesktop/systemd1/unit/[a-zA-Z0-9_]+)"\n', obj)
         if match is None:
+            incomplete = True
             continue
         data, capped = capture(base + ["get-property", service, match[1].decode("ascii"),
                                        service + ".Service", "EnvironmentFiles", "LoadCredential",
                                        "LoadCredentialEncrypted"], limit=16384, seconds=1)
         truncated |= capped
         if data is None or capped:
+            incomplete = True
             continue
         try:
             discovered = parse_properties(data)
         except (ValueError, UnicodeError):
+            incomplete = True
             continue
         units_with_evidence += 1
         for group in properties:
             properties[group].update(discovered[group])
-    report = {"coverage": "observed" if units_with_evidence else "unknown",
-              "units_with_evidence": units_with_evidence, "truncated": truncated}
+    coverage = "unknown"
+    if units_with_evidence:
+        coverage = "partial" if incomplete or truncated else "observed"
+    report = {"coverage": coverage, "units_with_evidence": units_with_evidence,
+              "truncated": truncated}
     as_is = properties["as_is_credentials"]
     encrypted = properties["encrypted_credentials"]
-    report["credential_declarations"] = {
+    report["distinct_credential_sources"] = {
         "as_is": min(len(as_is), PATH_LIMIT) if units_with_evidence else None,
         "encrypted": min(len(encrypted), PATH_LIMIT) if units_with_evidence else None,
     }
@@ -427,6 +443,7 @@ def metadata_policy(pids):
     ):
         if len(paths) > PATH_LIMIT:
             report["truncated"] = True
+            report["coverage"] = "partial"
         report[group] = file_modes(sorted(paths)[:PATH_LIMIT])
     return report
 
@@ -443,7 +460,8 @@ def report_linux():
             nftables = "tables_present" if tables.strip() else "no_tables_observed"
     return {
         "listeners": listeners(), "nftables": nftables, "ports": ports,
-        "ssh": effective_ssh_settings(), "firewall": firewall, "fail2ban": sshd_jail(),
+        "ssh": {"source": "default_config_for_connection", **ssh_default_config()},
+        "firewall": firewall, "fail2ban": sshd_jail(),
         "metadata": metadata_policy(pids),
     }
 

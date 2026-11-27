@@ -135,6 +135,9 @@ jobs:
       - name: Test the opt-in Security Check
         if: ${{ !cancelled() }}
         run: cargo nextest run --locked -p erpc -p erpc-api -p erpc-ssh --features erpc/security-check-pilot --no-fail-fast
+      - name: Verify Security Check orchestration
+        if: ${{ !cancelled() && matrix.os == 'ubuntu-latest' }}
+        run: scripts/tests/security-check-orchestration.test.sh
       - name: Test the Linux Security Check collector
         if: ${{ !cancelled() && matrix.os == 'ubuntu-latest' }}
         run: |

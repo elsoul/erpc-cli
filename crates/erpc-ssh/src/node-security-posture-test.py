@@ -62,12 +62,12 @@ class PostureTests(unittest.TestCase):
     def test_config_dump_and_fail2ban_project_only_closed_results(self):
         settings = b"usedns no\npasswordauthentication no\nkbdinteractiveauthentication yes\n"
         with patch.dict("os.environ", {"USER": "ubuntu", "SSH_CONNECTION": "192.0.2.4 54321 192.0.2.8 22"}):
-            capture = POSTURE["effective_ssh_settings"].__globals__
+            capture = POSTURE["ssh_default_config"].__globals__
             with patch.dict(capture, capture=lambda args, **_: (settings, False)):
-                result = POSTURE["effective_ssh_settings"]()
+                result = POSTURE["ssh_default_config"]()
             self.assertEqual(result, {"password": "disabled", "keyboard_interactive": "enabled"})
             with patch.dict(capture, capture=lambda args, **_: (settings, True)):
-                self.assertEqual(POSTURE["effective_ssh_settings"]()["password"], "unknown")
+                self.assertEqual(POSTURE["ssh_default_config"]()["password"], "unknown")
         capture = POSTURE["sshd_jail"].__globals__
         with patch.dict(capture, capture=lambda args, **_: (b"Status for the jail: sshd\n", False)):
             self.assertEqual(POSTURE["sshd_jail"](), "sshd_jail_observed")
@@ -157,9 +157,9 @@ class PostureTests(unittest.TestCase):
             if "GetUnit" in args and args[-1] == "ssh.service":
                 return (b'o "/org/freedesktop/systemd1/unit/ssh_2eservice"\n', False)
             if "get-property" in args:
-                return (b'a(sb) 0\na(ss) 2 "left" "/fixture/dual" "right" "/fixture/raw"\n'
+                return (b'a(sb) 0\na(ss) 3 "left" "/fixture/dual" "right" "/fixture/raw" "extra" "/fixture/raw"\n'
                         b'a(ss) 2 "third" "/fixture/dual" "fourth" "/fixture/encrypted"\n', False)
-            return None, False
+            return POSTURE["NOT_LOADED"], False
 
         def modes(paths):
             observed_calls.append(tuple(paths))
@@ -167,12 +167,52 @@ class PostureTests(unittest.TestCase):
 
         with patch.dict(metadata.__globals__, capture=capture, file_modes=modes):
             report = metadata(set())
-        self.assertEqual(report["credential_declarations"], {"as_is": 2, "encrypted": 2})
+        self.assertEqual(report["distinct_credential_sources"], {"as_is": 2, "encrypted": 2})
         self.assertEqual(observed_calls, [(), (), ("/fixture/dual", "/fixture/encrypted", "/fixture/raw")])
         self.assertNotIn("/fixture", json.dumps(report))
         with patch.dict(metadata.__globals__, capture=lambda *args, **kw: (None, False)):
             unavailable = metadata(set())
-        self.assertEqual(unavailable["credential_declarations"], {"as_is": None, "encrypted": None})
+        self.assertEqual(unavailable["distinct_credential_sources"], {"as_is": None, "encrypted": None})
+
+    def test_metadata_distinguishes_missing_units_from_failed_reads(self):
+        metadata = POSTURE["metadata_policy"]
+        names = ("ssh.service", "redis-server.service")
+        empty = b"a(sb) 0\na(ss) 0\na(ss) 0\n"
+        positive = b'a(sb) 1 "/fixture/.env" false\na(ss) 0\na(ss) 0\n'
+        unit_path = "/org/freedesktop/systemd1/unit/"
+        absent = b"Call failed: Unit redis-server.service not loaded."
+        missing = POSTURE["capture"](
+            [sys.executable, "-c", "import sys; print(sys.argv[1], file=sys.stderr); sys.exit(1)",
+             absent.decode("ascii")],
+            absent_line=absent,
+        )
+        self.assertEqual(missing, (POSTURE["NOT_LOADED"], False))
+
+        def modes(paths):
+            return {"owner_only": 0, "group_or_other_access": len(paths), "unknown": 0}
+
+        for second, expected in [
+            (missing, "observed"),
+            ((None, False), "partial"),
+            ((b"unreadable", False), "partial"),
+            ((b"truncated", True), "partial"),
+        ]:
+            for first in (empty, positive):
+                def capture(args, **options):
+                    if "GetUnit" in args:
+                        if args[-1] == names[1] and second[0] is POSTURE["NOT_LOADED"]:
+                            return second
+                        unit = "ssh" if args[-1] == names[0] else "redis"
+                        return f'o "{unit_path}{unit}"\n'.encode("ascii"), False
+                    return (first, False) if unit_path + "ssh" in args else second
+
+                with patch.dict(metadata.__globals__, capture=capture, file_modes=modes,
+                                unit_names=lambda _: (names, False)):
+                    report = metadata(set())
+                self.assertEqual(report["coverage"], expected, report)
+                self.assertEqual(report["units_with_evidence"], 1)
+                self.assertEqual(report["environment_files"]["group_or_other_access"], int(first == positive))
+                self.assertNotIn("/fixture", json.dumps(report))
 
 
 if __name__ == "__main__":

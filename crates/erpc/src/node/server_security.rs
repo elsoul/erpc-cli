@@ -19,6 +19,9 @@ use std::net::Ipv4Addr;
 use erpc_ai::session::Access as _;
 use erpc_auth::AuthClient;
 use erpc_auth::credential::Audience;
+use erpc_core::endpoints::{
+    SECURITY_CHECK_QUOTE_URL, SECURITY_CHECK_SELECT_URL, SECURITY_CHECK_SERVERS_URL,
+};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
@@ -116,8 +119,6 @@ fn inventory_failed() -> Outcome {
     Outcome::Failed(t!("node_check.inventory_failed"))
 }
 
-const SERVERS_URL: &str = "https://user-api.erpc.global/v3/ai/security-check/servers";
-const SELECT_URL: &str = "https://user-api.erpc.global/v3/ai/security-check/servers/select";
 // The account API stores IDs as safe JavaScript integers.
 const MAX_RENTAL_ID: u64 = (1 << 53) - 1;
 
@@ -288,26 +289,26 @@ impl Account {
     }
 
     async fn eligible(&self) -> Result<Vec<EligibleServer>, Outcome> {
-        let body = self.read_list(SERVERS_URL).await?;
+        let body = self.read_list(SECURITY_CHECK_SERVERS_URL).await?;
         parse_eligible(&body).ok_or_else(inventory_failed)
     }
 
-    async fn verify_rental(&self, server: &EligibleServer) -> Result<AuthorizedServer, Outcome> {
+    async fn select_rental(&self, server: Server) -> Result<(u16, Zeroizing<String>), Outcome> {
         let refused = || Outcome::Failed(t!("node_check.preflight_failed"));
         let token = self.access.access_token().await.map_err(|_| sign_in())?;
-        let request = selection_body(server.rental);
+        let request = selection_body(server);
         let (status, body) = self
             .client
             .post_with_token(
                 Audience::AuthApi,
-                SELECT_URL,
+                SECURITY_CHECK_SELECT_URL,
                 &token,
                 request.to_string().into_bytes(),
                 None,
             )
             .await
             .map_err(|_| refused())?;
-        verify_selection(status, &Zeroizing::new(body), server)
+        Ok((status, Zeroizing::new(body)))
     }
 }
 
@@ -435,8 +436,8 @@ impl Posture {
             "udp": udp,
             "redis_binding": redis_binding,
             "daemon_review": daemon_review,
-            "ssh_password": self.ssh.as_ref().map_or(Switch::Unknown, |ssh| ssh.password),
-            "ssh_keyboard_interactive": self.ssh.as_ref().map_or(Switch::Unknown, |ssh| ssh.keyboard_interactive),
+            "ssh_password": self.ssh.as_ref().map_or(Switch::Unknown, |ssh| ssh.password.billing_fact()),
+            "ssh_keyboard_interactive": self.ssh.as_ref().map_or(Switch::Unknown, |ssh| ssh.keyboard_interactive.billing_fact()),
             "firewall_ipv4": self.firewall.as_ref().map_or(FirewallEvidence::Unknown, |filter| filter.ipv4),
             "firewall_ipv6": self.firewall.as_ref().map_or(FirewallEvidence::Unknown, |filter| filter.ipv6),
             "fail2ban": self.fail2ban.unwrap_or(Jail::Unknown),
@@ -594,41 +595,29 @@ async fn menu(
         Ok(None) => return Outcome::Done(String::new()),
         Err(outcome) => return outcome,
     };
-    match cliclack::confirm(inspection_scope(&server))
-        .initial_value(false)
-        .interact()
-    {
-        Ok(true) => {}
-        Ok(false) => return Outcome::Done(String::new()),
-        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
-            return Outcome::Done(String::new());
-        }
-        Err(_) => return Outcome::Failed(t!("node_check.menu_failed")),
-    }
-    let approved = match billing::ApprovedReport::ask(&account).await {
-        Ok(Some(approved)) => approved,
+    let completed = run_selected(
+        &server,
+        ask_confirmation,
+        || async {
+            let unavailable = || Outcome::Failed(t!("node_check.quote_unavailable"));
+            tokio::time::timeout(
+                std::time::Duration::from_secs(45),
+                account.read_list(SECURITY_CHECK_QUOTE_URL),
+            )
+            .await
+            .map_err(|_| unavailable())?
+            .map_err(|_| unavailable())
+        },
+        async |rental| account.select_rental(rental).await,
+        async |verified| collect_selected(verified, explicit_key).await,
+        async |submission| submission.submit(&account).await,
+    )
+    .await;
+    let Completed { id, result, model } = match completed {
+        Ok(Some(completed)) => completed,
         Ok(None) => return Outcome::Done(String::new()),
         Err(outcome) => return outcome,
     };
-    // Resolve the assignment again after consent and before opening SSH.
-    let verified = match account.verify_rental(&server).await {
-        Ok(verified) => verified,
-        Err(outcome) => return outcome,
-    };
-    let observation = tokio::task::spawn_blocking(move || {
-        let key = explicit_key
-            .as_ref()
-            .map(|(key, user)| (key.as_str(), user.as_str()));
-        observe_remote(&verified, key)
-    })
-    .await;
-    let result = match observation {
-        Ok(Ok(result)) => result,
-        Ok(Err(outcome)) => return outcome,
-        Err(_) => return Outcome::Failed(t!("node_check.remote_failed")),
-    };
-    let id = approved.request_id.clone();
-    let model = approved.submit(&account, server.rental, &result).await;
     if json {
         let mut output = serde_json::json!({
             "server": server.summary(), "source": "pinned_ssh", "posture": result, "requestId": id,
@@ -655,6 +644,60 @@ async fn menu(
     ))
 }
 
+fn ask_confirmation(prompt: String) -> Result<bool, Outcome> {
+    match cliclack::confirm(prompt).initial_value(false).interact() {
+        Ok(answer) => Ok(answer),
+        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => Ok(false),
+        Err(_) => Err(Outcome::Failed(t!("node_check.menu_failed"))),
+    }
+}
+
+struct Completed {
+    id: String,
+    result: Posture,
+    model: Result<billing::Receipt, billing::ReportFailure>,
+}
+
+async fn run_selected(
+    server: &EligibleServer,
+    mut confirm: impl FnMut(String) -> Result<bool, Outcome>,
+    quote: impl AsyncFnOnce() -> Result<Zeroizing<String>, Outcome>,
+    select: impl AsyncFnOnce(Server) -> Result<(u16, Zeroizing<String>), Outcome>,
+    observe: impl AsyncFnOnce(AuthorizedServer) -> Result<Posture, Outcome>,
+    submit: impl AsyncFnOnce(
+        billing::ReportSubmission,
+    ) -> Result<billing::Receipt, billing::ReportFailure>,
+) -> Result<Option<Completed>, Outcome> {
+    if !confirm(inspection_scope(server))? {
+        return Ok(None);
+    }
+    let Some(approved) = billing::ApprovedReport::from_quote(&quote().await?, confirm)? else {
+        return Ok(None);
+    };
+    // Resolve the assignment again after consent and before opening SSH.
+    let (status, body) = select(server.rental).await?;
+    let verified = verify_selection(status, &body, server)?;
+    let result = observe(verified).await?;
+    let submission = approved.submission(server.rental, &result);
+    let id = submission.idempotency_key.clone();
+    let model = submit(submission).await;
+    Ok(Some(Completed { id, result, model }))
+}
+
+async fn collect_selected(
+    verified: AuthorizedServer,
+    explicit_key: Option<(String, String)>,
+) -> Result<Posture, Outcome> {
+    tokio::task::spawn_blocking(move || {
+        let key = explicit_key
+            .as_ref()
+            .map(|(key, user)| (key.as_str(), user.as_str()));
+        observe_remote(&verified, key)
+    })
+    .await
+    .map_err(|_| Outcome::Failed(t!("node_check.remote_failed")))?
+}
+
 #[cfg(test)]
 mod tests {
     use erpc_core::i18n::Lang;
@@ -664,6 +707,125 @@ mod tests {
         Kind, Posture, PostureFailure, decode_posture, inspection_scope, list_body, parse_eligible,
         select_server, selection_body, verify_selection,
     };
+
+    #[tokio::test]
+    async fn production_security_check_gates_ssh_and_metered_submission() {
+        use crate::account::commands::Outcome;
+        use std::cell::RefCell;
+        use zeroize::Zeroizing;
+
+        let listed = json!({
+            "id": "bare_metal:7", "kind": "bare_metal", "label": "fixture",
+            "address": "8.8.8.4", "region": "tokyo",
+        });
+        let mut eligible = parse_eligible(&json!({"servers": [listed.clone()]}).to_string())
+            .expect("eligible fixture");
+        let server = eligible.pop().expect("fixture server");
+        for (refusal, quote_valid, lease_valid, expected) in [
+            (Some("scope"), true, true, &["scope"][..]),
+            (None, false, true, &["scope", "quote"]),
+            (Some("price"), true, true, &["scope", "quote", "price"]),
+            (None, true, false, &["scope", "quote", "price", "verify"]),
+            (
+                None,
+                true,
+                true,
+                &["scope", "quote", "price", "verify", "ssh", "submit"],
+            ),
+        ] {
+            let steps = RefCell::new(Vec::new());
+            let result = super::run_selected(
+                &server,
+                |prompt| {
+                    let stage = if prompt.contains("authorized to assess") {
+                        "scope"
+                    } else {
+                        assert!(prompt.contains("28160"));
+                        "price"
+                    };
+                    steps.borrow_mut().push(stage);
+                    Ok(refusal != Some(stage))
+                },
+                async || {
+                    steps.borrow_mut().push("quote");
+                    Ok(Zeroizing::new(json!({
+                        "model":"claude-mythos-5-2", "meterVersion":"posture1", "currency":"ai_credits",
+                        "baseCredits":512, "weights":{"input":3,"output":12},
+                        "limits":{"input":8192,"output":256},
+                        "maximumCredits": if quote_valid { 28160 } else { 28161 },
+                    }).to_string()))
+                },
+                async |rental| {
+                    steps.borrow_mut().push("verify");
+                    assert_eq!(rental.canonical_id(), "bare_metal:7");
+                    let mut selected = listed.clone();
+                    if !lease_valid {
+                        selected["address"] = json!("8.8.8.5");
+                    }
+                    Ok((200, Zeroizing::new(json!({
+                        "server": selected,
+                        "report": { "status": "preflight-only", "checks": {
+                            "session": "verified", "rental": "active",
+                            "provisioning": "ready", "listeners": "not-observed",
+                        } },
+                    }).to_string())))
+                },
+                async |verified| {
+                    steps.borrow_mut().push("ssh");
+                    assert_eq!(verified.rental.canonical_id(), "bare_metal:7");
+                    assert_eq!(verified.address.to_string(), "8.8.8.4");
+                    Ok(decode_posture(br#"{"listeners":"no_listener","nftables":"not_observed"}"#)
+                        .expect("fixed SSH fixture"))
+                },
+                async |request| {
+                    steps.borrow_mut().push("submit");
+                    let body: serde_json::Value =
+                        serde_json::from_slice(&request.body).expect("prepared report");
+                    assert_eq!(body["requestId"], request.idempotency_key);
+                    assert_eq!(body["server"], "bare_metal:7");
+                    assert_eq!(body["maximumCredits"], 28160);
+                    assert_eq!(body["posture"]["listeners"], "no_listener");
+                    Ok(serde_json::from_value(json!({
+                        "status":"completed", "model":"claude-mythos-5-2", "findings":[],
+                        "billing":{"meterVersion":"posture1","chargedCredits":527,
+                            "baseCredits":512,"inputTokens":1,"outputTokens":1},
+                    })).expect("broker fixture"))
+                },
+            )
+            .await;
+            assert_eq!(*steps.borrow(), expected);
+            if !quote_valid || !lease_valid {
+                assert!(matches!(result, Err(Outcome::Failed(_))));
+            } else if refusal.is_some() {
+                assert!(matches!(result, Ok(None)));
+            } else {
+                assert!(matches!(
+                    result,
+                    Ok(Some(super::Completed { model: Ok(_), .. }))
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn security_check_endpoints_accept_only_the_account_access_audience() {
+        use erpc_auth::allowlist::ensure_token_destination;
+        use erpc_auth::credential::Audience;
+        use erpc_core::endpoints::{
+            SECURITY_CHECK_QUOTE_URL, SECURITY_CHECK_REPORT_URL, SECURITY_CHECK_SELECT_URL,
+            SECURITY_CHECK_SERVERS_URL,
+        };
+
+        for endpoint in [
+            SECURITY_CHECK_SERVERS_URL,
+            SECURITY_CHECK_SELECT_URL,
+            SECURITY_CHECK_QUOTE_URL,
+            SECURITY_CHECK_REPORT_URL,
+        ] {
+            assert!(ensure_token_destination(Audience::AuthApi, endpoint).is_ok());
+            assert!(ensure_token_destination(Audience::McpUserApi, endpoint).is_err());
+        }
+    }
 
     #[test]
     fn node_check_verifies_the_canonical_id_and_unchanged_public_assignment() {
@@ -779,6 +941,64 @@ mod tests {
     }
 
     #[test]
+    fn billing_preserves_positive_redis_and_valkey_observations() {
+        for (service, incomplete, wildcard, expected) in [
+            ("valkey", false, true, "non_loopback_observed"),
+            ("redis", true, true, "non_loopback_observed"),
+            ("valkey", true, true, "non_loopback_observed"),
+            ("redis", true, false, "unknown"),
+            ("valkey", false, false, "loopback_only"),
+            ("ssh", false, true, "none_observed"),
+        ] {
+            let entry = json!([{"port": 6379,"services": [service]}]);
+            let udp = if incomplete {
+                json!([{"port": 5353,"services": ["unknown"]}])
+            } else {
+                json!([])
+            };
+            let raw = json!({
+                "listeners": "no_listener",
+                "nftables": "not_observed",
+                "ports": {
+                    "tcp": { "coverage": "complete", "interface": [],
+                        "wildcard": if wildcard { entry.clone() } else { json!([]) },
+                        "loopback": if wildcard { json!([]) } else { entry } },
+                    "udp": { "coverage": "complete", "wildcard": [], "interface": [], "loopback": udp },
+                    "truncated": false,
+                },
+            });
+            let posture = decode_posture(raw.to_string().as_bytes()).expect("bounded posture");
+            assert_eq!(posture.billing_facts()["redis_binding"], expected, "{raw}");
+        }
+    }
+
+    #[test]
+    fn billing_keeps_partial_metadata_positives_and_marks_missing_evidence_unknown() {
+        for (coverage, broad, expected) in [
+            ("observed", 0, "none_observed"),
+            ("partial", 0, "unknown"),
+            ("partial", 1, "broad_mode_observed"),
+        ] {
+            let raw = json!({
+                "listeners": "no_listener", "nftables": "not_observed",
+                "metadata": {
+                    "coverage": coverage, "units_with_evidence": 1, "truncated": false,
+                    "environment_files": {"owner_only": 0, "group_or_other_access": broad, "unknown": 0},
+                    "service_env": {"owner_only": 0, "group_or_other_access": broad, "unknown": 0},
+                    "credential_sources": {"owner_only": 0, "group_or_other_access": broad, "unknown": 0},
+                },
+            });
+            let posture = decode_posture(raw.to_string().as_bytes()).expect("bounded metadata");
+            for key in ["service_env", "credential_sources"] {
+                assert_eq!(posture.billing_facts()[key], expected);
+            }
+            if coverage == "partial" {
+                assert!(posture.report().contains("Partial systemd metadata"));
+            }
+        }
+    }
+
+    #[test]
     fn remote_posture_preserves_legacy_fields_and_projects_only_fixed_billing_facts() {
         let raw = json!({
             "listeners": "no_listener",
@@ -788,7 +1008,7 @@ mod tests {
                 "udp":{"coverage":"partial","loopback":[{"port":5353,"services":["unknown"]}],"wildcard":[],"interface":[]},
                 "truncated":true
             },
-            "ssh":{"password":"disabled","keyboard_interactive":"unknown"},
+            "ssh":{"source":"default_config_for_connection","password":"disabled","keyboard_interactive":"unknown"},
             "firewall":{"ipv4":"input_default_drop","ipv6":"unknown","truncated":false},
             "fail2ban":"sshd_jail_observed",
             "metadata":{
@@ -796,7 +1016,7 @@ mod tests {
                 "environment_files":{"owner_only":2,"group_or_other_access":0,"unknown":0},
                 "service_env":{"owner_only":1,"group_or_other_access":0,"unknown":0},
                 "credential_sources":{"owner_only":0,"group_or_other_access":1,"unknown":0},
-                "credential_declarations":{"as_is":1,"encrypted":1}
+                "distinct_credential_sources":{"as_is":1,"encrypted":1}
             },
             "updates":{"status":"available","packages":2}
         });
@@ -825,8 +1045,8 @@ mod tests {
             json!({
                 "listeners":"no_listener", "nftables":"tables_present",
                 "tcp":"non_loopback_observed","udp":"unknown",
-            "redis_binding":"unknown","daemon_review":"unknown",
-                "ssh_password":"disabled","ssh_keyboard_interactive":"unknown",
+            "redis_binding":"non_loopback_observed","daemon_review":"unknown",
+                "ssh_password":"unknown","ssh_keyboard_interactive":"unknown",
                 "firewall_ipv4":"input_default_drop","firewall_ipv6":"unknown",
                 "fail2ban":"sshd_jail_observed","service_env":"owner_only_modes_observed",
                 "credential_sources":"broad_mode_observed","updates":"available"

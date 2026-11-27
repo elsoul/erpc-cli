@@ -160,26 +160,27 @@ impl Ports {
             .flat_map(|protocol| protocol.groups())
             .flatten()
             .flat_map(|port| &port.services);
-        if self.truncated
+        let incomplete = self.truncated
             || protocols
                 .iter()
                 .any(|protocol| protocol.coverage != Coverage::Complete)
-            || services.clone().any(|service| *service == Service::Unknown)
-        {
-            return ("unknown", "unknown");
-        }
-        let contains_redis = |ports: &[Port]| {
-            ports
-                .iter()
-                .any(|port| port.services.contains(&Service::Redis))
+            || services.clone().any(|service| *service == Service::Unknown);
+        let contains_redis_family = |ports: &[Port]| {
+            ports.iter().any(|port| {
+                port.services
+                    .iter()
+                    .any(|service| matches!(service, Service::Redis | Service::Valkey))
+            })
         };
         let redis = if protocols.iter().any(|protocol| {
-            contains_redis(&protocol.interface) || contains_redis(&protocol.wildcard)
+            contains_redis_family(&protocol.interface) || contains_redis_family(&protocol.wildcard)
         }) {
             "non_loopback_observed"
+        } else if incomplete {
+            "unknown"
         } else if protocols
             .iter()
-            .any(|protocol| contains_redis(&protocol.loopback))
+            .any(|protocol| contains_redis_family(&protocol.loopback))
         {
             "loopback_only"
         } else {
@@ -190,6 +191,8 @@ impl Ports {
             .any(|service| *service == Service::Unclassified)
         {
             "unclassified_observed"
+        } else if incomplete {
+            "unknown"
         } else {
             "none_in_observed"
         };
@@ -214,6 +217,15 @@ pub(super) enum Switch {
 }
 
 impl Switch {
+    pub(super) fn billing_fact(self) -> Self {
+        // The on-disk default evaluation can surface a concern, but it
+        // cannot establish that the running daemon disabled a method.
+        match self {
+            Self::Enabled => Self::Enabled,
+            Self::Disabled | Self::Unknown => Self::Unknown,
+        }
+    }
+
     fn label(self) -> String {
         match self {
             Self::Enabled => t!("node_check.setting_enabled"),
@@ -226,12 +238,20 @@ impl Switch {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Ssh {
+    source: SshSource,
     pub(super) password: Switch,
     pub(super) keyboard_interactive: Switch,
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum SshSource {
+    DefaultConfigForConnection,
+}
+
 impl Ssh {
     pub(super) fn describe(&self, text: &mut String) {
+        let _ = writeln!(text, "{}", t!("node_check.ssh_config_scope"));
         let _ = writeln!(
             text,
             "{} · {}",
@@ -310,6 +330,7 @@ impl Jail {
 #[serde(rename_all = "snake_case")]
 enum MetadataCoverage {
     Observed,
+    Partial,
     Unknown,
 }
 
@@ -351,12 +372,12 @@ impl ModeCounts {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct CredentialDeclarations {
+struct DistinctCredentialSources {
     as_is: Option<u16>,
     encrypted: Option<u16>,
 }
 
-impl CredentialDeclarations {
+impl DistinctCredentialSources {
     fn valid(&self, observed: bool) -> bool {
         match (self.as_is, self.encrypted) {
             (Some(as_is), Some(encrypted)) => observed && as_is <= 64 && encrypted <= 64,
@@ -394,18 +415,22 @@ pub(super) struct Metadata {
     environment_files: Option<ModeCounts>,
     service_env: ModeCounts,
     credential_sources: ModeCounts,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    credential_declarations: Option<CredentialDeclarations>,
+    #[serde(
+        default,
+        alias = "credential_declarations",
+        skip_serializing_if = "Option::is_none"
+    )]
+    distinct_credential_sources: Option<DistinctCredentialSources>,
 }
 
 impl Metadata {
     pub(super) fn valid(&self) -> bool {
         self.units_with_evidence <= 16
             && self
-                .credential_declarations
+                .distinct_credential_sources
                 .as_ref()
                 .is_none_or(|declarations| {
-                    declarations.valid(self.coverage == MetadataCoverage::Observed)
+                    declarations.valid(self.coverage != MetadataCoverage::Unknown)
                 })
             && self.environment_files.as_ref().is_none_or(|files| {
                 files.total() <= 64 && (self.truncated || self.service_env.total() <= files.total())
@@ -413,7 +438,9 @@ impl Metadata {
             && self.service_env.total() <= 64
             && self.credential_sources.total() <= 64
             && match self.coverage {
-                MetadataCoverage::Observed => self.units_with_evidence > 0,
+                MetadataCoverage::Observed | MetadataCoverage::Partial => {
+                    self.units_with_evidence > 0
+                }
                 MetadataCoverage::Unknown => {
                     self.units_with_evidence == 0
                         && self.service_env.total() == 0
@@ -446,6 +473,9 @@ impl Metadata {
                 t!("node_check.unknown")
             );
         } else {
+            if self.coverage == MetadataCoverage::Partial {
+                let _ = writeln!(text, "{}", t!("node_check.metadata_partial"));
+            }
             let environment_files = self.environment_files.as_ref().unwrap_or(&self.service_env);
             if let Some(environment_files) = &self.environment_files {
                 environment_files.describe(text, &t!("node_check.environment_files"));
@@ -458,7 +488,7 @@ impl Metadata {
             self.credential_sources
                 .describe(text, &t!("node_check.credential_sources"));
         }
-        if let Some(declarations) = &self.credential_declarations {
+        if let Some(declarations) = &self.distinct_credential_sources {
             declarations.describe(text);
         }
         if self.truncated {

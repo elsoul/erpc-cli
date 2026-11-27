@@ -7,6 +7,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use erpc_ai::session::Access as _;
 use erpc_auth::credential::Audience;
+use erpc_core::endpoints::SECURITY_CHECK_REPORT_URL;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
@@ -14,9 +15,6 @@ use zeroize::Zeroizing;
 use super::{Account, Posture, Server};
 use crate::account::commands::Outcome;
 
-pub(super) const QUOTE_URL: &str =
-    "https://user-api.erpc.global/v3/ai/security-check/posture-report/quote";
-const REPORT_URL: &str = "https://user-api.erpc.global/v3/ai/security-check/posture-report";
 const MODEL: &str = "claude-mythos-5-2";
 const METER: &str = "posture1";
 const BASE: u32 = 512;
@@ -24,6 +22,7 @@ const WEIGHT_IN: u32 = 3;
 const WEIGHT_OUT: u32 = 12;
 const MAX_IN: u32 = 8192;
 const MAX_OUT: u32 = 256;
+const REPORT_TIMEOUT: Duration = Duration::from_secs(120);
 const MAXIMUM: u32 = BASE + MAX_IN * WEIGHT_IN + MAX_OUT * WEIGHT_OUT;
 
 fn expected_quote() -> Value {
@@ -89,7 +88,7 @@ fn report_request(id: &str, rental: Server, posture: &Posture) -> Value {
 }
 
 pub(super) struct ApprovedReport {
-    pub(super) request_id: String,
+    request_id: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -147,7 +146,7 @@ impl ReportFailure {
         }
     }
 
-    pub(super) const fn timeout() -> Self {
+    const fn timeout() -> Self {
         Self::local(SettlementState::Unconfirmed, FailureCode::RequestTimeout)
     }
 
@@ -213,23 +212,16 @@ impl ReportFailure {
 
 impl ApprovedReport {
     /// Missing route, entitlement, unavailable ledger or a price revision all stop before spending.
-    pub(super) async fn ask(account: &Account) -> Result<Option<Self>, Outcome> {
+    pub(super) fn from_quote(
+        body: &str,
+        confirm: impl FnOnce(String) -> Result<bool, Outcome>,
+    ) -> Result<Option<Self>, Outcome> {
         let unavailable = || Outcome::Failed(t!("node_check.quote_unavailable"));
-        let body = tokio::time::timeout(Duration::from_secs(45), account.read_list(QUOTE_URL))
-            .await
-            .map_err(|_| unavailable())?
-            .map_err(|_| unavailable())?;
-        if !valid_quote(&body) {
+        if !valid_quote(body) {
             return Err(unavailable());
         }
-        match cliclack::confirm(quote_prompt())
-            .initial_value(false)
-            .interact()
-        {
-            Ok(true) => {}
-            Ok(false) => return Ok(None),
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => return Ok(None),
-            Err(_) => return Err(Outcome::Failed(t!("node_check.menu_failed"))),
+        if !confirm(quote_prompt())? {
+            return Ok(None);
         }
         let mut bytes = [0u8; 16];
         getrandom::fill(&mut bytes).map_err(|_| unavailable())?;
@@ -237,32 +229,46 @@ impl ApprovedReport {
         Ok(Some(Self { request_id }))
     }
 
-    pub(super) async fn submit(
-        self,
-        account: &Account,
-        rental: Server,
-        posture: &Posture,
-    ) -> Result<Receipt, ReportFailure> {
+    pub(super) fn submission(self, rental: Server, posture: &Posture) -> ReportSubmission {
+        let body = report_request(&self.request_id, rental, posture)
+            .to_string()
+            .into_bytes();
+        ReportSubmission {
+            idempotency_key: self.request_id,
+            body,
+        }
+    }
+}
+
+pub(super) struct ReportSubmission {
+    pub(super) idempotency_key: String,
+    pub(super) body: Vec<u8>,
+}
+
+impl ReportSubmission {
+    pub(super) async fn submit(self, account: &Account) -> Result<Receipt, ReportFailure> {
         let token = account.access.access_token().await.map_err(|_| {
             ReportFailure::local(SettlementState::NoCharge, FailureCode::AccessUnavailable)
         })?;
-        // One submission for this approval. The body and idempotency
-        // header share its ID even if the underlying transport retries.
-        let id = self.request_id.as_str();
-        let request = report_request(id, rental, posture);
-        eprintln!("{}", request_notice(id));
-        let call = account.client.post_with_token(
-            Audience::AuthApi,
-            REPORT_URL,
-            &token,
-            request.to_string().into_bytes(),
-            Some(id),
-        );
-        let (status, body) = tokio::time::timeout(Duration::from_secs(120), call)
+        // The body and idempotency header share the ID for this approval.
+        eprintln!("{}", request_notice(&self.idempotency_key));
+        let (status, body) = account
+            .client
+            .post_with_token_timeout(
+                Audience::AuthApi,
+                SECURITY_CHECK_REPORT_URL,
+                &token,
+                self.body,
+                &self.idempotency_key,
+                REPORT_TIMEOUT,
+            )
             .await
-            .map_err(|_| ReportFailure::timeout())?
-            .map_err(|_| {
-                ReportFailure::local(SettlementState::Unconfirmed, FailureCode::RequestTransport)
+            .map_err(|error| match error {
+                erpc_auth::HttpError::Timeout { .. } => ReportFailure::timeout(),
+                _ => ReportFailure::local(
+                    SettlementState::Unconfirmed,
+                    FailureCode::RequestTransport,
+                ),
             })?;
         let body = Zeroizing::new(body);
         if status != 200 {

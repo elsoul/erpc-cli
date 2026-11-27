@@ -94,13 +94,17 @@ network namespace and available system configuration.
 - TCP listeners and bound UDP ports grouped by bind scope, with service
   classifications when available. External reachability is outside the
   scope of this check.
-- Effective SSH password and keyboard-interactive settings, nftables input
-  filter evidence, and fail2ban's sshd jail status. The collector may retry
-  denied nftables ruleset or fail2ban status reads with non-interactive
-  sudo.
+- SSH password and keyboard-interactive settings from OpenSSH's default
+  on-disk configuration, evaluated for the SSH connection. The running
+  daemon may use different options or configuration. A configured
+  `no` is reported as unknown for billing. The check also reads nftables
+  input filter evidence and fail2ban's sshd jail status, and may retry
+  denied reads of those two sources with non-interactive sudo.
 - File mode counts for systemd environment and credential source references.
-  The collector distinguishes `LoadCredential` and
-  `LoadCredentialEncrypted` declarations using metadata alone.
+  The collector counts distinct source values separately for
+  `LoadCredential` and `LoadCredentialEncrypted`, deduplicating repeated
+  values within each kind. Partial systemd reads preserve observed findings
+  and leave missing evidence unknown.
 - Security update counts from the local Debian or Ubuntu package cache.
 
 The pricing prompt shows the model, maximum reservation of 28,160 ERPC AI
