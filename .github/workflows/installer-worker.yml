@@ -88,8 +88,9 @@ jobs:
         with:
           node-version: "24"
       - run: npm ci
-      # Bundles exactly as a deploy would and stops before uploading.
-      - run: npx wrangler deploy --dry-run --outdir dist
+      # Bundles exactly as a deploy would and stops before uploading. The
+      # explicit --config and --env-file are explained at the deploy step.
+      - run: npx wrangler deploy --dry-run --config wrangler.toml --env-file /dev/null --outdir dist
         env:
           WRANGLER_SEND_METRICS: "false"
       # The source map too: wrangler uploads it beside the Worker, as a
@@ -132,7 +133,20 @@ jobs:
         run: node scripts/select-release.mjs
         env:
           GH_TOKEN: ${{ github.token }}
-      - run: npx wrangler deploy --no-bundle dist/index.js --var "LATEST_RELEASE:$LATEST_RELEASE" --var "LATEST_RELEASE_SOURCE:$LATEST_RELEASE_SOURCE"
+      # --config: without it wrangler looks for wrangler.json in the script's
+      # directory (installer/dist here; installer/ for the bundle) and every
+      # directory above it up to /, then for wrangler.jsonc the same way,
+      # then wrangler.toml, and follows a .wrangler/deploy/config.json
+      # redirect found on the way up. So a JSON config anywhere above, even
+      # outside the checkout, would beat installer/wrangler.toml.
+      # --env-file: without it wrangler loads installer/.env and .env.local
+      # into its environment, so a file there could set
+      # CLOUDFLARE_API_BASE_URL and send the token elsewhere.
+      # scripts/tests/installer-deploy.test.sh also refuses such files, and
+      # anything under installer/dist, if they are tracked in this
+      # repository; a config outside the checkout is covered only by
+      # --config.
+      - run: npx wrangler deploy --no-bundle dist/index.js --config wrangler.toml --env-file /dev/null --var "LATEST_RELEASE:$LATEST_RELEASE" --var "LATEST_RELEASE_SOURCE:$LATEST_RELEASE_SOURCE"
         env:
           LATEST_RELEASE: ${{ steps.release.outputs.tag }}
           LATEST_RELEASE_SOURCE: ${{ steps.release.outputs.source }}
