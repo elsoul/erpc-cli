@@ -549,10 +549,20 @@ def collect():
             pending = start_keys()
         except Exception:
             pass
-    report = report_linux()
-    updates = globals().get("security_update_summary")
-    if updates is not None:
-        report["updates"] = updates()
+    try:
+        report = report_linux()
+        updates = globals().get("security_update_summary")
+        if updates is not None:
+            report["updates"] = updates()
+    except BaseException:
+        # No report will be printed: end the search rather than leave it.
+        stop_keys = globals().get("stop_key_search")
+        if pending is not None and stop_keys is not None:
+            try:
+                stop_keys(pending)
+            except Exception:
+                pass
+        raise
     if start_keys is not None:
         try:
             report["keys"] = globals()["finish_key_search"](pending)

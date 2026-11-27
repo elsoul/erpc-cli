@@ -394,14 +394,23 @@ fn decode(place: &str) -> Option<Vec<u8>> {
 }
 
 /// A place as the operator reads it: its characters, with `\` doubled,
-/// control and bidirectional formatting characters escaped as `\u{…}`, and
-/// each byte that is not UTF-8 as `\xHH`. So a file's name cannot rewrite
-/// the terminal, and two different paths never look the same.
+/// control, bidirectional and invisible formatting characters escaped as
+/// `\u{…}`, and each byte that is not UTF-8 as `\xHH`. So a file's name
+/// cannot rewrite the terminal or hide part of itself. Characters that
+/// merely look alike (a Cyrillic `а` for a Latin `a`) are shown as they are.
 fn shown(place: &str) -> String {
-    let bidi = |c: char| {
+    let hidden = |c: char| {
         matches!(
             c,
-            '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+            '\u{00ad}'
+                | '\u{034f}'
+                | '\u{061c}'
+                | '\u{180e}'
+                | '\u{200b}'..='\u{200f}'
+                | '\u{2028}'..='\u{202e}'
+                | '\u{2060}'..='\u{206f}'
+                | '\u{feff}'
+                | '\u{fff9}'..='\u{fffb}'
         )
     };
     let mut text = String::new();
@@ -409,7 +418,7 @@ fn shown(place: &str) -> String {
         for c in chunk.valid().chars() {
             if c == '\\' {
                 text.push_str("\\\\");
-            } else if c.is_control() || bidi(c) {
+            } else if c.is_control() || hidden(c) {
                 let _ = write!(text, "{}", c.escape_unicode());
             } else {
                 text.push(c);
@@ -604,5 +613,11 @@ pub(super) mod tests {
         assert_eq!(shown("/k%FF"), "/k\\xff");
         assert_eq!(shown("/k%5Cxff"), "/k\\\\xff");
         assert_eq!(shown("/home/sol/%E9%8D%B5.json"), "/home/sol/\u{9375}.json");
+        // Invisible characters are shown; look-alike letters are left as they are.
+        assert_eq!(
+            shown("/k%E2%80%8Bey%EF%BB%BF%C2%AD%E2%81%A0"),
+            "/k\\u{200b}ey\\u{feff}\\u{ad}\\u{2060}"
+        );
+        assert_eq!(shown("/%D0%B0.json"), "/\u{430}.json");
     }
 }

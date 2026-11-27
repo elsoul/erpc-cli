@@ -162,13 +162,18 @@ symbolic link, a validator whose identity file it cannot tell (Firedancer
 among them), or a directory, file, environment or identity file this login
 may not read. As an ordinary user it cannot read other users' processes, so
 it is partial there. It reports no result when it could read none of its
-starting directories, or when it fails or stalls: the child gets one second
-past its deadline to report what it found, and the rest of the report does
-not wait on it.
+starting directories, nor found anything. When it fails or stalls, it
+reports what it had found so far as partial, or no result if that was
+nothing: the child gets one second past its deadline to report, and the
+rest of the report does not wait on it. A child still running five seconds
+past its deadline is ended by an alarm, and one whose report cannot be
+delivered exits at once; only a read the kernel will not interrupt (a hung
+network filesystem) can keep it longer.
 
 A Solana keypair counts as the validator identity when its 64 bytes are
 those of the identity file a running `agave-validator` or
-`solana-validator` was given (`--identity`). That file is read where the
+`solana-validator` was given (`--identity`), found from the command lines
+and working directories of running processes. That file is read where the
 validator reads it, through symbolic links and on any filesystem, only if
 it is a regular file of 1 byte to 64 KiB, not on a kernel filesystem such
 as `/proc` or `/sys`, and owned by the validator's user unless the

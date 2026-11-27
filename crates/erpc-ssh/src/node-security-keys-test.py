@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import runpy
 import shutil
+import signal
 import stat
 import tempfile
 import time
@@ -753,6 +754,67 @@ class IsolationTests(unittest.TestCase):
             self.assertEqual(sink.read(), b"")
         self.assertEqual(result, {"coverage": "unreadable", "groups": []})
 
+    @staticmethod
+    def stalled_child(seconds, **replace):
+        class Stalled(KEYS["KeySearch"]):
+            def run(self):
+                time.sleep(120)
+
+        globals_ = KEYS["start_key_search"].__globals__
+        with patch.dict(globals_, dict(replace, KeySearch=Stalled)):
+            return KEYS["start_key_search"]("/nonexistent", seconds)
+
+    REAPED = "reaped by the code under test"
+
+    def ended_within(self, pid, seconds):
+        """The child's wait status once it has ended, REAPED if the code under
+        test already collected it, or None if it is still running after
+        `seconds`. The child is killed in any case."""
+        until = time.monotonic() + seconds
+        try:
+            while time.monotonic() < until:
+                try:
+                    done, status = os.waitpid(pid, os.WNOHANG)
+                except ChildProcessError:
+                    return IsolationTests.REAPED
+                if done:
+                    return status
+                time.sleep(0.05)
+            return None
+        finally:
+            try:
+                os.kill(pid, signal.SIGKILL)
+                os.waitpid(pid, 0)
+            except OSError:
+                pass
+
+    def test_a_child_whose_report_cannot_be_delivered_exits(self):
+        # The parent went away (killed, out of memory) while the search was
+        # stuck: the watchdog's write fails, and the child must still end.
+        pid, read_end, _ = self.stalled_child(1)
+        os.close(read_end)
+        status = self.ended_within(pid, 10)
+        self.assertIsNotNone(status, "the child outlived its unread report")
+        self.assertTrue(os.WIFEXITED(status))
+
+    def test_the_alarm_ends_a_child_whose_watchdog_never_runs(self):
+        class NoThreads:
+            Lock = __import__("threading").Lock
+
+            class Thread:
+                def __init__(self, **_):
+                    pass
+
+                def start(self):
+                    pass
+
+        pid, read_end, _ = self.stalled_child(1, threading=NoThreads)
+        self.addCleanup(os.close, read_end)
+        status = self.ended_within(pid, 15)
+        self.assertIsNotNone(status, "the alarm did not end the child")
+        self.assertTrue(os.WIFSIGNALED(status))
+        self.assertEqual(os.WTERMSIG(status), signal.SIGALRM)
+
     def test_a_child_that_dies_or_says_nothing_leaves_the_keys_unreadable(self):
         class Dying(KEYS["KeySearch"]):
             def run(self):
@@ -814,6 +876,30 @@ class EntryPointTests(unittest.TestCase):
             report = self.collect(start_key_search=lambda: KEYS["start_key_search"]("/nonexistent"),
                                   finish_key_search=KEYS["finish_key_search"])
         self.assertEqual(report["keys"], {"coverage": "partial", "groups": []})
+
+    def test_a_failing_posture_read_ends_the_key_search(self):
+        started = []
+
+        def start():
+            started.append(IsolationTests.stalled_child(20))
+            return started[0]
+
+        def fail():
+            raise RuntimeError("fixture: a posture read failed")
+
+        collect = runpy.run_path(str(HERE / "node-security-posture.py"))["collect"]
+        replace = {"report_linux": fail, "security_update_summary": lambda: self.UPDATES,
+                   "start_key_search": start, "finish_key_search": KEYS["finish_key_search"],
+                   "stop_key_search": KEYS["stop_key_search"]}
+        with patch.dict(collect.__globals__, replace):
+            with self.assertRaises(RuntimeError):
+                collect()
+        pid, _, _ = started[0]
+        status = IsolationTests.ended_within(self, pid, 5)
+        self.assertIsNotNone(status, "the search outlived the collector's failure")
+        if status != IsolationTests.REAPED:
+            self.assertTrue(os.WIFSIGNALED(status))
+            self.assertEqual(os.WTERMSIG(status), signal.SIGKILL)
 
     def test_without_the_key_search_there_is_no_key_section(self):
         self.assertNotIn("keys", self.collect())

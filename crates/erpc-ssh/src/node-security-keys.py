@@ -637,6 +637,8 @@ class KeySearch:
 
 
 UNREADABLE_KEYS = {"coverage": "unreadable", "groups": []}
+# Seconds past the deadline at which SIGALRM ends a child still running.
+CHILD_GRACE = 5
 
 
 def search_child(write_end, search):
@@ -646,10 +648,14 @@ def search_child(write_end, search):
 
     def send(failed):
         sent.acquire()
-        data = json.dumps(search.result(failed), separators=(",", ":")).encode("ascii") + b"\n"
-        while data:
-            data = data[os.write(write_end, data):]
-        os._exit(0)
+        try:
+            data = json.dumps(search.result(failed), separators=(",", ":")).encode("ascii") + b"\n"
+            while data:
+                data = data[os.write(write_end, data):]
+        finally:
+            # Whether or not anyone is left to read it: a parent that went
+            # away must not leave this process, and what it read, behind.
+            os._exit(0)
 
     def watch():
         time.sleep(max(0, search.deadline - time.monotonic()) + 1)
@@ -675,11 +681,30 @@ def start_key_search(root="/", seconds=KEY_SECONDS):
             null = os.open(os.devnull, os.O_RDWR)
             for target in (0, 1, 2):
                 os.dup2(null, target)
+            # The last resort: SIGALRM's default action ends the child a few
+            # seconds after the watchdog should have, however it got stuck
+            # (short of a read the kernel will not interrupt).
+            signal.alarm(int(max(0, deadline - time.monotonic())) + CHILD_GRACE)
             search_child(write_end, KeySearch(root, deadline))
         finally:
             os._exit(0)
     os.close(write_end)
     return pid, read_end, deadline
+
+
+def stop_key_search(pending):
+    """Ends the child without waiting for its result, when the report it was
+    to join will not be printed."""
+    pid, read_end, _ = pending
+    try:
+        os.close(read_end)
+    except OSError:
+        pass
+    try:
+        os.kill(pid, signal.SIGKILL)
+        os.waitpid(pid, os.WNOHANG)
+    except OSError:
+        pass
 
 
 def finish_key_search(pending):
