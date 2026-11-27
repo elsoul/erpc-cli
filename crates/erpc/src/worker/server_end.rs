@@ -263,11 +263,7 @@ pub(crate) struct Local<'a> {
 /// The server, said for the question: its size and region, as far as the
 /// record has them.
 fn server_said(server: &account::Server) -> String {
-    let size = match (server.cores, server.memory_gb) {
-        (Some(cores), Some(memory)) => Some(t!("worker_account.status.size", cores, memory)),
-        (Some(cores), None) => Some(t!("worker_account.status.cores", cores)),
-        _ => None,
-    };
+    let size = crate::worker::vps::Spec::sized(server.cores, server.memory_gb).said();
     let region = server.region.as_deref().map(crate::storage::clean);
     match (size, region) {
         (Some(size), Some(region)) => t!("worker_server_end.said_sized_in", size, region),
@@ -1055,7 +1051,7 @@ mod tests {
         assert_eq!(
             asked.take().as_deref(),
             Some(
-                "End the server of environment prod of bot (2 vCPU, 8 GB, in amsterdam)? Its billing by the hour stops, and what is on it is lost. This cannot be undone."
+                "End the ERPC Worker of environment prod of bot (2 vCPU, 8 GB memory, in amsterdam)? Its billing by the hour stops, and what is on it is lost. This cannot be undone."
             )
         );
         assert_eq!(
@@ -1210,7 +1206,7 @@ mod tests {
         assert!(
             asked
                 .take()
-                .is_some_and(|q| q.starts_with("By this machine's list of apps, the server may also run bot (staging), which ending it ends too. End the server")),
+                .is_some_and(|q| q.starts_with("By this machine's list of apps, the server may also run bot (staging), which ending it ends too. End the ERPC Worker")),
         );
         assert_eq!(ends(&fake), 1);
     }

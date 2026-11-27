@@ -253,7 +253,7 @@ erpc worker deploy --new-server --grpc # a new hourly server and gRPC line, pric
   1.98.1 or newer (`rustup update`); `deploy` names an older one before it buys anything
   (`check` does not run Rust, so it cannot).
 
-- The server: `[env.<name>]` in erpc.toml, else `--server <ID>` (a VPS of the account, by its id),
+- The server: `[env.<name>]` in erpc.toml, else `--server <ID>` (an ERPC Worker of the account, by its id),
   `--new-server` (cheapest, nearest region; `--region`, `--plan`), or `--host <ADDRESS>` (a server
   of their own, with `--user`, `--port`, `--fingerprint`).
 - Lines: `--grpc` sets `GRPC_ENDPOINT`, `--shreds` sets `SHREDS_ENDPOINT`, `--unlimited` sets

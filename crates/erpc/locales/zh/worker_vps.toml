@@ -34,10 +34,10 @@ ended = "user-api 表示，以此次开通的密钥购买的内容已被终止�
 ended_stays = "user-api 表示，以此次开通的密钥购买的内容已被终止，今后不再接受该密钥：从开通到终止期间可能已按小时计费，至少一个小时，可在控制面板中查看。erpc 无法将此请求从记录中移除（{error}）：下次运行同一命令时会再发送一次其密钥"
 
 [vps]
-none = "该账户没有 VPS {id}，--server 只接受 VPS ID（裸金属服务器用 --host 指定）"
-no_address = "服务器 {id} 还没有地址"
-not_key_only = "未能将服务器 {id} 设置为仅允许密钥登录"
-bad_id = "{id} 不是服务器 ID"
+none = "该账户没有 ERPC Worker {id}，--server 只接受 ERPC Worker 的 ID（裸金属服务器用 --host 指定）"
+no_address = "ERPC Worker {id} 还没有地址"
+not_key_only = "未能将 ERPC Worker {id} 设置为仅允许密钥登录"
+bad_id = "{id} 不是 ERPC Worker 的 ID"
 
 [plan]
 not_offered = "{id} 不是当前可按小时计费的 {family} 套餐"
@@ -47,32 +47,32 @@ cheapest = "最便宜的"
 
 [buy]
 bad_region = "`{region}` 不是服务器区域；可用的有 {regions}"
-buying = "新的按小时计费服务器：{name}（{product}；{how}，每小时 €{price}），区域 {region}（{why}）"
+buying = "新的按小时计费 {name}：产品 {product}，{how}，每小时 €{price}，区域 {region}（{why}）"
 region_asked = "你指定的"
 region_nearest = "根据本机时区选择的最近区域"
 not_started = "user-api 未开通服务器（HTTP {status}）：{reason}"
 other_region_hint = "其他 --region 可能有库存；`erpc worker deploy --region <name>{scope}`"
-started = "服务器 {id} 已开通"
+started = "ERPC Worker {id} 已开通"
 
 [ready]
-waiting = "正在等待服务器 {id} 就绪（最多五分钟）"
-failed = "服务器 {id} 未能就绪：{reason}"
+waiting = "正在等待 ERPC Worker {id} 就绪（最多五分钟）"
+failed = "ERPC Worker {id} 未能就绪：{reason}"
 
 [end]
-not_hourly = "此环境的服务器不是按小时计费的 ERPC 服务器；未终止任何内容"
+not_hourly = "此环境的服务器不是按小时计费的 ERPC Worker；未终止任何内容"
 ending = "正在终止按小时计费的 {kind} {id}"
 failed = "user-api 未能终止 {kind} {id}：{answer}"
 no_hourly_list = "user-api 的积分快照中没有列出按小时计费的产品；未做任何更改"
 
 [gone]
-looking = "VPS {id} 既不在该账户的服务器中，也不在计费项目中：可能是刚刚购买的，将再查看一分多钟"
-no_list = "user-api 的 VPS 状态中没有列表，因此无法确定 VPS {id} 是否仍在该账户中"
+looking = "ERPC Worker {id} 既不在该账户的服务器中，也不在计费项目中：可能是刚刚购买的，将再查看一分多钟"
+no_list = "user-api 关于该账户 ERPC Worker 的应答中没有列表，因此无法确定 ERPC Worker {id} 是否仍在该账户中"
 
 [line]
 no_status = "erpc 不知道如何获取 {kind} 线路的状态"
 no_list = "user-api 返回的 {kind} 线路状态中没有列表；未做任何更改"
 no_region = "Unlimited RPC 需在服务器所在的 ERPC 区域中开通，而此服务器没有记录区域"
-no_region_hint = "请部署到 ERPC 服务器（`--server <id>` 或 `--new-server`）"
+no_region_hint = "请部署到 ERPC Worker（`--server <id>` 或 `--new-server`）"
 buying = "新的按小时计费 {kind} 线路：{name}（{product}；{how}，每小时 €{price}），用于 {ip}"
 not_started = "user-api 未开通 {kind} 线路（HTTP {status}）：{reason}"
 made_anyway = "user-api 仍创建了线路 {id}，且已记录；在 `erpc worker delete --release-server{scope}` 或控制面板将其终止之前，可能会持续计费"
@@ -95,7 +95,7 @@ ending = "正在终止按小时计费的 {kind} 线路 {id}"
 end_failed = "user-api 未能终止 {kind} 线路 {id}：{answer}"
 udp_no_port = "UDP Forwarding 线路需发送到服务器的某个 UDP 端口，但未指定端口"
 udp_no_region = "UDP Forwarding 线路从某个 ERPC 区域发送，而此服务器没有记录区域"
-udp_no_region_hint = "请部署到 ERPC 服务器（`--server <id>` 或 `--new-server`），或用 `--udp-region` 指定区域"
+udp_no_region_hint = "请部署到 ERPC Worker（`--server <id>` 或 `--new-server`），或用 `--udp-region` 指定区域"
 udp_bad_region = "`{region}` 不是 {name} 的区域；它从 {regions} 发送"
 udp_region_elsewhere = "{name} 可从 {region} 发送：`--udp-plan {product}` 可选择它"
 buying_udp = "新的按小时计费 UDP Forwarding 线路：{name}（{product}；{how}，每小时 €{price}），从 {region} 发送到 {ip}:{port}"
@@ -129,3 +129,15 @@ otherwise = "若不接管"
 a_second = "接下来会询问是否开通新线路；如果这条线路是另一个应用的部署开通的，请在此回答“否”"
 not_under_yes = "该账户有此前已开通、尚未指向任何服务器的 {name} 线路 {id}；本次部署是否接管它，不由 --yes 决定：它可能属于另一个应用"
 not_under_yes_hint = "在终端运行本次部署，会询问是否接管；若没有任何应用在用线路 {id}，先终止它（`erpc ai` 或控制面板），再重新运行"
+
+[worker]
+bare = "ERPC Worker"
+bare_id = "ERPC Worker {id}"
+named = "ERPC Worker（{spec}）"
+named_id = "ERPC Worker {id}（{spec}）"
+cores = "{cores} vCPU"
+memory = "内存 {memory} GB"
+disk_nvme = "NVMe {disk} GB"
+disk_ssd = "SSD {disk} GB"
+disk = "磁盘 {disk} GB"
+sep = "，"

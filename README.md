@@ -423,7 +423,7 @@ api-prod on 203.0.113.10: running, release 20261101T093000Z-1a2b3c4d, pid 4217, 
   current 20261101T093000Z-1a2b3c4d, previous 20261028T171500Z-9f8e7d6c, 2 releases kept
   WAF: listening on port 8080, forwarding to 127.0.0.1:3000, since 2026-11-01T09:30:12Z; requests 5120, forwarded 5043, blocked 71, connections refused 12, app errors 6, addresses banned now 1
   Charged by the hour, from ERPC Credit:
-    VPS 100001  €0.07 per hour
+    ERPC Worker 100001  €0.07 per hour
   The account has €12.00 of credit and spends €0.07 per hour on all it runs: about 171 hours.
   `erpc worker delete --release-server --env prod` ends what this app is charged for.
 ```

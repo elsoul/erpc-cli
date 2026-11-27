@@ -325,7 +325,7 @@ pub(crate) enum Action {
         #[command(subcommand)]
         action: SealAction,
     },
-    /// The servers of an environment kept in the ERPC account.
+    /// The ERPC Workers of an environment kept in the ERPC account.
     Server {
         #[command(subcommand)]
         action: ServerAction,
@@ -385,7 +385,7 @@ pub(crate) enum Action {
         fingerprint: Option<String>,
         // `--vps` and `--new-vps` are the names these two had before, and
         // still work.
-        /// A server of the account, by its VPS id (a bare-metal server goes in with --host).
+        /// An ERPC Worker of the account, by its id (a bare-metal server goes in with --host).
         #[arg(
             long = "server",
             id = "server",
@@ -394,17 +394,17 @@ pub(crate) enum Action {
             conflicts_with = "host"
         )]
         vps: Option<i64>,
-        /// Start a new hourly ERPC server for it (its price is shown first).
+        /// Start a new hourly ERPC Worker for it (its price is shown first).
         /// For an environment erpc.toml has nothing for yet, it is started in
         /// the ERPC account, which keeps the environment from then on, and
         /// needs a terminal; --inline, --vault, --plan, a data line or a
         /// wallet keep the environment out of the account, as before.
         #[arg(long = "new-server", alias = "new-vps", conflicts_with_all = ["host", "server"])]
         new_vps: bool,
-        /// The region of a new server (default: nearest by this machine's time zone).
+        /// The region of a new ERPC Worker (default: nearest by this machine's time zone).
         #[arg(long, value_name = "REGION")]
         region: Option<String>,
-        /// The hourly plan of a new server, by product id (default: the cheapest).
+        /// The hourly plan of a new ERPC Worker, by product id (default: the cheapest).
         #[arg(long, value_name = "PRODUCT_ID")]
         plan: Option<String>,
         /// Start an hourly gRPC line that lets in the server, and set
@@ -465,10 +465,10 @@ pub(crate) enum Action {
         /// start nothing; the next deploy hands them over and starts it.
         #[arg(long)]
         prepare: bool,
-        /// Go ahead without asking: a new server's or line's price is said, not
+        /// Go ahead without asking: a new ERPC Worker's or line's price is said, not
         /// asked (it is paid from ERPC Credit; a line the deploy offers to end
         /// is still asked about, and so are a server on record, never reached,
-        /// that is not on the account signed in to, a new server for an
+        /// that is not on the account signed in to, a new ERPC Worker for an
         /// environment kept in the ERPC account that the command line does
         /// not ask for with --new-server, and the first login to a server
         /// kept in the ERPC account, at a terminal).
@@ -599,7 +599,7 @@ pub(crate) enum Action {
     Delete {
         #[command(flatten)]
         app: App,
-        /// Also end the hourly ERPC server it runs on.
+        /// Also end the hourly ERPC Worker it runs on.
         #[arg(long)]
         release_server: bool,
         /// Do not reach the server: the worker no longer runs there (the
@@ -877,7 +877,7 @@ pub(crate) enum SealAction {
 /// What `erpc worker server` does.
 #[derive(Subcommand, Debug)]
 pub(crate) enum ServerAction {
-    /// Start a new server, paid for by the hour, for an environment kept in the ERPC account whose record names no server and no address yet: its price is said first.
+    /// Start a new ERPC Worker, paid for by the hour, for an environment kept in the ERPC account whose record names no server and no address yet: its price is said first.
     Start {
         #[command(flatten)]
         app: App,
@@ -891,7 +891,7 @@ pub(crate) enum ServerAction {
         #[arg(long, short = 'y')]
         yes: bool,
     },
-    /// End the server an environment kept in the ERPC account uses, when it is the only server on the environment's record and the environment has no line that is not ended, and clear its address from the record: its billing by the hour stops, and what is on it is lost.
+    /// End the ERPC Worker an environment kept in the ERPC account uses, when it is the only server on the environment's record and the environment has no line that is not ended, and clear its address from the record: its billing by the hour stops, and what is on it is lost.
     End {
         #[command(flatten)]
         app: App,
@@ -2002,10 +2002,7 @@ fn describe(path: &Path, m: &Manifest, warnings: &[String]) -> String {
         let resource = env.resource.as_ref().map_or_else(String::new, |r| {
             format!(
                 "  [{}{}{}]",
-                serde_json::to_value(r.kind)
-                    .ok()
-                    .and_then(|v| v.as_str().map(ToOwned::to_owned))
-                    .unwrap_or_default(),
+                r.kind.as_str(),
                 r.region
                     .as_ref()
                     .map_or_else(String::new, |g| format!(" {g}")),
@@ -3593,6 +3590,22 @@ mod tests {
             check(false, &dir, Some("prod")),
             Outcome::Problems(_)
         ));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn check_names_an_erpc_server_on_record_an_erpc_worker() {
+        crate::cli::ui::force_drawn(false);
+        let root = app_dir(
+            "kind",
+            "name = \"bot\"\nchain = \"solana\"\n[env.prod]\nhost = \"203.0.113.10\"\n\
+             resource = { kind = \"vps\", id = \"100001\", region = \"amsterdam\", hourly = true }\n",
+        );
+        let Outcome::Done(report) = check(false, &Dir::at(&root), None) else {
+            panic!("a report");
+        };
+        assert!(report.contains("[ERPC Worker amsterdam"), "{report}");
+        assert!(!report.contains("vps"), "{report}");
         let _ = std::fs::remove_dir_all(root);
     }
 

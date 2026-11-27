@@ -1373,7 +1373,7 @@ mod tests {
         // A yes: deleted in the account, then put away here, this
         // environment only.
         let (answer, text) = run_with(&fake, &app(), "bot", &local, (false, false, true), |q| {
-            assert!(q.contains("1 server") && q.contains("gRPC"), "{q}");
+            assert!(q.contains("1 ERPC Worker") && q.contains("gRPC"), "{q}");
             Ok(true)
         })
         .await
@@ -1435,7 +1435,7 @@ mod tests {
         assert_eq!(
             asked.take(),
             format!(
-                "{NOTE} Delete environment prod of bot from the ERPC account, ending 1 server, its Shreds line? This cannot be undone."
+                "{NOTE} Delete environment prod of bot from the ERPC account, ending 1 ERPC Worker, its Shreds line? This cannot be undone."
             )
         );
         assert_eq!(
@@ -1499,7 +1499,7 @@ mod tests {
         .expect("deleted");
         assert_eq!(
             asked.take(),
-            "Delete environment prod of bot from the ERPC account, ending 1 server, its gRPC line? This cannot be undone."
+            "Delete environment prod of bot from the ERPC account, ending 1 ERPC Worker, its gRPC line? This cannot be undone."
         );
         assert_eq!(answer["bundle_parts_taken_off"], json!([]));
         assert_eq!(
@@ -2526,7 +2526,7 @@ mod tests {
                     assert!(q.contains("names no server in use"), "{q}");
                     assert!(
                         q.contains(
-                            "an ERPC server the account no longer lists for this environment, \
+                            "an ERPC Worker the account no longer lists for this environment, \
                              it is ended already"
                         ),
                         "{q}"
@@ -2613,7 +2613,7 @@ mod tests {
             .expect("deleted");
         let printed = crate::node::common::heard::take_printed().join("\n");
         assert!(
-            printed.contains("ending 1 server, its gRPC line and deleting environment prod"),
+            printed.contains("ending 1 ERPC Worker, its gRPC line and deleting environment prod"),
             "{printed}"
         );
     }

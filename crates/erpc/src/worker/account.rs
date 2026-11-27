@@ -877,11 +877,10 @@ pub(crate) fn account_said(env: &EnvDetail) -> Vec<String> {
         lines.push(format!("  {}", t!("worker_account.status.no_server")));
     }
     for s in &env.servers {
-        let size = match (s.cores, s.memory_gb) {
-            (Some(c), Some(m)) => t!("worker_account.status.size", cores = c, memory = m),
-            (Some(c), None) => t!("worker_account.status.cores", cores = c),
-            _ => String::new(),
-        };
+        // An ERPC Worker, with its spec as far as the account gives it.
+        let size = crate::worker::vps::Spec::sized(s.cores, s.memory_gb)
+            .said()
+            .unwrap_or_default();
         let running = if s.app_running {
             t!("worker_account.status.app_running")
         } else {
@@ -1830,8 +1829,12 @@ mod tests {
     fn status_says_servers_by_slot_and_size_and_lines_by_kind_never_a_number() {
         let env = env_detail();
         let said = account_said(&env).join("\n");
-        assert!(said.contains("server (in use)"), "{said}");
-        assert!(said.contains("2 vCPU, 8 GB"), "{said}");
+        assert!(said.contains("ERPC Worker (in use)"), "{said}");
+        assert!(said.contains("2 vCPU, 8 GB memory"), "{said}");
+        assert!(
+            !said.contains("VPS") && !said.contains("server ("),
+            "{said}"
+        );
         assert!(said.contains("amsterdam"), "{said}");
         assert!(said.contains("app running"), "{said}");
         assert!(

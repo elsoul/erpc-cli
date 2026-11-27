@@ -325,12 +325,24 @@ fn euros(cents: u64) -> String {
     format!("{}.{:02}", cents / 100, cents % 100)
 }
 
+/// The server of `price`'s size, as a person reads it: "ERPC Worker" and
+/// its spec ([`crate::worker::vps::worker`]).
+fn worker_of(price: &ServerPrice) -> String {
+    use crate::worker::vps::{Spec, worker};
+    worker(&Spec::sized(Some(price.cores), Some(price.memory_gb)))
+}
+
+/// A server of `cores` cores, as a person reads it.
+fn worker_cored(cores: u16) -> String {
+    use crate::worker::vps::{Spec, worker};
+    worker(&Spec::sized(Some(cores), None))
+}
+
 /// One size and its price, as the refusal of another lists it.
 fn size_said(price: &ServerPrice) -> String {
     t!(
         "worker_server.size",
-        cores = price.cores,
-        memory = price.memory_gb,
+        worker = worker_of(price),
         price = euros(price.hourly_cents)
     )
 }
@@ -363,7 +375,7 @@ fn priced(prices: &ServerPrices, env: &str, cores: Option<u16>) -> Result<Server
                 Code::Usage,
                 t!(
                     "worker_server.not_offered",
-                    cores,
+                    worker = worker_cored(cores),
                     offered = offered.join(", ")
                 ),
             ))
@@ -555,7 +567,7 @@ fn open_refused(env: &str, open: &Open, kept: Option<bool>) -> CliError {
     let what = match (open.server, open.cores, open.region.as_deref()) {
         (true, Some(cores), Some(region)) => t!(
             "worker_server.open_server",
-            cores,
+            worker = worker_cored(cores),
             region = crate::storage::clean(region)
         ),
         (true, _, _) => t!("worker_server.open_server_unsaid"),
@@ -652,9 +664,9 @@ fn to_send_again(
             Code::Usage,
             t!(
                 "worker_server.differs",
-                kept_cores = again.cores,
+                kept = worker_cored(again.cores),
                 kept_region = again.region.as_str(),
-                cores,
+                asked = worker_cored(cores),
                 region
             ),
         )
@@ -672,37 +684,20 @@ fn asking(
     again: bool,
 ) -> (String, String) {
     let (env, scope) = (app.env.as_str(), app.scope());
-    let (cores, memory) = (price.cores, price.memory_gb);
+    let worker = worker_of(price);
     let price = euros(price.hourly_cents);
     let (price, scope) = (price.as_str(), scope.as_str());
     let (question, note) = match asked.by {
         By::ServerStart => (
-            t!(
-                "worker_server.question",
-                env,
-                cores,
-                memory,
-                region,
-                price,
-                scope
-            ),
-            t!(
-                "worker_server.note",
-                env,
-                cores,
-                memory,
-                region,
-                price,
-                scope
-            ),
+            t!("worker_server.question", env, worker, region, price, scope),
+            t!("worker_server.note", env, worker, region, price, scope),
         ),
         By::Deploy => (
             t!(
                 "worker_first_deploy.question",
                 app = name,
                 env,
-                cores,
-                memory,
+                worker,
                 region,
                 price,
                 scope
@@ -711,8 +706,7 @@ fn asking(
                 "worker_first_deploy.note",
                 app = name,
                 env,
-                cores,
-                memory,
+                worker,
                 region,
                 price,
                 scope
@@ -1612,8 +1606,9 @@ mod tests {
         out.expect("started");
         let question = question.expect("asked");
         assert!(
-            question.contains("Make bot an ERPC Worker")
-                && question.contains("€0.07")
+            question.contains(
+                "Run bot on a new ERPC Worker (1 vCPU, 2 GB memory) in your ERPC account"
+            ) && question.contains("€0.07")
                 && question.contains("tokyo")
                 && question.contains("`account = true`"),
             "{question}"
@@ -1684,7 +1679,7 @@ mod tests {
         out.expect("sent again");
         let question = question.expect("asked");
         assert!(
-            question.contains("2-core") && question.contains("4 GB") && question.contains("€0.13"),
+            question.contains("ERPC Worker (2 vCPU, 4 GB memory)") && question.contains("€0.13"),
             "{question}"
         );
         assert!(!question.contains("€0.07"), "{question}");
@@ -1732,7 +1727,8 @@ mod tests {
         let (answer, text) = out.expect("started");
         let question = question.expect("asked");
         assert!(
-            question.contains("€0.07") && question.contains("1-core") && question.contains("2 GB"),
+            question.contains("€0.07")
+                && question.contains("Start a new ERPC Worker (1 vCPU, 2 GB memory)"),
             "{question}"
         );
         assert!(question.contains("amsterdam"), "{question}");
@@ -1767,7 +1763,7 @@ mod tests {
         assert_eq!(fake.kept(), None);
         assert_eq!(answer["started"], true);
         assert_eq!(answer["already"], false);
-        assert!(text.contains("Started a new server"), "{text}");
+        assert!(text.contains("Started a new ERPC Worker"), "{text}");
     }
 
     #[tokio::test]
@@ -1994,7 +1990,7 @@ mod tests {
         fake.breaks_store = Some("garbage");
         let (out, _) = go(&fake, &asked(1, true, false, false), &MAKING, true).await;
         let (answer, text) = out.expect("started");
-        assert!(text.contains("Started a new server"), "{text}");
+        assert!(text.contains("Started a new ERPC Worker"), "{text}");
         assert!(text.contains("could not be updated"), "{text}");
         assert!(text.contains("the next run stops at it"), "{text}");
         assert!(!text.contains("nothing was started"), "{text}");
@@ -2171,7 +2167,7 @@ mod tests {
         let (out, question) = go(&fake, &frankfurt, &MAKING, true).await;
         out.expect("started");
         let question = question.expect("asked");
-        for words in ["2-core", "4 GB", "€0.13", "frankfurt"] {
+        for words in ["ERPC Worker (2 vCPU, 4 GB memory)", "€0.13", "frankfurt"] {
             assert!(question.contains(words), "{words}: {question}");
         }
         assert!(!question.contains("€0.07"), "{question}");
@@ -2182,7 +2178,7 @@ mod tests {
         let (out, _) = go(&fake, &asked(4, true, false, false), &MAKING, true).await;
         out.expect("started");
         let printed = crate::node::common::heard::take_printed().join("\n");
-        for words in ["4-core", "16 GB", "€1.20"] {
+        for words in ["ERPC Worker (4 vCPU, 16 GB memory)", "€1.20"] {
             assert!(printed.contains(words), "{words}: {printed}");
         }
         assert!(!printed.contains("€0.07"), "{printed}");
@@ -2369,9 +2365,13 @@ mod tests {
         let e = out.expect_err("not offered");
         assert_eq!(e.code, Code::Usage);
         assert!(
-            e.message.contains("1-core (2 GB, €0.07 an hour)")
-                && e.message.contains("2-core (4 GB, €0.13 an hour)")
-                && e.message.contains("4-core (16 GB, €1.20 an hour)"),
+            e.message.contains("ERPC Worker (8 vCPU) is not offered")
+                && e.message
+                    .contains("ERPC Worker (1 vCPU, 2 GB memory), €0.07 an hour")
+                && e.message
+                    .contains("ERPC Worker (2 vCPU, 4 GB memory), €0.13 an hour")
+                && e.message
+                    .contains("ERPC Worker (4 vCPU, 16 GB memory), €1.20 an hour"),
             "{}",
             e.message
         );

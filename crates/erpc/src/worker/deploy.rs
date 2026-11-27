@@ -1813,7 +1813,7 @@ pub(crate) async fn pick(api: &Api, new: String) -> Result<Picked, CliError> {
     let running = vps::running(api).await?;
     let mut options: Vec<String> = running
         .iter()
-        .map(|(id, ip, region, plan)| format!("{}  {ip}  {region}  {plan}", server_named(id)))
+        .map(|(id, ip, region, spec)| format!("{}  {ip}  {region}", vps::worker_id(id, spec)))
         .collect();
     options.push(new);
     let question = t!("worker_deploy.server.which");
@@ -3613,7 +3613,7 @@ mod tests {
         let taken_up = super::Waiting::Vps(super::Api::offline(), bought());
         let line = super::go_ahead_line(&taken_up, false, "bot", "erpc-worker-bot")
             .expect("a VPS taken up from an earlier deploy asks");
-        assert!(line.contains("server 100001"), "{line}");
+        assert!(line.contains("ERPC Worker 100001"), "{line}");
         assert!(super::go_ahead_line(&taken_up, true, "bot", "erpc-worker-bot").is_none());
     }
 
@@ -3638,7 +3638,7 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(*log.borrow(), ["saved 100001", "waited for 100001"]);
         // The failure is then told what is charged (deploy's wrapper).
-        assert_eq!(*on_record.borrow(), ["server 100001"]);
+        assert_eq!(*on_record.borrow(), ["ERPC Worker 100001"]);
     }
 
     #[tokio::test]
@@ -5498,7 +5498,7 @@ mod tests {
 
         assert!(forget_missing(&missing, "100001", scope, true, answer(true)).expect("yes"));
         assert!(
-            asked.borrow()[0].contains("VPS 100001")
+            asked.borrow()[0].contains("ERPC Worker 100001")
                 && asked.borrow()[0].contains("(Example Account)"),
             "{:?}",
             asked.borrow()

@@ -1810,7 +1810,7 @@ fn same_server(a: &Env, b: &Env) -> bool {
         e.resource
             .as_ref()
             .filter(|r| !r.id.is_empty())
-            .map(|r| (r.kind.as_str(), r.id.clone()))
+            .map(|r| (r.kind, r.id.clone()))
     };
     let same_id = id(a).is_some() && id(a) == id(b);
     let same_host = a.host.is_some() && a.host == b.host;
@@ -2555,6 +2555,36 @@ mod tests {
         forget_prompt, hourly_items, left_over, line_end, must_keep, refuse_delete, retry_hint,
         say_still_charged, server_left_running, still_charged_line, unreached_hint,
     };
+
+    #[test]
+    fn servers_are_the_same_by_their_kind_and_id_not_by_how_they_are_named() {
+        // Every kind of VPS is named an ERPC Worker; one id of two kinds is
+        // two servers all the same.
+        let of = |kind: ResourceKind, host: Option<&str>| Env {
+            resource: Some(Resource {
+                kind,
+                id: "100001".to_owned(),
+                region: None,
+                hourly: true,
+            }),
+            host: host.map(str::to_owned),
+            ..Env::default()
+        };
+        assert_eq!(ResourceKind::Vps.as_str(), ResourceKind::SuperVps.as_str());
+        assert!(super::same_server(
+            &of(ResourceKind::Vps, None),
+            &of(ResourceKind::Vps, None)
+        ));
+        assert!(!super::same_server(
+            &of(ResourceKind::Vps, None),
+            &of(ResourceKind::SuperVps, None)
+        ));
+        // The same address is the same server, whatever its kind.
+        assert!(super::same_server(
+            &of(ResourceKind::Vps, Some("203.0.113.10")),
+            &of(ResourceKind::PremiumVps, Some("203.0.113.10"))
+        ));
+    }
 
     fn again(scope: &str) -> Again<'_> {
         Again {
@@ -3555,7 +3585,7 @@ mod tests {
         say_released(&mut text, &released, true);
         assert_eq!(
             text,
-            " VPS 100001 is not on the account you are signed in to (Example Account): it was not \
+            " ERPC Worker 100001 is not on the account you are signed in to (Example Account): it was not \
              ended, and it leaves the record."
         );
         let details = failure_details(&Removal::NoHost, &released, &[], None);
@@ -3715,7 +3745,7 @@ mod tests {
         let missing = Some("Example Account");
         assert_eq!(
             delete_prompt(&bought, &id, "prod", true, (false, missing)),
-            "Forget [env.prod] (its server was never reached), then take VPS 100001 off the \
+            "Forget [env.prod] (its server was never reached), then take ERPC Worker 100001 off the \
              record without ending it: it is not on the account you are signed in to (Example \
              Account), so it has ended, or it is another account's"
         );
@@ -3723,7 +3753,7 @@ mod tests {
         assert!(
             forgotten.starts_with("Forget [env.prod] without reaching 203.0.113.10, as asked")
                 && forgotten.contains(
-                    ", then end its data lines and take VPS 100001 off the record without ending it"
+                    ", then end its data lines and take ERPC Worker 100001 off the record without ending it"
                 )
                 && forgotten.contains("(Example Account)"),
             "{forgotten}"
@@ -3772,7 +3802,11 @@ mod tests {
         // Missing, nobody to ask (no terminal, --json; --yes or not).
         let nobody = agreed(missing, false, answer(true), go_ahead).expect_err("nobody");
         assert_eq!(nobody.code, Code::NeedsTerminal);
-        assert!(nobody.message.contains("VPS 100001"), "{}", nobody.message);
+        assert!(
+            nobody.message.contains("ERPC Worker 100001"),
+            "{}",
+            nobody.message
+        );
         assert!(
             nobody.message.contains("(Example Account)"),
             "{}",
@@ -3794,9 +3828,9 @@ mod tests {
             Some("Example Account")
         );
         assert!(
-            asked.borrow()[0]
-                .starts_with("Go ahead, taking VPS 100001 off the record without ending it?")
-                && asked.borrow()[0].contains("(Example Account)"),
+            asked.borrow()[0].starts_with(
+                "Go ahead, taking ERPC Worker 100001 off the record without ending it?"
+            ) && asked.borrow()[0].contains("(Example Account)"),
             "{:?}",
             asked.borrow()
         );

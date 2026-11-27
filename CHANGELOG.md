@@ -282,6 +282,32 @@ whose version has no entry below.
   finishes it. While another environment remains, the app's record stays
   as before. `--json` says `app_deleted`, and the help of `delete --yes`
   says the app's record goes with its last environment kept there.
+- What `erpc worker` shows a person calls an ERPC server an ERPC Worker,
+  followed by its spec as the ERPC account or the product's name gives it
+  (`ERPC Worker (1 vCPU, 4 GB memory, 10 GB NVMe)`; what neither gives is
+  left out), or by its id where one is needed (`ERPC Worker 100001`), never
+  "VPS" or the product's own name. So say the server picker's rows (by id,
+  address, region and the spec its product's name gives) and its "start a new one", the line said
+  before a new server is bought, the `server start` question, note, sizes
+  and refusals, `status` of an environment kept in the account, the
+  question of `server end`, the count of servers `delete --release-server`
+  ends, `check`, what `status` says is charged, and every message that
+  named a `VPS <id>`, a `server <id>` or an ERPC server, in en, ja, zh and
+  ru, and the help of `deploy --server`, `--new-server`, `--region`,
+  `--plan`, `--yes`, `delete --release-server`, `server`, `server start`
+  and `server end`. A server of your own stays a server.
+  `--vps`, `--new-vps`, `kind = "vps"` in `erpc.toml` and the `--json`
+  field names are as they were; a `--json` `name` that said `VPS <id>` now
+  says `ERPC Worker <id>`. For an environment kept in `erpc.toml`, the
+  price question of a deploy that buys its server and the end question of
+  `delete --release-server` are `erpc ai`'s, with the product's name said
+  as the ERPC Worker it is; `erpc ai` itself is as it was, and a reason
+  user-api or `erpc ai` gives for a failure is quoted as it came. A spec
+  is read from the product's name only when all of the name, the
+  product's own name too, is in the known form; any other name shows
+  `ERPC Worker` and the id alone. Servers on
+  this machine's list are still told apart by their kind and id, not by
+  how they are named.
 - `erpc worker deploy` names the server it deploys to as a server, not a
   VPS: `--server <ID>` and `--new-server`, in every language's help and
   message. `--vps` and `--new-vps`, the names before, still work, so a

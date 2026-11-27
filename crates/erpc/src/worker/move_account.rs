@@ -1876,7 +1876,7 @@ mod tests {
                             "another ERPC account does not see it",
                             "--yes and --json do not give it",
                             "when what the account says of the server changes, it is asked again at a terminal",
-                            "an ERPC server the account does not show as active is not reached, not even to stop the app",
+                            "an ERPC Worker the account does not show as active is not reached, not even to stop the app",
                         ],
                     ),
                     (
@@ -1948,7 +1948,7 @@ mod tests {
                             "ほかの ERPC アカウントからは見えません",
                             "--yes や --json では答えられません",
                             "アカウントが示すサーバーの内容が変わると、端末でもう一度尋ねます",
-                            "アカウントが active と示さない ERPC のサーバーには接続せず、アプリを止めることもできません",
+                            "アカウントが active と示さない ERPC Worker には接続せず、アプリを止めることもできません",
                         ],
                     ),
                     (
@@ -2021,7 +2021,7 @@ mod tests {
                             "其他 ERPC 账户则看不到它",
                             "--yes 和 --json 无法代替",
                             "账户所说的服务器信息一旦变化，就会在终端上再次询问",
-                            "账户未显示为 active 的 ERPC 服务器不会被连接，连停止应用也不行",
+                            "账户未显示为 active 的 ERPC Worker 不会被连接，连停止应用也不行",
                         ],
                     ),
                     (
@@ -2092,7 +2092,7 @@ mod tests {
                             "другой же аккаунт ERPC его не видит",
                             "--yes и --json этого не дают",
                             "когда то, что аккаунт говорит о сервере, меняется, это снова спрашивается в терминале",
-                            "к серверу ERPC, который аккаунт не показывает активным, не подключаются — даже чтобы остановить приложение",
+                            "к ERPC Worker, который аккаунт не показывает активным, не подключаются — даже чтобы остановить приложение",
                         ],
                     ),
                     (

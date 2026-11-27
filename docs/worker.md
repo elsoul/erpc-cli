@@ -323,8 +323,8 @@ first of the set is the one `init` suggests.
 `deploy` finds the server in this order:
 
 1. the one `[env.<name>]` names;
-2. `--server <id>`, a server of the account by its VPS id (`--vps <id>`, its
-   name before, still works; a bare-metal server goes in with `--host`);
+2. `--server <id>`, an ERPC Worker of the account by its id (`--vps <id>`,
+   its name before, still works; a bare-metal server goes in with `--host`);
 3. `--new-server` (before, `--new-vps`), the cheapest hourly server in the
    region nearest this machine (by its time zone; `--region` and `--plan`
    choose otherwise). For an environment `erpc.toml` has nothing for yet,
@@ -336,9 +336,50 @@ first of the set is the one `init` suggests.
    connection to that server but SSH, the app's port when
    `firewall.app_allow` lists someone and, with `--udp`, the UDP Forwarding
    line's port, so a server that serves anything else is not the one to use;
-5. otherwise, at a terminal, a list of the account's running VPSs, with "start
-   a new one" at the end (for an environment `erpc.toml` has nothing for
-   yet, started in the ERPC account as with `--new-server`).
+5. otherwise, at a terminal, a list of the account's running ERPC Workers,
+   each by its id, address, region and spec (read from the product's name
+   the account gives each, when it is in the known form below), with
+   "start a new one" at the
+   end (for an environment `erpc.toml` has nothing for yet, started in the
+   ERPC account as with `--new-server`).
+
+What `erpc worker` shows calls an ERPC server an **ERPC Worker**, followed by
+its spec as the ERPC account or the product's name gives it, such as `ERPC
+Worker (1 vCPU, 4 GB memory, 10 GB NVMe)`, and by its id where you need one
+to name it (`ERPC Worker 100001`): in its questions, prices, status, deploy
+lines and hints, in every language, never by "VPS" or the product's own
+name. What neither gives is left out (a server kept in the ERPC account
+has its vCPUs and memory, and no disk). A spec is read from the product's
+name only when all of the name is in the known form, word by word, case
+aside but for `GB` and `TB`:
+- the product's own name, before the first ` - `, only of 🛰️, SLV, VPS,
+  Super, Premium, Max and Plus;
+- then parts split by ` - `: a CPU part, `<n> vCPU` (1 to 3 digits), then
+  nothing, AMD, Intel, EPYC, EPYC4G, Xeon, Ryzen, AMD EPYC, AMD EPYC4G,
+  AMD Ryzen or Intel Xeon, then, if given, `x <n> GB <memory>`; a memory
+  part, `<n> GB <memory>`; a disk part, `<n> GB <disk>` or `<n> TB
+  <disk>` (1000 GB each);
+- memory words are DDR4, DDR5, RAM and ECC, disk words SSD, NVMe, NVMe3,
+  NVMe4 and HDD, one kind of disk (HDD not with SSD or NVMe), no word
+  twice in a part; a number is up to 9 digits with no nought first;
+- each of a CPU part, memory and a disk part at most once; disk parts
+  joined by ` + ` are the one disk part and give no disk, and a `+`
+  between anything else gives none.
+
+Any other name (another word, a count however written, a sign, a size too
+large) gives no spec at all: the server is shown as `ERPC Worker` and its
+id alone. A running server's spec is read the same way from the product's
+name the account gives with it. A server of your own (`--host`) is a
+server. `erpc.toml` keeps writing
+the kind it records (`kind = "vps"`), and `--vps`/`--new-vps` still work.
+For an environment kept in `erpc.toml`, a deploy that buys its server
+asks the price with the question `erpc ai` asks before an hourly product
+is started, and `delete --release-server` asks before it ends the server
+with `erpc ai`'s end question; erpc says the product's name in both as the
+ERPC Worker it is. The rest of those questions, and the first login's, are
+`erpc ai`'s own words, which `erpc ai` keeps for itself. A reason
+user-api or `erpc ai` gives for a failure is quoted as it came, and may
+name a VPS.
 
 Anything that costs money is shown with its hourly price, the balance, and how
 long the credit lasts. At a terminal it starts only after a yes. With `--yes`
@@ -632,27 +673,28 @@ What is bought goes on record at once:
   `erpc worker delete --release-server` ends it. Its price was the
   question, asked or answered by `--yes`; a deploy asks no second "Go
   ahead?" after it.
-- **A VPS ended outside erpc** (in the dashboard, or by support): erpc
-  asks the account you are signed in to. A VPS is missing from it when it
-  is neither among its servers nor charged for at every look over a
-  little more than a minute; a VPS bought a moment ago can take that long
-  to be listed, and is never missing. erpc.toml does not say which account
-  bought it, so a VPS missing from the account you are signed in to may be
-  another account's: erpc names the account it looked at, and only you,
-  at a terminal, can say the VPS leaves the record. `--yes` does not
+- **An ERPC Worker ended outside erpc** (in the dashboard, or by support):
+  erpc asks the account you are signed in to. An ERPC Worker is missing
+  from it when it is neither among its servers nor charged for at every
+  look over a little more than a minute; one bought a moment ago can take
+  that long to be listed, and is never missing. erpc.toml does not say
+  which account bought it, so one missing from the account you are signed
+  in to may be another account's: erpc names the account it looked at, and
+  only you, at a terminal, can say it leaves the record. `--yes` does not
   answer that question; with no terminal, or under `--json`, nothing is
-  done. The next deploy asks whether to take a missing VPS it never
-  reached off the record and choose a server, as for a new environment.
+  done. The next deploy asks whether to take a missing ERPC Worker it
+  never reached off the record and choose a server, as for a new
+  environment.
   While a UDP Forwarding line billed by the hour is on the record and no
-  server it reached is (such a VPS left it, one was bought and never
+  server it reached is (such an ERPC Worker left it, one was bought and never
   reached, or `delete --release-server` ended the server but not the
   line), every deploy stops before it buys anything unless it has
   `--udp` (which points the line at the server it reaches) or
   `--forget-line <ID>` for the line: a line not asked for again keeps
   sending where it was pointed, and is charged all the same. The error
   names the line and how to point it or end it. `delete --release-server`
-  takes a VPS ended outside erpc off the record without ending it; it asks
-  the account only about a VPS never reached, or one you say is not to be
+  takes an ERPC Worker ended outside erpc off the record without ending it;
+  it asks the account only about one never reached, or one you say is not to be
   reached (`--forget`). A server that was reached is
   removed from and ended as before: erpc never takes a failure to reach
   it (its firewall, your network) for its end.

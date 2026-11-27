@@ -67,6 +67,371 @@ pub(crate) const REGIONS: [&str; 7] = [
     "sydney",
 ];
 
+/// What an ERPC server is made of, as the account or its product's name
+/// gives it; what neither gives is left out.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Spec {
+    /// Its vCPUs.
+    pub(crate) cores: Option<u16>,
+    /// Its memory, in GB.
+    pub(crate) memory_gb: Option<u32>,
+    /// Its disk, in GB.
+    pub(crate) disk_gb: Option<u32>,
+    /// What its disk is.
+    pub(crate) disk: Disk,
+}
+
+/// What a server's disk is, as its product's name says.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum Disk {
+    /// `NVMe`.
+    Nvme,
+    /// SSD.
+    Ssd,
+    /// Not said.
+    #[default]
+    Unsaid,
+}
+
+/// The words a product's own name, before its first ` - `, may hold: those
+/// of the names the account's servers are sold under. Any other word there
+/// gives no spec.
+const NAME_WORDS: [&str; 8] = ["🛰️", "🛰", "slv", "vps", "super", "premium", "max", "plus"];
+/// What may follow a CPU part's `<n> vCPU`: the makers and lines the
+/// account's names use, as they go together. Anything else there gives no
+/// spec.
+const CPU_NAMES: [&[&str]; 10] = [
+    &["amd"],
+    &["intel"],
+    &["epyc"],
+    &["epyc4g"],
+    &["xeon"],
+    &["ryzen"],
+    &["amd", "epyc"],
+    &["amd", "epyc4g"],
+    &["amd", "ryzen"],
+    &["intel", "xeon"],
+];
+/// The words that may follow a memory size: `4 GB DDR5`.
+const MEMORY_WORDS: [&str; 4] = ["ddr4", "ddr5", "ram", "ecc"];
+/// The words that may follow a disk size: `10 GB SSD NVMe4`.
+const DISK_WORDS: [&str; 5] = ["ssd", "nvme", "nvme3", "nvme4", "hdd"];
+
+/// One part of a product's name, read in the known form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Part {
+    /// `<n> vCPU`, its CPU's words, and `x <size> <memory words>` if given.
+    Cpu(u16, Option<u32>),
+    /// `<size> <memory words>`.
+    Memory(u32),
+    /// `<size> <disk words>`.
+    Disk(u32, Disk),
+}
+
+/// Whether `word` is one of `list`, whatever its case.
+fn known(word: &str, list: &[&str]) -> bool {
+    list.iter().any(|k| word.eq_ignore_ascii_case(k))
+}
+
+/// Whether `words` are one or more of `list`, none of them twice.
+fn all_known(words: &[&str], list: &[&str]) -> bool {
+    !words.is_empty()
+        && words
+            .iter()
+            .enumerate()
+            .all(|(i, w)| known(w, list) && !words[..i].iter().any(|v| v.eq_ignore_ascii_case(w)))
+}
+
+/// A number written in digits alone, of at most `most` digits, with no
+/// nought first (so above nought).
+fn digits(word: &str, most: usize) -> Option<u32> {
+    let plain = (1..=most).contains(&word.len())
+        && !word.starts_with('0')
+        && word.chars().all(|c| c.is_ascii_digit());
+    plain.then(|| word.parse().ok()).flatten()
+}
+
+/// The size `words` begins with, in GB: digits, then `GB`, or `TB` (1000
+/// GB each) where `tb` allows it. Too large to count: none.
+fn size_of(words: &[&str], tb: bool) -> Option<u32> {
+    let [n, unit, ..] = words else {
+        return None;
+    };
+    let n = digits(n, 9)?;
+    match *unit {
+        "GB" => Some(n),
+        "TB" if tb => n.checked_mul(1000),
+        _ => None,
+    }
+}
+
+/// `words`, every one of them, as one part in the known form; none when a
+/// word is not where that form has it.
+fn part_of(words: &[&str]) -> Option<Part> {
+    if words.get(1).is_some_and(|w| w.eq_ignore_ascii_case("vcpu")) {
+        let cores = u16::try_from(digits(words[0], 3)?).ok()?;
+        let rest = &words[2..];
+        let cpu = rest
+            .iter()
+            .take_while(|w| !w.eq_ignore_ascii_case("x"))
+            .count();
+        let named = &rest[..cpu];
+        let cpu_known = |name: &&[&str]| {
+            name.len() == named.len()
+                && name
+                    .iter()
+                    .zip(named)
+                    .all(|(k, w)| w.eq_ignore_ascii_case(k))
+        };
+        if !named.is_empty() && !CPU_NAMES.iter().any(cpu_known) {
+            return None;
+        }
+        let memory = match &rest[cpu..] {
+            [] => None,
+            [_x, size @ ..] => {
+                let gb = size_of(size, false)?;
+                if !all_known(&size[2..], &MEMORY_WORDS) {
+                    return None;
+                }
+                Some(gb)
+            }
+        };
+        return Some(Part::Cpu(cores, memory));
+    }
+    let kind = words.get(2..)?;
+    if all_known(kind, &MEMORY_WORDS) {
+        return size_of(words, false).map(Part::Memory);
+    }
+    if !all_known(kind, &DISK_WORDS) {
+        return None;
+    }
+    let gb = size_of(words, true)?;
+    let is = |k: &str| kind.iter().any(|w| w.eq_ignore_ascii_case(k));
+    let nvme = is("nvme") || is("nvme3") || is("nvme4");
+    // A disk said to be two kinds: not in the form.
+    if is("hdd") && (nvme || is("ssd")) {
+        return None;
+    }
+    let disk = if nvme {
+        Disk::Nvme
+    } else if is("ssd") {
+        Disk::Ssd
+    } else {
+        Disk::Unsaid
+    };
+    Some(Part::Disk(gb, disk))
+}
+
+impl Spec {
+    /// The cores and memory the account gives.
+    pub(crate) const fn sized(cores: Option<u16>, memory_gb: Option<u32>) -> Self {
+        Self {
+            cores,
+            memory_gb,
+            disk_gb: None,
+            disk: Disk::Unsaid,
+        }
+    }
+
+    /// The spec in the name of a product, read only when all of the name
+    /// is in the known form, word by word, case aside but for `GB` and
+    /// `TB`: the product's own name from [`NAME_WORDS`] (`🛰️ SLV VPS`), then
+    /// parts split by ` - `, each one of `<n> vCPU` (1 to 3 digits, then
+    /// CPU words as in [`CPU_NAMES`] and, if given, `x <n> GB <memory
+    /// words>`), `<n> GB <memory words>` ([`MEMORY_WORDS`]) and `<n> GB|TB
+    /// <disk words>` ([`DISK_WORDS`], one kind of disk), with a CPU, a
+    /// memory and a disk part each at most once and no word twice in a
+    /// part. Disk parts joined by ` + ` count as the one disk part and
+    /// give no disk. `SLV VPS - 1 vCPU AMD EPYC4G x 4 GB DDR5 - 10 GB SSD
+    /// NVMe4` has 1 vCPU, 4 GB of memory and a 10 GB `NVMe` disk. Any other
+    /// name gives none at all.
+    pub(crate) fn of_title(title: &str) -> Self {
+        let words: Vec<&str> = title.split_whitespace().collect();
+        let Some(at) = words.iter().position(|w| *w == "-") else {
+            return Self::default();
+        };
+        let name = &words[..at];
+        if name.is_empty() || !name.iter().all(|w| known(w, &NAME_WORDS)) {
+            return Self::default();
+        }
+        Self::of_parts(&words[at + 1..])
+    }
+
+    /// The parts `words` holds, split by `-`, read in the known form: the
+    /// spec they give together, or none when one is not in it.
+    fn of_parts(words: &[&str]) -> Self {
+        let mut spec = Self::default();
+        let mut disks = 0_usize;
+        for part in words.split(|w| *w == "-") {
+            let pieces: Vec<&[&str]> = part.split(|w| *w == "+").collect();
+            let twice = if pieces.len() > 1 {
+                // ` + ` joins disks only: the one disk part, but not one
+                // disk, so none is said.
+                if !pieces
+                    .iter()
+                    .all(|piece| matches!(part_of(piece), Some(Part::Disk(..))))
+                {
+                    return Self::default();
+                }
+                disks += 1;
+                false
+            } else {
+                match part_of(part) {
+                    Some(Part::Cpu(cores, memory)) if spec.cores.is_none() => {
+                        spec.cores = Some(cores);
+                        memory.is_some_and(|gb| spec.memory_gb.replace(gb).is_some())
+                    }
+                    Some(Part::Memory(gb)) => spec.memory_gb.replace(gb).is_some(),
+                    Some(Part::Disk(gb, disk)) => {
+                        disks += 1;
+                        (spec.disk_gb, spec.disk) = (Some(gb), disk);
+                        false
+                    }
+                    Some(Part::Cpu(..)) | None => true,
+                }
+            };
+            if twice || disks > 1 {
+                return Self::default();
+            }
+        }
+        spec
+    }
+
+    /// What is known of it, said: `1 vCPU, 4 GB memory, 10 GB NVMe`.
+    pub(crate) fn said(&self) -> Option<String> {
+        let mut parts = Vec::new();
+        if let Some(cores) = self.cores {
+            parts.push(t!("worker_vps.worker.cores", cores));
+        }
+        if let Some(memory) = self.memory_gb {
+            parts.push(t!("worker_vps.worker.memory", memory));
+        }
+        if let Some(disk) = self.disk_gb {
+            parts.push(match self.disk {
+                Disk::Nvme => t!("worker_vps.worker.disk_nvme", disk),
+                Disk::Ssd => t!("worker_vps.worker.disk_ssd", disk),
+                Disk::Unsaid => t!("worker_vps.worker.disk", disk),
+            });
+        }
+        (!parts.is_empty()).then(|| parts.join(&t!("worker_vps.worker.sep")))
+    }
+}
+
+/// An ERPC server as a person reads it: "ERPC Worker" and its spec, such
+/// as `ERPC Worker (1 vCPU, 4 GB memory, 10 GB NVMe)`; "ERPC Worker" alone
+/// when none of it is known. Never "VPS", nor the product's own name.
+pub(crate) fn worker(spec: &Spec) -> String {
+    match spec.said() {
+        Some(spec) => t!("worker_vps.worker.named", spec),
+        None => t!("worker_vps.worker.bare"),
+    }
+}
+
+/// [`worker`], with the id a person names it by: `ERPC Worker 100001 (1
+/// vCPU, 4 GB memory, 10 GB NVMe)`.
+pub(crate) fn worker_id(id: impl std::fmt::Display, spec: &Spec) -> String {
+    let id = id.to_string();
+    match spec.said() {
+        Some(spec) => t!("worker_vps.worker.named_id", id, spec),
+        None => t!("worker_vps.worker.bare_id", id),
+    }
+}
+
+/// What `erpc ai`'s start or end of a server asks, through `inner`, with
+/// the product's own name said as the ERPC Worker it is ([`worker`])
+/// wherever it appears: the yes or no is `inner`'s.
+struct AsWorker<'a> {
+    inner: &'a dyn Confirm,
+    named: Named<'a>,
+}
+
+/// Which server [`AsWorker`] names.
+enum Named<'a> {
+    /// The one a start buys: its product's name, and the ERPC Worker it is.
+    Start { product: &'a str, worker: String },
+    /// ERPC Worker `id`, which an end ends: `erpc ai` names it by its
+    /// product's name, followed on the product's line by `(vps <id>)`.
+    End { id: i64 },
+    /// Something else, said as `erpc ai` says it.
+    AsIs,
+}
+
+/// Who answers the end of `product_type` `id` that `erpc worker delete
+/// --release-server` asks for: `asked` (none: nobody), with an ERPC
+/// Worker said as the ERPC Worker it is.
+fn end_answerer<'a>(
+    asked: Option<&'a dyn Confirm>,
+    product_type: &str,
+    id: i64,
+) -> Option<AsWorker<'a>> {
+    asked.map(|inner| AsWorker {
+        inner,
+        named: if product_type == "vps" {
+            Named::End { id }
+        } else {
+            Named::AsIs
+        },
+    })
+}
+
+impl AsWorker<'_> {
+    /// `ask`, its product's name said as the ERPC Worker.
+    fn renamed(&self, ask: &erpc_ai::confirm::Confirmation) -> erpc_ai::confirm::Confirmation {
+        let (product, worker, tag) = match &self.named {
+            Named::AsIs => return ask.clone(),
+            Named::Start { product, worker } => ((*product).to_owned(), worker.clone(), None),
+            Named::End { id } => {
+                // The product's line says its name and `(vps <id>)`.
+                let tag = format!(" (vps {id})");
+                let Some(product) = ask.lines.iter().find_map(|(_, v)| v.strip_suffix(&tag)) else {
+                    return ask.clone();
+                };
+                let worker = worker_id(id, &Spec::of_title(product));
+                (product.to_owned(), worker, Some(tag))
+            }
+        };
+        let name = product.trim();
+        let swap = |text: &str| {
+            let text = tag
+                .as_deref()
+                .and_then(|tag| text.strip_suffix(tag))
+                .unwrap_or(text);
+            if name.is_empty() {
+                text.to_owned()
+            } else {
+                text.replace(name, &worker)
+            }
+        };
+        erpc_ai::confirm::Confirmation {
+            title: swap(&ask.title),
+            lines: ask
+                .lines
+                .iter()
+                .map(|(label, value)| (label.clone(), swap(value)))
+                .collect(),
+        }
+    }
+}
+
+impl Confirm for AsWorker<'_> {
+    fn confirm<'a>(
+        &'a self,
+        ask: &'a erpc_ai::confirm::Confirmation,
+    ) -> core::pin::Pin<Box<dyn Future<Output = bool> + 'a>> {
+        Box::pin(async move { self.inner.confirm(&self.renamed(ask)).await })
+    }
+}
+
+/// How a family of hourly products is named: the servers as
+/// [`worker`] names them, the others by the catalogue's word.
+fn family_said(family: &str) -> String {
+    if family == "vps" {
+        t!("worker_vps.worker.bare")
+    } else {
+        family.to_owned()
+    }
+}
+
 /// The UDP port a UDP Forwarding line sends to when neither `--udp-port`
 /// nor a line on record names one.
 pub(crate) const DEFAULT_UDP_PORT: u16 = 10001;
@@ -1080,7 +1445,7 @@ pub(crate) struct Server {
 }
 
 /// The account's VPSs that are running, as (id, address, region, plan).
-pub(crate) async fn running(api: &Api) -> Result<Vec<(i64, String, String, String)>, CliError> {
+pub(crate) async fn running(api: &Api) -> Result<Vec<(i64, String, String, Spec)>, CliError> {
     let reply = api
         .read(erpc_ai::ready::vps_status_url().map_err(failed)?)
         .await?;
@@ -1094,14 +1459,20 @@ pub(crate) async fn running(api: &Api) -> Result<Vec<(i64, String, String, Strin
                 row["userVpsId"].as_i64()?,
                 row["ip"].as_str()?.to_owned(),
                 row["region"].as_str().unwrap_or("").to_owned(),
-                row["vpsVersion"]
-                    .as_str()
-                    .or_else(|| row["productName"].as_str())
-                    .unwrap_or("VPS")
-                    .to_owned(),
+                running_spec(row),
             ))
         })
         .collect())
+}
+
+/// The spec of a running server's `row` (one of the account's VPS status
+/// rows): from its product's name, the row's `product`, read as
+/// [`Spec::of_title`] reads it; never the name itself.
+fn running_spec(row: &Value) -> Spec {
+    row["product"]
+        .as_str()
+        .map(Spec::of_title)
+        .unwrap_or_default()
 }
 
 /// VPS `id` of the account, made key-only when erpc has not done so yet:
@@ -1245,10 +1616,13 @@ async fn plan(api: &Api, family: &str, asked: Option<&str>) -> Result<Plan, CliE
         })
         .collect();
     if let Some(id) = asked {
-        let (id, cents) = plans
-            .into_iter()
-            .find(|(p, _)| p == id)
-            .ok_or_else(|| failed(t!("worker_vps.plan.not_offered", id, family)))?;
+        let (id, cents) = plans.into_iter().find(|(p, _)| p == id).ok_or_else(|| {
+            failed(t!(
+                "worker_vps.plan.not_offered",
+                id,
+                family = family_said(family)
+            ))
+        })?;
         let name = product_name(api, &id).await.unwrap_or_else(|| id.clone());
         return Ok(Plan { id, cents, name });
     }
@@ -1267,7 +1641,7 @@ async fn plan(api: &Api, family: &str, asked: Option<&str>) -> Result<Plan, CliE
     offered
         .into_iter()
         .min_by(|a, b| a.cents.total_cmp(&b.cents))
-        .ok_or_else(|| failed(t!("worker_vps.plan.none", family)))
+        .ok_or_else(|| failed(t!("worker_vps.plan.none", family = family_said(family))))
 }
 
 /// How a plan was chosen, as the line about buying it says.
@@ -1323,9 +1697,10 @@ pub(crate) async fn buy(
     };
     let chosen = plan(api, "vps", asked_plan).await?;
     let (product, cents) = (chosen.id.clone(), chosen.cents);
+    let named = worker(&Spec::of_title(&chosen.name));
     say.line(&t!(
         "worker_vps.buy.buying",
-        name = chosen.name,
+        name = named.as_str(),
         product,
         how = how_chosen(asked_plan),
         price = format!("{:.4}", cents / 100.0),
@@ -1336,7 +1711,16 @@ pub(crate) async fn buy(
             t!("worker_vps.buy.region_nearest")
         }
     ));
-    let confirm = api.confirm_start()?;
+    // What `erpc ai`'s start asks names the product by its own name: here
+    // it is said as the ERPC Worker it is.
+    let confirm = AsWorker {
+        inner: api.confirm_start()?,
+        named: Named::Start {
+            product: &chosen.name,
+            worker: named,
+        },
+    };
+    let confirm: &dyn Confirm = &confirm;
     let wanted = Start {
         key: String::new(),
         family: "vps".to_owned(),
@@ -1445,20 +1829,24 @@ pub(crate) async fn end(env: &Env, say: &Say, yes: bool) -> Result<Value, CliErr
         ResourceKind::BareMetal => "bare_metal",
         _ => "vps",
     };
+    let kind = resource.kind.as_str();
     let api = Api::open().await?.releasing(yes);
-    say.line(&t!("worker_vps.end.ending", kind = product_type, id));
+    say.line(&t!("worker_vps.end.ending", kind, id));
+    // What `erpc ai`'s end asks names an ERPC Worker by its product's name:
+    // here it is said as the ERPC Worker it is.
+    let answerer = end_answerer(api.confirm(), product_type, id);
     let ended = erpc_ai::actions::end_hourly_product(
         &api.client,
         &api.token,
         &json!({ "productType": product_type, "userProductId": id }),
-        api.confirm(),
+        answerer.as_ref().map(|a| a as &dyn Confirm),
     )
     .await
     .map_err(failed)?;
     if ended["done"] != json!(true) {
         return Err(failed(t!(
             "worker_vps.end.failed",
-            kind = product_type,
+            kind,
             id,
             answer = ended
         )));
@@ -5069,6 +5457,574 @@ mod tests {
             ["203.0.113.5", "203.0.113.6"]
         );
         assert!(line_ips(&json!({ "whitelistIps": null })).is_empty());
+    }
+
+    /// Every name an earlier review tried that is in the known form, with
+    /// the spec it gives: the name's own words, never more.
+    const REVIEWED_IN_FORM: [(&str, &str); 14] = [
+        (
+            "🛰\u{fe0f} SLV VPS - 1 vCPU AMD EPYC4G x 4 GB DDR5 - 10 GB SSD NVMe4",
+            "ERPC Worker (1 vCPU, 4 GB memory, 10 GB NVMe)",
+        ),
+        (
+            "SLV VPS - 1 vCPU - 999999999 GB NVMe",
+            "ERPC Worker (1 vCPU, 999999999 GB NVMe)",
+        ),
+        (
+            "SLV VPS - 100 GB NVMe + 100 GB NVMe + 100 GB NVMe - 4 vCPU",
+            "ERPC Worker (4 vCPU)",
+        ),
+        (
+            "SLV\tVPS\t-\t1\tvCPU\tx\t4\tGB\tDDR5",
+            "ERPC Worker (1 vCPU, 4 GB memory)",
+        ),
+        ("SLV VPS - 4 GB ECC", "ERPC Worker (4 GB memory)"),
+        (
+            "SLV VPS - 8 vCPU AMD Ryzen x 32 GB DDR5",
+            "ERPC Worker (8 vCPU, 32 GB memory)",
+        ),
+        (
+            "SLV VPS - 1 VCPU X 4 GB DDR5",
+            "ERPC Worker (1 vCPU, 4 GB memory)",
+        ),
+        (
+            "SLV VPS - 1 vCPU x 4 GB DDR5 - 10 GB NVMe + 10 GB NVMe",
+            "ERPC Worker (1 vCPU, 4 GB memory)",
+        ),
+        ("SLV VPS - 999 vCPU", "ERPC Worker (999 vCPU)"),
+        (
+            "SLV VPS - 1 vCPU AMD EPYC4G x 4 GB DDR5 - 10 GB SSD NVMe4",
+            "ERPC Worker (1 vCPU, 4 GB memory, 10 GB NVMe)",
+        ),
+        (
+            "SLV VPS - 4 vCPU x 4 GB DDR5 - 10 GB SSD NVMe4 + 100 GB HDD",
+            "ERPC Worker (4 vCPU, 4 GB memory)",
+        ),
+        (
+            "SLV VPS - 4 vCPU x 2 GB DDR5",
+            "ERPC Worker (4 vCPU, 2 GB memory)",
+        ),
+        (
+            "SLV VPS - 1 vCPU x 4 GB DDR5 - 10 GB SSD + 10 GB SSD",
+            "ERPC Worker (1 vCPU, 4 GB memory)",
+        ),
+        (
+            "SLV VPS Max - 16 vCPU x 64 GB RAM - 1 TB SSD",
+            "ERPC Worker (16 vCPU, 64 GB memory, 1000 GB SSD)",
+        ),
+    ];
+
+    /// Every name an earlier review tried that is not in the known form:
+    /// none gives a spec.
+    const REVIEWED_NOT_IN_FORM: [&str; 160] = [
+        "Dual SLV VPS - 1 vCPU AMD EPYC4G x 4 GB DDR5 - 10 GB SSD NVMe4",
+        "SLV VPS x2 - 1 vCPU AMD EPYC4G x 4 GB DDR5 - 10 GB SSD NVMe4",
+        "2 x SLV VPS - 4 vCPU x 8 GB DDR5 - 100 GB NVMe",
+        "SLV VPS (2 servers) - 4 vCPU x 8 GB DDR5",
+        "SLV VPS per vCPU - 4 GB DDR5",
+        "SLV VPS 2 vCPU 8 GB - 1 vCPU",
+        "1 vCPU AMD EPYC4G x 4 GB DDR5 - 10 GB SSD NVMe4",
+        "16 vCPU x 64 GB DDR5 - 2 vCPU",
+        "SLV VPS - 1 vCPU x 1 TB RAM",
+        "SLV VPS - 1 vCPU x 4 TB DDR5",
+        "SLV VPS - 1 vCPU - 9999999 TB NVMe",
+        "SLV VPS - 1 vCPU - 4294967296 GB NVMe",
+        "SLV VPS - 1 vCPU + 4 GB DDR5",
+        "SLV VPS - 1 vCPU + 4 GB DDR5 - 10 GB NVMe",
+        "SLV VPS - 4 vCPU x 8 GB DDR5 + 100 GB NVMe",
+        "SLV VPS - 100 GB NVMe + 8 GB DDR5",
+        "SLV VPS - 4 vCPU + x 8 GB DDR5",
+        "SLV VPS - 4 vCPU x 8 GB DDR5 + 8 GB DDR5",
+        "SLV VPS - 4 GB DDR5 + 1 vCPU",
+        "SLV VPS – 1 vCPU x 4 GB DDR5",
+        "SLV VPS — 1 vCPU x 4 GB DDR5",
+        "SLV VPS -- 1 vCPU x 4 GB DDR5",
+        "SLV VPS - 1 vCPU AMD AMD AMD x 4 GB DDR5 DDR5",
+        "SLV VPS - 1 vCPU Intel AMD x 4 GB RAM ECC",
+        "SLV VPS - 10 GB HDD SSD",
+        "SLV VPS - 10 GB NVMe HDD",
+        "SLV VPS - 10 GB SSD HDD",
+        "SLV VPS - 4 GB DDR5 SSD",
+        "SLV VPS - 01 vCPU x 04 GB DDR5",
+        "SLV VPS - 1 vCPU x 0 GB DDR5",
+        "SLV VPS - 0 vCPU",
+        "SLV VPS - 1 vCPU x 4 GB DDR5 -",
+        "- 1 vCPU x 4 GB DDR5",
+        "- - 1 vCPU",
+        "SLV VPS - Tokyo - 1 vCPU",
+        "SLV VPS - 1 vCPU x 4 GB DDR5 - 10 GB SSD NVMe4 - 1 vCPU",
+        "SLV VPS - 1 vCPU x 4 GB DDR5 x 4 GB DDR5",
+        "SLV VPS - 1 vCPU AMD x x 4 GB DDR5",
+        "SLV VPS - 8 vCPU AMD Ryzen 9 7950X x 32 GB DDR5",
+        "SLV VPS - 1 vcpu x 4 gb ddr5",
+        "SLV VPS - 1 vCPU x 4 Gb DDR5",
+        "SLV VPS - 1 vCPU x 4 GiB DDR5",
+        "SLV VPS - 1 vCPU x 4096 MB DDR5",
+        "SLV VPS - 1 vCPU x 4GB DDR5",
+        "SLV VPS - 1 vCPU, x 4 GB DDR5",
+        "SLV VPS - 1 vCPU x 4 GB DDR5 - 10 GB NVMe x",
+        "SLV VPS - 1 vCPU x 4 GB DDR5 - x 10 GB NVMe",
+        "SLV VPS - 1 vCPU x 4 GB DDR5 - 10 GB NVMe - 10 GB NVMe",
+        "SLV VPS - 1 vCPU x 4 GB DDR5 - 10 GB NVMe ++ 10 GB NVMe",
+        "SLV VPS - 1 vCPU x 4 GB DDR5 - 10 GB NVMe+10 GB NVMe",
+        "SLV VPS - 1 vCPU x 4 GB DDR5 - 10 GB NVMe +10 GB NVMe",
+        "SLV VPS - 1 vCPU x 4 GB DDR5 - 10 GB NVMe + ",
+        "SLV VPS - 1 vCPU x 4 GB DDR5 - + 10 GB NVMe",
+        "SLV VPS - 1 vCPU x 4 GB DDR5 + - 10 GB NVMe",
+        "SLV VPS - 4 vCPU - 2 GB DDR5 - 2 GB DDR5",
+        "SLV VPS - 4 vCPU x 2 GB DDR5 - 2 GB DDR5",
+        "SLV VPS - 1 vCPU AMD EPYC4G x 4 GB DDR5 - 10 GB SSD NVMe4 2",
+        "SLV VPS - 1 vCPU AMD EPYC4G 2 x 4 GB DDR5",
+        "SLV VPS - 2 1 vCPU",
+        "SLV VPS - 1 vCPU 2",
+        "SLV VPS - 1 2 vCPU",
+        "SLV VPS - 1 vCPU x 2 4 GB DDR5",
+        "SLV VPS - 1 vCPU x 4 GB 2 DDR5",
+        "SLV VPS - 1 vCPU x 4 GB DDR5 2",
+        "SLV VPS - 10 GB 2 NVMe",
+        "SLV VPS - 10 TB 2 NVMe",
+        "SLV VPS - ２ vCPU",
+        "SLV VPS - 1 vCPU x 4 ＧＢ DDR5",
+        "SLV VPS - 1 vCPU x 4 GB DDR5 - 10 GB NVMe4 NVMe4",
+        "SLV VPS - 1 vCPU x 4 GB DDR5 - 10 GB SSD SSD SSD",
+        "SLV VPS - 1 vCPU x 4 GB DDR5 - 10 GB nvme3 hdd",
+        "SLV VPS - 1 vCPU AMD EPYC4G x 4 GB DDR5 - 10 GB SSD NVMe4 x 2",
+        "SLV VPS - 1 vCPU AMD EPYC4G x 4 GB DDR5 - 10 GB SSD NVMe4 x2",
+        "SLV VPS - 4 vCPU x 4 GB DDR5 ECC x 2 - 50 GB NVMe",
+        "SLV VPS - 4 vCPU x 8 GB DDR5 - 960 GB SSD NVMe4 (x2)",
+        "SLV VPS - 4 vCPU x 8 GB DDR5 - 960 GB NVMe x 2",
+        "SLV VPS - 2 vCPU x 2 - 8 GB DDR5",
+        "SLV VPS - 4 vCPU x 16 GB DDR5 - 2 x 1 TB NVMe",
+        "SLV VPS - 8 vCPU - 32 GB DDR5 RAM - 2 × 960 GB NVMe",
+        "SLV VPS - 2vCPU x 4GB DDR5 - 40GB NVMe",
+        "SLV VPS - 4 vCPU x 8 GB DDR5 - 960 GB NVMe×2",
+        "SLV VPS - 4 vCPU x 8 GB DDR5 - 960 GB NVMex2",
+        "SLV VPS - 4 vCPU x 8 GB DDR5 - 960 GB SSD NVMe4x2",
+        "SLV VPS - 4 vCPU x 8 GB DDR5 - 960 GB NVMe *2",
+        "SLV VPS - 4 vCPU x 8 GB DDR5 - 960 GB NVMe * 2",
+        "SLV VPS - 4 vCPU x 8 GB DDR5 - 2 * 960 GB NVMe",
+        "SLV VPS - 4 vCPU x 8 GB DDR5 - 960 GB NVMe 2 pcs",
+        "SLV VPS - 4 vCPU x 8 GB DDR5 - Dual 960 GB NVMe",
+        "SLV VPS - 4 vCPU x 8 GB DDR5 - 960 GB NVMe (2 disks)",
+        "SLV VPS - 4 vCPU x 8 GB DDR5 - 960 GB NVMe RAID1 x 2",
+        "SLV VPS - 4 vCPU x 8 GB DDR5 - 960 GB NVMe RAID 1",
+        "SLV VPS - 4 vCPU x 8 GB DDR5 - 960 GB NVMe RAID 10",
+        "SLV VPS - 4 vCPU x 8 GB DDR5 – 960 GB NVMe – x 2",
+        "SLV VPS – 4 vCPU x 8 GB DDR5 – 960 GB NVMe x 2",
+        "SLV VPS - 4 vCPU x 8 GB DDR5 / 960 GB NVMe x 2",
+        "SLV VPS - 4 vCPU x 8 GB DDR5 | 2 x 480 GB SSD",
+        "SLV VPS - 4 vCPU x 8 GB DDR5 - 960 GB NVMe (x 2)",
+        "SLV VPS - 4 vCPU x 8 GB DDR5 - 960 GB NVMe ( x2 )",
+        "SLV VPS - 4 vCPU x 8 GB DDR5 - 960 GB NVMe [2x]",
+        "SLV VPS - 4 vCPU x 8 GB DDR5 - (2x) 960 GB NVMe",
+        "SLV VPS - 4 vCPU x 8 GB DDR5 - 2x960 GB NVMe",
+        "SLV VPS - 4 vCPU x 8 GB DDR5 - 960 GB x 2 NVMe",
+        "SLV VPS - 4 vCPU x 8 GB DDR5 - 960 GB NVMe 2x",
+        "SLV VPS - 4 vCPU x 8 GB DDR5 - 960 GB NVMe 2 x",
+        "SLV VPS - 4 vCPU x 8 GB DDR5 - 960 GB NVMe, x 2",
+        "SLV VPS - 4 vCPU x 8 GB DDR5 - 960 GB NVMe,x2",
+        "SLV VPS - 4 vCPU x 8 GB DDR5 - 960 GB NVMe x 02",
+        "SLV VPS - 4 vCPU x 8 GB DDR5 - 960 GB NVMe x 10",
+        "SLV VPS - 4 vCPU x 8 GB DDR5 - 960 GB NVMe x 100",
+        "SLV VPS - 2 x 4 vCPU - 16 GB DDR5",
+        "SLV VPS - 4 vCPU x 2 - 16 GB DDR5",
+        "SLV VPS - 4 vCPUs x 2 - 16 GB DDR5",
+        "SLV VPS - 4 vCPU (x2) - 16 GB DDR5",
+        "SLV VPS - 16 GB DDR5 x 2 - 100 GB NVMe",
+        "SLV VPS - 16 GB DDR5 2x - 100 GB NVMe",
+        "SLV VPS - 16 GB DDR5 (2x8 GB) - 100 GB NVMe",
+        "SLV VPS - 16 GB DDR5 (2 x 8 GB) - 100 GB NVMe",
+        "SLV VPS - 2 x 8 GB DDR5 - 100 GB NVMe",
+        "SLV VPS - 4 vCPU x 8 GB DDR5 x2 - 100 GB NVMe",
+        "SLV VPS - 4 vCPU x 8 GB DDR5 RAM x2 - 100 GB NVMe",
+        "SLV VPS - 8 vCPU AMD Ryzen 9 7950X x 32 GB DDR5 - 100 GB NVMe",
+        "SLV VPS - 8 vCPU AMD EPYC 9 x 32 GB DDR5 - 100 GB NVMe",
+        "SLV VPS - 8 vCPU AMD EPYC 9 - 32 GB DDR5 - 100 GB NVMe",
+        "SLV VPS - 8 vCPU Intel Xeon 2 x 32 GB DDR5",
+        "SLV VPS - 8 vCPU Gen 4 x 32 GB DDR5",
+        "SLV VPS - 4 vCPU x 8 GB DDR5 - 960 GB NVMe Gen4 x 4 lanes",
+        "SLV VPS - 1 TB NVMe x 2",
+        "SLV Super VPS - 16 vCPU x 64 GB DDR5 - 2 x 1.92 TB NVMe",
+        "SLV Super VPS - 16 vCPU x 64 GB DDR5 - 1.92 TB NVMe x 2",
+        "SLV Premium VPS - 32 vCPU x 128 GB DDR5 - 3.84 TB NVMe",
+        "SLV VPS - 4 vCPU x 8 GB DDR5 - 960 GB SSD NVMe4 x 2 + 100 GB HDD",
+        "SLV VPS - 4 vCPU x 8 GB - 960 GB NVMe",
+        "🛰\u{fe0f} SLV VPS - 1 vCPU AMD EPYC4G x 4 GB DDR5 - 10 GB SSD NVMe4 ×2",
+        "SLV VPS - 4 vCPU x 8 GB DDR5 - 2 x 960 GB NVMe",
+        "SLV VPS - 4 vCPU x 4 GB DDR5 x 2 - 50 GB NVMe",
+        "SLV VPS - 2 x 4 vCPU - 16 GB DDR5 - 2x 480 GB SSD",
+        "SLV VPS - 8 GB RAM x2 - 100 GB SSD",
+        "SLV VPS - 2 vCPU x 8 GB DDR5, 40 GB NVMe x 2",
+        "SLV VPS - 4 GB DDR5 2 x - 40 GB NVMe",
+        "SLV VPS - 4 GB DDR5 2x - 40 GB NVMe",
+        "SLV VPS - 4 GB DDR5 2x 480 GB SSD",
+        "SLV VPS - 4 vCPU, DDR5 x 2 - 50 GB NVMe",
+        "SLV VPS - 4 vCPU 8 GB DDR5 x 2 - 50 GB NVMe",
+        "SLV VPS - 8 GB DDR5 - 100 GB NVMe + backup x 2",
+        "SLV VPS - 4 GB DDR5 2 x 480 GB SSD",
+        "SLV VPS - 4 GB DDR5 - NVMe x 2",
+        "SLV VPS - 4 GB DDR5 , NVMe x 2",
+        "SLV VPS - 4 GB DDR5, NVMe x 2",
+        "SLV VPS - 8 vCPU AMD Ryzen 9 7950X 32 GB DDR5",
+        "SLV VPS - 2 vCPU × 8 GB DDR5 - 40 GB NVMe",
+        "🛰\u{fe0f} SLV VPS - 1 vCPU AMD EPYC4G x 4 GB DDR5 - 10 GB SSD NVMe4x2",
+        "🛰\u{fe0f} SLV VPS - 1 vCPU AMD EPYC4G x 4 GB DDR5 - 10 GB SSD NVMe4×2",
+        "🛰\u{fe0f} SLV VPS - 1 vCPU AMD EPYC4G x 4 GB DDR5 - 10 GB SSD NVMe4 x 2",
+        "🛰\u{fe0f} SLV VPS - 1 vCPU AMD EPYC4G x 4 GB DDR5 - 10 GB SSD NVMe4 * 2",
+        "🛰\u{fe0f} SLV VPS - 1 vCPU AMD EPYC4G x 4 GB DDR5 - 2 * 10 GB SSD NVMe4",
+        "🛰\u{fe0f} SLV VPS - 1 vCPU AMD EPYC4G x 4 GB DDR5 - 10 GB SSD NVMe4 2 pcs",
+        "🛰\u{fe0f} SLV VPS - 1 vCPU AMD EPYC4G x 4 GB DDR5 - Dual 10 GB SSD NVMe4",
+        "🛰\u{fe0f} SLV VPS - 1 vCPU AMD EPYC4G x 4 GB DDR5x2 - 10 GB SSD NVMe4",
+        "🛰\u{fe0f} SLV VPS - 1 vCPU AMD EPYC4G x 4 GB DDR5 - 960 GB SSD NVMe4 x 2 + 100 GB HDD",
+        "SLV VPS - 8 vCPU AMD EPYC 9654 x 32 GB DDR5 - 100 GB NVMe",
+    ];
+
+    #[test]
+    fn every_name_the_reviews_tried_gives_only_what_it_says() {
+        use super::{Spec, worker};
+        // Every name the reviews tried.
+        for (title, said) in REVIEWED_IN_FORM {
+            assert_eq!(worker(&Spec::of_title(title)), said, "{title:?}");
+        }
+        for title in REVIEWED_NOT_IN_FORM {
+            assert_eq!(Spec::of_title(title), Spec::default(), "{title:?}");
+        }
+        // The product's own name, word by word too.
+        for title in [
+            "Dual SLV VPS - 1 vCPU",
+            "SLV VPS x2 - 1 vCPU",
+            "2 x SLV VPS - 1 vCPU",
+            "SLV VPS (2 servers) - 1 vCPU",
+            "SLV VPS per vCPU - 4 GB DDR5",
+            "- 1 vCPU",
+        ] {
+            assert_eq!(Spec::of_title(title), Spec::default(), "{title:?}");
+        }
+        for name in [
+            "🛰️ SLV VPS",
+            "🛰 SLV VPS",
+            "SLV VPS Max",
+            "SLV Super VPS",
+            "Premium VPS",
+            "VPS Plus",
+        ] {
+            assert_eq!(
+                worker(&Spec::of_title(&format!("{name} - 2 vCPU"))),
+                "ERPC Worker (2 vCPU)",
+                "{name}"
+            );
+        }
+        // `+` joins disks only; units are GB and TB as written; a size
+        // too large to count, a nought first, a word twice, a disk of two
+        // kinds and a CPU of two makers give none.
+        for title in [
+            "SLV VPS - 1 vCPU + 4 GB DDR5",
+            "SLV VPS - 4 GB DDR5 + 1 vCPU",
+            "SLV VPS - 4 vCPU x 8 GB DDR5 + 100 GB NVMe",
+            "SLV VPS - 1 vCPU + 4 GB DDR5 - 10 GB NVMe",
+            "SLV VPS - 10 GB NVMe - 10 GB NVMe + 10 GB NVMe",
+            "SLV VPS - 10 GB NVMe + 10 GB NVMe - 10 GB NVMe",
+            "SLV VPS - 1 vCPU - 10 GB NVMe - 10 GB NVMe + 10 GB NVMe",
+            "SLV VPS - 2 vCPU - 4 GB DDR5 + 8 GB DDR5",
+            "SLV VPS - 1 vCPU x 4 gb DDR5",
+            "SLV VPS - 1 vCPU x 4 Gb DDR5",
+            "SLV VPS - 1 vCPU x 1 TB RAM",
+            "SLV VPS - 1 vCPU - 9999999 TB NVMe",
+            "SLV VPS - 01 vCPU",
+            "SLV VPS - 1 vCPU x 04 GB DDR5",
+            "SLV VPS - 1 vCPU AMD AMD",
+            "SLV VPS - 4 GB DDR5 DDR5",
+            "SLV VPS - 10 GB SSD HDD",
+            "SLV VPS - 10 GB NVMe HDD",
+            "SLV VPS - 1 vCPU Intel AMD",
+            "SLV VPS - 1 vCPU Xeon AMD",
+            "SLV VPS - 1 vCPU EPYC AMD",
+        ] {
+            assert_eq!(Spec::of_title(title), Spec::default(), "{title:?}");
+        }
+        assert_eq!(
+            worker(&Spec::of_title("SLV VPS - 1 vCPU - 4294967 TB NVMe")),
+            "ERPC Worker (1 vCPU, 4294967000 GB NVMe)"
+        );
+    }
+
+    #[test]
+    fn a_spec_is_read_from_a_name_only_in_the_known_form() {
+        use super::{Spec, worker};
+        // In the known form, part by part.
+        for (title, said) in [
+            (
+                "🛰️ SLV VPS - 1 vCPU AMD EPYC4G x 4 GB DDR5 - 10 GB SSD NVMe4",
+                "ERPC Worker (1 vCPU, 4 GB memory, 10 GB NVMe)",
+            ),
+            (
+                "SLV VPS Max - 16 vCPU x 64 GB RAM - 1 TB SSD",
+                "ERPC Worker (16 vCPU, 64 GB memory, 1000 GB SSD)",
+            ),
+            (
+                "SLV VPS - 4 vCPU Intel Xeon - 16 GB DDR4 ECC - 480 GB HDD",
+                "ERPC Worker (4 vCPU, 16 GB memory, 480 GB disk)",
+            ),
+            (
+                "SLV VPS - 8 vCPU AMD Ryzen x 32 GB DDR5 - 100 GB NVMe3",
+                "ERPC Worker (8 vCPU, 32 GB memory, 100 GB NVMe)",
+            ),
+            ("SLV VPS - 2 vCPU", "ERPC Worker (2 vCPU)"),
+            // Words are read whatever their case.
+            (
+                "slv vps - 1 VCPU amd epyc4g X 4 GB ddr5",
+                "ERPC Worker (1 vCPU, 4 GB memory)",
+            ),
+            // Disks joined by `+`: no disk said.
+            (
+                "SLV VPS - 4 vCPU x 8 GB DDR5 - 100 GB NVMe + 100 GB HDD",
+                "ERPC Worker (4 vCPU, 8 GB memory)",
+            ),
+        ] {
+            assert_eq!(worker(&Spec::of_title(title)), said, "{title}");
+        }
+        // Anything else gives none at all: a count, however written, a word
+        // not in the form, a second disk or memory, another part.
+        for title in [
+            // Counts.
+            "SLV VPS - 1 vCPU AMD EPYC4G x 4 GB DDR5 - 10 GB SSD NVMe4 x 2",
+            "SLV VPS - 1 vCPU AMD EPYC4G x 4 GB DDR5 - 10 GB SSD NVMe4 x2",
+            "SLV VPS - 4 vCPU x 4 GB DDR5 ECC x 2 - 50 GB NVMe",
+            "SLV VPS - 4 vCPU x 8 GB DDR5 - 960 GB SSD NVMe4 (x2)",
+            "🛰️ SLV VPS - 1 vCPU AMD EPYC4G x 4 GB DDR5 - 10 GB SSD NVMe4x2",
+            "🛰️ SLV VPS - 1 vCPU AMD EPYC4G x 4 GB DDR5 - 10 GB SSD NVMe4×2",
+            "🛰️ SLV VPS - 1 vCPU AMD EPYC4G x 4 GB DDR5x2 - 10 GB SSD NVMe4",
+            "🛰️ SLV VPS - 1 vCPU AMD EPYC4G x 4 GB DDR5 - 10 GB SSD NVMe4 * 2",
+            "🛰️ SLV VPS - 1 vCPU AMD EPYC4G x 4 GB DDR5 - 2 * 10 GB SSD NVMe4",
+            "🛰️ SLV VPS - 1 vCPU AMD EPYC4G x 4 GB DDR5 - 10 GB SSD NVMe4 2 pcs",
+            "🛰️ SLV VPS - 1 vCPU AMD EPYC4G x 4 GB DDR5 - Dual 10 GB SSD NVMe4",
+            "SLV VPS - 4 vCPU x 8 GB DDR5 - 2 x 960 GB NVMe",
+            "SLV VPS - 2 x 4 vCPU - 16 GB DDR5 - 2x 480 GB SSD",
+            "SLV VPS - 8 GB RAM x2 - 100 GB SSD",
+            // A word, a sign or a number not in the form.
+            "SLV VPS - 2 vCPU × 8 GB DDR5 - 40 GB NVMe",
+            "SLV VPS - 8 vCPU AMD Ryzen 9 7950X x 32 GB DDR5",
+            "SLV VPS - 1 vCPU AMD EPYC4G x 4 GB DDR5 - 10 GB SSD NVMe4 Promo",
+            "SLV VPS - 1 vCPU Turbo x 4 GB DDR5",
+            "SLV VPS - 4 GB GDDR6",
+            "SLV VPS - 4 vCPUs - 8 GB DDR5",
+            "SLV VPS - 1000 vCPU",
+            "SLV VPS - 0 vCPU - 8 GB DDR5",
+            "SLV VPS - 1 vCPU x 4 GB",
+            "SLV VPS - 4 vCPU, 8 GB DDR5",
+            "SLV VPS - Promo - 1 vCPU",
+            "SLV VPS - 1 vCPU - - 4 GB DDR5",
+            "SLV VPS - 100 GB NVMe +",
+            "SLV VPS - 100 GB NVMe + backup",
+            // A second of a kind.
+            "SLV VPS - 1 vCPU - 2 vCPU",
+            "SLV VPS - 8 GB DDR5 - 1 vCPU x 4 GB DDR5",
+            "SLV VPS - 1 vCPU AMD x",
+            "SLV VPS - 1 vCPU x 4 GB DDR5 - 8 GB DDR5",
+            "SLV VPS - 10 GB NVMe - 20 GB HDD",
+            // No parts.
+            "1 vCPU AMD EPYC4G x 4 GB DDR5",
+            "SLV VPS",
+            "",
+        ] {
+            assert_eq!(Spec::of_title(title), Spec::default(), "{title}");
+            assert_eq!(worker(&Spec::of_title(title)), "ERPC Worker", "{title}");
+        }
+    }
+
+    #[test]
+    fn a_server_is_an_erpc_worker_with_its_spec_never_its_products_name() {
+        use super::{Disk, Spec, family_said, running_spec, worker, worker_id};
+        let title = "🛰️ SLV VPS - 1 vCPU AMD EPYC4G x 4 GB DDR5 - 10 GB SSD NVMe4";
+        let spec = Spec::of_title(title);
+        assert_eq!(
+            spec,
+            Spec {
+                cores: Some(1),
+                memory_gb: Some(4),
+                disk_gb: Some(10),
+                disk: Disk::Nvme,
+            }
+        );
+        assert_eq!(
+            worker(&spec),
+            "ERPC Worker (1 vCPU, 4 GB memory, 10 GB NVMe)"
+        );
+        assert_eq!(
+            worker_id(100_001, &spec),
+            "ERPC Worker 100001 (1 vCPU, 4 GB memory, 10 GB NVMe)"
+        );
+        // Another product's words: an SSD, a size in TB, "RAM".
+        assert_eq!(
+            worker(&Spec::of_title(
+                "SLV VPS Max - 16 vCPU x 64 GB RAM - 1 TB SSD"
+            )),
+            "ERPC Worker (16 vCPU, 64 GB memory, 1000 GB SSD)"
+        );
+        // A name that says nothing of it: the id, never the name.
+        for odd in ["Mystery plan", "", "SLV VPS"] {
+            let spec = Spec::of_title(odd);
+            assert_eq!(spec, Spec::default(), "{odd}");
+            assert_eq!(worker(&spec), "ERPC Worker");
+            assert_eq!(worker_id(7, &spec), "ERPC Worker 7");
+        }
+        // What the account gives: cores and memory, or cores alone.
+        assert_eq!(
+            worker(&Spec::sized(Some(2), Some(8))),
+            "ERPC Worker (2 vCPU, 8 GB memory)"
+        );
+        assert_eq!(worker(&Spec::sized(Some(2), None)), "ERPC Worker (2 vCPU)");
+        // A row of the account's running servers: its product's name read
+        // for the spec, else its version's; never shown as it is.
+        // A row in the shape the account's VPS status rows have: its
+        // product's name read for the spec, in the known form or not at all.
+        let row = |product: &str| {
+            json!({ "userVpsId": 100_001, "subscriptionItemId": "si_1", "priceId": "price_1",
+                "product": product, "price": 78, "status": "on", "region": "tokyo",
+                "ip": "203.0.113.9", "username": "solv" })
+        };
+        assert_eq!(running_spec(&row(title)), spec);
+        assert_eq!(
+            worker_id(100_001, &running_spec(&row("SLV VPS - 1 vCPU x 4 GB DDR5"))),
+            "ERPC Worker 100001 (1 vCPU, 4 GB memory)"
+        );
+        assert_eq!(running_spec(&row("EPYC VPS+")), Spec::default());
+        assert_eq!(
+            worker_id(100_001, &running_spec(&row("EPYC VPS+"))),
+            "ERPC Worker 100001"
+        );
+        assert_eq!(running_spec(&json!({})), Spec::default());
+        // A name under another field is not the row's product.
+        assert_eq!(
+            running_spec(&json!({ "productName": title, "vpsVersion": "2 vCPU x 8 GB DDR5" })),
+            Spec::default()
+        );
+        // The family a plan is refused for.
+        assert_eq!(family_said("vps"), "ERPC Worker");
+        assert_eq!(family_said("grpc"), "grpc");
+    }
+
+    #[tokio::test]
+    async fn the_start_and_end_questions_say_the_product_as_the_erpc_worker_it_is() {
+        use std::cell::RefCell;
+
+        use erpc_ai::confirm::{Confirm, Confirmation};
+
+        use super::{AsWorker, Named, Spec, end_answerer, worker};
+
+        /// Says yes, and keeps what it was asked.
+        #[derive(Default)]
+        struct Asked(RefCell<Vec<Confirmation>>);
+        impl Confirm for Asked {
+            fn confirm<'a>(
+                &'a self,
+                ask: &'a Confirmation,
+            ) -> core::pin::Pin<Box<dyn Future<Output = bool> + 'a>> {
+                self.0.borrow_mut().push(ask.clone());
+                Box::pin(async { true })
+            }
+        }
+        let title = "🛰️ SLV VPS - 1 vCPU AMD EPYC4G x 4 GB DDR5 - 10 GB SSD NVMe4";
+        let asked = Asked::default();
+        let named = AsWorker {
+            inner: &asked,
+            named: Named::Start {
+                product: title,
+                worker: worker(&Spec::of_title(title)),
+            },
+        };
+        let ask = Confirmation {
+            title: format!("Start {title} hourly? It is charged until it is ended."),
+            lines: vec![
+                ("Product".to_owned(), title.to_owned()),
+                ("Price".to_owned(), "€0.0123 per hour".to_owned()),
+            ],
+        };
+        assert!(named.confirm(&ask).await, "the answer is the person's");
+        let shown = asked.0.borrow()[0].text();
+        assert!(
+            shown.starts_with(
+                "Start ERPC Worker (1 vCPU, 4 GB memory, 10 GB NVMe) hourly? It is charged"
+            ),
+            "{shown}"
+        );
+        assert!(!shown.contains("VPS") && !shown.contains("SLV"), "{shown}");
+        assert!(shown.contains("€0.0123 per hour"), "{shown}");
+        // The end of ERPC Worker 100001: its product's name, and the
+        // `(vps 100001)` erpc ai puts after it, said as the ERPC Worker.
+        let ending = end_answerer(Some(&asked), "vps", 100_001).expect("someone to ask");
+        let ask = Confirmation {
+            title: format!(
+                "End {title}? It stops, and stops being charged; this cannot be undone."
+            ),
+            lines: vec![
+                ("Product".to_owned(), format!("{title} (vps 100001)")),
+                ("Price now".to_owned(), "€0.0123 per hour".to_owned()),
+            ],
+        };
+        assert!(ending.confirm(&ask).await, "the answer is the person's");
+        let shown = asked.0.borrow()[1].text();
+        assert!(
+            shown.starts_with("End ERPC Worker 100001 (1 vCPU, 4 GB memory, 10 GB NVMe)? It stops"),
+            "{shown}"
+        );
+        assert!(
+            shown.contains("Product    ERPC Worker 100001 (1 vCPU, 4 GB memory, 10 GB NVMe)\n"),
+            "{shown}"
+        );
+        assert!(
+            !shown.to_lowercase().contains("vps") && !shown.contains("SLV"),
+            "{shown}"
+        );
+        // With no product's name, erpc ai says the type: still the ERPC Worker.
+        let ask = Confirmation {
+            title: "End vps? It stops, and stops being charged; this cannot be undone.".to_owned(),
+            lines: vec![("Product".to_owned(), "vps (vps 100001)".to_owned())],
+        };
+        assert!(ending.confirm(&ask).await);
+        let shown = asked.0.borrow()[2].text();
+        assert!(
+            shown.starts_with("End ERPC Worker 100001? It stops"),
+            "{shown}"
+        );
+        assert!(!shown.to_lowercase().contains("vps"), "{shown}");
+        // A bare-metal server's end is said as erpc ai says it; nobody to
+        // ask is nobody.
+        let bare = end_answerer(Some(&asked), "bare_metal", 7).expect("someone to ask");
+        let ask = Confirmation {
+            title: "End Bare Metal X? It stops.".to_owned(),
+            lines: vec![(
+                "Product".to_owned(),
+                "Bare Metal X (bare_metal 7)".to_owned(),
+            )],
+        };
+        assert!(bare.confirm(&ask).await);
+        assert_eq!(asked.0.borrow()[3], ask);
+        assert!(end_answerer(None, "vps", 100_001).is_none());
+    }
+
+    #[test]
+    fn an_erpc_worker_is_named_so_in_every_language_with_its_spec_translated() {
+        use super::{Spec, worker_id};
+        let spec = Spec::of_title("SLV VPS - 1 vCPU AMD EPYC4G x 4 GB DDR5 - 10 GB SSD NVMe4");
+        for (lang, said) in [
+            (
+                erpc_core::i18n::Lang::Ja,
+                "ERPC Worker 100001（1 vCPU、メモリ 4 GB、NVMe 10 GB）",
+            ),
+            (
+                erpc_core::i18n::Lang::Zh,
+                "ERPC Worker 100001（1 vCPU，内存 4 GB，NVMe 10 GB）",
+            ),
+            (
+                erpc_core::i18n::Lang::Ru,
+                "ERPC Worker 100001 (1 vCPU, 4 ГБ памяти, 10 ГБ NVMe)",
+            ),
+        ] {
+            let named = crate::cli::i18n::speaking(lang, || worker_id(100_001, &spec));
+            assert_eq!(named, said);
+            assert!(!named.contains("VPS"), "{named}");
+        }
     }
 
     #[test]
