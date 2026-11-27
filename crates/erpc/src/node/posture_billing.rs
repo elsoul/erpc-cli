@@ -362,6 +362,7 @@ fn code_name(code: FailureCode) -> String {
 pub(super) enum QuoteFailure {
     Timeout,
     Transport,
+    Unreadable,
     Oversized(u16),
     Refused(u16, FailureCode),
     Unverified,
@@ -377,6 +378,7 @@ impl QuoteFailure {
         let reason = match self {
             Self::Timeout => "[request_timeout]".to_owned(),
             Self::Transport => "[request_transport]".to_owned(),
+            Self::Unreadable => "[unreadable_reply]".to_owned(),
             Self::Oversized(status) => format!("HTTP {status} (response_limit)"),
             Self::Refused(status, code) => format!("HTTP {status} ({})", code_name(code)),
             Self::Unverified => "[quote_not_verified]".to_owned(),
@@ -879,6 +881,7 @@ mod tests {
         for (failure, reason) in [
             (QuoteFailure::Timeout, "[request_timeout]"),
             (QuoteFailure::Transport, "[request_transport]"),
+            (QuoteFailure::Unreadable, "[unreadable_reply]"),
             (QuoteFailure::Oversized(200), "HTTP 200 (response_limit)"),
             (QuoteFailure::Unverified, "[quote_not_verified]"),
             (QuoteFailure::RequestId, "[request_id]"),
