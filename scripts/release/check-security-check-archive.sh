@@ -10,7 +10,7 @@ trap 'rm -rf "$scratch"' EXIT
 
 case "$archive_base" in
   *-pc-windows-msvc)
-    "$(cygpath -u "$WINDIR")/System32/tar.exe" -xf "$archive_base.zip" -C "$scratch"
+    python -m zipfile -e "$archive_base.zip" "$scratch"
     executable=erpc.exe
     shell=powershell
     ERPC_HOME="$(cygpath -w "$scratch/state")"
@@ -30,6 +30,6 @@ binary=$(find "$scratch" -type f -name "$executable")
 "$binary" --help > "$scratch/help"
 "$binary" ai --help > "$scratch/ai-help"
 "$binary" completions "$shell" > "$scratch/completions"
-grep -q -- '--security-check' "$scratch/ai-help"
+grep -Eq '^[[:space:]]+--security-check([[:space:]]|$)' "$scratch/ai-help"
 # PowerShell and Bash generators both derive flags from the same command.
-grep -q -- '--security-check' "$scratch/completions"
+grep -Eq '(^|[^[:alnum:]_-])--security-check([^[:alnum:]_-]|$)' "$scratch/completions"

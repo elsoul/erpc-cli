@@ -166,5 +166,13 @@ else
   bad "the release smoke test covers every archive in the dist plan" "smoke and dist target sets differ"
 fi
 
+preflight="$repo_root/.github/workflows/release-preflight.yml"
+preflight_targets=$(awk '/- target:/ { print $NF }' "$preflight" | sort)
+if [ -n "$dist_targets" ] && [ "$preflight_targets" = "$dist_targets" ]; then
+  ok "the untagged preflight builds and smokes every target in the dist plan"
+else
+  bad "the untagged preflight builds and smokes every target in the dist plan" "preflight and dist target sets differ"
+fi
+
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
