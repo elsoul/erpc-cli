@@ -26,9 +26,12 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { createTransport, withSentry, type ErrorEvent } from "@sentry/cloudflare";
+// The SDK's own DSN parser, from the package @sentry/cloudflare is built on
+// (locked at the same version), to check every DSN the worker passes on.
+import { makeDsn } from "@sentry/core";
 
 import { makeHandler, type Env } from "./index.ts";
-import { isSentryIngestHost, scrubBreadcrumb, scrubEvent, sentryOptions } from "./sentry.ts";
+import { dsnRefusal, isSentryIngestHost, onceWarner, scrubBreadcrumb, scrubEvent, sentryOptions } from "./sentry.ts";
 
 // A declared Sentry ingest host (WORKER_REPORT_HOST_PATTERNS) with an org id
 // no project has; the transport below sends nothing anywhere.
@@ -56,17 +59,27 @@ globalThis.fetch = nativeLookingFetch as typeof fetch;
 const logged: unknown[][] = [];
 console.log = (...args: unknown[]) => { logged.push(args); };
 
+// The worker's own warning about a refused DSN, and anything the SDK prints
+// as an error (it prints "Invalid Sentry Dsn: <the whole DSN>"), are kept
+// here the same way, so tests can check what reached the logs.
+const warned: string[] = [];
+console.warn = (...args: unknown[]) => { warned.push(args.join(" ")); };
+const errored: string[] = [];
+console.error = (...args: unknown[]) => { errored.push(args.join(" ")); };
+
+type SentryEnvForTest = Parameters<typeof sentryOptions>[0];
+
 test("without a DSN nothing is reported", () => {
   const options = sentryOptions({});
   assert.equal(options.enabled, false);
-  assert.equal(options.dsn, undefined);
+  assert.equal(options.dsn, "");
 });
 
 test("a DSN that does not name a Sentry ingest host over https is not used", () => {
   for (const dsn of ["http://public@127.0.0.1/1", "https://public@127.0.0.1/1", "not a url"]) {
-    const options = sentryOptions({ SENTRY_DSN: dsn });
+    const options = sentryOptions({ SENTRY_DSN: dsn }, () => {});
     assert.equal(options.enabled, false, dsn);
-    assert.equal(options.dsn, undefined, dsn);
+    assert.equal(options.dsn, "", dsn);
   }
 });
 
@@ -75,15 +88,61 @@ test("a Sentry ingest DSN over plain http is not used", () => {
   // plaintext URL literal outside loopback, and nothing here is contacted.
   const url = new URL(DSN);
   url.protocol = "http:";
-  const options = sentryOptions({ SENTRY_DSN: url.href });
+  const options = sentryOptions({ SENTRY_DSN: url.href }, () => {});
   assert.equal(options.enabled, false);
-  assert.equal(options.dsn, undefined);
+  assert.equal(options.dsn, "");
+});
+
+test("a SENTRY_DSN that is not a string is treated as not set", () => {
+  for (const value of [42, true, { dsn: DSN }]) {
+    const reasons: string[] = [];
+    const options = sentryOptions({ SENTRY_DSN: value as unknown as string }, (reason) => reasons.push(reason));
+    assert.equal(options.enabled, false, JSON.stringify(value));
+    assert.equal(options.dsn, "", JSON.stringify(value));
+    assert.deepEqual(reasons, [], JSON.stringify(value));
+  }
 });
 
 test("a tunnel turns reporting off, since reports would go to it", () => {
-  const options = sentryOptions({ SENTRY_DSN: DSN, SENTRY_TUNNEL: "" });
+  const options = sentryOptions({ SENTRY_DSN: DSN, SENTRY_TUNNEL: "" }, () => {});
   assert.equal(options.enabled, false);
-  assert.equal(options.dsn, undefined);
+  assert.equal(options.dsn, "");
+});
+
+test("a refused DSN logs why, once, and never any part of the DSN", () => {
+  const plain = new URL(DSN);
+  plain.protocol = "http:";
+  const refused: [SentryEnvForTest, string][] = [
+    [{ SENTRY_DSN: "public@o9.example" }, "not a URL"],
+    [{ SENTRY_DSN: "https://public@127.0.0.1/1" }, "not a Sentry ingest host"],
+    [{ SENTRY_DSN: plain.href }, "not an https URL"],
+    [{ SENTRY_DSN: DSN, SENTRY_TUNNEL: "" }, "SENTRY_TUNNEL is set"],
+  ];
+  for (const [env, why] of refused) {
+    const reasons: string[] = [];
+    sentryOptions(env, (reason) => reasons.push(reason));
+    assert.equal(reasons.length, 1, JSON.stringify(env));
+    assert.ok(reasons[0].includes(why), reasons[0]);
+    assert.equal(dsnRefusal(env), reasons[0]);
+    for (const part of [env.SENTRY_DSN!, "public", "127.0.0.1", "o0.ingest", "o9.example"]) {
+      assert.ok(!reasons[0].includes(part), `"${part}" is in the reason: ${reasons[0]}`);
+    }
+  }
+  for (const env of [{}, { SENTRY_DSN: DSN }, { SENTRY_DSN: "" }, { SENTRY_TUNNEL: "" }] as SentryEnvForTest[]) {
+    const reasons: string[] = [];
+    sentryOptions(env, (reason) => reasons.push(reason));
+    assert.deepEqual(reasons, [], JSON.stringify(env));
+    assert.equal(dsnRefusal(env), undefined, JSON.stringify(env));
+  }
+});
+
+test("the refusal is logged once per Worker instance", () => {
+  const lines: string[] = [];
+  const warn = onceWarner((line) => lines.push(line));
+  warn("first reason");
+  warn("second reason");
+  assert.equal(lines.length, 1, lines.join("\n"));
+  assert.ok(lines[0].includes("SENTRY_DSN is set but not used") && lines[0].includes("first reason"), lines[0]);
 });
 
 test("the hosts the worker accepts are among those endpoints.rs declares for it", () => {
@@ -121,6 +180,7 @@ test("reports carry no personal data, no tracing and no trace headers", () => {
   const options = sentryOptions({ SENTRY_DSN: DSN });
   assert.equal(options.enabled, true);
   assert.equal(options.dsn, DSN);
+  assert.equal(options.debug, false);
   assert.equal(options.sendDefaultPii, false);
   assert.equal(options.tracesSampleRate, 0);
   assert.equal(options.tracesSampler(), 0);
@@ -291,18 +351,128 @@ test("a request that asks for a sampled trace gets no transaction, and its trace
   assertNoTraceHeaders(sent);
 });
 
-test("a rejected DSN, or a tunnel, sends nothing even though the SDK reads both from the env", async (t) => {
+test("a rejected DSN, or a tunnel, sends nothing even though the SDK reads both from the env, and the worker says why once", async (t) => {
   const plain = new URL(DSN);
   plain.protocol = "http:";
+  const warnedBefore = warned.length;
+  // run() adds SENTRY_DSN: DSN unless the case sets its own, so the tunnel
+  // case is a valid DSN together with a tunnel.
   for (const env of [
     { SENTRY_DSN: "https://public@127.0.0.1/1" },
     { SENTRY_DSN: plain.href },
-    { SENTRY_TUNNEL: "https://127.0.0.1/tunnel" },
+    { SENTRY_DSN: DSN, SENTRY_TUNNEL: "https://127.0.0.1/tunnel" },
   ]) {
     const sent = await run(t, { path: "/v0.1.0", env });
     assert.equal(sent.res?.status, 502);
     assert.equal(sent.raw, "", JSON.stringify(env));
   }
+  // Through the worker as production wraps it, with the default warner:
+  // three requests with refused DSNs, one warning, and none of the DSN in it.
+  const lines = warned.slice(warnedBefore).filter((line) => line.includes("SENTRY_DSN is set but not used"));
+  assert.equal(lines.length, 1, warned.slice(warnedBefore).join("\n"));
+  for (const part of ["public", "127.0.0.1", "o0.ingest", plain.href, DSN]) {
+    assert.ok(!lines[0].includes(part), `"${part}" is in the warning: ${lines[0]}`);
+  }
+});
+
+// Spellings the worker's URL parser accepts and normalises but the SDK's
+// parser rejects: it prints the first four in full, key included, and drops
+// HTTPS:// silently (its protocol check is case-sensitive). The worker hands
+// the SDK a DSN rebuilt from the parsed parts, never this text, so each of
+// these reports normally. Built from DSN at run time because the endpoint gate refuses
+// a backslash or a non-ASCII host in a URL literal, as it should.
+const NORMALISED = [
+  DSN.replace("sentry.io/", "sentry.io:/"),
+  DSN.replace("@o0.", "@\uff4f0."),
+  DSN.replace("https://", "https:"),
+  DSN.replace("//", "\\\\").replace("sentry.io/", "sentry.io\\"),
+  DSN.replace("https://", "HTTPS://"),
+];
+
+test("through the real worker, a spelling the SDK cannot parse but the worker accepts is rebuilt, so the SDK never prints it", async (t) => {
+  const errorsBefore = errored.length;
+  for (const value of NORMALISED) {
+    const sent = await run(t, { path: "/v0.1.0", env: { SENTRY_DSN: value } });
+    assert.equal(sent.res?.status, 502);
+    assert.ok(sent.raw.includes("could not fetch the installer"), JSON.stringify(value));
+  }
+  assert.deepEqual(errored.slice(errorsBefore).filter((line) => line.includes("Invalid Sentry Dsn")), []);
+});
+
+test("through the real worker, a DSN the SDK cannot parse is never handed to it, so it never prints one", async (t) => {
+  // The SDK falls back to SENTRY_DSN from the env when the options give no
+  // DSN, and prints "Invalid Sentry Dsn: " and the value when it cannot
+  // parse it, even with reporting off. These values all fail its parser.
+  const key = new URL(DSN).username;
+  const errorsBefore = errored.length;
+  for (const value of [
+    DSN.replace(`//${key}@`, "//pub-lic@"),
+    DSN.replace(`${key}@`, ""),
+    DSN.replace("/1", "/x/1/y"),
+    "   ",
+  ]) {
+    const sent = await run(t, { path: "/v0.1.0", env: { SENTRY_DSN: value } });
+    assert.equal(sent.res?.status, 502);
+    assert.equal(sent.raw, "", JSON.stringify(value));
+  }
+  assert.deepEqual(errored.slice(errorsBefore).filter((line) => line.includes("Invalid Sentry Dsn")), []);
+});
+
+test("every DSN the worker uses is one the SDK accepts, and the SDK never prints a DSN", () => {
+  const key = new URL(DSN).username;
+  const at = (rest: string) => DSN.replace(/@.*$/, "@" + rest);
+  const used = [
+    DSN,
+    DSN + "\n",
+    " " + DSN,
+    "\t" + DSN + " ",
+    at("o0.ingest.sentry.io:443/1"),
+    at("O0.INGEST.SENTRY.IO/1"),
+    DSN.replace(`//${key}@`, `//${key}:second_part@`),
+    // The URL parser resolves the dots; the SDK is given the parsed URL.
+    at("o0.ingest.sentry.io/1/../1"),
+    ...NORMALISED,
+  ];
+  const refused: [string, string][] = [
+    ["   ", "blank"],
+    [DSN.replace(`${key}@`, ""), "its key"],
+    [DSN.replace(`//${key}@`, "//@"), "its key"],
+    [DSN.replace(`//${key}@`, "//pub-lic@"), "its key"],
+    [DSN.replace(`//${key}@`, `//${key}:se-cret@`), "its key"],
+    [at("o0.ingest.sentry.io/1/"), "project number"],
+    [at("o0.ingest.sentry.io/abc"), "project number"],
+    [at("o0.ingest.sentry.io/"), "project number"],
+    [at("o0.ingest.sentry.io/1?x=y"), "project number"],
+    [at("o0.ingest.sentry.io/1#f"), "project number"],
+    [at("o0.ingest.sentry.io/1?"), "project number"],
+    [at("o0.ingest.sentry.io/1#"), "project number"],
+    [at("o0.ingest.sentry.io:8443/1"), "port"],
+    [DSN.replace("/1", "/\n1"), "inside it"],
+    [DSN.replace("@", " @"), "inside it"],
+  ];
+  const errorsBefore = errored.length;
+  for (const value of used) {
+    const reasons: string[] = [];
+    const options = sentryOptions({ SENTRY_DSN: value }, (reason) => reasons.push(reason));
+    assert.deepEqual(reasons, [], JSON.stringify(value));
+    assert.equal(options.enabled, true, JSON.stringify(value));
+    const parsed = makeDsn(options.dsn!);
+    assert.ok(parsed && /^\d+$/.test(parsed.projectId) && parsed.publicKey === key, JSON.stringify(value));
+    assert.equal(parsed.host, "o0.ingest.sentry.io", JSON.stringify(value));
+    assert.equal(parsed.pass, value.includes(":second_part@") ? "second_part" : "", JSON.stringify(value));
+  }
+  for (const [value, why] of refused) {
+    const reasons: string[] = [];
+    const options = sentryOptions({ SENTRY_DSN: value }, (reason) => reasons.push(reason));
+    assert.equal(options.enabled, false, JSON.stringify(value));
+    assert.equal(options.dsn, "", JSON.stringify(value));
+    assert.equal(reasons.length, 1, JSON.stringify(value));
+    assert.ok(reasons[0].includes(why), `${JSON.stringify(value)}: ${reasons[0]}`);
+    for (const part of [key, "pub-lic", "se-cret", "second_part", "o0.ingest"]) {
+      assert.ok(!reasons[0].includes(part), `"${part}" is in the reason: ${reasons[0]}`);
+    }
+  }
+  assert.deepEqual(errored.slice(errorsBefore).filter((line) => line.includes("Invalid Sentry Dsn")), []);
 });
 
 test("a deployment with no release selected is reported as a warning", async (t) => {

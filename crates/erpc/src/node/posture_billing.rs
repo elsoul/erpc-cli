@@ -31,19 +31,16 @@ const FALLBACK_HEADER: &str = "x-erpc-security-check-fallback";
 
 #[derive(Clone, Copy)]
 struct Price {
-    model: &'static str,
     input: u32,
     output: u32,
 }
 
 impl Price {
     const PRIMARY: Self = Self {
-        model: "claude-mythos-5-2",
         input: 3,
         output: 12,
     };
     const FALLBACK: Self = Self {
-        model: "claude-sonnet-5-5",
         input: 1,
         output: 3,
     };
@@ -64,10 +61,25 @@ enum Consent {
     ExternalV1,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// What the operator approved: the consent, and the model named for each
+/// rate. The names come from the quote; the rates are fixed here.
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Terms {
     consent: Consent,
-    fallback: bool,
+    model: String,
+    fallback: Option<String>,
+}
+
+/// A model name from the quote, shown to the operator and sent back as is.
+fn model_name(name: &str) -> bool {
+    (1..=64).contains(&name.len())
+        && name
+            .bytes()
+            .next()
+            .is_some_and(|byte| byte.is_ascii_lowercase())
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"-.".contains(&byte))
 }
 
 fn external_consent<'de, D: serde::Deserializer<'de>>(value: D) -> Result<Consent, D::Error> {
@@ -124,7 +136,7 @@ impl Quote {
             maximum_credits,
             ..
         } = self;
-        model == price.model
+        model_name(model)
             && meter_version == METER
             && currency == "ai_credits"
             && *base_credits == BASE
@@ -151,33 +163,39 @@ fn parse_quote(body: &str) -> Option<Terms> {
         return None;
     }
     let Quote::Fixed {
+        model,
         consent_version,
         fallback,
         ..
     } = quote;
     let fallback = match (consent_version, fallback) {
-        (_, None) => false,
-        (Consent::ExternalV1, Some(quote))
-            if matches!(
-                *quote,
-                Quote::Fixed {
-                    fallback: None,
-                    consent_version: Consent::Internal,
-                    ..
-                }
-            ) && quote.valid_for(Price::FALLBACK) =>
-        {
-            true
+        (_, None) => None,
+        (Consent::ExternalV1, Some(quote)) if quote.valid_for(Price::FALLBACK) => {
+            let Quote::Fixed {
+                model: name,
+                consent_version: Consent::Internal,
+                fallback: None,
+                ..
+            } = *quote
+            else {
+                return None;
+            };
+            // One name per rate, so the receipt's model names the rate it charged.
+            if name == model {
+                return None;
+            }
+            Some(name)
         }
         _ => return None,
     };
     Some(Terms {
         consent: consent_version,
+        model,
         fallback,
     })
 }
 
-fn quote_prompt(terms: Terms, rental: Server) -> String {
+fn quote_prompt(terms: &Terms, rental: Server) -> String {
     let scope = match terms.consent {
         Consent::Internal => t!("node_check.billing_scope"),
         Consent::ExternalV1 => t!(
@@ -191,14 +209,14 @@ fn quote_prompt(terms: Terms, rental: Server) -> String {
         base = BASE,
         input = Price::PRIMARY.input,
         output = Price::PRIMARY.output,
-        model = Price::PRIMARY.model
+        model = &terms.model
     );
-    if !terms.fallback {
+    let Some(model) = &terms.fallback else {
         return format!("{scope}\n{price}");
-    }
+    };
     let fallback = t!(
         "node_check.quote_fallback",
-        model = Price::FALLBACK.model,
+        model = model,
         maximum = Price::FALLBACK.maximum(),
         base = BASE,
         input = Price::FALLBACK.input,
@@ -382,7 +400,7 @@ impl ApprovedReport {
     ) -> Result<Option<Self>, Outcome> {
         let unavailable = || Outcome::Failed(t!("node_check.quote_unavailable"));
         let terms = parse_quote(body).ok_or_else(unavailable)?;
-        if !confirm(quote_prompt(terms, rental))? {
+        if !confirm(quote_prompt(&terms, rental))? {
             return Ok(None);
         }
         let mut bytes = [0u8; 16];
@@ -414,18 +432,18 @@ pub(super) struct ReportSubmission {
 }
 
 impl Terms {
-    fn headers(self, idempotency_key: &str) -> Vec<(&str, &str)> {
+    fn headers<'a>(&'a self, idempotency_key: &'a str) -> Vec<(&'a str, &'a str)> {
         let mut headers = vec![("idempotency-key", idempotency_key)];
         if self.consent == Consent::ExternalV1 {
             headers.push((CONSENT_HEADER, CONSENT_VERSION));
-            if self.fallback {
-                headers.push((FALLBACK_HEADER, Price::FALLBACK.model));
+            if let Some(model) = &self.fallback {
+                headers.push((FALLBACK_HEADER, model));
             }
         }
         headers
     }
 
-    fn receipt(self, status: u16, body: &str) -> Result<Receipt, ReportFailure> {
+    fn receipt(&self, status: u16, body: &str) -> Result<Receipt, ReportFailure> {
         if status != 200 {
             return Err(ReportFailure::from_response(status, body));
         }
@@ -505,12 +523,11 @@ pub(super) struct Receipt {
 }
 
 impl Receipt {
-    fn valid(&self, terms: Terms) -> bool {
-        let price = if self.model == Price::PRIMARY.model {
+    fn valid(&self, terms: &Terms) -> bool {
+        let price = if self.model == terms.model {
             Price::PRIMARY
         } else if terms.consent == Consent::ExternalV1
-            && terms.fallback
-            && self.model == Price::FALLBACK.model
+            && terms.fallback.as_deref() == Some(self.model.as_str())
         {
             Price::FALLBACK
         } else {
@@ -588,17 +605,32 @@ impl FindingId {
 mod tests {
     use super::*;
 
-    const EXTERNAL: Terms = Terms {
-        consent: Consent::ExternalV1,
-        fallback: false,
-    };
-    const WITH_FALLBACK: Terms = Terms {
-        consent: Consent::ExternalV1,
-        fallback: true,
-    };
+    // Any name the quote gives; the CLI holds none of its own.
+    const PRIMARY: &str = "fixture-model-a";
+    const FALLBACK: &str = "fixture-model-b";
+
+    fn terms(consent: Consent, fallback: bool) -> Terms {
+        Terms {
+            consent,
+            model: PRIMARY.to_owned(),
+            fallback: fallback.then(|| FALLBACK.to_owned()),
+        }
+    }
+
+    fn internal() -> Terms {
+        terms(Consent::Internal, false)
+    }
+
+    fn external() -> Terms {
+        terms(Consent::ExternalV1, false)
+    }
+
+    fn with_fallback() -> Terms {
+        terms(Consent::ExternalV1, true)
+    }
 
     fn example() -> Value {
-        json!({"status":"completed","model":Price::PRIMARY.model,"findings":["review_ssh_jail"],
+        json!({"status":"completed","model":PRIMARY,"findings":["review_ssh_jail"],
             "billing":{"meterVersion":METER,"baseCredits":512,"inputTokens":413,
                 "outputTokens":55,"chargedCredits":2411}})
     }
@@ -645,20 +677,21 @@ mod tests {
         let receipt: Receipt = serde_json::from_value(example()).expect("valid receipt");
         for language in [Lang::En, Lang::Ja, Lang::Ru, Lang::Zh] {
             crate::cli::i18n::speaking(language, || {
-                let quote = quote_prompt(Terms::default(), rental);
-                let external = quote_prompt(EXTERNAL, rental);
-                let fallback = quote_prompt(WITH_FALLBACK, rental);
+                let quote = quote_prompt(&internal(), rental);
+                let external = quote_prompt(&external(), rental);
+                let fallback = quote_prompt(&with_fallback(), rental);
                 assert!(!quote.contains("vps:42"));
+                assert!(quote.contains(PRIMARY), "{quote}");
                 assert!(external.contains("vps:42"), "{external}");
                 assert!(external.contains("90"), "{external}");
                 assert!(external.contains("28160"), "{external}");
-                assert!(!external.contains(Price::FALLBACK.model), "{external}");
-                assert!(fallback.contains(Price::FALLBACK.model), "{fallback}");
+                assert!(!external.contains(FALLBACK), "{external}");
+                assert!(fallback.contains(FALLBACK), "{fallback}");
                 for expected in ["28160", "9472"] {
                     assert!(fallback.contains(expected), "{fallback}");
                 }
                 let summary = receipt.summary();
-                assert!(summary.contains(Price::PRIMARY.model), "{summary}");
+                assert!(summary.contains(PRIMARY), "{summary}");
                 let quote_numbers = quote
                     .split(|c: char| !c.is_ascii_digit())
                     .collect::<Vec<_>>();
@@ -701,41 +734,45 @@ mod tests {
             kind: super::super::Kind::Vps,
             id: 42,
         };
-        for (language, profile, actor, provider, audit) in [
+        for (language, recipient, profile, actor, provider, audit) in [
             (
                 Lang::En,
-                "Anthropic customer profile ID",
+                "ERPC sends its AI model provider",
+                "the provider's customer profile ID linked to your ERPC account",
                 "stable pseudonymous actor ID",
-                "Anthropic's standard retention",
+                "The provider's standard retention",
                 "ERPC separately keeps",
             ),
             (
                 Lang::Ja,
-                "Anthropic の顧客プロファイル ID",
+                "ERPC の AI モデル提供元に送信します",
+                "ERPC アカウントに紐づく提供元の顧客プロファイル ID",
                 "実行をまたいで同じユーザーを識別する固定の仮名 ID",
-                "Anthropic の標準保持方針",
+                "提供元の標準保持方針",
                 "ERPC は別途",
             ),
             (
                 Lang::Ru,
-                "идентификатор профиля клиента Anthropic",
+                "ERPC отправляет своему поставщику ИИ-модели",
+                "идентификатор профиля клиента у этого поставщика",
                 "устойчивый псевдонимизированный идентификатор пользователя",
-                "стандартные условия хранения Anthropic",
+                "стандартные условия хранения поставщика",
                 "ERPC отдельно хранит",
             ),
             (
                 Lang::Zh,
-                "Anthropic 客户档案 ID",
+                "ERPC 会向其 AI 模型提供方发送",
+                "提供方处与您的 ERPC 账户关联的客户档案 ID",
                 "固定的操作者假名 ID",
-                "Anthropic 的标准保留政策",
+                "提供方的标准保留政策",
                 "ERPC 会另外",
             ),
         ] {
             crate::cli::i18n::speaking(language, || {
-                let internal = quote_prompt(Terms::default(), rental);
-                for terms in [EXTERNAL, WITH_FALLBACK] {
-                    let prompt = quote_prompt(terms, rental);
-                    for label in [profile, actor, provider, audit] {
+                let internal = quote_prompt(&internal(), rental);
+                for terms in [external(), with_fallback()] {
+                    let prompt = quote_prompt(&terms, rental);
+                    for label in [recipient, profile, actor, provider, audit] {
                         assert!(prompt.contains(label), "{prompt}");
                         assert!(!internal.contains(label), "{internal}");
                     }
@@ -775,9 +812,8 @@ mod tests {
 
     #[test]
     fn reconciles_the_receipt_locally_and_refuses_unquoted_billing() {
-        let ok = |v: Value| {
-            serde_json::from_value::<Receipt>(v).is_ok_and(|r| r.valid(Terms::default()))
-        };
+        let ok =
+            |v: Value| serde_json::from_value::<Receipt>(v).is_ok_and(|r| r.valid(&internal()));
         assert!(ok(example()));
         for (key, numeric) in [
             ("chargedCredits", 2412),
@@ -804,16 +840,23 @@ mod tests {
 
     #[test]
     fn quote_requires_the_exact_price_and_approved_consent_version() {
-        let internal = r#"{"model":"claude-mythos-5-2","meterVersion":"posture1","currency":"ai_credits","baseCredits":512,"weights":{"input":3,"output":12},"limits":{"input":8192,"output":256},"maximumCredits":28160}"#;
-        let fallback = r#"{"model":"claude-sonnet-5-5","meterVersion":"posture1","currency":"ai_credits","baseCredits":512,"weights":{"input":1,"output":3},"limits":{"input":8192,"output":256},"maximumCredits":9472}"#;
+        let internal = r#"{"model":"fixture-model-a","meterVersion":"posture1","currency":"ai_credits","baseCredits":512,"weights":{"input":3,"output":12},"limits":{"input":8192,"output":256},"maximumCredits":28160}"#;
+        let fallback = r#"{"model":"fixture-model-b","meterVersion":"posture1","currency":"ai_credits","baseCredits":512,"weights":{"input":1,"output":3},"limits":{"input":8192,"output":256},"maximumCredits":9472}"#;
         let consent = r#""consentVersion":"security-check-local-posture-v1""#;
         let with = |fields: &str| format!("{},{fields}}}", internal.trim_end_matches('}'));
-        assert_eq!(parse_quote(internal), Some(Terms::default()));
-        assert_eq!(parse_quote(&with(consent)), Some(EXTERNAL));
+        assert_eq!(parse_quote(internal), Some(super::tests::internal()));
+        assert_eq!(parse_quote(&with(consent)), Some(external()));
         assert_eq!(
             parse_quote(&with(&format!(r#"{consent},"fallback":{fallback}"#))),
-            Some(WITH_FALLBACK)
+            Some(with_fallback())
         );
+        let named = |name: &str| internal.replace(PRIMARY, name);
+        for name in ["model-5.2", "m", &"m".repeat(64)] {
+            assert_eq!(
+                parse_quote(&named(name)).map(|terms| terms.model),
+                Some(name.to_owned())
+            );
+        }
         for invalid in [
             with(r#""consentVersion":"security-check-local-posture-v2""#),
             with(r#""consentVersion":null"#),
@@ -833,6 +876,21 @@ mod tests {
                 fallback.trim_matches(['{', '}'])
             )),
             internal.replace("28160", "28161"),
+            named(""),
+            named("Model"),
+            named("-model"),
+            named("0"),
+            named("9472"),
+            named("5-model"),
+            named("model a"),
+            named("model\\u001b[31m"),
+            named("model\\u202e"),
+            named(&"m".repeat(65)),
+            internal.replace(r#""fixture-model-a""#, "7"),
+            with(&format!(
+                r#"{consent},"fallback":{}"#,
+                fallback.replace(FALLBACK, PRIMARY)
+            )),
             internal.replace(r#"{"input":3,"output":12}"#, "[3,12]"),
             internal.replace(r#""output":12"#, r#""output":12,"output":12"#),
             format!("{internal}{}", " ".repeat(4096)),
@@ -846,10 +904,10 @@ mod tests {
         let mut approval = ReportSubmission {
             idempotency_key: "request-id".to_owned(),
             body: Vec::new(),
-            terms: Terms::default(),
+            terms: internal(),
         };
         assert_eq!(approval.headers(), [("idempotency-key", "request-id")]);
-        approval.terms = EXTERNAL;
+        approval.terms = external();
         assert_eq!(
             approval.headers(),
             [
@@ -860,7 +918,7 @@ mod tests {
                 ),
             ]
         );
-        approval.terms = WITH_FALLBACK;
+        approval.terms = with_fallback();
         assert_eq!(
             approval.headers(),
             [
@@ -869,7 +927,7 @@ mod tests {
                     "x-erpc-security-check-consent",
                     "security-check-local-posture-v1"
                 ),
-                ("x-erpc-security-check-fallback", "claude-sonnet-5-5"),
+                ("x-erpc-security-check-fallback", FALLBACK),
             ]
         );
     }
@@ -877,18 +935,28 @@ mod tests {
     #[test]
     fn reconciles_fallback_only_after_approval_and_at_the_actual_model_rate() {
         let mut response = example();
-        response["model"] = json!("claude-sonnet-5-5");
+        response["model"] = json!(FALLBACK);
         let incorrect: Receipt = serde_json::from_value(response.clone()).expect("receipt");
-        assert!(!incorrect.valid(WITH_FALLBACK));
+        assert!(!incorrect.valid(&with_fallback()));
         response["billing"]["chargedCredits"] = json!(1090);
-        let fallback: Receipt = serde_json::from_value(response).expect("receipt");
-        assert!(!fallback.valid(Terms::default()));
-        assert!(!fallback.valid(EXTERNAL));
-        assert!(fallback.valid(WITH_FALLBACK));
+        let fallback: Receipt = serde_json::from_value(response.clone()).expect("receipt");
+        assert!(!fallback.valid(&internal()));
+        assert!(!fallback.valid(&external()));
+        assert!(fallback.valid(&with_fallback()));
         let summary = fallback.summary();
-        assert!(summary.contains("claude-sonnet-5-5"), "{summary}");
+        assert!(summary.contains(FALLBACK), "{summary}");
         assert!(summary.contains("1090"), "{summary}");
         let primary: Receipt = serde_json::from_value(example()).expect("receipt");
-        assert!(primary.valid(WITH_FALLBACK));
+        assert!(primary.valid(&with_fallback()));
+        // A model the quote did not name is refused at either rate:
+        // 1090 is the fallback's charge for this usage, 2411 the primary's.
+        for charged in [1090, 2411] {
+            response["model"] = json!("fixture-model-c");
+            response["billing"]["chargedCredits"] = json!(charged);
+            let unquoted: Receipt = serde_json::from_value(response.clone()).expect("receipt");
+            assert!(!unquoted.valid(&internal()));
+            assert!(!unquoted.valid(&external()));
+            assert!(!unquoted.valid(&with_fallback()));
+        }
     }
 }

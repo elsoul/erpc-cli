@@ -69,7 +69,19 @@ Without the secret the worker reports nothing. It also reports nothing when a
 ingest host over https: `o<org id>.ingest.sentry.io`, or the same in Sentry's
 `de` or `us` region. Those are among the hosts `WORKER_REPORT_HOST_PATTERNS`
 in `crates/erpc-core/src/endpoints.rs` declares for this worker, and a test
-checks that. The DSN is never in this repository; a maintainer sets it with
+checks that. It also refuses a DSN whose key is missing; whose key, or the
+optional part after it, has characters other than letters, digits and `_`;
+whose path is anything other than the project number; that has a `?` or `#`;
+that names a port other than the default; or that has a space or line break
+inside it. Some of these fail the Sentry SDK's own parser, which prints a DSN
+it cannot parse, key included, to the logs; a port would send somewhere else;
+and for the rest the worker accepts only the plain form. A refused value is
+never used as the SDK's DSN, and an accepted one is given to the SDK rebuilt
+from its checked parts, never as typed. Spaces and line breaks around the
+value are trimmed. When the secret is set but not used for one of these
+reasons, the worker logs one warning per Worker instance, in its Cloudflare
+logs, saying which reason applies; the warning never contains the DSN or any
+part of it. The DSN is never in this repository; a maintainer sets it with
 `npx wrangler secret put SENTRY_DSN` in `installer/`. Whoever holds the DSN
 can submit events to that Sentry project and cannot read them.
 
