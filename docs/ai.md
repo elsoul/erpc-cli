@@ -64,36 +64,67 @@ More about conversations:
   After an upgrade `erpc doctor` warns while the copies on disk are older,
   and the next command says so once.
 
-## Local Solana RPC binding check (pilot builds)
+## ERPC server Security Check (pilot builds)
 
-Standard releases omit this check. Anyone can compile the local menu and
-check by enabling the `node-check-pilot` Cargo feature. Completing a report
-requires signing in. The server controls which deployments enable reports
-and which accounts can receive them.
+Standard releases omit Security Check. Build the pilot with
+`cargo build --locked -p erpc --features security-check-pilot`. The older
+`node-check-pilot` feature name also enables this pilot. The ERPC service
+determines eligibility for the signed-in account and its rentals.
 
-With the feature enabled, run `erpc ai --node-check` on a Linux node you
-administer, or enter `/node-check` in the interactive `erpc ai` console there.
-Select **Check Solana RPC binding on TCP 8899**. The menu starts on **Cancel**
-and takes no host, port, or other arguments. In all builds, input whose first word is
-`/node-check` stays local, including with `--message` or piped input.
+After `erpc login`, run `erpc ai --security-check` from your terminal to
+select an eligible VPS or bare-metal rental. The selector starts on
+**Cancel**. Use `erpc ai --security-check --list --json` to list rentals,
+or add `--kind vps --id 123` or `--kind bare-metal --id 456` to select one
+directly. Inspection requires a terminal. In every build, input whose first
+word is `/security-check` stays local in the console, with `--message`, and
+on standard input. In pilot builds it points to the terminal command.
+`/node-check` locally displays the migration message.
 
-The check reads Linux's IPv4 and IPv6 socket tables in the current network
-namespace. It reports a wildcard or non-loopback binding for review,
-loopback-only listeners, no observed listener, or an inconclusive result.
-A missing table, such as on Linux with IPv6 disabled, an unreadable or
-truncated table, or either table exceeding 8 MiB makes the result
-inconclusive even when the other table shows a listener. The size limit
-counts every row, including established connections.
+Before inspection, confirm that you own the selected server or have
+authorization to assess it and agree to use the check without reselling
+it. ERPC then revalidates the rental, provisioning state and public IPv4
+assignment before any SSH connection. The CLI uses the SSH identity in
+`ssh_key` and the saved VPS host key pin for that rental. You can supply
+an independently verified Ed25519 host public key with
+`--host-key '<public-key>' --ssh-user '<login>'` instead.
 
-Only the fixed check name and one classification go to ERPC for the report.
-Listener addresses and raw socket data stay on the node. The console shows
-the report without adding it to the chat session or saved conversation.
+The collector reads bounded evidence from the remote Linux SSH login's
+network namespace and available system configuration.
 
-This is a snapshot of listeners on the conventional Solana RPC port,
-TCP 8899. It does not identify the process, change the node, or probe
-network reachability. If the RPC runs in another network namespace, run
-the CLI in that namespace. Other ports and network namespaces are
-outside the check's scope.
+- TCP listeners and bound UDP ports grouped by bind scope, with service
+  classifications when available. External reachability is outside the
+  scope of this check.
+- SSH password and keyboard-interactive settings from OpenSSH's default
+  on-disk configuration, evaluated for the SSH connection. The running
+  daemon may use different options or configuration. A configured
+  `no` is reported as unknown for billing. The check also reads nftables
+  input filter evidence and fail2ban's sshd jail status, and may retry
+  denied reads of those two sources with non-interactive sudo.
+- File mode counts for systemd environment and credential source references.
+  The collector checks a fixed systemd unit allowlist and eligible ERPC
+  units that own sockets in the sampled namespace. It follows nested
+  socket cgroups to their owning service. The collector counts distinct
+  source values separately for `LoadCredential` and
+  `LoadCredentialEncrypted`, deduplicating repeated values within each
+  kind. Incomplete socket attribution, cgroup discovery
+  or systemd reads leave missing evidence unknown. An observed
+  `EnvironmentFile` declaration produces a local SSH policy finding
+  regardless of its file mode. JSON reports include that finding in
+  `localFindings`, alongside any metered findings.
+- Security update counts from the local Debian or Ubuntu package cache.
+
+The inventory accepts up to 256 rentals and a 128 KiB reply. Quote and
+rental verification replies are capped at 4 KiB each. An oversized reply
+stops the check before SSH.
+
+The pricing prompt shows the model, maximum reservation of 28,160 ERPC AI
+tokens and rate for a completed report. The current rate is 512 tokens
+plus 3 per model input token and 12 per model output token. The check
+requires approval of a verified quote before opening SSH. The billed
+request contains fixed posture classifications, the rental and request
+IDs, and billing parameters. The CLI keeps detailed socket and file-mode
+observations in the operator's report. It shows the settled charge,
+reports when no tokens were charged, or flags an unconfirmed settlement.
 
 ## Wallet: `erpc wallet`
 

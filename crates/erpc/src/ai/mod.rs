@@ -90,11 +90,24 @@ pub enum Start {
     Latest,
 }
 
-/// The local menu command is reserved in all builds so it never goes to chat.
+/// The retired command remains reserved so old invocations stay local.
 pub(crate) const NODE_CHECK_COMMAND: &str = "/node-check";
 
 pub(crate) fn is_node_check_command(text: &str) -> bool {
     text.split_whitespace().next() == Some(NODE_CHECK_COMMAND)
+}
+
+/// Keep this operator command outside every assistant conversation.
+const SECURITY_CHECK_COMMAND: &str = "/security-check";
+
+pub(crate) fn security_check_reply(text: &str) -> Option<String> {
+    (text.split_whitespace().next() == Some(SECURITY_CHECK_COMMAND)).then(|| {
+        if cfg!(feature = "security-check-pilot") {
+            t!("node_check.console_only")
+        } else {
+            t!("tui.unknown_command", command = SECURITY_CHECK_COMMAND)
+        }
+    })
 }
 
 /// Runs `erpc ai`, bare `erpc`, and `erpc resume`. `size` puts every turn
@@ -105,21 +118,6 @@ pub async fn run(
     start: Start,
     size: Option<erpc_api::ai::Size>,
 ) -> Outcome {
-    let client = match AuthClient::new() {
-        Ok(client) => client,
-        Err(e) => return crate::cli::error::classify(&e).into(),
-    };
-    let access = match StoreAccess::open(client.clone()) {
-        Ok(access) => access,
-        Err(outcome) => return outcome,
-    };
-    let mut system = erpc_ai::prompt::system(&crate::command_reference());
-    // What is remembered goes last, so the blocks before it stay cached
-    // when it changes.
-    if let Some(remembered) = crate::ai::memory::store().ok().and_then(|m| m.prompt()) {
-        system.push(remembered);
-    }
-
     // A question on the command line, or piped in: one answer, then done.
     let one_shot = match message {
         Some(text) => Some(text),
@@ -133,12 +131,25 @@ pub async fn run(
         None => None,
     };
     if one_shot.as_deref().is_some_and(is_node_check_command) {
-        let message = if cfg!(feature = "node-check-pilot") {
-            t!("node_check.console_only")
-        } else {
-            t!("tui.unknown_command", command = NODE_CHECK_COMMAND)
-        };
-        return Outcome::Usage(message);
+        return Outcome::Usage(t!("node_check.retired"));
+    }
+    if let Some(reply) = one_shot.as_deref().and_then(security_check_reply) {
+        return Outcome::Usage(reply);
+    }
+
+    let client = match AuthClient::new() {
+        Ok(client) => client,
+        Err(e) => return crate::cli::error::classify(&e).into(),
+    };
+    let access = match StoreAccess::open(client.clone()) {
+        Ok(access) => access,
+        Err(outcome) => return outcome,
+    };
+    let mut system = erpc_ai::prompt::system(&crate::command_reference());
+    // What is remembered goes last, so the blocks before it stay cached
+    // when it changes.
+    if let Some(remembered) = crate::ai::memory::store().ok().and_then(|m| m.prompt()) {
+        system.push(remembered);
     }
 
     if let Some(text) = one_shot {

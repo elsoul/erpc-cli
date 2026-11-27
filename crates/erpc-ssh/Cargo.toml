@@ -13,6 +13,9 @@ homepage.workspace = true
 authors.workspace = true
 publish = true
 
+[features]
+node-check-pilot = []
+
 [dependencies]
 base64.workspace = true
 flate2.workspace = true

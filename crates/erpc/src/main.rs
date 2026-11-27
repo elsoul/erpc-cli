@@ -182,10 +182,9 @@ enum Command {
         /// each turn's words decide.
         #[arg(long, value_name = "SIZE", value_parser = |text: &str| text.parse::<erpc_api::ai::Size>())]
         model: Option<erpc_api::ai::Size>,
-        /// Open the local Solana RPC listener check menu.
-        #[cfg(feature = "node-check-pilot")]
-        #[arg(long, conflicts_with_all = ["message", "continue_last", "model"])]
-        node_check: bool,
+        #[cfg(feature = "security-check-pilot")]
+        #[command(flatten)]
+        security: node::server_security::Args,
     },
     /// Continue a saved conversation. Without an id, pick one from a list.
     Resume {
@@ -274,7 +273,11 @@ pub fn command_reference() -> String {
                 let id = arg.get_id().as_str();
                 // The node check is an operator-only action, outside the assistant's prompt.
                 if matches!(id, "json" | "help" | "version" | "args")
-                    || (name == "ai" && id == "node_check")
+                    || (name == "ai"
+                        && matches!(
+                            id,
+                            "security_check" | "list" | "kind" | "id" | "host_key" | "ssh_user"
+                        ))
                 {
                     continue;
                 }
@@ -556,12 +559,12 @@ async fn dispatch(cli: Cli) -> ExitCode {
             message,
             continue_last,
             model,
-            #[cfg(feature = "node-check-pilot")]
-            node_check,
+            #[cfg(feature = "security-check-pilot")]
+            security,
         } => {
-            #[cfg(feature = "node-check-pilot")]
-            if node_check {
-                return finish(node::check::menu(cli.json).await);
+            #[cfg(feature = "security-check-pilot")]
+            if let Some(outcome) = security.run(cli.json).await {
+                return finish(outcome);
             }
             let start = if continue_last {
                 ai::Start::Latest

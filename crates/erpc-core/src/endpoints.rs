@@ -406,6 +406,22 @@ pub const X402_SOLANA_URL: &str = "https://x402.erpc.global/v1/solana-mainnet";
 /// Ethereum mainnet RPC paid per request.
 pub const X402_ETH_URL: &str = "https://x402.erpc.global/v1/eth-mainnet";
 
+/// Eligible server rentals for the signed-in operator.
+pub const SECURITY_CHECK_SERVERS_URL: &str =
+    "https://user-api.erpc.global/v3/ai/security-check/servers";
+
+/// Live authorization and assignment for a selected rental.
+pub const SECURITY_CHECK_SELECT_URL: &str =
+    "https://user-api.erpc.global/v3/ai/security-check/servers/select";
+
+/// Metered Security Check price and limits.
+pub const SECURITY_CHECK_QUOTE_URL: &str =
+    "https://user-api.erpc.global/v3/ai/security-check/posture-report/quote";
+
+/// Metered Security Check report submission.
+pub const SECURITY_CHECK_REPORT_URL: &str =
+    "https://user-api.erpc.global/v3/ai/security-check/posture-report";
+
 /// Refuse any URL that `erpc` must not contact on its own initiative.
 ///
 /// Accepts `https`/`wss` to an allowlisted host with no explicit port and no
@@ -581,6 +597,18 @@ mod tests {
             super::X402_ETH_URL,
         ] {
             assert!(super::ensure_service_url(url).is_ok());
+        }
+    }
+
+    #[test]
+    fn security_check_endpoints_are_service_urls() {
+        for url in [
+            super::SECURITY_CHECK_SERVERS_URL,
+            super::SECURITY_CHECK_SELECT_URL,
+            super::SECURITY_CHECK_QUOTE_URL,
+            super::SECURITY_CHECK_REPORT_URL,
+        ] {
+            assert!(super::ensure_service_url(url).is_ok(), "{url}");
         }
     }
 

@@ -28,7 +28,7 @@ use crate::allowlist::{self, AllowlistError};
 use crate::credential::{Audience, Credential};
 use crate::device_flow::{CLIENT_ID, DeviceAuthorization, PollOutcome, SCOPE, endpoint};
 
-/// How long any single request may take.
+/// Default deadline for a single request.
 ///
 /// The poll loop has its own schedule, so a request that hangs must not be
 /// allowed to stall it past the device code's lifetime.
@@ -48,6 +48,20 @@ pub enum HttpError {
         host: &'static str,
         /// What went wrong.
         reason: String,
+    },
+    /// The request's explicit deadline elapsed.
+    #[error("request to {host} timed out")]
+    Timeout {
+        /// The host that was being contacted.
+        host: &'static str,
+    },
+    /// A bounded JSON response exceeded its byte limit.
+    #[error("{host} returned a response exceeding its size limit (HTTP {status})")]
+    ResponseLimit {
+        /// The host that was being contacted.
+        host: &'static str,
+        /// The HTTP status received before the body.
+        status: u16,
     },
     /// The server answered with something this client cannot read.
     #[error("{host} returned a reply this version cannot read: {reason}")]
@@ -74,6 +88,23 @@ pub enum HttpError {
 #[derive(Debug, Clone)]
 pub struct AuthClient {
     inner: reqwest::Client,
+}
+
+/// Per-request deadline and body limits for an authenticated JSON submission.
+#[derive(Clone, Copy)]
+pub struct JsonResponseLimits {
+    /// Deadline for both headers and body.
+    pub timeout: Duration,
+    /// Maximum bytes for an HTTP 200 response.
+    pub ok_bytes: usize,
+    /// Maximum bytes for any other response.
+    pub other_bytes: usize,
+}
+
+#[derive(Default)]
+struct JsonOptions<'a> {
+    idempotency_key: Option<&'a str>,
+    response_limits: Option<JsonResponseLimits>,
 }
 
 impl AuthClient {
@@ -258,6 +289,32 @@ impl AuthClient {
         url: &str,
         access_token: &SecretString,
     ) -> Result<(u16, String), HttpError> {
+        self.get_json(audience, url, access_token, None).await
+    }
+
+    /// Sends an authenticated GET with a deadline and response byte cap.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::post_with_token_bounded`].
+    pub async fn get_with_token_bounded(
+        &self,
+        audience: Audience,
+        url: &str,
+        access_token: &SecretString,
+        limits: JsonResponseLimits,
+    ) -> Result<(u16, String), HttpError> {
+        self.get_json(audience, url, access_token, Some(limits))
+            .await
+    }
+
+    async fn get_json(
+        &self,
+        audience: Audience,
+        url: &str,
+        access_token: &SecretString,
+        limits: Option<JsonResponseLimits>,
+    ) -> Result<(u16, String), HttpError> {
         allowlist::ensure_token_destination(audience, url)?;
         // The destination, not the issuer. Naming the issuer here told an
         // operator whose user-api request failed that auth-api could not
@@ -266,19 +323,11 @@ impl AuthClient {
             .first()
             .copied()
             .unwrap_or_else(|| audience.issuer_host());
-        let response = self
+        let request = self
             .inner
             .get(url)
-            .bearer_auth(access_token.expose_secret())
-            .send()
-            .await
-            .map_err(|e| HttpError::Transport {
-                host,
-                reason: e.to_string(),
-            })?;
-        let status = response.status().as_u16();
-        let text = response.text().await.unwrap_or_default();
-        Ok((status, text))
+            .bearer_auth(access_token.expose_secret());
+        send_json(request, host, limits).await
     }
 
     /// POSTs `body` as JSON with the access token and returns the status and
@@ -307,7 +356,41 @@ impl AuthClient {
             url,
             access_token,
             body,
-            idempotency_key,
+            JsonOptions {
+                idempotency_key,
+                ..JsonOptions::default()
+            },
+        )
+        .await
+    }
+
+    /// POSTs authenticated JSON with an optional idempotency key, a per-request
+    /// deadline and a byte cap checked as the body is received.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::post_with_token`]. A deadline, byte limit, or invalid UTF-8
+    /// returns [`HttpError::Timeout`], [`HttpError::ResponseLimit`], or
+    /// [`HttpError::Malformed`], respectively.
+    pub async fn post_with_token_bounded(
+        &self,
+        audience: Audience,
+        url: &str,
+        access_token: &SecretString,
+        body: Vec<u8>,
+        idempotency_key: Option<&str>,
+        limits: JsonResponseLimits,
+    ) -> Result<(u16, String), HttpError> {
+        self.send_with_token(
+            reqwest::Method::POST,
+            audience,
+            url,
+            access_token,
+            body,
+            JsonOptions {
+                idempotency_key,
+                response_limits: Some(limits),
+            },
         )
         .await
     }
@@ -333,7 +416,7 @@ impl AuthClient {
             url,
             access_token,
             body,
-            None,
+            JsonOptions::default(),
         )
         .await
     }
@@ -359,7 +442,7 @@ impl AuthClient {
             url,
             access_token,
             body,
-            None,
+            JsonOptions::default(),
         )
         .await
     }
@@ -371,29 +454,20 @@ impl AuthClient {
         url: &str,
         access_token: &SecretString,
         body: Vec<u8>,
-        idempotency_key: Option<&str>,
+        options: JsonOptions<'_>,
     ) -> Result<(u16, String), HttpError> {
         allowlist::ensure_token_destination(audience, url)?;
         let host = allowlist::destinations(audience)
             .first()
             .copied()
             .unwrap_or_else(|| audience.issuer_host());
-        let mut request = self
-            .inner
-            .request(method, url)
-            .bearer_auth(access_token.expose_secret())
-            .header("content-type", "application/json")
-            .body(body);
-        if let Some(key) = idempotency_key {
-            request = request.header("idempotency-key", key);
-        }
-        let response = request.send().await.map_err(|e| HttpError::Transport {
-            host,
-            reason: e.to_string(),
-        })?;
-        let status = response.status().as_u16();
-        let text = response.text().await.unwrap_or_default();
-        Ok((status, text))
+        let request = json_request(
+            self.inner.request(method, url),
+            access_token,
+            body,
+            options.idempotency_key,
+        );
+        send_json(request, host, options.response_limits).await
     }
 
     /// POSTs `body` as raw bytes with the access token, allowing `timeout`
@@ -758,6 +832,78 @@ impl TokenBody {
         })
     }
 }
+
+fn json_request(
+    request: reqwest::RequestBuilder,
+    access_token: &SecretString,
+    body: Vec<u8>,
+    idempotency_key: Option<&str>,
+) -> reqwest::RequestBuilder {
+    let request = request
+        .bearer_auth(access_token.expose_secret())
+        .header("content-type", "application/json")
+        .body(body);
+    if let Some(key) = idempotency_key {
+        request.header("idempotency-key", key)
+    } else {
+        request
+    }
+}
+
+async fn send_json(
+    request: reqwest::RequestBuilder,
+    host: &'static str,
+    response_limits: Option<JsonResponseLimits>,
+) -> Result<(u16, String), HttpError> {
+    let transport = |error: reqwest::Error| {
+        if response_limits.is_some() && error.is_timeout() {
+            HttpError::Timeout { host }
+        } else {
+            HttpError::Transport {
+                host,
+                reason: error.to_string(),
+            }
+        }
+    };
+    let request = if let Some(limits) = response_limits {
+        request.timeout(limits.timeout)
+    } else {
+        request
+    };
+    let mut response = request.send().await.map_err(transport)?;
+    let status = response.status().as_u16();
+    let Some(limits) = response_limits else {
+        return Ok((status, response.text().await.unwrap_or_default()));
+    };
+    let maximum = if status == 200 {
+        limits.ok_bytes
+    } else {
+        limits.other_bytes
+    };
+    let exceeded = || HttpError::ResponseLimit { host, status };
+    if response
+        .content_length()
+        .is_some_and(|length| length > maximum as u64)
+    {
+        return Err(exceeded());
+    }
+    let mut bytes = Vec::with_capacity(maximum.min(16 * 1024));
+    while let Some(chunk) = response.chunk().await.map_err(transport)? {
+        if chunk.len() > maximum - bytes.len() {
+            return Err(exceeded());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let text = String::from_utf8(bytes).map_err(|_| HttpError::Malformed {
+        host,
+        reason: "response is not UTF-8".to_owned(),
+    })?;
+    Ok((status, text))
+}
+
+#[cfg(test)]
+#[path = "client_timeout_test.rs"]
+mod timeout_test;
 
 #[cfg(test)]
 mod tests {

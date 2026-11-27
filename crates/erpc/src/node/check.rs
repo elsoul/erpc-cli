@@ -1,74 +1,24 @@
 // SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
 // SPDX-License-Identifier: Apache-2.0
 
-//! One local, read-only check of listeners on the conventional Solana RPC port.
+//! Fixed listener summaries for server posture reports.
+//!
+//! The previous Linux socket parser is kept for its regression fixtures.
 
-use std::io::IsTerminal as _;
+use erpc_api::node_check::Finding;
+#[cfg(test)]
+use erpc_api::node_check::Observation;
 
-use erpc_ai::session::Access as _;
-use erpc_api::node_check::{Finding, Observation, SOLANA_RPC_BIND};
-use erpc_auth::AuthClient;
-
-use crate::account::commands::Outcome;
-
-pub(crate) const SUPPORTED: bool = cfg!(target_os = "linux");
-
-pub(crate) async fn menu(json: bool) -> Outcome {
-    if !SUPPORTED {
-        return Outcome::Failed(t!("node_check.unsupported"));
-    }
-    if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
-        return Outcome::NeedsTerminal(t!("node_check.terminal_required"));
-    }
-    let selection = cliclack::select(t!("node_check.scope"))
-        .item(true, t!("node_check.run"), "")
-        .item(false, t!("node_check.cancel"), "")
-        .initial_value(false)
-        .interact();
-    match selection {
-        Ok(true) => match check().await {
-            Ok(finding) if json => crate::account::commands::Said::Json(
-                serde_json::json!({ "check": SOLANA_RPC_BIND, "finding": finding }),
-            )
-            .done(),
-            Ok(finding) => Outcome::Done(report(finding)),
-            Err(outcome) => outcome,
-        },
-        Ok(false) => Outcome::Done(String::new()),
-        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => Outcome::Done(String::new()),
-        Err(_) => Outcome::Failed(t!("node_check.menu_failed")),
-    }
-}
-
-pub(crate) async fn check() -> Result<Finding, Outcome> {
-    if !SUPPORTED {
-        return Err(Outcome::Failed(t!("node_check.unsupported")));
-    }
-    let observation = observe().await;
-    let failed = || Outcome::Failed(t!("node_check.request_failed"));
-    let sign_in = || Outcome::NoSession(t!("node_check.sign_in"));
-    let client = AuthClient::new().map_err(|_| failed())?;
-    let access = crate::ai::StoreAccess::open(client.clone()).map_err(|_| sign_in())?;
-    let token = access.access_token().await.map_err(|_| sign_in())?;
-    erpc_api::node_check::check(&client, &token, observation)
-        .await
-        .map_err(|err| match err {
-            erpc_api::ApiError::Unauthorized => sign_in(),
-            _ => failed(),
-        })
-}
-
-pub(crate) fn report(finding: Finding) -> String {
-    let summary = match finding {
+pub(crate) fn summary(finding: Finding) -> String {
+    match finding {
         Finding::ReviewBinding => t!("node_check.review_binding"),
         Finding::LoopbackBinding => t!("node_check.loopback_binding"),
         Finding::NoListener => t!("node_check.no_listener"),
         Finding::Inconclusive => t!("node_check.inconclusive"),
-    };
-    format!("{summary}\n{}", t!("node_check.limits"))
+    }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(test, target_os = "linux"))]
 async fn observe() -> Observation {
     // The operator's current network namespace only. Neither path can be
     // supplied by the command line, the server or chat.
@@ -83,12 +33,7 @@ async fn observe() -> Observation {
     .unwrap_or(Observation::Unknown)
 }
 
-#[cfg(not(target_os = "linux"))]
-fn observe() -> std::future::Ready<Observation> {
-    std::future::ready(Observation::Unknown)
-}
-
-#[cfg(any(target_os = "linux", test))]
+#[cfg(test)]
 fn classify(ipv4: Option<impl std::io::Read>, ipv6: Option<impl std::io::Read>) -> Observation {
     match (
         ipv4.and_then(|table| read_table(table, Family::V4)),
@@ -99,14 +44,14 @@ fn classify(ipv4: Option<impl std::io::Read>, ipv6: Option<impl std::io::Read>) 
     }
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(test)]
 #[derive(Clone, Copy)]
 enum Family {
     V4,
     V6,
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(test)]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum TableBinding {
     None,
@@ -114,7 +59,7 @@ enum TableBinding {
     NonLoopback,
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(test)]
 impl From<TableBinding> for Observation {
     fn from(binding: TableBinding) -> Self {
         match binding {
@@ -126,10 +71,10 @@ impl From<TableBinding> for Observation {
 }
 
 // The byte cap bounds resource use and treats oversized tables as incomplete.
-#[cfg(any(target_os = "linux", test))]
+#[cfg(test)]
 const TABLE_LIMIT: u64 = 8 * 1024 * 1024;
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(test)]
 fn read_table(table: impl std::io::Read, family: Family) -> Option<TableBinding> {
     use std::io::{BufRead as _, BufReader};
 
@@ -163,7 +108,7 @@ fn read_table(table: impl std::io::Read, family: Family) -> Option<TableBinding>
     }
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(test)]
 fn read_row(line: &str, family: Family) -> Option<TableBinding> {
     const RPC_PORT: u16 = 8899;
     const TCP_LISTEN: u8 = 0x0a;
@@ -188,14 +133,14 @@ fn read_row(line: &str, family: Family) -> Option<TableBinding> {
     })
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(test)]
 fn hex(s: &str, width: usize) -> Option<u32> {
     (s.len() == width && s.bytes().all(|b| b.is_ascii_hexdigit()))
         .then(|| u32::from_str_radix(s, 16).ok())
         .flatten()
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(test)]
 fn is_loopback(address: &str, family: Family) -> Option<bool> {
     use std::net::{Ipv4Addr, Ipv6Addr};
 
@@ -379,7 +324,7 @@ mod tests {
     }
 
     #[test]
-    fn reports_are_fixed_and_make_scope_visible() {
+    fn listener_summaries_are_fixed() {
         use erpc_api::node_check::Finding;
         for (finding, phrase) in [
             (Finding::ReviewBinding, "Review binding"),
@@ -387,10 +332,7 @@ mod tests {
             (Finding::NoListener, "No listener observed"),
             (Finding::Inconclusive, "Inconclusive"),
         ] {
-            let report = super::report(finding);
-            assert!(report.starts_with(phrase));
-            assert!(report.contains("current Linux network namespace"));
-            assert!(report.contains("network reachability"));
+            assert!(super::summary(finding).starts_with(phrase));
         }
     }
 }
