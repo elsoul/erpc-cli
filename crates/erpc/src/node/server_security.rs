@@ -9,6 +9,9 @@ mod billing;
 #[path = "posture_details.rs"]
 mod posture_details;
 
+#[path = "posture_keys.rs"]
+mod posture_keys;
+
 use posture_details::{
     Firewall, FirewallEvidence, Jail, Metadata, Ports, Ssh, Switch, UpdateStatus, Updates,
 };
@@ -412,6 +415,10 @@ pub(super) struct Posture {
     metadata: Option<Metadata>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     updates: Option<Updates>,
+    /// The plain-text key search: local to this screen, never in the
+    /// billing facts, and without its places in `--json`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    keys: Option<posture_keys::Keys>,
 }
 
 impl Posture {
@@ -419,6 +426,24 @@ impl Posture {
         self.ports.as_ref().is_none_or(Ports::valid)
             && self.metadata.as_ref().is_none_or(Metadata::valid)
             && self.updates.as_ref().is_none_or(Updates::valid)
+            && self.keys.as_ref().is_none_or(posture_keys::Keys::valid)
+    }
+
+    /// The local findings, by id, for `localFindings`: the `EnvironmentFile`
+    /// policy review, then those the key search raises.
+    fn local_findings(&self) -> Vec<&'static str> {
+        let mut ids = Vec::new();
+        if self
+            .metadata
+            .as_ref()
+            .is_some_and(Metadata::has_environment_reference)
+        {
+            ids.push("review_env_file_use");
+        }
+        if let Some(keys) = &self.keys {
+            ids.extend(keys.findings());
+        }
+        ids
     }
 
     pub(super) fn report(&self) -> String {
@@ -446,6 +471,9 @@ impl Posture {
         }
         if let Some(updates) = &self.updates {
             updates.describe(&mut text);
+        }
+        if let Some(keys) = &self.keys {
+            keys.describe(&mut text);
         }
         text.push_str(&t!("node_check.remote_limits"));
         text
@@ -613,8 +641,9 @@ fn select_server(
 
 fn inspection_scope(server: &EligibleServer) -> String {
     format!(
-        "{}\n{}\n{}",
+        "{}\n{}\n{}\n{}",
         t!("node_check.remote_scope", server = server.label()),
+        t!("node_check.keys_scope"),
         t!("node_check.readonly_sudo"),
         t!("node_check.authorization"),
     )
@@ -690,14 +719,12 @@ impl Completed {
             let mut output = serde_json::json!({
                 "server": server.summary(), "source": "pinned_ssh", "posture": result, "requestId": id,
             });
-            if result
-                .metadata
-                .as_ref()
-                .is_some_and(Metadata::has_environment_reference)
-            {
-                output["localFindings"] = serde_json::json!([
-                    { "id": "review_env_file_use", "source": "pinned_ssh" }
-                ]);
+            let local = result.local_findings();
+            if !local.is_empty() {
+                output["localFindings"] = local
+                    .into_iter()
+                    .map(|id| serde_json::json!({ "id": id, "source": "pinned_ssh" }))
+                    .collect();
             }
             match model {
                 Ok(receipt) => output["modelReport"] = serde_json::json!(receipt),
@@ -1414,6 +1441,384 @@ mod tests {
         malformed["ports"]["tcp"]["wildcard"] = json!([{"port":0,"services":["redis"]}]);
         let malformed: Posture = serde_json::from_value(malformed).expect("wire typing");
         assert!(!malformed.valid());
+    }
+
+    fn fixture_server() -> super::EligibleServer {
+        let listed = json!({ "servers": [{
+            "id": "bare_metal:7", "kind": "bare_metal", "label": "fixture",
+            "address": "8.8.8.4", "region": "tokyo",
+        }] });
+        parse_eligible(&listed.to_string())
+            .expect("eligible fixture")
+            .pop()
+            .expect("fixture server")
+    }
+
+    fn with_keys(keys: &serde_json::Value) -> Posture {
+        let raw = json!({"listeners": "no_listener", "nftables": "not_observed", "keys": keys});
+        decode_posture(raw.to_string().as_bytes()).expect("bounded key section")
+    }
+
+    fn completed(result: Posture) -> super::Completed {
+        super::Completed {
+            id: "fixture-request".into(),
+            result,
+            model: Err(billing::ReportFailure::from_response(
+                409,
+                r#"{"error":"posture_report_no_actionable_candidates"}"#,
+            )),
+        }
+    }
+
+    fn key_group(
+        kind: &str,
+        role: &str,
+        location: &str,
+        access: &str,
+        count: u32,
+        places: &[&str],
+    ) -> serde_json::Value {
+        let more = count - u32::try_from(places.len()).expect("few places");
+        json!({"kind": kind, "role": role, "location": location, "access": access,
+            "count": count, "places": places, "more": more})
+    }
+
+    #[test]
+    fn key_findings_list_their_places_escaped_on_screen_and_never_in_json() {
+        use crate::account::commands::Said;
+
+        let keys = json!({"coverage": "complete", "groups": [
+            key_group("solana_keypair", "validator_identity", "home", "owner_only", 1,
+                &["/home/sol/backup/id.json"]),
+            key_group("solana_keypair", "validator_identity", "home", "group", 12,
+                &["/home/sol/validator-keypair.json"]),
+            key_group("evm_private_key", "unknown", "tmp", "world", 1,
+                &["/tmp/%1B[2Jkey%E2%80%AEtxt.json%0A"]),
+            key_group("history_secret", "unknown", "shell_history", "owner_only", 3,
+                &["/root/.bash_history", "/home/a%5Cxff%FF/.bash_history"]),
+        ]});
+        let done = completed(with_keys(&keys));
+        let Said::Text(text) = done.render(&fixture_server(), false) else {
+            panic!("human report expected");
+        };
+        assert!(text.contains("Plain-text key search · complete\n"));
+        assert!(text.contains(
+            "Local SSH finding · The validator identity keypair can be read by accounts other \
+             than its owner. Make the identity keypair readable by the validator's own user only \
+             (chmod 600).\n  - solana_keypair (validator_identity) in home, readable by group: \
+             12\n      /home/sol/validator-keypair.json\n      and 11 more\n"
+        ));
+        assert!(text.contains(
+            "Validator identity keypairs readable by their owner only:\n  - solana_keypair \
+             (validator_identity) in home, readable by owner_only: 1\n      \
+             /home/sol/backup/id.json\n"
+        ));
+        assert!(text.contains(
+            "  - evm_private_key (unknown) in tmp, readable by world: 1\n      \
+             /tmp/\\u{1b}[2Jkey\\u{202e}txt.json\\u{a}\n"
+        ));
+        assert!(text.contains(
+            "      /root/.bash_history\n      /home/a\\\\xff\\xff/.bash_history\n      and 1 more\n"
+        ));
+        // Every account can read the key in /tmp: a finding of its own,
+        // whose group is not listed with its places twice.
+        assert!(text.contains(
+            "Local SSH finding · A private key or secret on this server can be read by every \
+             account. Make the file readable by its owner only (chmod 600), and move it off the \
+             server if it controls funds.\n  - evm_private_key (unknown) in tmp, readable by \
+             world: 1\nThis snapshot"
+        ));
+        assert_eq!(text.matches("txt.json").count(), 1);
+        assert!(!text.contains('\u{1b}') && !text.contains('\u{202e}'));
+
+        let Said::Json(record) = done.render(&fixture_server(), true) else {
+            panic!("JSON report expected");
+        };
+        assert_eq!(
+            record["localFindings"],
+            json!([
+                {"id": "plaintext_wallet_key", "source": "pinned_ssh"},
+                {"id": "validator_identity_permissions", "source": "pinned_ssh"},
+                {"id": "secret_in_shell_history", "source": "pinned_ssh"},
+                {"id": "key_world_readable", "source": "pinned_ssh"},
+            ])
+        );
+        assert_eq!(
+            record["posture"]["keys"]["groups"][1],
+            json!({"kind": "solana_keypair", "role": "validator_identity", "location": "home",
+                "access": "group", "count": 12})
+        );
+        let record = record.to_string();
+        for place in [
+            "/home",
+            "/root",
+            "/tmp",
+            "bash_history",
+            "id.json",
+            "places",
+            "more",
+        ] {
+            assert!(!record.contains(place), "{place} in {record}");
+        }
+        for language in [Lang::En, Lang::Ja, Lang::Ru, Lang::Zh] {
+            let plain = with_keys(&json!({"coverage": "partial", "groups": [
+                key_group("mnemonic", "unknown", "opt", "world", 12, &["/opt/bot/seed.txt"]),
+            ]}));
+            let text = crate::cli::i18n::speaking(language, || plain.report());
+            assert!(text.contains("/opt/bot/seed.txt"), "{text}");
+            assert!(!text.contains('{') && !text.contains('%'), "{text}");
+        }
+    }
+
+    #[test]
+    fn the_prompt_before_the_check_says_it_reads_file_contents_for_keys() {
+        let server = fixture_server();
+        let scope = inspection_scope(&server);
+        assert!(scope.contains(
+            "reads the contents of files under /root, /home, /etc, /opt, /srv, /var/lib, /tmp \
+             and /var/tmp, shell histories and the environments of running processes, looking \
+             for private keys and seed phrases"
+        ));
+        assert!(scope.contains("nothing about the keys is sent to ERPC"));
+        for language in [Lang::Ja, Lang::Ru, Lang::Zh] {
+            let scope = crate::cli::i18n::speaking(language, || inspection_scope(&server));
+            assert!(
+                scope.contains("/var/tmp") && scope.contains("ERPC"),
+                "{scope}"
+            );
+        }
+    }
+
+    #[test]
+    fn no_key_section_or_an_empty_one_changes_nothing_else() {
+        let plain = decode_posture(br#"{"listeners":"no_listener","nftables":"not_observed"}"#)
+            .expect("legacy posture");
+        for (keys, heading) in [
+            (
+                json!({"coverage": "complete", "groups": []}),
+                "Plain-text key search · complete\nNo private keys",
+            ),
+            (
+                json!({"coverage": "partial", "groups": []}),
+                "Plain-text key search · partial.",
+            ),
+            (
+                json!({"coverage": "unreadable", "groups": []}),
+                "Plain-text key search · no result.",
+            ),
+        ] {
+            let posture = with_keys(&keys);
+            assert_eq!(posture.billing_facts(), plain.billing_facts());
+            assert!(posture.report().contains(heading), "{}", posture.report());
+            assert!(posture.local_findings().is_empty());
+        }
+        assert!(!plain.report().contains("key search"));
+    }
+
+    #[test]
+    fn the_strict_parser_refuses_a_key_section_out_of_bounds() {
+        let good = key_group("mnemonic", "unknown", "opt", "world", 1, &["/opt/seed.txt"]);
+        assert!(with_keys(&json!({"coverage": "complete", "groups": [good]})).valid());
+        for bad in [
+            json!({"coverage": "complete", "groups": [good], "paths": []}),
+            json!({"coverage": "complete"}),
+            json!({"coverage": "unreadable", "groups": [good]}),
+            json!({"coverage": "complete", "groups": [good, good]}),
+            json!({"coverage": "complete", "groups": [
+                key_group("mnemonic", "unknown", "opt", "world", 1, &["opt/seed.txt"])]}),
+            json!({"coverage": "complete", "groups": [
+                key_group("mnemonic", "unknown", "opt", "world", 1, &["/opt/se\u{e9}d.txt"])]}),
+            json!({"coverage": "complete", "groups": [
+                key_group("mnemonic", "validator_identity", "opt", "world", 1, &[])]}),
+            json!({"coverage": "complete", "groups": [
+                key_group("mnemonic", "unknown", "opt", "world", 100_001, &[])]}),
+        ] {
+            let raw = json!({"listeners": "no_listener", "nftables": "not_observed", "keys": bad});
+            assert!(
+                matches!(
+                    decode_posture(raw.to_string().as_bytes()),
+                    Err(PostureFailure::InvalidPosture)
+                ),
+                "{bad}"
+            );
+        }
+    }
+
+    /// The largest report the strict parser accepts, key section included,
+    /// fits what the capture takes from the collector.
+    #[test]
+    fn the_largest_valid_report_fits_the_capture_limit() {
+        use super::posture_keys::{PLACE_LIMIT, PLACES_BUDGET, tests::every_group};
+
+        let services = [
+            "container",
+            "dns",
+            "erpc_worker",
+            "mysql",
+            "postgresql",
+            "redis",
+            "solana",
+            "ssh",
+            "time_sync",
+            "unclassified",
+            "unknown",
+            "valkey",
+            "web",
+        ];
+        let rows = |from: u16| -> Vec<serde_json::Value> {
+            (from..from + 64)
+                .map(|port| json!({"port": port, "services": services}))
+                .collect()
+        };
+        let counts = json!({"owner_only": 22, "group_or_other_access": 21, "unknown": 21});
+        // Places that cost the most: every byte written as %HH.
+        let place = format!("/{}", "%FF".repeat((PLACE_LIMIT - 4) / 3));
+        let shown = PLACES_BUDGET / (place.len() + 3);
+        let groups: Vec<serde_json::Value> = every_group()
+            .iter()
+            .enumerate()
+            .map(|(index, [kind, role, location, access])| {
+                let places = if index == 0 {
+                    vec![place.clone(); shown]
+                } else {
+                    Vec::new()
+                };
+                json!({"kind": kind, "role": role, "location": location, "access": access,
+                    "count": 100_000, "places": places, "more": 100_000 - places.len()})
+            })
+            .collect();
+        let largest = json!({
+            "listeners": "loopback_binding", "nftables": "no_tables_observed",
+            "ports": {
+                "tcp": {"coverage": "partial", "wildcard": rows(10_000), "interface": [], "loopback": []},
+                "udp": {"coverage": "partial", "wildcard": rows(20_000), "interface": [], "loopback": []},
+                "truncated": true,
+            },
+            "ssh": {"source": "default_config_for_connection", "password": "disabled",
+                "keyboard_interactive": "disabled"},
+            "firewall": {"ipv4": "configured_drop_or_reject_rule",
+                "ipv6": "configured_drop_or_reject_rule", "truncated": true},
+            "fail2ban": "sshd_jail_not_listed",
+            "metadata": {"coverage": "observed", "units_with_evidence": 16, "truncated": true,
+                "environment_files": counts, "service_env": counts, "credential_sources": counts,
+                "distinct_credential_sources": {"as_is": 64, "encrypted": 64}},
+            "updates": {"status": "none_in_cached_candidates", "packages": 0},
+            "keys": {"coverage": "partial", "groups": groups},
+        });
+        // The collector prints it compact, as this, and a newline.
+        let printed = largest.to_string().len() + 1;
+        assert!(decode_posture(largest.to_string().as_bytes()).is_ok());
+        assert!(
+            printed <= erpc_ssh::exec::POSTURE_OUTPUT_LIMIT,
+            "{printed} bytes"
+        );
+        let keys = largest["keys"].to_string().len();
+        assert!(keys < 24 * 1024, "{keys} bytes of keys");
+    }
+
+    /// The report request built from a server full of keys carries none of
+    /// them, nor where they are: the collector's own key search, run on a
+    /// fixture tree its tests make, with keys made as it runs.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn nothing_the_key_search_finds_reaches_the_request() {
+        use crate::account::commands::Said;
+
+        let tests = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../erpc-ssh/src/node-security-keys-test.py");
+        let driver = "import json, runpy, sys\n\
+            tests = runpy.run_path(sys.argv[1])\n\
+            tree, secrets = tests['key_host']()\n\
+            try:\n    \
+                print(json.dumps({'keys': tests['search'](tree.root), 'secrets': secrets, 'root': str(tree.root)}))\n\
+            finally:\n    \
+                tree.remove()\n";
+        let Ok(output) = std::process::Command::new("python3")
+            .arg("-I")
+            .arg("-c")
+            .arg(driver)
+            .arg(&tests)
+            .output()
+        else {
+            return;
+        };
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let reply: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("fixture reply");
+        let posture = with_keys(&reply["keys"]);
+        assert_eq!(reply["keys"]["groups"].as_array().map(Vec::len), Some(11));
+        let server = fixture_server();
+        let approved = billing::ApprovedReport::from_quote(
+            &quote_fixture(true, FixtureQuote::Customer),
+            server.rental,
+            |_| Ok(true),
+        )
+        .expect("approved quote")
+        .expect("approved");
+        let body = String::from_utf8(approved.submission(&posture).body).expect("text body");
+        let root = reply["root"].as_str().expect("root");
+        // Neither the keys nor any part of where they are, anywhere off
+        // this screen.
+        let mut local: Vec<&str> = reply["secrets"]
+            .as_array()
+            .expect("secrets")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect();
+        local.extend([
+            root,
+            "erpc-keys-",
+            "/home",
+            "/root",
+            "/proc",
+            "/tmp",
+            "/var",
+            "/etc",
+            "/opt",
+            "/srv",
+            "validator-keypair",
+            "id.json",
+            ".env",
+            "bash_history",
+            "fish_history",
+            "deployer",
+            "seed.txt",
+            "keystore.json",
+            "places",
+        ]);
+        // Nor, in the request, that there are keys at all.
+        let classes = [
+            "keys",
+            "wallet",
+            "history",
+            "mnemonic",
+            "keystore",
+            "solana_keypair",
+        ];
+        for fragment in local.iter().chain(&classes) {
+            assert!(!body.contains(fragment), "{fragment} reached the request");
+        }
+        let plain = decode_posture(br#"{"listeners":"no_listener","nftables":"not_observed"}"#)
+            .expect("legacy posture");
+        assert_eq!(posture.billing_facts(), plain.billing_facts());
+        // The operator's screen lists the places; --json does not.
+        let done = completed(posture);
+        let Said::Text(text) = done.render(&server, false) else {
+            panic!("human report expected");
+        };
+        assert!(text.contains("/home/sol/validator-keypair.json"));
+        assert!(text.contains("/root/.bash_history"));
+        let Said::Json(record) = done.render(&server, true) else {
+            panic!("JSON report expected");
+        };
+        let record = record.to_string();
+        for fragment in &local {
+            assert!(!record.contains(fragment), "{fragment} reached --json");
+        }
     }
 
     #[test]

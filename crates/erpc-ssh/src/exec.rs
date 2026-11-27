@@ -211,6 +211,12 @@ pub(crate) fn check_settings(output: &str, required: &[(&str, String)]) -> Resul
     Ok(())
 }
 
+/// The most the Security Check's collector may print: its largest report,
+/// plain-text key results included, is held under this by a test in
+/// `erpc`'s `node::server_security`.
+#[cfg(feature = "node-check-pilot")]
+pub const POSTURE_OUTPUT_LIMIT: usize = 48 * 1024;
+
 fn private_command(remote: &RemoteCommand) -> bool {
     #[cfg(feature = "node-check-pilot")]
     if matches!(remote, RemoteCommand::NodeSecurityPosture) {
@@ -359,6 +365,8 @@ impl Session {
     }
 
     /// Run only the fixed posture collector with closed, redacted diagnostics.
+    /// The collector goes on standard input; its report may take up to
+    /// [`POSTURE_OUTPUT_LIMIT`].
     ///
     /// # Errors
     /// Returns a sanitized failure category, without either raw stream.
@@ -367,8 +375,9 @@ impl Session {
         crate::private_output::run_detailed(
             self.command(&RemoteCommand::NodeSecurityPosture)
                 .env("LC_ALL", "C"),
-            &[],
-            48 * 1024,
+            crate::command::NODE_SECURITY_POSTURE_SCRIPT.as_bytes(),
+            crate::command::NODE_SECURITY_POSTURE_SCRIPT_LIMIT,
+            POSTURE_OUTPUT_LIMIT,
             std::time::Duration::from_secs(90),
         )
     }

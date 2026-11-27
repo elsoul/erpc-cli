@@ -17,6 +17,13 @@ whose version has no entry below.
 - Official Linux, macOS and Windows archives include the opt-in Server
   Security Check command, `erpc ai --security-check`, for eligible ERPC
   rentals.
+- The Server Security Check searches the rental for private keys and seed
+  phrases kept in plain text: key files, seed phrases, keystores without
+  encryption, and secrets in environment files, process environments and
+  shell histories. Its results stay on the operator's screen with the
+  paths; nothing about them is sent to ERPC, and `--json` carries their
+  counts and classes only. The collector now reaches the server on
+  standard input.
 - `erpc worker seal show` and `erpc worker seal list`: this machine's
   sealing key in the ERPC account, which the app's secrets kept there will
   be sealed to. `seal show` makes the key the first time, keeps its private

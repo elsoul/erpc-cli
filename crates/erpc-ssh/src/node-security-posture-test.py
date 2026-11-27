@@ -389,5 +389,11 @@ class PostureTests(unittest.TestCase):
                 self.assertNotIn("/fixture", json.dumps(report))
 
 
+# The plain-text key search's tests run with these: CI runs this file.
+for _name, _value in runpy.run_path(str(Path(__file__).with_name("node-security-keys-test.py"))).items():
+    if isinstance(_value, type) and issubclass(_value, unittest.TestCase):
+        globals()[_name] = _value
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -113,25 +113,31 @@ fn read(mut stream: impl Read, maximum: usize) -> Result<Zeroizing<Vec<u8>>, Pri
         // Continue draining until exit/timeout without accumulating oversized data.
     }
 }
+/// The most private input [`run`] sends.
+pub(crate) const INPUT_LIMIT: usize = 65_536;
+
 pub(crate) fn run(
     command: &mut Command,
     input: &[u8],
     maximum: usize,
     timeout: Duration,
 ) -> Result<PrivateOutput, &'static str> {
-    run_detailed(command, input, maximum, timeout)
+    run_detailed(command, input, INPUT_LIMIT, maximum, timeout)
         .map_err(|_| "protected private response could not be verified")
 }
 
+/// Runs `command` with `input`, at most `input_limit` bytes, on its standard
+/// input, and captures at most `maximum` bytes of its output.
 pub(crate) fn run_detailed(
     command: &mut Command,
     input: &[u8],
+    input_limit: usize,
     maximum: usize,
     timeout: Duration,
 ) -> Result<PrivateOutput, PrivateCaptureError> {
     use PrivateCaptureError as Failure;
 
-    if maximum == 0 || maximum > 65_536 || input.len() > 65_536 {
+    if maximum == 0 || maximum > 65_536 || input.len() > input_limit {
         return Err(Failure::InvalidLimits);
     }
     let mut child = command
@@ -280,16 +286,34 @@ mod tests {
         ] {
             let mut child = Command::new("python3");
             child.args(["-I", "-c", source]);
-            let error = run_detailed(&mut child, &[], 64, Duration::from_secs(5)).unwrap_err();
+            let error =
+                run_detailed(&mut child, &[], INPUT_LIMIT, 64, Duration::from_secs(5)).unwrap_err();
             assert_eq!(error, expected);
             assert!(!error.to_string().contains("fixture"));
         }
         let mut child = Command::new("python3");
         child.args(["-I", "-c", "import time;time.sleep(10)"]);
         assert_eq!(
-            run_detailed(&mut child, &[], 64, Duration::from_millis(100)).unwrap_err(),
+            run_detailed(&mut child, &[], INPUT_LIMIT, 64, Duration::from_millis(100)).unwrap_err(),
             Failure::Timeout
         );
+    }
+
+    #[test]
+    fn each_caller_bounds_its_own_input() {
+        let echo = || {
+            let mut command = Command::new("python3");
+            command.args(["-I", "-c", "import sys;print(len(sys.stdin.buffer.read()))"]);
+            command
+        };
+        let over = vec![b'#'; INPUT_LIMIT + 1];
+        assert_eq!(
+            run_detailed(&mut echo(), &over, INPUT_LIMIT, 64, Duration::from_secs(5)).unwrap_err(),
+            PrivateCaptureError::InvalidLimits
+        );
+        let sent = run_detailed(&mut echo(), &over, 96 * 1024, 64, Duration::from_secs(5))
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(sent.expose(), format!("{}\n", INPUT_LIMIT + 1).as_bytes());
     }
 
     #[test]

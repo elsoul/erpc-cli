@@ -114,6 +114,87 @@ network namespace and available system configuration.
   regardless of its file mode. JSON reports include that finding in
   `localFindings`, alongside any metered findings.
 - Security update counts from the local Debian or Ubuntu package cache.
+- Private keys and secrets kept in plain text. This part reads file
+  contents: files under `/root`, `/home`, `/etc`, `/opt`, `/srv`,
+  `/var/lib` (with Docker's volumes), `/tmp` and `/var/tmp`, shell
+  histories, and the environments of running processes. It looks for:
+  - Solana CLI keypair files (a JSON array of 64 numbers from 0 to 255);
+  - files whose name contains `key`, `private` or `wallet` in any case and
+    that hold only 64 hexadecimal digits, with or without `0x` (`.pem`
+    files excepted);
+  - BIP-39 English seed phrases of 12, 15, 18, 21 or 24 lower-case words
+    and nothing else;
+  - JSON keystores with a private key field (`privateKey`, `private_key`,
+    `secretKey` and similar spellings) and no `crypto` object;
+  - lines of `.env`, `*.env` and `environment` files that set a variable
+    whose name contains `PRIVATE_KEY`, `SECRET_KEY`, `MNEMONIC`,
+    `SEED_PHRASE`, `KEYPAIR` or `WALLET_KEY` to a value written out, rather
+    than an `op://`, `keychain:`, `keystore:` or `$` reference or a path
+    starting with `/`, `~/`, `./` or `../`. A name ending in `_PATH`,
+    `_FILE` or `_DIR` is not counted;
+  - the same variables, set to a value, in the environments of running
+    processes;
+  - lines of bash, zsh and fish histories that hold 64 hexadecimal digits
+    in a row, 87 or 88 base58 characters in a row (the length of a Solana
+    secret key), or set one of those variables. A transaction signature,
+    hash or digest of the same length is counted too.
+
+The key search runs on the server in a child process of the collector,
+beside the other reads, as the SSH login and with no `sudo`. It opens each
+directory and file relative to the directory it was listed in, first as a
+path only (`O_PATH`, `O_NOFOLLOW`), so it learns an entry's type, owner,
+size and filesystem before opening anything to read. It does not follow
+symbolic links, opens no device and waits on no pipe, and does not cross
+into another filesystem, though each directory in `/home` may be one of its
+own; that is decided before a directory is opened to read. It skips Docker's
+`overlay2` image layers and every directory named `ledger`, `accounts`,
+`snapshots`, `rocksdb`, `chaindata`, `geth`, `nodes` or `data`, where chains
+keep their databases, so a key kept in one of those is not found. It reads
+files of up to 64 KiB, the last 1 MiB of a history and process environments
+of up to 1 MiB, goes at most 48 directories deep, and stops after 200,000
+entries or 20 seconds from the collector's start, counted between one entry
+and the next. It opens files and directories without updating their access
+times where the system allows it. Nothing is written on the server.
+
+The search reports itself as partial when it ran out of time or entries,
+met a deeper tree, a larger environment, a starting directory that is a
+symbolic link, a validator whose identity file it cannot tell (Firedancer
+among them), or a directory, file, environment or identity file this login
+may not read. As an ordinary user it cannot read other users' processes, so
+it is partial there. It reports no result when it could read none of its
+starting directories, or when it fails or stalls: the child gets one second
+past its deadline to report what it found, and the rest of the report does
+not wait on it.
+
+A Solana keypair counts as the validator identity when its 64 bytes are
+those of the identity file a running `agave-validator` or
+`solana-validator` was given (`--identity`). That file is read where the
+validator reads it, through symbolic links and on any filesystem, only if
+it is a regular file of 1 byte to 64 KiB, not on a kernel filesystem such
+as `/proc` or `/sys`, and owned by the validator's user unless the
+validator runs as root. Who can read a key is judged from the permission
+bits and groups of the file and of the directories above it: everyone when
+others may pass every directory and read the file, its group when the
+group may read it and pass every directory, and otherwise its owner. That
+is an approximation: an account that owns a directory above the file, and
+access control lists, are not taken into account.
+
+The key search's results stay on your screen. The report lists each group
+of keys by kind, role, kind of place, who can read it and how many, with
+up to ten of their paths, then "and N more". Paths are escaped so that a
+file's name cannot drive the terminal, and the collector keeps all the
+paths it sends to 6 KiB. Each group raises one local finding:
+`plaintext_wallet_key` (other keypairs and hexadecimal keys),
+`validator_identity_permissions` (the identity keypair, when others than
+its owner can read it), `mnemonic_on_disk`, `unencrypted_keystore`,
+`secret_in_env_file`, `secret_in_process_env` or `secret_in_shell_history`,
+and `key_world_readable` when every account can read one. `--json` lists
+those findings in `localFindings` and the groups' counts and classes under
+`posture.keys`, without paths. None of it is sent to ERPC or counted in
+the billed request. The collector reads contents into bounded buffers and
+only classifications, counts and paths leave its child process; Python
+cannot wipe memory, so what it read stays in that process until it exits,
+right after reporting.
 
 The inventory accepts up to 256 rentals and a 128 KiB reply. Quote and
 rental verification replies are capped at 4 KiB each. An oversized reply
