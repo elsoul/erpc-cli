@@ -1041,9 +1041,11 @@ mod tests {
     const HOST: &str = "auth-api.erpc.global";
 
     /// Every way of sending with a token refuses a host the token is not
-    /// for before anything is sent: the waiting ones as the others.
+    /// for, with `HostNotAllowed`: the waiting and the bounded ones as the
+    /// others. Whether the check comes before the request is sent is not
+    /// seen here; each sending body makes it its first step.
     #[tokio::test]
-    async fn every_request_with_a_token_checks_its_destination_first() {
+    async fn every_request_with_a_token_refuses_a_host_it_is_not_for() {
         let client = AuthClient::new().expect("a client");
         let token = SecretString::from("not-a-token");
         let url = "https://dashboard.erpc.global/v3/worker/apps";
@@ -1099,6 +1101,17 @@ mod tests {
                 .map(ok),
             client
                 .post_with_token_bounded(audience, url, &token, Vec::new(), Some("k"), limits())
+                .await
+                .map(ok),
+            client
+                .post_with_token_bounded_and_headers(
+                    audience,
+                    url,
+                    &token,
+                    Vec::new(),
+                    &[],
+                    limits(),
+                )
                 .await
                 .map(ok),
         ];
