@@ -211,12 +211,61 @@ class PostureTests(unittest.TestCase):
                     return (first, False) if unit_path + "ssh" in args else second
 
                 with patch.dict(metadata.__globals__, capture=capture, file_modes=modes,
-                                unit_names=lambda _: (names, False, False)):
+                                unit_names=lambda _: (names, set(), False, False)):
                     report = metadata(set(), False)
                 self.assertEqual(report["coverage"], expected, report)
                 self.assertEqual(report["units_with_evidence"], 1)
                 self.assertEqual(report["environment_files"]["group_or_other_access"], int(first == positive))
                 self.assertNotIn("/fixture", json.dumps(report))
+
+    def test_sampled_fixed_unit_disappearance_or_unreadable_properties_downgrade_coverage(self):
+        report_linux = POSTURE["report_linux"]
+        target = "redis-server.service"
+        fixed = b"0::/system.slice/redis-server.service"
+        obj = b'o "/org/freedesktop/systemd1/unit/redis"\n'
+        missing = (POSTURE["NOT_LOADED"], False)
+        empty = b"a(sb) 0\na(ss) 0\na(ss) 0\n"
+        for cgroup, lookup, properties, other_positive, expected, capped in (
+            (fixed, missing, None, False, "partial", False),
+            (fixed + b"/child", missing, None, True, "partial", False),
+            (fixed + b"/child", (None, False), None, True, "partial", False),
+            (fixed, (None, True), None, True, "partial", True),
+            (fixed + b"/child", (obj, False), (None, False), True, "partial", False),
+            (fixed + b"/child", (obj, False), (None, True), True, "partial", True),
+            (fixed + b"/child", (obj, False), (empty, False), False, "observed", False),
+            (b"0::/system.slice/cron.service/child", missing, None, False, "observed", False),
+        ):
+            with self.subTest(cgroup=cgroup, lookup=lookup, properties=properties):
+                def capture(args, **_):
+                    if args[0] == "/usr/bin/ss":
+                        return b'tcp LISTEN 0 0 *:6379 *:* users:(("redis",pid=27,fd=4))\n', False
+                    if "GetUnit" in args:
+                        if args[-1] == target:
+                            return lookup
+                        if args[-1] == "ssh.service":
+                            return b'o "/org/freedesktop/systemd1/unit/ssh"\n', False
+                    if "/org/freedesktop/systemd1/unit/redis" in args:
+                        self.assertIsNotNone(properties)
+                        return properties
+                    if "/org/freedesktop/systemd1/unit/ssh" in args:
+                        return (b'a(sb) 1 "/fixture/.env" false\na(ss) 0\na(ss) 0\n'
+                                if other_positive else empty), False
+                    return missing
+
+                def open_cgroup(path, mode):
+                    self.assertEqual((path, mode), ("/proc/27/cgroup", "rb"))
+                    return io.BytesIO(cgroup + b"\n")
+
+                with patch.dict(report_linux.__globals__, capture=capture, open=open_cgroup,
+                                listeners=lambda: "no_listener", ssh_default_config=lambda: {},
+                                control_read=lambda _: (b'{"nftables":[]}', False),
+                                sshd_jail=lambda: "unknown",
+                                file_modes=lambda paths: {"owner_only": len(paths),
+                                                          "group_or_other_access": 0, "unknown": 0}):
+                    report = report_linux()["metadata"]
+                self.assertEqual(report["coverage"], expected, report)
+                self.assertEqual(report["truncated"], capped, report)
+                self.assertEqual(report["environment_files"]["owner_only"], int(other_positive))
 
     def test_report_metadata_carries_socket_and_cgroup_uncertainty(self):
         report_linux = POSTURE["report_linux"]
@@ -284,7 +333,7 @@ class PostureTests(unittest.TestCase):
             (nested + b"\xff\n", True, True, "partial", False),
             (nested + b"\n" + b"z" * 4096, True, True, "partial", True),
             (nested + b"\n", False, True, "partial", False),
-            (b"0::/system.slice/docker.service/child\n", True, False, "observed", False),
+            (b"0::/system.slice/cron.service/child\n", True, False, "observed", False),
             (b"0::/system.slice/docker.service/erpc-worker-example.service\n",
              True, False, "partial", False),
             (b"0::/system.slice/erpc-worker-example.service/../sibling\n",

@@ -358,6 +358,7 @@ def systemd_owner(path):
 
 def unit_names(pids):
     units = set(FIXED_UNITS)
+    sampled = set()
     incomplete = False
     truncated = len(pids) > PID_LIMIT
     for pid in sorted(pids)[:PID_LIMIT]:
@@ -396,12 +397,13 @@ def unit_names(pids):
                     continue
                 owners.add(owner)
                 unit = owner[-1].decode("ascii")
-                if ERPC_UNIT.fullmatch(unit):
+                if unit in FIXED_UNITS or ERPC_UNIT.fullmatch(unit):
                     units.add(unit)
+                    sampled.add(unit)
             incomplete |= not seen or len(owners) > 1
         except OSError:
             incomplete = True
-    return sorted(units)[:UNIT_LIMIT], truncated or len(units) > UNIT_LIMIT, incomplete
+    return sorted(units)[:UNIT_LIMIT], sampled, truncated or len(units) > UNIT_LIMIT, incomplete
 
 
 def property_references():
@@ -454,7 +456,7 @@ def file_modes(paths):
 
 
 def metadata_policy(pids, socket_attribution_incomplete):
-    units, truncated, incomplete = unit_names(pids)
+    units, sampled, truncated, incomplete = unit_names(pids)
     properties = property_references()
     service = "org.freedesktop.systemd1"
     base = ["/usr/bin/busctl", "--system", "--auto-start=no", "--allow-interactive-authorization=no"]
@@ -467,9 +469,9 @@ def metadata_policy(pids, socket_attribution_incomplete):
                               absent_line=f"Call failed: Unit {unit} not loaded.".encode("ascii"))
         truncated |= capped
         if obj is NOT_LOADED and not capped:
-            # A fixed unit can simply be absent. A live membership referring
-            # to a discovered unit that PID 1 cannot resolve is inconclusive.
-            incomplete |= unit not in FIXED_UNITS
+            # A candidate may be absent. A unit attributed to a sampled
+            # socket that PID 1 cannot resolve leaves discovery incomplete.
+            incomplete |= unit in sampled
             continue
         if obj is None or capped:
             incomplete = True
