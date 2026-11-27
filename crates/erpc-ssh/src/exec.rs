@@ -212,6 +212,10 @@ pub(crate) fn check_settings(output: &str, required: &[(&str, String)]) -> Resul
 }
 
 fn private_command(remote: &RemoteCommand) -> bool {
+    #[cfg(feature = "node-check-pilot")]
+    if matches!(remote, RemoteCommand::NodeSecurityPosture) {
+        return true;
+    }
     matches!(
         remote,
         RemoteCommand::SolanaNative(crate::solana_native::Command::MigrationExport(_))
@@ -280,6 +284,10 @@ impl Session {
 
     fn command(&self, remote: &RemoteCommand) -> Command {
         let mut command = tool(&self.ssh);
+        #[cfg(feature = "node-check-pilot")]
+        if matches!(remote, RemoteCommand::NodeSecurityPosture) {
+            command.args(["-o", "PreferredAuthentications=publickey"]);
+        }
         command
             .arg("-F")
             .arg(self.run.config())
@@ -346,6 +354,21 @@ impl Session {
             &mut self.command(remote),
             stdin,
             maximum,
+            std::time::Duration::from_secs(90),
+        )
+    }
+
+    /// Run only the fixed posture collector with closed, redacted diagnostics.
+    ///
+    /// # Errors
+    /// Returns a sanitized failure category, without either raw stream.
+    #[cfg(feature = "node-check-pilot")]
+    pub fn run_posture(&self) -> Result<crate::PrivateOutput, crate::PrivateCaptureError> {
+        crate::private_output::run_detailed(
+            self.command(&RemoteCommand::NodeSecurityPosture)
+                .env("LC_ALL", "C"),
+            &[],
+            48 * 1024,
             std::time::Duration::from_secs(90),
         )
     }
@@ -533,6 +556,25 @@ mod tests {
     fn the_configuration_as_written_passes() {
         let k = Path::new("/tmp/r/known_hosts");
         check_effective(&effective("/tmp/r/known_hosts"), &target(), k).expect("passes");
+    }
+
+    #[cfg(feature = "node-check-pilot")]
+    #[test]
+    fn only_the_security_check_requires_explicit_public_key_authentication() {
+        let session = Session {
+            ssh: fixture_path("/inert/no-ssh-execution"),
+            run: crate::config::RunDir::new(&target()).unwrap(),
+        };
+        let posture = session.command(&crate::RemoteCommand::NodeSecurityPosture);
+        assert!(
+            posture
+                .get_args()
+                .take(3)
+                .eq(["-o", "PreferredAuthentications=publickey", "-F"])
+        );
+        let path = crate::RemotePath::new("/opt/erpc/uploads/agent/erpc-worker-agent").unwrap();
+        let ordinary = session.command(&crate::RemoteCommand::WriteFile(path));
+        assert_eq!(ordinary.get_args().next(), Some(std::ffi::OsStr::new("-F")));
     }
 
     #[test]

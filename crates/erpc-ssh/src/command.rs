@@ -599,6 +599,9 @@ pub enum RemoteCommand {
     VpsConfirmAllow,
     /// Takes the allow list away.
     VpsOpenSsh,
+    /// Fixed read-only listener and nftables table observations.
+    #[cfg(feature = "node-check-pilot")]
+    NodeSecurityPosture,
     /// The address the connection comes from, as `controller=<address>`.
     VpsController,
 }
@@ -679,6 +682,15 @@ impl RemoteCommand {
             Self::VpsAllowSsh(list) => crate::vps::allow(list),
             Self::VpsConfirmAllow => crate::vps::CONFIRM_ALLOW.to_owned(),
             Self::VpsOpenSsh => crate::vps::OPEN.to_owned(),
+            #[cfg(feature = "node-check-pilot")]
+            Self::NodeSecurityPosture => {
+                let script = concat!(
+                    include_str!("node-security-updates.py"),
+                    "\n",
+                    include_str!("node-security-posture.py"),
+                );
+                format!("/usr/bin/python3 -I -c '{}'", script.replace('\'', "'\\''"))
+            }
             Self::VpsController => "printf 'controller=%s\\n' \"${SSH_CLIENT%% *}\"".to_owned(),
             Self::NearControl { action, contract } => super::near::control(*action, contract),
             Self::NearLogs { lines, follow } => super::near::logs(*lines, *follow),

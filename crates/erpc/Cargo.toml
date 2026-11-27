@@ -21,7 +21,9 @@ name = "erpc"
 path = "src/main.rs"
 
 [features]
-node-check-pilot = ["erpc-api/node-check-pilot"]
+security-check-pilot = ["erpc-api/node-check-pilot", "erpc-ssh/node-check-pilot"]
+# Compatibility for builds of the earlier pilot.
+node-check-pilot = ["security-check-pilot"]
 
 [dependencies]
 erpc-chain-hyperliquid.workspace = true

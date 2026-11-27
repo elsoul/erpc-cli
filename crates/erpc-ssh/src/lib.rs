@@ -37,7 +37,7 @@ pub mod hyperliquid_aqa;
 mod nitro;
 pub mod polygon;
 mod private_output;
-pub use private_output::PrivateOutput;
+pub use private_output::{PrivateCaptureError, PrivateOutput};
 pub mod python;
 pub mod rollup;
 pub mod solana_native;

@@ -46,30 +46,46 @@ fn erpc(args: &[&str]) -> std::process::Output {
 }
 
 #[test]
-fn ai_help_and_completions_only_list_the_local_menu_in_the_pilot_build() {
+fn ai_help_and_completions_only_list_security_checks_in_the_pilot_build() {
     let output = erpc(&["ai", "--help"]);
     assert!(output.status.success());
     let help = String::from_utf8_lossy(&output.stdout);
     for option in ["--message", "--continue", "--model"] {
         assert!(help.contains(option));
     }
-    assert_eq!(
-        help.contains("--node-check"),
-        cfg!(feature = "node-check-pilot")
-    );
-
     let output = erpc(&["completions", "bash"]);
     assert!(output.status.success());
+    let completions = String::from_utf8_lossy(&output.stdout);
+    for flag in [
+        "--node-check",
+        "--security-check-remote",
+        "--list-unverified",
+    ] {
+        assert!(!help.contains(flag));
+        assert!(!completions.contains(flag));
+    }
+    for output in [&help, &completions] {
+        assert_eq!(
+            output
+                .split_whitespace()
+                .any(|arg| arg.trim_matches('"') == "--security-check"),
+            cfg!(feature = "security-check-pilot")
+        );
+    }
     assert_eq!(
-        String::from_utf8_lossy(&output.stdout).contains("--node-check"),
-        cfg!(feature = "node-check-pilot")
+        erpc(&["--json", "ai", "--security-check"]).status.code(),
+        Some(if cfg!(feature = "security-check-pilot") {
+            3
+        } else {
+            2
+        })
     );
 }
 
-#[cfg(not(feature = "node-check-pilot"))]
+#[cfg(not(feature = "security-check-pilot"))]
 #[test]
-fn the_standard_build_rejects_the_node_check_flag() {
-    let output = erpc(&["--json", "ai", "--node-check"]);
+fn the_standard_build_rejects_the_pilot_flag() {
+    let output = erpc(&["--json", "ai", "--security-check"]);
     assert_eq!(output.status.code(), Some(2));
     let reply: serde_json::Value = serde_json::from_slice(&output.stdout).expect("error record");
     assert_eq!(reply["error"]["code"], "usage");
@@ -77,8 +93,16 @@ fn the_standard_build_rejects_the_node_check_flag() {
 
 #[test]
 fn node_check_slash_input_cannot_be_sent_as_a_chat_message() {
-    let direct = erpc(&["--json", "ai", "--message", "/node-check dummy-host"]);
     let home = isolated_home();
+    std::fs::write(home.path().join("config.toml"), "invalid TOML")
+        .expect("set a broken fixture credential configuration");
+    let direct = erpc_command(
+        &["--json", "ai", "--message", "/node-check dummy-host"],
+        home.path(),
+    )
+    .stdin(Stdio::null())
+    .output()
+    .expect("run erpc");
     let mut child = erpc_command(&["--json", "ai"], home.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -96,21 +120,59 @@ fn node_check_slash_input_cannot_be_sent_as_a_chat_message() {
         let reply: serde_json::Value =
             serde_json::from_slice(&output.stdout).expect("error record");
         assert_eq!(reply["error"]["code"], "usage");
-        let detail = if cfg!(feature = "node-check-pilot") {
-            "open local node checks from the interactive erpc ai console"
-        } else {
-            "Unknown command: /node-check · /help"
-        };
-        assert_eq!(reply["error"]["message"], detail);
+        assert_eq!(
+            reply["error"]["message"],
+            "The old node check has been retired. Use erpc ai --security-check in a Security Check pilot build."
+        );
     }
 }
 
-#[cfg(feature = "node-check-pilot")]
 #[test]
-fn ai_node_check_refuses_arguments_and_chat_flags() {
+fn security_check_slash_stays_local_in_one_shot_modes() {
+    let home = isolated_home();
+    std::fs::write(home.path().join("config.toml"), "invalid TOML")
+        .expect("prove handling precedes opening credential configuration");
+    let direct = erpc_command(
+        &["--json", "ai", "--message", "/security-check vps:1"],
+        home.path(),
+    )
+    .stdin(Stdio::null())
+    .output()
+    .expect("run erpc");
+    let mut child = erpc_command(&["--json", "ai"], home.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("start erpc");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(b" /security-check\tvps:1\n")
+        .expect("send stdin");
+    let piped = child.wait_with_output().expect("run erpc");
+    let expected = if cfg!(feature = "security-check-pilot") {
+        "Run erpc ai --security-check in your terminal to open Security Check."
+    } else {
+        "Unknown command: /security-check · /help"
+    };
+    for output in [direct, piped] {
+        assert_eq!(output.status.code(), Some(2));
+        let reply: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("error record");
+        assert_eq!(reply["error"]["code"], "usage");
+        assert_eq!(reply["error"]["message"], expected);
+    }
+}
+
+#[test]
+fn retired_flag_is_rejected_without_starting_a_check() {
     for args in [
-        &["node.example"][..],
+        &[][..],
+        &["node.example"],
         &["--port", "80"],
+        &["--list"],
+        &["--kind", "vps", "--id", "5"],
         &["--message", "a question"],
         &["--continue"],
         &["--model", "small"],
@@ -119,19 +181,75 @@ fn ai_node_check_refuses_arguments_and_chat_flags() {
         command.extend(args);
         let output = erpc(&command);
         assert_eq!(output.status.code(), Some(2));
+        let reply: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("error record");
+        assert_eq!(reply["error"]["code"], "usage");
     }
 }
 
-#[cfg(feature = "node-check-pilot")]
+#[cfg(feature = "security-check-pilot")]
 #[test]
-fn ai_node_check_bypasses_chat_and_requires_linux_and_a_terminal() {
-    let output = erpc(&["--json", "ai", "--node-check"]);
-    let reply: serde_json::Value = serde_json::from_slice(&output.stdout).expect("error record");
-    if cfg!(target_os = "linux") {
-        assert_eq!(output.status.code(), Some(3));
-        assert_eq!(reply["error"]["code"], "needs_terminal");
-    } else {
-        assert_eq!(output.status.code(), Some(1));
-        assert_eq!(reply["error"]["message"], "the node check requires Linux");
+fn ai_remote_check_refuses_arguments_and_chat_flags() {
+    for args in [
+        &["node.example"][..],
+        &["--port", "80"],
+        &["--kind", "vps"],
+        &["--kind", "bare-metal", "--id", "not-a-number"],
+        &["--list", "--node-check"],
+        &["--list", "--kind", "vps", "--id", "5"],
+        &["--list-unverified"],
+        &["--security-check-remote"],
+        &["--list-unverified", "--kind", "vps", "--id", "5"],
+        &[
+            "--kind",
+            "vps",
+            "--id",
+            "5",
+            "--host-key",
+            "key-without-ssh-user",
+        ],
+        &[
+            "--kind",
+            "vps",
+            "--id",
+            "5",
+            "--ssh-user",
+            "user-without-host-key",
+        ],
+        &["--message", "a question"],
+        &["--continue"],
+        &["--model", "small"],
+    ] {
+        let mut command = vec!["--json", "ai", "--security-check"];
+        command.extend(args);
+        let output = erpc(&command);
+        assert_eq!(output.status.code(), Some(2));
     }
+}
+
+#[cfg(feature = "security-check-pilot")]
+#[test]
+fn ai_remote_check_requires_a_terminal_and_inventory_requires_a_session() {
+    for args in [
+        &["--json", "ai", "--security-check"][..],
+        &[
+            "--json",
+            "ai",
+            "--security-check",
+            "--kind",
+            "bare-metal",
+            "--id",
+            "5",
+        ],
+    ] {
+        let output = erpc(args);
+        assert_eq!(output.status.code(), Some(3));
+        let reply: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("error record");
+        assert_eq!(reply["error"]["code"], "needs_terminal");
+    }
+    let output = erpc(&["--json", "ai", "--security-check", "--list"]);
+    assert_eq!(output.status.code(), Some(4));
+    let reply: serde_json::Value = serde_json::from_slice(&output.stdout).expect("error record");
+    assert_eq!(reply["error"]["code"], "not_signed_in");
 }

@@ -156,6 +156,37 @@ pub(crate) fn pinned_target(ip: &str) -> Result<Target, String> {
     target(ip, &pin, &identity)
 }
 
+/// Read an existing key-only pin for this exact rental, never just its IP.
+#[cfg(feature = "security-check-pilot")]
+pub(crate) fn security_target(ip: &str, id: u64) -> Option<Target> {
+    let pin = load_pins(&pins_path().ok()?)
+        .ok()?
+        .remove(ip)
+        .filter(|pin| pin.key_only && u64::try_from(pin.vps_id).ok() == Some(id))?;
+    target(ip, &pin, &security_identity()?).ok()
+}
+
+/// Use the exact identity already configured in erpc and the current agent.
+#[cfg(feature = "security-check-pilot")]
+pub(crate) fn security_identity() -> Option<Identity> {
+    let config = crate::account::session::config_path().ok()?;
+    let public = PathBuf::from(crate::account::config::get(&config, "ssh_key").ok()??);
+    if !public.is_absolute() || public.extension()?.to_str()? != "pub" {
+        return None;
+    }
+    let line = crate::node::common::public_key_line(&public).ok()?;
+    if let Some(socket) = std::env::var_os("SSH_AUTH_SOCK").map(PathBuf::from)
+        && socket.is_absolute()
+        && erpc_ssh::agent_holds(&socket, &line)
+    {
+        return Some(Identity::Agent {
+            socket,
+            public_key: public,
+        });
+    }
+    Some(Identity::File(public.with_extension("")))
+}
+
 /// A key session to a VPS erpc pinned.
 fn session(ip: &str, identity: &Identity) -> Result<Session, String> {
     let pin = load_pins(&pins_path()?)?
