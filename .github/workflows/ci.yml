@@ -393,6 +393,7 @@ jobs:
           scripts/tests/build-manifest.test.sh
           scripts/tests/release-wiring.test.sh
           scripts/tests/workflow-audit.test.sh
+          scripts/tests/installer-deploy.test.sh
           scripts/tests/self-hosted-routing.test.sh
       - name: hygiene gate (all tracked files)
         run: scripts/check-oss-hygiene.sh
@@ -426,6 +427,7 @@ jobs:
           /bin/bash scripts/tests/build-manifest.test.sh
           /bin/bash scripts/tests/release-wiring.test.sh
           /bin/bash scripts/tests/workflow-audit.test.sh
+          /bin/bash scripts/tests/installer-deploy.test.sh
           /bin/bash scripts/tests/self-hosted-routing.test.sh
 
   zizmor:
