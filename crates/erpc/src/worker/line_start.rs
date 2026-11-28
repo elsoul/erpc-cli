@@ -26,7 +26,8 @@
 //! setting it gives, when the run stops, starting no line. A start kept
 //! here under a key refuses a run that would buy the server
 //! ([`Owing::refuse_kept_starts`]), and one the account said bought a line
-//! it did not put on the record is never let go or replaced.
+//! it did not put on the record is never let go or replaced: it stops a run
+//! whose app needs that line, and one that does not goes on without it.
 //!
 //! Each start is sent under a key kept here before it is sent, as not to be
 //! sent again, and the account's answer decides what becomes of it, as
@@ -374,6 +375,10 @@ pub(crate) trait Reach {
     /// The plan of the hourly catalogue for a line of `kind`: `asked`, or
     /// the cheapest.
     async fn plan(&self, kind: LineKind, asked: Option<&str>) -> Result<Plan, CliError>;
+    /// The plan `id` of the hourly catalogue for a line of `kind`, when the
+    /// catalogue offers it: `None` when it does not; an error when the
+    /// catalogue cannot be read.
+    async fn offered(&self, kind: LineKind, id: &str) -> Result<Option<Plan>, CliError>;
     /// Asks `question` at the terminal.
     fn confirm(&self, question: &str) -> Result<bool, String>;
     /// A new start's key.
@@ -433,6 +438,10 @@ impl Reach for Live<'_> {
         crate::worker::vps::line_plan(self.api, kind, asked).await
     }
 
+    async fn offered(&self, kind: LineKind, id: &str) -> Result<Option<Plan>, CliError> {
+        crate::worker::vps::offered_line_plan(self.api, kind, id).await
+    }
+
     fn confirm(&self, question: &str) -> Result<bool, String> {
         crate::node::common::confirm(question)
     }
@@ -483,6 +492,7 @@ pub(crate) type Planned = Vec<(LineKind, Plan)>;
 /// bought: each one's plan of the hourly catalogue (one it does not offer
 /// is refused then), and what this machine keeps of the environment's
 /// lines.
+#[derive(Debug)]
 pub(crate) struct Owing {
     store: PathBuf,
     pin: String,
@@ -583,33 +593,37 @@ impl Owing {
     /// under a key for the app `name` and the environment: one kept from an
     /// earlier environment, or server, of those names, whose outcome is not
     /// known.
-    pub(crate) fn refuse_kept_starts(&self, app: &App, name: &str) -> Result<(), CliError> {
+    pub(crate) fn refuse_kept_starts(&self, name: &str) -> Result<(), CliError> {
         let Some((kind, line)) = self.started.first() else {
             return Ok(());
         };
         let start = line.start.as_deref().map(clean);
-        let named = start.as_deref().map_or_else(String::new, |start| {
-            t!("worker_first_deploy.line_start_named", start)
-        });
-        let hint = t!(
-            "worker_first_deploy.line_kept_earlier_hint",
-            scope = app.scope()
-        );
-        let hint = match &start {
-            Some(start) => format!(
-                "{}; {hint}",
-                t!("worker_server.support_hint", start = start.as_str())
-            ),
-            None => hint,
+        let named = start_named(start.as_deref());
+        let (kind, env) = (kind.label(), self.env.as_str());
+        let message = if line.mismatched() {
+            t!(
+                "worker_first_deploy.line_kept_earlier_mismatch",
+                kind,
+                app = name,
+                env,
+                start = named.as_str()
+            )
+        } else {
+            t!(
+                "worker_first_deploy.line_kept_earlier",
+                kind,
+                app = name,
+                env,
+                start = named.as_str()
+            )
         };
-        Err(failed(t!(
-            "worker_first_deploy.line_kept_earlier",
-            kind = kind.label(),
-            app = name,
-            env = self.env.as_str(),
-            start = named.as_str()
-        ))
-        .hint(hint))
+        // erpc.toml may have nothing for the environment: the hint names
+        // what is reached without it.
+        Err(failed(message).hint(format!(
+            "{}; {}",
+            support(start.as_deref()),
+            t!("worker_first_deploy.line_kept_earlier_hint")
+        )))
     }
 
     /// Asks each line's price at the terminal (`confirm`), or says it under
@@ -714,8 +728,9 @@ impl Owing {
 /// cheapest) of environment `app.env` of the app named `name`, and (unless
 /// `fresh`) those kept here owed, through the signed-in `signed`: the plans
 /// read from the hourly catalogue through user-api, only when a line is to
-/// be asked. A line kept here owed whose plan the catalogue no longer
-/// offers is let go, and said.
+/// be asked. A line kept here owed whose plan the catalogue says it no
+/// longer offers is let go, and said; a catalogue that cannot be read stops
+/// the run, the line kept.
 pub(crate) async fn owing(
     signed: &kept::Signed,
     (app, name): (&App, &str),
@@ -734,6 +749,23 @@ pub(crate) async fn owing(
     owing_with(&live, (pin, env), lines, (&store, fresh)).await
 }
 
+/// The kinds of the lines kept on this machine for environment `app.env`
+/// of the app named `name`, through the signed-in `signed`: read only.
+pub(crate) async fn kinds_kept_for(
+    signed: &kept::Signed,
+    (app, name): (&App, &str),
+) -> Result<Vec<LineKind>, CliError> {
+    let uid = kept::Account::uid(signed).await?;
+    let store = crate::account::session::beside_config(FILE).map_err(failed)?;
+    kinds_kept_in(&store, &kept::pin_key(&uid, name, &app.env))
+}
+
+/// The kinds of the lines `store` keeps for the environment filed under
+/// `pin`: read only.
+pub(crate) fn kinds_kept_in(store: &Path, pin: &str) -> Result<Vec<LineKind>, CliError> {
+    Ok(kinds_kept(&load(store).map_err(failed)?, pin))
+}
+
 /// [`owing`] through `reach`, for the environment `env` filed under `pin`,
 /// with what is kept here in `store`.
 async fn owing_with(
@@ -748,7 +780,9 @@ async fn owing_with(
     }
     let mut again = Vec::new();
     for (kind, product) in Owing::owed_again(store, &pin, lines, fresh)? {
-        if let Ok(plan) = reach.plan(kind, Some(&product)).await {
+        // Let go only when the catalogue says it does not offer the plan;
+        // one that cannot be read stops the run, the line kept.
+        if let Some(plan) = reach.offered(kind, &product).await? {
             again.push((kind, plan));
         } else {
             drop_owed(store, &pin, kind).map_err(failed)?;
@@ -836,6 +870,9 @@ enum Decided {
     /// A start kept here that is not sent again, with nothing of the kind
     /// open or on record: let go only after a yes at a terminal.
     Stranded(Kept),
+    /// A start kept here that the account said bought a line it did not
+    /// put on the record: never let go, nor another made for it.
+    Mismatch(Kept),
 }
 
 /// [`Decided`] for a line of `kind` (`asked`: the plan the command line
@@ -878,7 +915,7 @@ fn decide(
         ([], Some(k)) if k.resend && for_here(k) && same_plan(k) => Ok(Decided::Again(k.clone())),
         // The account said it bought a line it did not put on the record:
         // never let go here, and no other start made for it.
-        ([], Some(k)) if k.mismatched() => Err(mismatch_kept(kind, k, app)),
+        ([], Some(k)) if k.mismatched() => Ok(Decided::Mismatch(k.clone())),
         ([], Some(k)) => Ok(Decided::Stranded(k.clone())),
         ([one], Some(k))
             if k.resend && one.product_id.as_deref() == Some(k.product_id.as_str()) =>
@@ -949,19 +986,39 @@ fn decide(
 /// The stop of a run for a line of `kind` whose start kept here, `k`, the
 /// account said bought a line it did not put on the record.
 fn mismatch_kept(kind: LineKind, k: &Kept, app: &App) -> CliError {
-    let start = k.start.as_deref().map(clean).unwrap_or_default();
+    let start = k.start.as_deref().map(clean);
     failed(t!(
         "worker_first_deploy.line_mismatch_kept",
         kind = kind.label(),
         env = app.env.as_str(),
-        start = start.as_str()
+        start = start_named(start.as_deref())
     ))
-    .hint(t!(
+    .hint(mismatch_hint(start.as_deref(), app))
+}
+
+/// ` (start <id>)`, or nothing when no id is known.
+fn start_named(start: Option<&str>) -> String {
+    start.map_or_else(String::new, |start| {
+        t!("worker_first_deploy.line_start_named", start)
+    })
+}
+
+/// Who can say how to go on with start `start`: ERPC support, given it
+/// when its id is known.
+fn support(start: Option<&str>) -> String {
+    start.map_or_else(
+        || t!("worker_first_deploy.line_support"),
+        |start| t!("worker_server.support_hint", start),
+    )
+}
+
+/// The hint of a stop for a start that bought a line not on the record.
+fn mismatch_hint(start: Option<&str>, app: &App) -> String {
+    t!(
         "worker_first_deploy.line_mismatch_hint",
-        kind = kind.label(),
-        start = start.as_str(),
-        scope = app.scope()
-    ))
+        scope = app.scope(),
+        support = support(start)
+    )
 }
 
 /// What becomes of the start kept here after the account answered `e`.
@@ -1056,7 +1113,7 @@ pub(crate) async fn start_lines(
         .into_iter()
         .filter(|kind| on_record(&record, *kind).is_some())
         .collect();
-    let (mut declined, mut ready) = (Vec::new(), Vec::new());
+    let (mut declined, mut held, mut ready) = (Vec::new(), Vec::new(), Vec::new());
     // Every line asked first: a no buys nothing.
     for (kind, asked) in to_start(lines, &kept_here) {
         match Box::pin(prepare(
@@ -1070,11 +1127,27 @@ pub(crate) async fn start_lines(
         {
             Prepared::OnRecord => {}
             Prepared::Declined => declined.push(kind),
+            Prepared::Mismatch(stop) => held.push((kind, *stop)),
             Prepared::Send(line) => {
                 present.push(kind);
                 ready.push((kind, line));
             }
         }
+    }
+    // A line held by a start that bought one not on the record stops the
+    // run only when the app needs it; else it goes on, the start kept.
+    if let Some(at) = held.iter().position(|(k, _)| (run.needs)(*k, &present)) {
+        return Err(held.swap_remove(at).1);
+    }
+    for (kind, stop) in &held {
+        say.line(&format!(
+            "note: {}\n{}",
+            stop.message,
+            t!(
+                "worker_first_deploy.line_mismatch_goes_on",
+                kind = kind.label()
+            )
+        ));
     }
     if let Some(kind) = declined.iter().find(|k| (run.needs)(**k, &present)) {
         return Err(CliError::new(
@@ -1137,6 +1210,9 @@ enum Prepared {
     OnRecord,
     /// Declined, and the line kept here for it let go.
     Declined,
+    /// Held by a start kept here that bought a line not on the record:
+    /// the stop it makes when the app needs the line.
+    Mismatch(Box<CliError>),
     /// To be sent: what is kept here for it now, and the start to send.
     Send(Box<(Option<Kept>, Kept)>),
 }
@@ -1174,6 +1250,11 @@ async fn prepare(
     let again = match decided {
         Decided::Again(line) => Some(line),
         Decided::New => None,
+        Decided::Mismatch(line) => {
+            return Ok(Prepared::Mismatch(Box::new(mismatch_kept(
+                kind, &line, app,
+            ))));
+        }
         Decided::Stranded(line) => {
             let_go_asked(reach, &line, kind, app, yes)?;
             put(store, &file_key, None, Some(&line))
@@ -1494,9 +1575,8 @@ fn answer_hint(
         // A line bought and not on the record: support settles it.
         After::Held if mismatch => t!(
             "worker_first_deploy.line_mismatch_hint",
-            kind,
-            start = start.unwrap_or_default(),
-            scope
+            scope,
+            support = support(start)
         ),
         After::Gone if code == Some(&AccountCode::StartPending) => t!(
             "worker_first_deploy.line_other_open_hint",
@@ -1829,6 +1909,8 @@ mod tests {
         cents: Cell<f64>,
         /// The plans the catalogue does not offer.
         unoffered: RefCell<Vec<&'static str>>,
+        /// Whether the catalogue cannot be read.
+        catalogue_down: Cell<bool>,
     }
 
     impl Fake {
@@ -1846,6 +1928,7 @@ mod tests {
                 pauses: Cell::new(0),
                 cents: Cell::new(12.5),
                 unoffered: RefCell::new(Vec::new()),
+                catalogue_down: Cell::new(false),
             }
         }
 
@@ -1976,6 +2059,16 @@ mod tests {
                 cents: self.cents.get(),
                 name: "Geyser gRPC Shared".to_owned(),
             })
+        }
+
+        async fn offered(&self, kind: LineKind, id: &str) -> Result<Option<Plan>, CliError> {
+            if self.catalogue_down.get() {
+                return Err(CliError::new(Code::Network, "no answer".to_owned()));
+            }
+            if self.unoffered.borrow().contains(&id) {
+                return Ok(None);
+            }
+            self.plan(kind, Some(id)).await.map(Some)
         }
 
         fn confirm(&self, question: &str) -> Result<bool, String> {
@@ -2546,12 +2639,29 @@ mod tests {
         );
         let kept = fake.kept().expect("kept");
         assert_eq!(kept.unsettled.as_deref(), Some(MISMATCH));
-        // Each run after, at a terminal or under --yes: stopped, naming the
-        // start, nothing asked or sent, the key kept.
+        // Each run after, at a terminal or under --yes, the app needing the
+        // line: stopped, naming the start, nothing asked or sent, the key
+        // kept.
+        let needs = |kind: LineKind, _: &[LineKind]| kind == LineKind::Grpc;
         for yes in [false, true] {
-            let e = go(&fake, LineKind::Grpc, yes).await.expect_err("stopped");
+            let e = start_lines(
+                &fake,
+                (&app(), "bot"),
+                &[(LineKind::Grpc, None)],
+                target(),
+                &Run {
+                    store: &fake.store,
+                    yes,
+                    agreed: Agreed::default(),
+                    needs: &needs,
+                },
+            )
+            .await
+            .expect_err("stopped");
             assert!(
-                e.message.contains("bought a line it has not put") && e.message.contains(START_ID),
+                e.message.contains("bought a line it has not put")
+                    && e.message.contains("may be charged")
+                    && e.message.contains(START_ID),
                 "{}",
                 e.message
             );
@@ -2565,6 +2675,86 @@ mod tests {
             assert_eq!(fake.sent.borrow().len(), 1);
             assert_eq!(fake.kept(), Some(kept.clone()));
         }
+        // The app does not need it: the deploy goes on, the start kept and
+        // named on stderr, nothing asked or sent.
+        let _ = crate::node::common::heard::take_printed();
+        go(&fake, LineKind::Grpc, false).await.expect("goes on");
+        let printed = crate::node::common::heard::take_printed().join("\n");
+        assert!(
+            printed.contains(START_ID) && printed.contains("goes on without it"),
+            "{printed}"
+        );
+        assert_eq!(fake.asked.borrow().len(), 1);
+        assert_eq!(fake.sent.borrow().len(), 1);
+        assert_eq!(fake.kept(), Some(kept.clone()));
+        // With no start's id: said without one.
+        let unnamed = Kept {
+            start: None,
+            ..kept
+        };
+        let e = mismatch_kept(LineKind::Grpc, &unnamed, &app());
+        assert!(!e.message.contains("()"), "{}", e.message);
+        assert!(
+            e.hint
+                .as_deref()
+                .is_some_and(|h| !h.contains("given start ,")),
+            "{e:?}"
+        );
+    }
+
+    #[test]
+    fn a_start_kept_from_an_earlier_environment_is_said_as_the_account_answered_it() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let store = dir.path().join(FILE);
+        let read = |line: &Kept| {
+            let mut starts = Starts::default();
+            starts
+                .starts
+                .insert(file_key(&pin(), LineKind::Grpc), line.clone());
+            write(&store, &starts).expect("written");
+            Owing::read(&store, (pin(), "prod"), (Vec::new(), Vec::new()), true)
+                .expect("read")
+                .refuse_kept_starts("bot")
+                .expect_err("refused")
+        };
+        let held = Kept {
+            start: Some(START_ID.to_owned()),
+            ..sent_kept(false)
+        };
+        let e = read(&held);
+        assert!(e.message.contains("not known"), "{}", e.message);
+        let mismatched = Kept {
+            unsettled: Some(MISMATCH.to_owned()),
+            ..held.clone()
+        };
+        let e = read(&mismatched);
+        assert!(
+            e.message
+                .contains("bought a line it did not put on the record")
+                && e.message.contains("may be charged")
+                && !e.message.contains("not known"),
+            "{}",
+            e.message
+        );
+        // The hint holds with nothing in erpc.toml for the environment.
+        let hint = e.hint.unwrap_or_default();
+        assert!(
+            hint.contains(START_ID)
+                && hint.contains("dashboard")
+                && !hint.contains("erpc worker status"),
+            "{hint}"
+        );
+        let e = read(&Kept {
+            start: None,
+            ..mismatched
+        });
+        assert!(!e.message.contains("()"), "{}", e.message);
+        assert!(
+            e.hint
+                .as_deref()
+                .is_some_and(|h| h.contains("ERPC support")),
+            "{e:?}"
+        );
     }
 
     #[test]
@@ -2980,9 +3170,7 @@ mod tests {
             owing.kinds(),
             [LineKind::Grpc, LineKind::Shreds, LineKind::Unlimited]
         );
-        let e = owing
-            .refuse_kept_starts(&app(), "bot")
-            .expect_err("refused");
+        let e = owing.refuse_kept_starts("bot").expect_err("refused");
         assert!(
             e.message.contains("Unlimited RPC line start") && e.message.contains("not known"),
             "{}",
@@ -3142,6 +3330,32 @@ mod tests {
             .expect("started");
         assert!(fake.asked.borrow().is_empty());
         assert_eq!(fake.sent.borrow().len(), 1);
+        // A plan this run names is the one asked, over the one kept; under a
+        // yes that says the prices, said, not asked.
+        let dir = tempfile::tempdir().expect("a directory");
+        let fake = Fake::new(&dir);
+        fake.keep(LineKind::Grpc, &owed(true));
+        let named = Lines {
+            named: vec![(LineKind::Grpc, Some("prod_grpc_2".to_owned()))],
+            ..Lines::default()
+        };
+        for_deploy_with(&fake, (&app(), &m), &named, &fake.store)
+            .await
+            .expect("started");
+        assert_eq!(fake.asked.borrow().len(), 1);
+        assert_eq!(fake.sent.borrow()[0].1["productId"], "prod_grpc_2");
+        let dir = tempfile::tempdir().expect("a directory");
+        let fake = Fake::new(&dir);
+        fake.keep(LineKind::Grpc, &owed(true));
+        let said = Lines {
+            yes: true,
+            ..Lines::default()
+        };
+        for_deploy_with(&fake, (&app(), &m), &said, &fake.store)
+            .await
+            .expect("started");
+        assert!(fake.asked.borrow().is_empty());
+        assert_eq!(fake.sent.borrow().len(), 1);
         // The app requires the setting the line gives: a no stops.
         let dir = tempfile::tempdir().expect("a directory");
         let fake = Fake::new(&dir);
@@ -3190,6 +3404,14 @@ mod tests {
         );
         assert_eq!(fake.kept_of(LineKind::Shreds), None);
         assert!(fake.kept().is_some());
+        // A catalogue that cannot be read: the run stops, the line kept.
+        fake.catalogue_down.set(true);
+        let e = owing_with(&fake, (pin(), "prod"), &[], (&fake.store, false))
+            .await
+            .expect_err("stopped");
+        assert_eq!(e.code, Code::Network);
+        assert!(fake.kept().is_some());
+        fake.catalogue_down.set(false);
         // A plan this run names that is not offered: refused.
         fake.unoffered.borrow_mut().push("prod_grpc_9");
         let lines = [(LineKind::Grpc, Some("prod_grpc_9".to_owned()))];

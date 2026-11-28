@@ -398,13 +398,17 @@ A script, or an agent such as `erpc ai` or another coding agent, has no
 terminal to answer at. Two flags let it do the work all the same:
 
 ```bash
-erpc worker deploy hello-world --new-server --inline --yes         # no key: all the way, unattended, kept in erpc.toml
-erpc worker deploy pump-sniper --new-server --grpc --yes --prepare # a bot: everything but its key
-erpc worker deploy pump-sniper                                     # then you, at a terminal: the key, and the start
+erpc worker deploy hello-world --new-server --inline --yes                  # no key: all the way, unattended, kept in erpc.toml
+erpc worker deploy pump-sniper --new-server --inline --grpc --yes --prepare # a bot: everything but its key, kept in erpc.toml
+erpc worker deploy pump-sniper                                              # then you, at a terminal: the key, and the start
 ```
 
 - **`--yes`** answers what a start asks: the price of each hourly product the
-  command names (`--new-server`, `--grpc`, `--shreds`, `--udp`, `--unlimited`).
+  command names (`--new-server`, `--grpc`, `--shreds`, `--udp`, `--unlimited`),
+  but for an environment kept in the ERPC account: there a run again asks
+  the server's price and every line's at the terminal unless `--new-server`
+  is given too, and a deploy whose record names a server and no deploy
+  asks every line's (**The first deploy** below).
   It does not take up a UDP Forwarding line the account already has and
   that points nowhere: that is no price, and the line may be another app's,
   so the deploy stops and names it (**Data lines** below). It also
@@ -420,8 +424,8 @@ erpc worker deploy pump-sniper                                     # then you, a
   below), whose first login is asked at a terminal only: without one, or
   under `--json`, that deploy is refused before anything is bought or
   written, and `--inline` keeps the environment in `erpc.toml` as before,
-  where `--yes` answers the first login too. A data line asked for keeps it
-  there too, as the bot's line above does.
+  where `--yes` answers the first login too: the bot above passes it, so its
+  line is bought with the environment kept there.
 - **`--prepare`** does everything that needs neither the trading key nor a
   secret, and starts, stops and restarts nothing: the server, its firewall,
   the lines, and a release uploaded and installed. An app that already runs
@@ -1075,7 +1079,9 @@ in that run:
   asked when they are started. A deploy of an environment kept in the
   account whose record names a server and no deploy, with a data line asked
   or kept on this machine for it, keeps the lines asked on this machine
-  before any question, and starts none without a yes in that run;
+  before any question (and lets go one kept here whose plan the hourly
+  catalogue says it no longer offers, said on stderr), and starts none
+  without a yes in that run;
 - `server end`, run again after a stop, may first finish clearing the
   address of a server whose end was already said yes to, and then asks
   nothing more in that run;
@@ -1661,8 +1667,10 @@ encrypted by restic. A storage plan is needed (`erpc storage buy 5`).
       size `--plan` names, and offers no other. Every line to be started
       there, one an earlier run agreed to and kept here too, is asked before
       the server is bought, as on a first deploy; a line start kept here under
-      a key refuses the run first, as above. A server start kept here to send
-      again is sent again as it was kept, whatever the stock read lists now. A
+      a key refuses the run first, as above. With `--plan`, a server start
+      kept here to send again skips the stock read and what is offered in its
+      place: it is sent again while the account lists it open, else a new
+      start of the size named is made, its price asked. A
       first deploy makes the records before it writes `account = true`, so an
       environment the account you are signed in to has no record of at all is
       another account's, or deleted: it is refused as before, saying so (`erpc
@@ -1725,10 +1733,12 @@ encrypted by restic. A storage plan is needed (`erpc storage buy 5`).
       `--yes`; a line started after it is a new purchase, its price asked. One
       the account answered had bought a line it did not put on the record
       (`start_mismatch`) is never let go here, and no other start is made for
-      it: each run stops, naming the start, ERPC support and `erpc worker
-      status`. Then the deploy waits up to three minutes for the line to be
-      active with its endpoint; when it is not, it stops, and `erpc worker
-      deploy` goes on from there, buying nothing more.
+      it: a run whose app needs that line stops, naming the start, ERPC
+      support and `erpc worker status`; one whose app does not goes on without
+      the line, the start kept and named on stderr. Then the deploy waits up
+      to three minutes for the line to be active with its endpoint; when it is
+      not, it stops, and `erpc worker deploy` goes on from there, buying
+      nothing more.
     - It goes as before, keeping the environment in `erpc.toml` (or its
       1Password item), for an environment that has anything in `erpc.toml`,
       for `--host`, `--server`, a server of the account picked at the

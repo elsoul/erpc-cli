@@ -1222,8 +1222,14 @@ pub(crate) async fn kept_to_send_again(
 ) -> Result<bool, CliError> {
     let uid = Buying::uid(signed).await?;
     let store = crate::account::session::beside_config(FILE).map_err(failed)?;
-    let saved = kept_start(&store, &kept::pin_key(&uid, name, &app.env))
-        .map_err(|error| failed(t!("worker_server.not_read", error)))?;
+    kept_resendable(&store, &kept::pin_key(&uid, name, &app.env))
+}
+
+/// Whether the start kept in `store` under `file_key` is one the account
+/// said to send again under its key.
+fn kept_resendable(store: &Path, file_key: &str) -> Result<bool, CliError> {
+    let saved =
+        kept_start(store, file_key).map_err(|error| failed(t!("worker_server.not_read", error)))?;
     Ok(saved.is_some_and(|s| s.resend))
 }
 
@@ -2438,6 +2444,17 @@ mod tests {
             assert_eq!(fake.sent.borrow()[0].0, NEW_KEY);
             assert_eq!(fake.kept(), None);
         }
+    }
+
+    #[test]
+    fn only_a_start_kept_to_send_again_is_one_the_first_deploy_sends_past_the_stock() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let fake = Fake::new(&dir);
+        assert!(!kept_resendable(&fake.store, &file_key()).expect("read"));
+        fake.keep(OLD_KEY, false);
+        assert!(!kept_resendable(&fake.store, &file_key()).expect("read"));
+        fake.keep(OLD_KEY, true);
+        assert!(kept_resendable(&fake.store, &file_key()).expect("read"));
     }
 
     #[tokio::test]

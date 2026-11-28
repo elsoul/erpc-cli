@@ -1604,6 +1604,25 @@ pub(crate) async fn line_plan(
     })
 }
 
+/// The plan `id` of the hourly catalogue for a data line of `kind`, when
+/// the catalogue offers it; `None` when it does not. A catalogue that
+/// cannot be read is an error, never `None`.
+pub(crate) async fn offered_line_plan(
+    api: &Api,
+    kind: LineKind,
+    id: &str,
+) -> Result<Option<crate::worker::line_start::Plan>, CliError> {
+    let Some((id, cents)) = catalog_plans(api, line_product(kind).family)
+        .await?
+        .into_iter()
+        .find(|(p, _)| p == id)
+    else {
+        return Ok(None);
+    };
+    let name = product_name(api, &id).await.unwrap_or_else(|| id.clone());
+    Ok(Some(crate::worker::line_start::Plan { id, cents, name }))
+}
+
 /// The name of the hourly ERPC Worker plan `id` (a `--plan`), and the
 /// cores it says in the known form ([`Spec::of_title`]); none when it does
 /// not. Refused when the hourly catalogue does not offer the plan.
@@ -1743,11 +1762,12 @@ async fn product_name(api: &Api, id: &str) -> Option<String> {
         .filter(|n| !n.is_empty())
 }
 
-/// The cheapest plan of hourly `family` the catalogue offers (for a VPS,
-/// one to run an app on), or the one asked for.
-async fn plan(api: &Api, family: &str, asked: Option<&str>) -> Result<Plan, CliError> {
+/// The plans of hourly `family` the catalogue offers, by product id with
+/// their price by the hour in cents of a euro. A catalogue that cannot be
+/// read is an error.
+async fn catalog_plans(api: &Api, family: &str) -> Result<Vec<(String, f64)>, CliError> {
     let catalog = api.read(hourly::CATALOG_URL).await?;
-    let plans: Vec<(String, f64)> = catalog["families"]
+    Ok(catalog["families"]
         .as_array()
         .into_iter()
         .flatten()
@@ -1759,7 +1779,13 @@ async fn plan(api: &Api, family: &str, asked: Option<&str>) -> Result<Plan, CliE
                 p["hourlyCents"].as_f64()?,
             ))
         })
-        .collect();
+        .collect())
+}
+
+/// The cheapest plan of hourly `family` the catalogue offers (for a VPS,
+/// one to run an app on), or the one asked for.
+async fn plan(api: &Api, family: &str, asked: Option<&str>) -> Result<Plan, CliError> {
+    let plans = catalog_plans(api, family).await?;
     if let Some(id) = asked {
         let (id, cents) = plans.into_iter().find(|(p, _)| p == id).ok_or_else(|| {
             failed(t!(
@@ -5907,6 +5933,44 @@ mod tests {
         );
         // A plan of another family: refused.
         assert!(super::plan_cores(&api, "prod_grpc_1").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_line_plan_is_not_offered_only_when_the_catalogue_says_so() {
+        use super::stub::{Request, Stub};
+        use erpc_worker::manifest::LineKind;
+        let stub = Stub::serve(|request: &Request| {
+            if request.path.starts_with("/v3/billing/hourly-catalog") {
+                (
+                    200,
+                    json!({ "families": [{ "family": "grpc", "plans": [
+                        { "productId": "prod_grpc_1", "hourlyCents": 12.5 }
+                    ] }] }),
+                )
+            } else {
+                (200, json!({ "message": { "name": "Geyser gRPC Shared" } }))
+            }
+        })
+        .await;
+        let api = stub.api();
+        let plan = super::offered_line_plan(&api, LineKind::Grpc, "prod_grpc_1")
+            .await
+            .expect("read")
+            .expect("offered");
+        assert_eq!((plan.id.as_str(), plan.cents), ("prod_grpc_1", 12.5));
+        assert!(
+            super::offered_line_plan(&api, LineKind::Grpc, "prod_grpc_9")
+                .await
+                .expect("read")
+                .is_none()
+        );
+        // A catalogue that cannot be read: an error, never "not offered".
+        let down = Stub::serve(|_: &Request| (503, json!({ "message": "down" }))).await;
+        assert!(
+            super::offered_line_plan(&down.api(), LineKind::Grpc, "prod_grpc_1")
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

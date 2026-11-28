@@ -345,8 +345,13 @@ whose version has no entry below.
   on this machine under a key for the same app and environment names
   refuses a deploy that would buy a server, before anything is bought; one
   the account answered bought a line it did not put on the record
-  (`start_mismatch`) is never let go or replaced. A server start kept to
-  send again is sent again with `--plan` whatever the stock read lists.
+  (`start_mismatch`) is never let go or replaced, and stops only a run whose
+  app needs that line (one that does not goes on without it, the start kept
+  and named on stderr). With `--plan`, a server start kept to send again
+  skips the stock read: it is sent again while the account lists it open,
+  else a new start of the size named is made, its price asked. A line kept
+  here owed is let go only when the catalogue says it no longer offers its
+  plan; a catalogue that cannot be read stops the run, the line kept.
   Each line start is sent
   under a key kept here before it is sent, as not to be sent again; the
   account's answer decides what becomes of it, as its contract says (an

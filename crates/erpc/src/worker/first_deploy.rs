@@ -265,6 +265,9 @@ pub(crate) trait Reach {
         lines: &[(LineKind, Option<String>)],
         fresh: bool,
     ) -> Result<Owing, CliError>;
+    /// The kinds of the lines kept on this machine for environment
+    /// `app.env` of the app named `name`: read only.
+    async fn kept_kinds(&self, app: &App, name: &str) -> Result<Vec<LineKind>, CliError>;
     /// Asks `question` at the terminal.
     fn confirm(&self, question: &str) -> Result<bool, String>;
     /// Whether a server start this machine kept for environment `app.env`
@@ -356,6 +359,10 @@ impl Reach for Live {
     async fn kept_server(&self, app: &App, name: &str) -> Result<bool, CliError> {
         crate::worker::server::kept_to_send_again(self.signed()?, app, name).await
     }
+
+    async fn kept_kinds(&self, app: &App, name: &str) -> Result<Vec<LineKind>, CliError> {
+        crate::worker::line_start::kinds_kept_for(self.signed()?, (app, name)).await
+    }
 }
 
 /// The deploy's first step: [`Next`] says what follows, with the lines
@@ -434,7 +441,7 @@ async fn new_server(
     // Each line's plan read, before anything is made or bought; a line
     // start kept here from an earlier environment of these names refuses.
     let owing = reach.owing((app, &m.name), &at.lines, true).await?;
-    owing.refuse_kept_starts(app, &m.name)?;
+    owing.refuse_kept_starts(&m.name)?;
     let agreed_now = core::cell::Cell::new(Agreed::default());
     let written = core::cell::Cell::new(false);
     // After the server's yes: each line's price asked, the lines kept,
@@ -555,7 +562,7 @@ async fn resume(
     // Every line to be started asked before the server is bought, those
     // kept here owed too; a line start kept here refuses first.
     let owing = reach.owing((app, &m.name), &at.lines, false).await?;
-    owing.refuse_kept_starts(app, &m.name)?;
+    owing.refuse_kept_starts(&m.name)?;
     let checked = Where {
         kept: Some(m.clone()),
         lines: owing.kinds().into_iter().map(|k| (k, None)).collect(),
@@ -619,12 +626,17 @@ async fn owed(
     {
         return Ok(None);
     }
-    let owing = reach.owing((app, &m.name), &at.lines, false).await?;
-    if owing.kinds().is_empty() {
+    // Whether a line is asked or kept here, read only; nothing more before
+    // the terminal is known to be there.
+    if at.lines.is_empty() && reach.kept_kinds(app, &m.name).await?.is_empty() {
         return Ok(None);
     }
     if nobody {
         return Err(resume_needs_terminal(app));
+    }
+    let owing = reach.owing((app, &m.name), &at.lines, false).await?;
+    if owing.kinds().is_empty() {
+        return Ok(None);
     }
     let mut start = at.clone();
     after_started(&mut start);
@@ -692,8 +704,9 @@ async fn sized_start(
             .start(app, m, (region, yes, Size::Unread(plan)), agreed)
             .await;
     };
-    // A start kept here to send again goes as it was kept, whatever the
-    // stock read lists now: the account answers it.
+    // A start kept here to send again skips the stock read and what is
+    // offered in its place: run_with sends it again while the account
+    // lists it open, else makes a new start of the size named, asked.
     if reach.kept_server(app, &m.name).await? {
         return reach
             .start(app, m, (region, yes, Size::Cores(cores)), agreed)
@@ -1154,6 +1167,14 @@ mod tests {
         async fn kept_server(&self, _: &App, _: &str) -> Result<bool, CliError> {
             self.calls.borrow_mut().push("kept_server");
             Ok(self.kept_server_start)
+        }
+
+        async fn kept_kinds(&self, _: &App, name: &str) -> Result<Vec<LineKind>, CliError> {
+            self.calls.borrow_mut().push("kept_kinds");
+            crate::worker::line_start::kinds_kept_in(
+                &self.store,
+                &kept::pin_key("user-100001", name, "prod"),
+            )
         }
     }
 
@@ -2130,7 +2151,8 @@ mod tests {
         // The deploy's checks see the line kept here as one asked: a
         // setting it gives does not refuse the deploy.
         assert_eq!(*fake.ready_lines.borrow(), [vec![LineKind::Grpc]]);
-        // Neither asked nor kept here: as before.
+        // Neither asked nor kept here: as before, under --json too, with
+        // nothing read but what is kept here.
         let dir = tempfile::tempdir().expect("a directory");
         let mut fake = Fake::new(&dir, &kept_toml());
         fake.record = Some(record_with_server());
@@ -2138,6 +2160,24 @@ mod tests {
             .await
             .expect("as before");
         assert_eq!(first, First::AsBefore);
+        let mut fake = Fake::new(&dir, &kept_toml());
+        fake.record = Some(record_with_server());
+        let first = go(&fake, &Where::default(), false, (true, false))
+            .await
+            .expect("as before");
+        assert_eq!(first, First::AsBefore);
+        assert_eq!(*fake.calls.borrow(), ["sign_in", "record", "kept_kinds"]);
+        // Kept here, under --json: refused before the catalogue is read or
+        // anything kept here is changed.
+        let json_dir = tempfile::tempdir().expect("a directory");
+        let mut fake = Fake::new(&json_dir, &kept_toml());
+        fake.record = Some(record_with_server());
+        fake.owe(LineKind::Grpc);
+        let e = go(&fake, &Where::default(), false, (true, false))
+            .await
+            .expect_err("refused");
+        assert_eq!(e.code, Code::NeedsTerminal);
+        assert!(!fake.calls.borrow().contains(&"owing"));
         // With anything else for a server (--new-server, --region,
         // --plan), on a record with no server, or once deployed to: as
         // before, refused by the deploy that follows.

@@ -488,8 +488,10 @@ pub(crate) enum Action {
         /// is still asked about, and so are a server on record, never reached,
         /// that is not on the account signed in to, a new ERPC Worker for an
         /// environment kept in the ERPC account that the command line does
-        /// not ask for with --new-server, and the first login to a server
-        /// kept in the ERPC account, at a terminal).
+        /// not ask for with --new-server, and its lines, every line of an
+        /// environment kept there whose record names a server and no deploy,
+        /// and the first login to a server kept in the ERPC account, at a
+        /// terminal).
         #[arg(long, short = 'y')]
         yes: bool,
     },

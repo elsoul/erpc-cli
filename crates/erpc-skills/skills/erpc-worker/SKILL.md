@@ -74,8 +74,10 @@ directory.
   - For an app with a `[wallet]`: `run`, `deploy`, `start`, `restart`, `rollback`. The key
     gate needs a person at a terminal; from `run_command` it refuses with "no terminal is
     attached". What you can do for such an app is everything but the key: once `erpc worker
-    build <app>` has finished, `erpc worker deploy <app> --new-server --grpc --yes --prepare`
-    gets the server, the firewall, the lines and a release in place and starts, stops and
+    build <app>` has finished, `erpc worker deploy <app> --new-server --inline --grpc --yes
+    --prepare` (`--inline` keeps the environment in erpc.toml: without it, a new
+    environment's deploy goes the ERPC account way, which needs a terminal) gets the server,
+    the firewall, the lines and a release in place and starts, stops and
     restarts nothing: an app that runs there runs on, under the agent it had, even when a
     newer agent was installed (the command says so). Then hand over one line, `erpc worker
     deploy <app>`, which hands the key over and starts the app: it builds and installs a
