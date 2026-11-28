@@ -36,6 +36,7 @@ pub(crate) mod seal_keys;
 pub(crate) mod secrets;
 pub(crate) mod server;
 pub(crate) mod server_end;
+pub(crate) mod tips;
 pub(crate) mod vps;
 pub(crate) mod waf;
 
@@ -101,6 +102,16 @@ impl Dir {
     /// A hint binds it as `dir_scope`.
     pub(crate) fn scope(&self) -> String {
         self.scope_with(by_name, Path::exists)
+    }
+
+    /// Where the app's directory goes when no app was named: the `--dir`
+    /// it was given, or none. `None` when the app was named.
+    fn unnamed(&mut self) -> Option<&mut Option<PathBuf>> {
+        if self.name.is_some() {
+            None
+        } else {
+            Some(&mut self.dir)
+        }
     }
 
     /// [`Dir::scope`], with names resolved by `resolve` and paths looked
@@ -1047,9 +1058,146 @@ fn parse_chain(name: &str) -> Result<Chain, String> {
     })
 }
 
+/// Where the app a verb acts on goes when it was not named, and whether
+/// the verb goes ahead without asking.
+struct AppSlot<'a> {
+    /// Its `--dir`: what was given, or none.
+    dir: &'a mut Option<PathBuf>,
+    /// It changes something, or runs the app, without a question of its
+    /// own: given `--yes`, or a verb that never asks.
+    goes_ahead: bool,
+}
+
+impl Action {
+    /// Where the app this verb acts on goes when it was not named: its
+    /// `--dir` ([`Dir::unnamed`]), and whether the verb goes ahead without
+    /// asking. `None` for a verb about no one app, and for an app given by
+    /// name. Every verb is listed, so that a new one says which it is.
+    ///
+    /// A verb goes ahead when it is given `--yes`, and when it changes
+    /// something or runs code in the app with no question of its own:
+    /// `run` and `build` (cargo runs the app's build scripts), `key new`,
+    /// `key import`, `secret put --generate` or `--from-account`, `secret
+    /// rm`, `api` with a method other than GET, and `backup now`. The
+    /// others only read, or ask before they buy, end, delete, send or
+    /// change anything. After the pick, four may do something that costs
+    /// nothing before a question of their own, or with none in that run:
+    /// `server start` (the account's records of the app and environment,
+    /// made when missing), `deploy` (`rustc`, and `rustup` to cross-build,
+    /// in the app's directory, for an app it builds; and, starting a new
+    /// server in the account, the same records as `server start`, or, for
+    /// a start kept here that went through before, `account = true` in
+    /// erpc.toml), `server
+    /// end` run again after a stop (it may finish clearing the address of
+    /// an end already said yes to) and `delete --release-server` of an
+    /// environment the account no longer has (it may finish deleting the
+    /// app's record an earlier yes agreed to, and puts the environment
+    /// away here).
+    fn app_slot(&mut self) -> Option<AppSlot<'_>> {
+        let (dir, goes_ahead) = match self {
+            Self::Init { .. }
+            | Self::Import { .. }
+            | Self::Seal { .. }
+            | Self::List { .. }
+            | Self::Secret {
+                action: SecretAction::Unlock | SecretAction::Lock,
+            } => return None,
+            // Read, or ask first (`key send` always asks).
+            Self::Check { dir, .. }
+            | Self::Key {
+                action:
+                    KeyAction::Show { dir }
+                    | KeyAction::Balance { dir, .. }
+                    | KeyAction::Send { dir, .. },
+            }
+            | Self::Secret {
+                action: SecretAction::List { dir },
+            } => (dir.unnamed(), false),
+            // Change something, or run the app's code, asking nothing.
+            Self::Run { dir, .. }
+            | Self::Build { dir }
+            | Self::Key {
+                action: KeyAction::New { dir, .. },
+            } => (dir.unnamed(), true),
+            Self::Key {
+                action: KeyAction::Import { dir, .. },
+            }
+            | Self::Secret {
+                action: SecretAction::Rm { dir, .. },
+            } => (Some(&mut dir.dir), true),
+            // A value typed is asked for; one made here or read from the
+            // account is not.
+            Self::Secret {
+                action: SecretAction::Put { dir, value, .. },
+            } => (Some(&mut dir.dir), value.value() != keys::Value::Typed),
+            Self::Api { app, method, .. } => {
+                (Some(&mut app.dir.dir), !method.eq_ignore_ascii_case("GET"))
+            }
+            Self::Firewall {
+                action:
+                    FirewallAction::Allow { app, yes, .. } | FirewallAction::Deny { app, yes, .. },
+            } => (Some(&mut app.dir.dir), *yes),
+            Self::Bench { app, .. }
+            | Self::Status { app }
+            | Self::Logs { app, .. }
+            | Self::Trades { app, .. }
+            | Self::Releases { app }
+            | Self::Firewall {
+                action: FirewallAction::List { app },
+            }
+            | Self::Backup {
+                action: BackupAction::Status { app },
+            } => (app.dir.unnamed(), false),
+            Self::Backup {
+                action: BackupAction::Now { app },
+            } => (app.dir.unnamed(), true),
+            Self::Deploy { app, yes, .. }
+            | Self::Start { app, yes }
+            | Self::Stop { app, yes, .. }
+            | Self::Restart { app, yes }
+            | Self::Rollback { app, yes, .. }
+            | Self::Delete { app, yes, .. }
+            | Self::Move { app, yes, .. }
+            | Self::Server {
+                action: ServerAction::Start { app, yes, .. } | ServerAction::End { app, yes },
+            }
+            | Self::Firewall {
+                action: FirewallAction::Sync { app, yes },
+            }
+            | Self::Backup {
+                action: BackupAction::On { app, yes, .. } | BackupAction::Off { app, yes },
+            } => (app.dir.unnamed(), *yes),
+        };
+        dir.map(|dir| AppSlot { dir, goes_ahead })
+    }
+}
+
+/// Who answers [`run`]'s question of which app, when it asks one.
+pub(crate) struct Asking {
+    /// Whether standard input and standard error are terminals.
+    tty: bool,
+    /// What puts the app picked in the verb's `--dir`.
+    pick: fn(&mut Option<PathBuf>) -> Result<(), CliError>,
+}
+
+impl Asking {
+    /// This process's terminal, and the apps this machine knows.
+    pub(crate) fn here() -> Self {
+        Self {
+            tty: crate::account::session::has_terminal(),
+            pick: pick_here,
+        }
+    }
+}
+
 /// Runs one `erpc worker` verb.
 #[allow(clippy::too_many_lines, reason = "one arm per verb, each a call")]
-pub(crate) async fn run(json: bool, action: Action) -> Outcome {
+pub(crate) async fn run(json: bool, mut action: Action, asking: Asking) -> Outcome {
+    // No app named and none here: at a terminal, the person picks one of
+    // the apps this machine knows, and the verb goes on with its directory.
+    if let Err(e) = settle_app(&mut action, json, at_a_terminal(asking.tty), asking.pick) {
+        return e.into();
+    }
     match action {
         Action::Init {
             chain,
@@ -1578,6 +1726,109 @@ fn locate(dir: &Dir) -> Result<PathBuf, CliError> {
             t!("worker.find.init_or_dir")
         })
     })
+}
+
+/// Whether a verb given no app asks which one: at a terminal erpc draws on
+/// ([`at_a_terminal`]), not under `--json`, whose reader is a program, and
+/// not for a verb that goes ahead without asking (`--yes`, or one that
+/// never asks: [`Action::app_slot`]): a key typed ahead must not choose
+/// what such a verb acts on.
+const fn asks_for_app(json: bool, goes_ahead: bool, terminal: bool) -> bool {
+    !json && !goes_ahead && terminal
+}
+
+/// Whether a person at `tty` (stdin and stderr terminals) can be shown
+/// the picker: erpc draws on that terminal, so not with `TERM=dumb`.
+fn at_a_terminal(tty: bool) -> bool {
+    tty && crate::cli::ui::stderr_drawn()
+}
+
+/// No app named, no `--dir`, and no erpc.toml here ([`pick_app_with`]):
+/// when the verb asks ([`asks_for_app`]), the app picked through `pick`,
+/// its directory put in the verb's `--dir`, so that the verb and its hints
+/// go on with it as with `--dir`. Otherwise nothing changes, and the verb
+/// says there is no app here, as it always has.
+fn settle_app(
+    action: &mut Action,
+    json: bool,
+    terminal: bool,
+    pick: impl FnOnce(&mut Option<PathBuf>) -> Result<(), CliError>,
+) -> Result<(), CliError> {
+    match action.app_slot() {
+        Some(slot) if slot.dir.is_none() && asks_for_app(json, slot.goes_ahead, terminal) => {
+            pick(slot.dir)
+        }
+        _ => Ok(()),
+    }
+}
+
+/// [`pick_app_with`] here: the current directory, the apps this machine
+/// knows (`erpc worker list`), the question at the terminal.
+fn pick_here(dir: &mut Option<PathBuf>) -> Result<(), CliError> {
+    pick_app_with(
+        dir,
+        || std::env::current_dir().ok(),
+        || index_path().and_then(|p| Index::load(&p).map_err(|e| CliError::new(Code::Failed, e))),
+        |question, options| prompt::pick(question, options, None),
+    )
+}
+
+/// For a verb given no app: when there is no erpc.toml at or above the
+/// current directory (`here`), the app picked through `pick` of those
+/// `index` has, its directory put in `dir`.
+fn pick_app_with(
+    dir: &mut Option<PathBuf>,
+    here: impl FnOnce() -> Option<PathBuf>,
+    index: impl FnOnce() -> Result<Index, CliError>,
+    pick: impl FnOnce(&str, &[String]) -> Result<usize, String>,
+) -> Result<(), CliError> {
+    // A current directory that cannot be read is said by the lookup.
+    let Some(here) = here() else {
+        return Ok(());
+    };
+    if manifest::locate(&here).is_some() {
+        return Ok(());
+    }
+    *dir = Some(picked(&index()?, &here, pick)?);
+    Ok(())
+}
+
+/// The directory of the app picked through `pick`, of the apps in `index`
+/// whose erpc.toml says a name, each shown by that name and its
+/// directory; or, when there is none to pick, that there is no app in
+/// `here` and why none can be picked, with `erpc worker init` first.
+fn picked(
+    index: &Index,
+    here: &Path,
+    pick: impl FnOnce(&str, &[String]) -> Result<usize, String>,
+) -> Result<PathBuf, CliError> {
+    // Each by its name and its directory, which tells two of one name
+    // apart.
+    let apps: Vec<(String, &PathBuf)> = index
+        .workers
+        .iter()
+        .filter_map(|e| {
+            Some((
+                format!("{}  {}", manifest_name(&e.dir)?, e.dir.display()),
+                &e.dir,
+            ))
+        })
+        .collect();
+    let (file, dir) = (manifest::FILE_NAME, here.display());
+    if apps.is_empty() {
+        let error = if index.workers.is_empty() {
+            CliError::new(Code::Failed, t!("worker.find.none_known", file, dir))
+                .hint(t!("worker.find.none_known_hint"))
+        } else {
+            CliError::new(Code::Failed, t!("worker.find.none_readable", file, dir))
+                .hint(t!("worker.find.none_readable_hint"))
+        };
+        return Err(error);
+    }
+    let options: Vec<String> = apps.iter().map(|(shown, _)| shown.clone()).collect();
+    let at = pick(&t!("worker.find.which", file), &options)
+        .map_err(|e| CliError::new(Code::Failed, e))?;
+    Ok(apps[at].1.clone())
 }
 
 /// The directory of the app erpc knows as `name`, from the list `erpc
@@ -2825,6 +3076,381 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// Asked only at a terminal erpc draws on, never under `--json` or
+    /// `--yes`.
+    #[test]
+    fn a_verb_given_no_app_asks_only_a_person_at_a_terminal() {
+        assert!(super::asks_for_app(false, false, true));
+        for (json, yes, terminal) in [
+            (true, false, true),
+            (false, true, true),
+            (true, true, true),
+            (false, false, false),
+            (true, false, false),
+            (false, true, false),
+            (true, true, false),
+        ] {
+            assert!(
+                !super::asks_for_app(json, yes, terminal),
+                "json {json}, yes {yes}, terminal {terminal}"
+            );
+        }
+        // A terminal erpc does not draw on (TERM=dumb) is not one to ask at.
+        crate::cli::ui::force_drawn(false);
+        assert!(!super::at_a_terminal(true));
+        crate::cli::ui::force_drawn(true);
+        assert!(super::at_a_terminal(true));
+        assert!(!super::at_a_terminal(false));
+        crate::cli::ui::force_drawn(false);
+    }
+
+    /// A worker command line, parsed.
+    fn worker_action(line: &str) -> super::Action {
+        match <crate::Cli as clap::Parser>::try_parse_from(line.split_whitespace())
+            .unwrap_or_else(|e| panic!("{line}: {e}"))
+            .command
+        {
+            Some(crate::Command::Worker { action }) => *action,
+            _ => panic!("not a worker command: {line}"),
+        }
+    }
+
+    /// The verbs that ask for the app: they read, or ask before they buy,
+    /// end, delete, send or change anything; four of them (server start,
+    /// deploy, server end run again, delete of an environment the account
+    /// no longer has) may do something that costs nothing after the pick
+    /// and before, or without, a question of their own
+    /// ([`super::Action::app_slot`]).
+    const ASKING: [&str; 30] = [
+        "check",
+        "key show",
+        "key balance",
+        "key send --to 11111111111111111111111111111111 --all",
+        "secret put API_TOKEN",
+        "secret put API_TOKEN --replace",
+        "secret list",
+        "server start --cores 1 --region tokyo",
+        "server end",
+        "deploy",
+        "bench",
+        "status",
+        "logs",
+        "api /healthz",
+        "api /healthz -X get",
+        "trades",
+        "start",
+        "stop",
+        "restart",
+        "rollback",
+        "releases",
+        "delete",
+        "move --to account",
+        "firewall list",
+        "firewall sync",
+        "firewall allow 203.0.113.7",
+        "firewall deny 203.0.113.7",
+        "backup on",
+        "backup off",
+        "backup status",
+    ];
+    /// Verbs given `--yes`.
+    const TOLD: [&str; 14] = [
+        "server start --cores 1 --region tokyo --yes",
+        "server end --yes",
+        "deploy --yes",
+        "start --yes",
+        "stop --yes",
+        "restart --yes",
+        "rollback --yes",
+        "delete --yes",
+        "move --to account --yes",
+        "firewall sync --yes",
+        "firewall allow 203.0.113.7 --yes",
+        "firewall deny 203.0.113.7 --yes",
+        "backup on --yes",
+        "backup off --yes",
+    ];
+    /// Verbs that change something, or run the app's code, with no question.
+    const UNASKED: [&str; 14] = [
+        "run",
+        "run --check",
+        "build",
+        "key new",
+        "key import wallet.json",
+        "key import wallet.json --wipe",
+        "secret put API_TOKEN --generate",
+        "secret put ERPC_API_KEY --from-account",
+        "secret rm API_TOKEN",
+        "api /api/trade -X POST",
+        "api /api/trade -X PUT",
+        "api /api/trade -X DELETE",
+        "api /api/trade -X PATCH",
+        "backup now",
+    ];
+    /// Verbs given the app, and verbs about no app.
+    const GIVEN: [&str; 9] = [
+        "deploy hft-bot",
+        "status hft-bot",
+        "check hft-bot",
+        "init",
+        "import",
+        "list",
+        "seal list",
+        "secret lock",
+        "secret unlock",
+    ];
+
+    /// Every verb that takes an app and only reads, or asks before it buys,
+    /// ends, deletes, sends or changes anything (four of them after a step
+    /// that costs nothing: [`super::Action::app_slot`]), asks for the app when it was not
+    /// named, and goes on with the directory picked in its `--dir`. A verb
+    /// given the app, one about no app, one given `--yes`, one that changes
+    /// something or runs the app's code without asking, and any run under
+    /// `--json` or with no terminal ask nothing.
+    #[test]
+    fn each_verb_that_takes_an_app_asks_for_it_unless_told_to_go_ahead() {
+        let picked = |line: &str, json: bool, terminal: bool| {
+            let mut action = worker_action(&format!("erpc worker {line}"));
+            let mut asked = false;
+            super::settle_app(&mut action, json, terminal, |dir| {
+                asked = true;
+                *dir = Some("/picked".into());
+                Ok(())
+            })
+            .expect("settled");
+            asked.then(|| action.app_slot().and_then(|slot| slot.dir.clone()))
+        };
+        for line in ASKING {
+            assert_eq!(
+                picked(line, false, true),
+                Some(Some("/picked".into())),
+                "{line}"
+            );
+            assert_eq!(picked(line, true, true), None, "{line} --json");
+            assert_eq!(picked(line, false, false), None, "{line} off a terminal");
+        }
+        for line in TOLD.into_iter().chain(UNASKED).chain(GIVEN) {
+            assert_eq!(picked(line, false, true), None, "{line}");
+        }
+        // A --dir given is the app: nothing is asked.
+        assert_eq!(picked("deploy --dir somewhere", false, true), None);
+        assert_eq!(
+            picked("secret put API_TOKEN --dir apps/bot", false, true),
+            None
+        );
+    }
+
+    /// `run` asks through what it is handed, only at a terminal erpc draws
+    /// on, and never under `--json`: there, the verb goes on and says there
+    /// is no app here, as it always has.
+    #[tokio::test]
+    async fn run_asks_for_the_app_only_where_a_person_can_answer() {
+        fn asked(_: &mut Option<std::path::PathBuf>) -> Result<(), super::CliError> {
+            Err(super::CliError::new(super::Code::Failed, "asked"))
+        }
+        let asking = |tty| super::Asking { tty, pick: asked };
+        let check = || worker_action("erpc worker check");
+        let was_asked =
+            |outcome: &Outcome| matches!(outcome, Outcome::Error(e) if e.message == "asked");
+        crate::cli::ui::force_drawn(true);
+        assert!(was_asked(&super::run(false, check(), asking(true)).await));
+        assert!(
+            !was_asked(&super::run(true, check(), asking(true)).await),
+            "--json"
+        );
+        assert!(
+            !was_asked(&super::run(false, check(), asking(false)).await),
+            "no terminal"
+        );
+        crate::cli::ui::force_drawn(false);
+        assert!(
+            !was_asked(&super::run(false, check(), asking(true)).await),
+            "TERM=dumb"
+        );
+    }
+
+    /// Apps for the picker's tests: two with a name, one whose directory
+    /// is gone and one whose erpc.toml says no name, and a directory with
+    /// no erpc.toml at or above it to run from.
+    struct Known {
+        root: tempfile::TempDir,
+        bot: std::path::PathBuf,
+        other: std::path::PathBuf,
+        index: erpc_worker::index::Index,
+    }
+
+    fn known() -> Known {
+        use erpc_worker::index::{Entry, Index};
+        let root = tempfile::tempdir().expect("a temporary directory");
+        let (bot, other) = (root.path().join("bot"), root.path().join("apps/other"));
+        let (gone, nameless) = (root.path().join("gone"), root.path().join("nameless"));
+        for (dir, text) in [
+            (&bot, "name = \"hft-bot\"\n"),
+            (&other, "name = \"other\"\n"),
+            (&nameless, "[run\n"),
+        ] {
+            std::fs::create_dir_all(dir).expect("dir");
+            std::fs::write(dir.join("erpc.toml"), text).expect("erpc.toml");
+        }
+        std::fs::create_dir_all(root.path().join("elsewhere")).expect("elsewhere");
+        let entry = |name: &str, dir: &std::path::Path| Entry {
+            name: name.into(),
+            dir: dir.into(),
+        };
+        let index = Index {
+            workers: vec![
+                entry("hft-bot", &bot),
+                entry("gone", &gone),
+                entry("nameless", &nameless),
+                entry("other", &other),
+            ],
+        };
+        Known {
+            root,
+            bot,
+            other,
+            index,
+        }
+    }
+
+    /// No app named and no erpc.toml here: the person picks one of the
+    /// apps this machine knows, each by its name and directory, and the
+    /// verb goes on with the directory picked, as with `--dir`, its hints
+    /// naming it.
+    #[test]
+    fn a_verb_given_no_app_where_there_is_none_goes_on_with_the_app_picked() {
+        let k = known();
+        let here = k.root.path().join("elsewhere");
+        assert!(
+            erpc_worker::manifest::locate(&here).is_none(),
+            "no app at {here:?}"
+        );
+        let mut dir = None;
+        let mut asked = None;
+        super::pick_app_with(
+            &mut dir,
+            || Some(here.clone()),
+            || Ok(k.index.clone()),
+            |question, options| {
+                asked = Some((question.to_owned(), options.to_vec()));
+                Ok(1)
+            },
+        )
+        .expect("picked");
+        let (question, options) = asked.expect("asked");
+        assert_eq!(
+            question,
+            "Which app? There is no erpc.toml in this directory or above it"
+        );
+        // The apps whose erpc.toml says a name, each with its directory,
+        // in the list's order; one that is gone or says no name is not
+        // offered.
+        assert_eq!(
+            options,
+            [
+                format!("hft-bot  {}", k.bot.display()),
+                format!("other  {}", k.other.display()),
+            ]
+        );
+        assert_eq!(dir.as_ref(), Some(&k.other));
+        let picked = Dir { name: None, dir };
+        assert_eq!(locate(&picked).expect("found"), k.other.join("erpc.toml"));
+        assert_eq!(
+            picked.scope(),
+            format!(
+                " --dir {}",
+                super::shell_word(&k.other.display().to_string())
+            )
+        );
+    }
+
+    /// An erpc.toml at or above the current directory, or a current
+    /// directory that cannot be read: nothing is asked or read, and the
+    /// verb finds its app (or says there is none) as it always has.
+    #[test]
+    fn nothing_is_asked_when_the_app_is_given_or_found_here() {
+        let k = known();
+        let unread = || -> Result<erpc_worker::index::Index, super::CliError> {
+            panic!("the list of apps was read")
+        };
+        let unasked =
+            |_: &str, _: &[String]| -> Result<usize, String> { panic!("the person was asked") };
+        let mut dir = None;
+        let inside = k.bot.join("src");
+        std::fs::create_dir_all(&inside).expect("src");
+        super::pick_app_with(&mut dir, || Some(inside.clone()), unread, unasked)
+            .expect("nothing to do");
+        assert_eq!(dir, None);
+        super::pick_app_with(&mut dir, || None, unread, unasked).expect("nothing to do");
+        assert_eq!(dir, None);
+    }
+
+    /// With no app to pick, that is said plainly, with `erpc worker init`
+    /// first in the hint, and nothing is asked.
+    #[test]
+    fn with_no_app_to_pick_it_says_so_and_leads_with_init() {
+        let k = known();
+        let here = k.root.path().join("elsewhere");
+        let unasked =
+            |_: &str, _: &[String]| -> Result<usize, String> { panic!("the person was asked") };
+        let none = super::picked(&erpc_worker::index::Index::default(), &here, unasked)
+            .expect_err("no app");
+        assert_eq!(
+            none.message,
+            format!(
+                "there is no erpc.toml in {} or above it, and erpc knows no app on this machine yet",
+                here.display()
+            )
+        );
+        assert!(
+            none.hint
+                .as_deref()
+                .is_some_and(|h| h.starts_with("run `erpc worker init` to make an app")),
+            "{:?}",
+            none.hint
+        );
+        // Known, and none of them readable: not said as none known.
+        let unreadable = erpc_worker::index::Index {
+            workers: k
+                .index
+                .workers
+                .iter()
+                .filter(|e| e.name == "gone" || e.name == "nameless")
+                .cloned()
+                .collect(),
+        };
+        let e = super::picked(&unreadable, &here, unasked).expect_err("none readable");
+        assert!(
+            e.message.contains("none of the apps erpc knows"),
+            "{}",
+            e.message
+        );
+        assert!(
+            e.hint
+                .as_deref()
+                .is_some_and(|h| h.starts_with("run `erpc worker init` to make an app")),
+            "{:?}",
+            e.hint
+        );
+    }
+
+    /// Esc at the picker: an error, and no app taken.
+    #[test]
+    fn a_cancelled_pick_takes_no_app() {
+        let k = known();
+        let here = k.root.path().join("elsewhere");
+        let mut dir = None;
+        let e = super::pick_app_with(
+            &mut dir,
+            || Some(here.clone()),
+            || Ok(k.index.clone()),
+            |_, _| Err("nothing was chosen".to_owned()),
+        )
+        .expect_err("cancelled");
+        assert_eq!(e.message, "nothing was chosen");
+        assert_eq!(dir, None);
+    }
+
     /// Every `erpc worker …` a hint names, in the worker's sources outside
     /// comments and tests, with Rust's line continuations joined.
     fn named_sources() -> Vec<(&'static str, &'static str)> {
@@ -2860,6 +3486,7 @@ mod tests {
             ("worker/secrets.rs", include_str!("secrets.rs")),
             ("worker/server.rs", include_str!("server.rs")),
             ("worker/server_end.rs", include_str!("server_end.rs")),
+            ("worker/tips.rs", include_str!("tips.rs")),
             ("worker/vps.rs", include_str!("vps.rs")),
             ("worker/waf.rs", include_str!("waf.rs")),
             ("node/common.rs", include_str!("../node/common.rs")),

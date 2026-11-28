@@ -1013,10 +1013,86 @@ that name, when there is one, wins); `secret put`, `secret rm`, `key import`,
 app by `--dir` only. `secret unlock` and `secret lock` are about this
 machine's keystore, not an app: they take neither, and no `--env`.
 
+A command given no app (no name, no `--dir`) run where there is no
+`erpc.toml` in the current directory or above it asks, at a terminal, which
+app: the apps erpc knows on this machine (`erpc worker list`) whose
+`erpc.toml` says a name, each by that name and its directory. The command
+then goes on with the app picked as if its directory had been given with
+`--dir`, and the commands its hints name carry that `--dir`. Esc ends it
+with nothing done. When erpc knows no app on this machine, or none it can
+read, it says so, and the hint starts with `erpc worker init`; when the list
+of apps (`workers.toml`) cannot be read, the error is that file's. The app is
+asked for before the command checks its own options, so a value it refuses
+(`erpc worker backup on --at 25:99`) is said after the pick.
+
+The picker asks for a command that only reads, or that asks before it
+buys, ends, deletes, sends or changes anything: a key typed ahead must not
+choose what a command that goes ahead without asking acts on.
+
+The picker asks nothing, and the command fails with `there is no erpc.toml
+in … or above it` as before, for:
+
+- any command given `--yes`;
+- the commands that change something, or run the app's code, with no
+  question of their own: `run` (and `run --check`), `build` (cargo runs the
+  app's build scripts), `key new`, `key import`, `secret put --generate` and
+  `secret put --from-account`, `secret rm`, `api` with a method other than
+  GET, and `backup now`;
+- any command under `--json`, with no terminal (a script, a pipe), or with
+  `TERM=dumb`.
+
+The commands that do ask are `check`, `key show`, `key balance`, `key send`
+(which always asks before it sends), `secret put` with a value typed,
+`secret list`, `server start`, `server end`, `deploy`, `bench`, `status`,
+`logs`, `api` with GET, `trades`, `start`, `stop`, `restart`, `rollback`,
+`releases`, `delete`, `move`, `firewall list`, `firewall allow`, `firewall
+deny`, `firewall sync`, `backup on`, `backup off` and `backup status`, each
+without `--yes`. The app is picked first. Then four of them may do
+something that costs nothing before a question of their own, or with none
+in that run:
+
+- `server start` makes the app's and the environment's records in the ERPC
+  account when they are missing (they cost nothing), before its price
+  question;
+- `deploy` looks at the Rust toolchain in the app's directory, unless the
+  app ships a `build.prebuilt` binary (which is not built) or cargo is not
+  installed: it runs `rustc` there (and `rustup`, to cross-build). Which
+  `rustc` that is comes from `RUSTC` or `CARGO_BUILD_RUSTC` when one is
+  set, else from `RUSTUP_TOOLCHAIN` or the app's `rust-toolchain.toml` (a
+  `path` toolchain included), and rustup can install the toolchain the file
+  names. A first deploy that starts a new server in the account
+  (`--new-server`, or the new server picked at the terminal, for an
+  environment `erpc.toml` has nothing for; or one run again after it
+  stopped) also makes the app's and the environment's records in the ERPC
+  account when they are missing, as `server start` does, before its price
+  question; when a start this machine kept for it went through before, it
+  says so instead of asking the price, and writes `account = true` for the
+  environment to `erpc.toml`, as the yes to that start agreed;
+- `server end`, run again after a stop, may first finish clearing the
+  address of a server whose end was already said yes to, and then asks
+  nothing more in that run;
+- `delete --release-server` of an environment kept in the ERPC account that
+  the account no longer has, when this machine trusted it under this
+  sign-in (a run that stopped after deleting it, say): it may first finish
+  deleting the app's record that an earlier yes agreed to delete with it,
+  with the settings and secrets the account keeps for the app, then puts
+  the environment away here (its table in `erpc.toml` and this machine's
+  records of it), and asks nothing in that run.
+
 At a terminal, results and failures are drawn with a mark on each line (✅
 done, ⚠️ to heed, 💡 a hint, 👉 the commands to run next) and progress with
-›. Anywhere else (a pipe, a file, a script) the plain lines are as they were,
-and `--json` is unchanged, with these exceptions:
+›. Three steps that can take minutes are a spinner there instead: the build
+(`erpc worker build`, and a deploy's), a deploy's wait for a new server to
+be ready, and its wait for a server kept in the ERPC account to be ready for
+its first login. The spinner shows the step, the time taken so far, and a
+short trading tip in the language erpc speaks, the next one every eight
+seconds; a deploy that builds while its new server gets ready shows both
+steps on one spinner. When a step ends, on success or failure, the spinner
+goes and the step's › line is printed in its place (the first-login wait's
+once, where it said it every round before). Under `--json`, off a
+terminal, or with `TERM=dumb`, there is no spinner and these steps print
+what they printed before. Anywhere else (a pipe, a file, a script) the plain
+lines are as they were, and `--json` is unchanged, with these exceptions:
 
 - `init`'s next steps name the app (`erpc worker check hft-bot`, and `cd`
   relative to where it was run) when that name finds it, in the text and in

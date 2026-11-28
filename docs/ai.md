@@ -214,6 +214,19 @@ lower-case letter followed by up to 63 lower-case letters, digits, dots
 and hyphens); a
 completed report must name a model the quote offered, at that model's
 rate. The check requires approval of a verified quote before opening SSH.
+When there is none, the message says why:
+- `HTTP <status> (<code>)` when the service refuses. The code is the
+  service's error code if the reply is exactly one code the CLI knows for
+  that status, such as `posture_report_not_funded` with 403, and
+  `unknown_response` otherwise.
+- `[request_timeout]`, `[request_transport]`, `[unreadable_reply]` or
+  `HTTP <status> (response_limit)` when the request did not complete.
+- `[quote_not_verified]` when the quote's terms do not match the CLI's.
+- `[request_id]` when the CLI could not make the request's ID after you
+  approved the quote.
+
+Nothing else from the reply is shown. A 401, or an access token the CLI
+cannot get, asks you to sign in again.
 The billed request contains fixed posture classifications, the rental and
 request IDs, and billing parameters. The CLI keeps detailed socket and
 file-mode observations in the operator's report. It shows the settled

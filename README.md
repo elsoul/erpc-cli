@@ -337,6 +337,15 @@ erpc worker deploy --new-server  # a new hourly server, its price shown first, y
 erpc worker status               # running? which release? on which server?
 ```
 
+Run them in the app's directory, or name the app (`erpc worker status hft-bot`);
+at a terminal, one run where there is no app asks which of the apps on this
+machine you mean. It asks nothing under `--yes` or `--json`, with `TERM=dumb`,
+or for a command that changes something without asking, such as `build`, `run`
+or `secret rm`. It asks for a command that only reads, or that asks before it
+buys, ends, deletes, sends or changes anything; four of those may do something
+free after the pick, before their own question or with none in that run, which
+[the guide](docs/worker.md#running-it) names.
+
 `erpc worker` compiles your app to a native Linux binary and runs it on a
 latest-generation ERPC server, or a server of your own. No Docker and no runtime
 in between: the binary runs under a hardened systemd unit with the whole

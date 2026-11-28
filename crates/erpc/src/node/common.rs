@@ -29,10 +29,9 @@ impl Say {
         if !self.quiet {
             #[cfg(test)]
             heard::note_printed(text);
-            eprintln!(
-                "{}",
-                crate::cli::ui::step_line(text, crate::cli::ui::stderr_drawn())
-            );
+            let line = crate::cli::ui::step_line(text, crate::cli::ui::stderr_drawn());
+            // Above a long step's spinner, while one is up.
+            crate::worker::tips::above(|| eprintln!("{line}"));
         }
     }
 }
