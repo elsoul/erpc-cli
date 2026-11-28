@@ -122,3 +122,114 @@ fix_unencrypted_keystore = "キーストアをパスフレーズで暗号化す�
 fix_secret_in_env_file = "シークレットを環境変数ファイルに置かず、アプリの起動時にパスワードマネージャーかキーチェーンから読み込んでください。"
 fix_secret_in_process_env = "シークレットは環境変数ではなく、パイプかファイルディスクリプタでプロセスに渡してください。"
 fix_secret_in_shell_history = "履歴ファイルから該当する行を消し、シークレットを入れ替えてください。すでに漏れています。"
+view_title = "ERPC Security Check — {server}"
+view_look = "要確認"
+view_fine = "問題なし"
+view_unknown = "確認できず"
+view_details = "詳細"
+view_listening_all_one = "{port} がサーバー内だけでなく、すべてのアドレスで待ち受けています"
+view_listening_interface_one = "{port} がサーバー内だけでなく、ネットワーク上のアドレスの 1 つで待ち受けています"
+view_listening_all = "すべてのアドレス：{ports}"
+view_listening_interface = "特定のアドレス：{ports}"
+view_firewall_filters = "ファイアウォールは許可していない着信を既定で遮断します。許可先が想定どおりか確認してください"
+view_firewall_lets_in = "ファイアウォールはすべての着信を既定で遮断するわけではありません。これらのポートに届く接続元を確認してください"
+view_firewall_unread = "ファイアウォールのルールを読み取れませんでした。これらのポートに届く接続元を確認してください"
+view_inside_only = "サーバー内のみ：{ports}"
+view_no_ports = "待ち受けているポートなし"
+view_redis = "Redis または Valkey がサーバー内だけでなく、ネットワーク上のアドレスで待ち受けています"
+view_redis_fix = "ほかのマシンから使わないなら、設定で 127.0.0.1 だけで待ち受けるようにしてください"
+view_unclassified = "erpc が識別できないプログラムが待ち受けています。それぞれ自分で用意したものか確認してください"
+view_ports_unread = "待ち受けポート：ソケットの一覧を読み取れませんでした"
+view_ports_partial = "一部の待ち受けポート：ソケットの一覧を一部しか読み取れなかったか、点検で一覧にできる数を超えていました"
+view_programs_unseen = "{ports} で待ち受けているプログラム：この SSH ログインからは見えませんでした"
+view_ports_absent = "待ち受けポート：点検で読み取っていません"
+view_rpc_open = "TCP 8899 がサーバー内だけでなく、ネットワーク上のアドレスで待ち受けています"
+view_rpc_inside = "TCP 8899 はサーバー内だけで待ち受けています"
+view_firewall_drops = "ファイアウォール（{families}）は着信を既定で遮断"
+view_firewall_none = "着信をフィルターする nftables の設定が見つかりません（{families}）"
+view_firewall_accepts = "ファイアウォール（{families}）が着信を遮断する設定は見つかりませんでした"
+view_firewall_rules_only = "ファイアウォール（{families}）は着信を既定では遮断せず、ルールで一部を遮断するだけです"
+view_firewall_set_up = "nftables で着信を既定で遮断し、SSH は通すよう設定してください"
+view_firewall_unknown = "ファイアウォール（{families}）：この SSH ログインではルールを読み取れなかったか、長すぎて読み取れませんでした"
+view_firewall_no_tables = "サーバーに nftables のファイアウォールが見つかりません"
+view_firewall_absent = "ファイアウォール：点検でルールを読み取っていません"
+view_jail_ok = "fail2ban が SSH を監視中"
+view_jail_missing = "fail2ban が SSH 用の jail なしで動いているため、失敗の続く SSH ログインを遮断しません"
+view_jail_fix = "/etc/fail2ban/jail.local で sshd の jail を有効にし（[sshd] enabled = true）、sudo systemctl restart fail2ban を実行してください"
+view_jail_unknown = "fail2ban：この SSH ログインに応答しなかったか、インストールされていません"
+view_jail_absent = "fail2ban：点検で問い合わせていません"
+view_ssh_password = "SSH の設定でパスワードによるログインが許可されています。パスワードは推測されるおそれがあります"
+view_ssh_keyboard = "SSH の設定でキーボード対話式のログインが許可されています。通常はパスワードを尋ねるもので、推測されるおそれがあります"
+view_ssh_both = "SSH の設定でパスワードとキーボード対話式のログインが許可されています。推測されるおそれがあります"
+view_ssh_fix = "/etc/ssh/sshd_config で PasswordAuthentication no と KbdInteractiveAuthentication no を設定し、sudo systemctl reload ssh を実行してください"
+view_ssh_unread = "SSH のパスワードログイン：この SSH ログインでは SSH サーバーの設定を読み取れなかったか、設定に記載がありませんでした"
+view_ssh_configured_off = "SSH のパスワードログイン：SSH サーバーの設定ではこのログインに対してオフですが、動作中のサーバーとほかのログインは確認していません"
+view_ssh_try = "別のマシンからパスワードでログインを試し、拒否されることを確かめてください"
+view_ssh_absent = "SSH のパスワードログイン：点検で SSH の設定を読み取っていません"
+view_env_fix = "秘密の情報は環境ファイルからではなく、アプリの起動時にパスワードマネージャーやキーチェーンから読み込んでください"
+view_chmod_words = "それぞれ所有者だけが読めるようにしてください（ファイルなら chmod 600）"
+view_file_other = "ファイルでもディレクトリでもありません"
+view_file_unknown = "権限を読み取れず"
+view_ls_fix = "それぞれの所有者と権限を sudo ls -l で確認してください"
+view_credentials_owner = "サービスの資格情報ファイルは所有者だけが読めます"
+view_services_none = "点検したサービスは環境ファイルも資格情報ファイルも読み込んでいません"
+view_services_partial = "一部のサービスの設定：この SSH ログインですべては読み取れなかったか、点検で読む数を超えていました"
+view_services_unread = "サービスの環境ファイルと資格情報ファイル：この SSH ログインではどのサービスの設定も読み取れませんでした"
+view_services_absent = "サービスの環境ファイルと資格情報ファイル：点検で読み取っていません"
+view_services_fix = "サービスの設定は sudo systemctl cat にサービス名を付けて確認してください"
+view_updates_none = "未適用のセキュリティ更新なし（パッケージ一覧）"
+view_updates_unknown = "セキュリティ更新：サーバーのパッケージ一覧を読み取れませんでした"
+view_updates_absent = "セキュリティ更新：点検でパッケージ一覧を読み取っていません"
+view_readable_owner = "所有者だけが読める"
+view_readable_group = "グループが読める"
+view_readable_world = "すべてのアカウントが読める"
+view_world_above = "上で「{who}」とした場所"
+view_identity_owner = "バリデーターの identity キーペアは所有者だけが読めます"
+view_keys_none = "平文の秘密鍵・シードフレーズなし"
+view_keys_none_readable = "平文の秘密鍵・シードフレーズなし（読めた範囲）"
+view_keys_partial = "平文の鍵：この SSH ログインでは読めないファイル、ディレクトリ、プロセスがあったか、検索が上限に達しました"
+view_keys_unreadable = "平文の鍵：この SSH ログインでは何も読めなかったか、検索が時間内に終わりませんでした"
+view_keys_absent = "平文の鍵：点検で検索していません"
+view_keys_fix = "それらを読める SSH ログインで、点検をもう一度実行してください"
+
+[view_count_look]
+other = "要確認 {n} 件"
+
+[view_count_fine]
+other = "問題なし {n} 件"
+
+[view_count_unknown]
+other = "確認できず {n} 件"
+
+[view_charged]
+other = "料金 {charged} ERPC AI トークン（上限 {maximum}）"
+
+[view_listening_many]
+other = "{n} 個のポートがサーバー内だけでなく、ネットワーク上のアドレスで待ち受けています"
+
+[view_env_readable]
+other = "サービスの環境ファイル {n} 件は、権限によりほかのアカウントも読めます"
+
+[view_env_in_use]
+other = "サービスが環境ファイル {n} 件を読み込んでいます。秘密の情報は入れないでください"
+
+[view_credentials_readable]
+other = "サービスの資格情報ファイル {n} 件は、権限によりほかのアカウントも読めます"
+
+[view_files_more]
+other = "ほかに一覧にないサービスのファイルが {n} 件あります"
+
+[view_env_modes_unknown]
+other = "サービスの環境ファイル {n} 件を誰が読めるか：点検では判断できませんでした"
+
+[view_credentials_unknown]
+other = "サービスの資格情報ソース {n} 件を誰が読めるか：点検では判断できませんでした（ファイルではなく名前、リンク、またはこの SSH ログインから見えないファイル）"
+
+[view_updates]
+other = "{n} 個のパッケージにセキュリティ更新があります"
+
+[view_env_open]
+other = "サービスの環境ファイル {n} 件は、権限によりほかのアカウントもアクセスできます"
+
+[view_credentials_open]
+other = "サービスの資格情報ファイル {n} 件は、権限によりほかのアカウントもアクセスできます"

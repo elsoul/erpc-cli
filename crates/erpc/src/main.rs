@@ -276,7 +276,13 @@ pub fn command_reference() -> String {
                     || (name == "ai"
                         && matches!(
                             id,
-                            "security_check" | "list" | "kind" | "id" | "host_key" | "ssh_user"
+                            "security_check"
+                                | "list"
+                                | "kind"
+                                | "id"
+                                | "host_key"
+                                | "ssh_user"
+                                | "details"
                         ))
                 {
                     continue;

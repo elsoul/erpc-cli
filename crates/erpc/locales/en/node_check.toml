@@ -122,3 +122,124 @@ fix_unencrypted_keystore = "Encrypt the keystore with a passphrase, or move the 
 fix_secret_in_env_file = "Keep secrets out of environment files: load them from a password manager or keychain when the app starts."
 fix_secret_in_process_env = "Give the secret to the process through a pipe or a file descriptor instead of its environment."
 fix_secret_in_shell_history = "Remove those lines from the history file, and replace the secret: it has been exposed."
+view_title = "ERPC Security Check — {server}"
+view_look = "Needs a look"
+view_fine = "Fine"
+view_unknown = "Could not check"
+view_details = "Details"
+view_listening_all_one = "{port} listens on all of the server's addresses, not only inside it"
+view_listening_interface_one = "{port} listens on one of the server's network addresses, not only inside it"
+view_listening_all = "On all addresses: {ports}"
+view_listening_interface = "On a specific address: {ports}"
+view_firewall_filters = "By default the firewall drops incoming connections it does not allow: check that it lets in only what you expect"
+view_firewall_lets_in = "The firewall does not drop every incoming connection by default: check what can reach these ports"
+view_firewall_unread = "The firewall's rules could not be read: check what can reach these ports"
+view_inside_only = "Inside the server only: {ports}"
+view_no_ports = "No listening ports"
+view_redis = "Redis or Valkey listens on the server's network addresses, not only inside it"
+view_redis_fix = "Unless other machines use it, bind it to 127.0.0.1 in its configuration"
+view_unclassified = "Programs erpc does not recognize are listening: check that each is one you set up"
+view_ports_unread = "Listening ports: the list of sockets could not be read"
+view_ports_partial = "Some listening ports: the list of sockets was read only in part, or had more ports than the check lists"
+view_programs_unseen = "Which programs listen on {ports}: this SSH login could not see them"
+view_ports_absent = "Listening ports: the check did not read them"
+view_rpc_open = "TCP 8899 listens on the server's network addresses, not only inside it"
+view_rpc_inside = "TCP 8899 listens only inside the server"
+view_firewall_drops = "Firewall drops incoming by default ({families})"
+view_firewall_none = "No nftables filter for incoming connections was found ({families})"
+view_firewall_accepts = "The firewall ({families}) was not seen to drop anything coming in"
+view_firewall_rules_only = "The firewall ({families}) does not drop incoming connections by default: only its rules drop some"
+view_firewall_set_up = "Set up nftables to drop incoming connections by default, letting SSH in"
+view_firewall_unknown = "The firewall ({families}): its rules could not be read with this SSH login, or were too long to read"
+view_firewall_no_tables = "No nftables firewall was found on the server"
+view_firewall_absent = "The firewall: the check did not read its rules"
+view_jail_ok = "fail2ban watches SSH"
+view_jail_missing = "fail2ban runs without its SSH jail, so it does not block repeated failed SSH logins"
+view_jail_fix = "Turn on the sshd jail in /etc/fail2ban/jail.local ([sshd] enabled = true), then run sudo systemctl restart fail2ban"
+view_jail_unknown = "fail2ban: it did not answer this SSH login, or is not installed"
+view_jail_absent = "fail2ban: the check did not ask it"
+view_ssh_password = "SSH's settings allow logging in with a password, which can be guessed"
+view_ssh_keyboard = "SSH's settings allow keyboard-interactive login, which usually asks for a password that can be guessed"
+view_ssh_both = "SSH's settings allow logging in with a password or keyboard-interactive login, which can be guessed"
+view_ssh_fix = "Set PasswordAuthentication no and KbdInteractiveAuthentication no in /etc/ssh/sshd_config, then run sudo systemctl reload ssh"
+view_ssh_unread = "SSH password login: this SSH login could not read the SSH server's settings, or they did not say"
+view_ssh_configured_off = "SSH password login: the SSH server's settings turn it off for this login; the running server and other logins were not checked"
+view_ssh_try = "From another machine, try to log in with a password: it should be refused"
+view_ssh_absent = "SSH password login: the check did not read SSH's settings"
+view_env_fix = "Load secrets from a password manager or keychain when the app starts, not from an environment file"
+view_chmod_words = "Make each one readable by its owner only (chmod 600 for a file)"
+view_file_other = "not a file or directory"
+view_file_unknown = "mode not read"
+view_ls_fix = "Check the owner and mode of each with sudo ls -l"
+view_credentials_owner = "The services' credential files are readable by their owners only"
+view_services_none = "The services the check reads load no environment or credential files"
+view_services_partial = "Some services' settings: not all could be read with this SSH login, or there were more than the check reads"
+view_services_unread = "The services' environment and credential files: no service's settings could be read with this SSH login"
+view_services_absent = "The services' environment and credential files: the check did not read them"
+view_services_fix = "Look at a service's settings with sudo systemctl cat and the service's name"
+view_updates_none = "No security updates in the package list"
+view_updates_unknown = "Security updates: the server's package list could not be read"
+view_updates_absent = "Security updates: the check did not read the package list"
+view_readable_owner = "readable by its owner only"
+view_readable_group = "readable by its group"
+view_readable_world = "readable by every account"
+view_world_above = "Each place above marked “{who}”"
+view_identity_owner = "The validator identity keypair is readable by its owner only"
+view_keys_none = "No plain-text keys or seed phrases"
+view_keys_none_readable = "No plain-text keys or seed phrases where readable"
+view_keys_partial = "Plain-text keys: some files, directories or processes could not be read with this SSH login, or the search reached its limit"
+view_keys_unreadable = "Plain-text keys: nothing could be read with this SSH login, or the search did not finish in time"
+view_keys_absent = "Plain-text keys: the check did not search for them"
+view_keys_fix = "Run the check again with an SSH login that can read them"
+
+[view_count_look]
+other = "{n} to look at"
+
+[view_count_fine]
+other = "{n} fine"
+
+[view_count_unknown]
+other = "{n} could not be checked"
+
+[view_charged]
+one = "Charged {charged} ERPC AI token (limit {maximum})"
+other = "Charged {charged} ERPC AI tokens (limit {maximum})"
+
+[view_listening_many]
+other = "{n} ports listen on the server's network addresses, not only inside it"
+
+[view_env_readable]
+one = "The mode of a service's environment file lets other accounts on the server read it"
+other = "The modes of {n} of the services' environment files let other accounts on the server read them"
+
+[view_env_in_use]
+one = "A service loads an environment file: keep secrets out of it"
+other = "The services load {n} environment files: keep secrets out of them"
+
+[view_credentials_readable]
+one = "The mode of a service's credential file lets other accounts on the server read it"
+other = "The modes of {n} of the services' credential files let other accounts on the server read them"
+
+[view_files_more]
+one = "{n} more of the services' files is not listed"
+other = "{n} more of the services' files are not listed"
+
+[view_env_modes_unknown]
+one = "Who can read one of the services' environment files: the check could not tell"
+other = "Who can read {n} of the services' environment files: the check could not tell"
+
+[view_credentials_unknown]
+one = "Who can read one of the services' credential sources: the check could not tell (a name rather than a file, a link, or a file this SSH login cannot see)"
+other = "Who can read {n} of the services' credential sources: the check could not tell (a name rather than a file, a link, or a file this SSH login cannot see)"
+
+[view_updates]
+one = "{n} package has a security update waiting"
+other = "{n} packages have security updates waiting"
+
+[view_env_open]
+one = "The mode of a service's environment file gives other accounts on the server access to it"
+other = "The modes of {n} of the services' environment files give other accounts on the server access to them"
+
+[view_credentials_open]
+one = "The mode of a service's credential file gives other accounts on the server access to it"
+other = "The modes of {n} of the services' credential files give other accounts on the server access to them"

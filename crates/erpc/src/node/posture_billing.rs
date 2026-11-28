@@ -28,6 +28,8 @@ const REPORT_LIMITS: JsonResponseLimits = JsonResponseLimits {
 const CONSENT_HEADER: &str = "x-erpc-security-check-consent";
 const CONSENT_VERSION: &str = "security-check-local-posture-v1";
 const FALLBACK_HEADER: &str = "x-erpc-security-check-fallback";
+/// The most a report may reserve, whichever model completes it.
+pub(super) const MAXIMUM: u32 = Price::PRIMARY.maximum();
 
 #[derive(Clone, Copy)]
 struct Price {
@@ -597,6 +599,16 @@ impl Receipt {
                 .all(|(i, id)| !self.findings[..i].contains(id))
     }
 
+    /// The findings the report ranked, most important first.
+    pub(super) fn findings(&self) -> &[FindingId] {
+        &self.findings
+    }
+
+    /// The ERPC AI tokens the report was charged.
+    pub(super) const fn charged(&self) -> u32 {
+        self.billing.charged_credits
+    }
+
     pub(super) fn summary(&self) -> String {
         let priorities = self
             .findings
@@ -617,9 +629,9 @@ impl Receipt {
 }
 
 /// Display IDs selected by the Worker from the fixed catalogue.
-#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum FindingId {
+pub(super) enum FindingId {
     ReviewListenerBindings,
     ReviewSshAuthentication,
     ReviewInputFilter,
@@ -633,7 +645,7 @@ enum FindingId {
 }
 
 impl FindingId {
-    fn label(self) -> String {
+    pub(super) fn label(self) -> String {
         match self {
             Self::ReviewListenerBindings => t!("node_check.review_listener_bindings"),
             Self::ReviewSshAuthentication => t!("node_check.review_ssh_authentication"),
@@ -1118,6 +1130,62 @@ mod tests {
                 ),
                 ("x-erpc-security-check-fallback", FALLBACK),
             ]
+        );
+    }
+
+    /// The request for a sample-shaped report, byte for byte as the CLI
+    /// sent it before the report on screen named the services' files: the
+    /// same with that detail as without it, and none of it in the request.
+    #[test]
+    fn the_report_request_is_byte_identical_to_before() {
+        let rental = Server {
+            kind: super::super::Kind::Vps,
+            id: 100_001,
+        };
+        let detailed = super::super::tests::sample_wire();
+        assert!(
+            !detailed["metadata"]["files"]
+                .as_array()
+                .expect("files")
+                .is_empty()
+        );
+        let mut before = detailed.clone();
+        let metadata = before["metadata"].as_object_mut().expect("metadata");
+        metadata.remove("files");
+        metadata.remove("files_more");
+        let body = |wire: &Value| {
+            let posture =
+                super::super::decode_posture(wire.to_string().as_bytes()).expect("sample posture");
+            let approved = ApprovedReport {
+                request_id: "01900000-0000-7000-8000-000000000001".to_owned(),
+                rental,
+                terms: external(),
+            };
+            String::from_utf8(approved.submission(&posture).body).expect("text")
+        };
+        assert_eq!(body(&detailed), body(&before));
+        let body = body(&detailed);
+        for detail in [
+            "erpc-worker-example",
+            "/etc",
+            "example.env",
+            "files",
+            "420",
+            "0644",
+        ] {
+            assert!(!body.contains(detail), "{detail} reached the request");
+        }
+        assert_eq!(
+            body,
+            "{\"maximumCredits\":28160,\"meterVersion\":\"posture1\",\"posture\":{\
+             \"credential_sources\":\"unknown\",\"daemon_review\":\"unknown\",\
+             \"fail2ban\":\"sshd_jail_observed\",\"firewall_ipv4\":\"input_default_drop\",\
+             \"firewall_ipv6\":\"input_default_drop\",\"listeners\":\"no_listener\",\
+             \"nftables\":\"tables_present\",\"redis_binding\":\"unknown\",\
+             \"service_env\":\"broad_mode_observed\",\"ssh_keyboard_interactive\":\"unknown\",\
+             \"ssh_password\":\"unknown\",\"tcp\":\"non_loopback_observed\",\
+             \"udp\":\"loopback_only\",\"updates\":\"none_in_cached_candidates\"},\
+             \"requestId\":\"01900000-0000-7000-8000-000000000001\",\"server\":\"vps:100001\"}"
         );
     }
 

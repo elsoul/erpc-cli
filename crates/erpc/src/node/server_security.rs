@@ -12,6 +12,9 @@ mod posture_details;
 #[path = "posture_keys.rs"]
 mod posture_keys;
 
+#[path = "posture_view.rs"]
+mod posture_view;
+
 use posture_details::{
     Firewall, FirewallEvidence, Jail, Metadata, Ports, Ssh, Switch, UpdateStatus, Updates,
 };
@@ -54,6 +57,10 @@ pub(crate) struct Args {
     /// Use this SSH login with the independently trusted host public key.
     #[arg(long, requires = "host_key")]
     ssh_user: Option<String>,
+    /// After the report, print every result the check read, as a detailed
+    /// list. --json is the same with or without it.
+    #[arg(long, requires = "security_check", conflicts_with = "list")]
+    details: bool,
 }
 
 impl Args {
@@ -66,6 +73,7 @@ impl Args {
         } else {
             menu(
                 json,
+                self.details,
                 self.kind.zip(self.id),
                 self.host_key.zip(self.ssh_user),
             )
@@ -751,6 +759,7 @@ fn inspection_scope(server: &EligibleServer) -> String {
 
 async fn menu(
     json: bool,
+    details: bool,
     selection: Option<(Kind, u64)>,
     explicit_key: Option<(String, String)>,
 ) -> Outcome {
@@ -792,7 +801,9 @@ async fn menu(
     )
     .await;
     match completed {
-        Ok(Some(completed)) => completed.render(&server, json).done(),
+        Ok(Some(completed)) => completed
+            .render(&server, json, details, posture_view::Look::here())
+            .done(),
         Ok(None) => Outcome::Done(String::new()),
         Err(outcome) => outcome,
     }
@@ -813,7 +824,15 @@ struct Completed {
 }
 
 impl Completed {
-    fn render(&self, server: &EligibleServer, json: bool) -> Said {
+    /// `--json`'s record, or the report a person reads, drawn as `look`
+    /// says, with the full evidence after it under `details`.
+    fn render(
+        &self,
+        server: &EligibleServer,
+        json: bool,
+        details: bool,
+        look: posture_view::Look,
+    ) -> Said {
         let Self { id, result, model } = self;
         if json {
             let mut output = serde_json::json!({
@@ -836,16 +855,25 @@ impl Completed {
             }
             return Said::Json(output);
         }
-        let message = match model {
-            Ok(receipt) => receipt.summary(),
-            Err(state) => state.message(id),
-        };
-        Said::Text(format!(
-            "{}\n{}\n{}",
-            server.label(),
-            result.report(),
-            message
+        let evidence = details.then(|| self.evidence(server));
+        Said::Text(posture_view::render(
+            server,
+            result,
+            model,
+            id,
+            look,
+            evidence.as_deref(),
         ))
+    }
+
+    /// Every result the check collected, as the report showed them before
+    /// it was grouped: what `--details` prints after the report.
+    fn evidence(&self, server: &EligibleServer) -> String {
+        let message = match &self.model {
+            Ok(receipt) => receipt.summary(),
+            Err(state) => state.message(&self.id),
+        };
+        format!("{}\n{}\n{message}", server.label(), self.result.report())
     }
 }
 
@@ -1602,7 +1630,7 @@ mod tests {
     }
 
     #[test]
-    fn final_report_keeps_confirmed_environment_references_independent_of_file_modes() {
+    fn the_evidence_keeps_confirmed_environment_references_independent_of_file_modes() {
         use crate::account::commands::Said;
 
         let listed = json!({ "servers": [{
@@ -1659,9 +1687,8 @@ mod tests {
                     result,
                     model,
                 };
-                let Said::Text(text) = completed.render(&server, false) else {
-                    panic!("human report expected");
-                };
+                // The evidence `--details` prints, as the report printed it before.
+                let text = completed.evidence(&server);
                 assert_eq!(
                     text.contains("Local SSH finding · EnvironmentFile policy review"),
                     observed_reference
@@ -1674,7 +1701,9 @@ mod tests {
                 } else {
                     assert!(text.contains("No AI tokens were charged"));
                 }
-                let Said::Json(record) = completed.render(&server, true) else {
+                let Said::Json(record) =
+                    completed.render(&server, true, false, super::posture_view::Look::PLAIN)
+                else {
                     panic!("JSON report expected");
                 };
                 if observed_reference {
@@ -1742,7 +1771,9 @@ mod tests {
                 result: posture,
                 model: Ok(receipt),
             };
-            let Said::Json(record) = done.render(&server, true) else {
+            let Said::Json(record) =
+                done.render(&server, true, false, super::posture_view::Look::PLAIN)
+            else {
                 panic!("JSON report expected");
             };
             let mut expected = wire;
@@ -1847,6 +1878,53 @@ mod tests {
         assert!(!malformed.valid());
     }
 
+    /// A collector report shaped as one from a real rental: TCP 22 on
+    /// every address with its program unseen, two ports on loopback, both
+    /// firewalls dropping by default, fail2ban's sshd jail, one service
+    /// environment file other accounts can read (named for the screen),
+    /// partial systemd metadata, no security updates, and a key search that
+    /// could not read everything and found nothing.
+    pub(in crate::node) fn sample_wire() -> serde_json::Value {
+        json!({
+            "listeners": "no_listener", "nftables": "tables_present",
+            "ports": {
+                "tcp": {"coverage": "complete", "wildcard": [{"port": 22, "services": ["unknown"]}],
+                    "interface": [], "loopback": [{"port": 53, "services": ["unknown"]},
+                        {"port": 3000, "services": ["unknown"]}]},
+                "udp": {"coverage": "complete", "wildcard": [], "interface": [],
+                    "loopback": [{"port": 53, "services": ["unknown"]}]},
+                "truncated": false,
+            },
+            "ssh": {"source": "default_config_for_connection", "password": "unknown",
+                "keyboard_interactive": "unknown"},
+            "firewall": {"ipv4": "input_default_drop", "ipv6": "input_default_drop",
+                "truncated": false},
+            "fail2ban": "sshd_jail_observed",
+            "metadata": {"coverage": "partial", "units_with_evidence": 2, "truncated": false,
+                "environment_files": {"owner_only": 0, "group_or_other_access": 1, "unknown": 0},
+                "service_env": {"owner_only": 0, "group_or_other_access": 0, "unknown": 0},
+                "credential_sources": {"owner_only": 0, "group_or_other_access": 0, "unknown": 0},
+                "distinct_credential_sources": {"as_is": 0, "encrypted": 0},
+                "files": [{"source": "environment_file", "unit": "erpc-worker-example.service",
+                    "path": "/etc/example.env", "type": "file", "mode": 0o644}],
+                "files_more": 0},
+            "updates": {"status": "none_in_cached_candidates", "packages": 0},
+            "keys": {"coverage": "partial", "groups": []},
+        })
+    }
+
+    /// The rental the sample came from, with made-up ids.
+    pub(in crate::node) fn sample_server() -> super::EligibleServer {
+        let listed = json!({ "servers": [{
+            "id": "vps:100001", "kind": "vps", "label": "fixture",
+            "address": "8.8.8.4", "region": "frankfurt",
+        }] });
+        parse_eligible(&listed.to_string())
+            .expect("eligible fixture")
+            .pop()
+            .expect("fixture server")
+    }
+
     fn fixture_server() -> super::EligibleServer {
         let listed = json!({ "servers": [{
             "id": "bare_metal:7", "kind": "bare_metal", "label": "fixture",
@@ -1888,7 +1966,7 @@ mod tests {
     }
 
     #[test]
-    fn key_findings_list_their_places_escaped_on_screen_and_never_in_json() {
+    fn key_findings_list_their_places_escaped_in_the_details_and_never_in_json() {
         use crate::account::commands::Said;
 
         let keys = json!({"coverage": "complete", "groups": [
@@ -1902,9 +1980,9 @@ mod tests {
                 &["/root/.bash_history", "/home/a%5Cxff%FF/.bash_history"]),
         ]});
         let done = completed(with_keys(&keys));
-        let Said::Text(text) = done.render(&fixture_server(), false) else {
-            panic!("human report expected");
-        };
+        // The evidence `--details` prints; the report above it lists the
+        // same places (posture_view's tests).
+        let text = done.evidence(&fixture_server());
         assert!(text.contains("Plain-text key search · complete\n"));
         assert!(text.contains(
             "Local SSH finding · The validator identity keypair can be read by accounts other \
@@ -1935,7 +2013,12 @@ mod tests {
         assert_eq!(text.matches("txt.json").count(), 1);
         assert!(!text.contains('\u{1b}') && !text.contains('\u{202e}'));
 
-        let Said::Json(record) = done.render(&fixture_server(), true) else {
+        let Said::Json(record) = done.render(
+            &fixture_server(),
+            true,
+            false,
+            super::posture_view::Look::PLAIN,
+        ) else {
             panic!("JSON report expected");
         };
         assert_eq!(
@@ -2048,10 +2131,12 @@ mod tests {
         }
     }
 
-    /// The largest report the strict parser accepts, key section included,
-    /// fits what the capture takes from the collector.
+    /// The largest report the strict parser accepts, key section and the
+    /// services' files included, fits what the capture takes from the
+    /// collector.
     #[test]
     fn the_largest_valid_report_fits_the_capture_limit() {
+        use super::posture_details::{FILES_BUDGET, FILES_SHOWN};
         use super::posture_keys::{PLACE_LIMIT, PLACES_BUDGET, tests::every_group};
 
         let services = [
@@ -2091,6 +2176,13 @@ mod tests {
                     "count": 100_000, "places": places, "more": 100_000 - places.len()})
             })
             .collect();
+        // As many files as are listed, of the longest unit name, with the
+        // budget shared between them: each costs more than its path.
+        let file = json!({"source": "environment_file",
+            "unit": format!("erpc-backup-{}.service", "a".repeat(64)),
+            "path": format!("/{}", "b".repeat(FILES_BUDGET / FILES_SHOWN - 4)),
+            "type": "directory", "mode": 0o7777});
+        let files = vec![file; FILES_SHOWN];
         let largest = json!({
             "listeners": "loopback_binding", "nftables": "no_tables_observed",
             "ports": {
@@ -2105,7 +2197,8 @@ mod tests {
             "fail2ban": "sshd_jail_not_listed",
             "metadata": {"coverage": "observed", "units_with_evidence": 16, "truncated": true,
                 "environment_files": counts, "service_env": counts, "credential_sources": counts,
-                "distinct_credential_sources": {"as_is": 64, "encrypted": 64}},
+                "distinct_credential_sources": {"as_is": 64, "encrypted": 64},
+                "files": files, "files_more": u16::MAX},
             "updates": {"status": "none_in_cached_candidates", "packages": 0},
             "keys": {"coverage": "partial", "groups": groups},
         });
@@ -2209,18 +2302,289 @@ mod tests {
         let plain = decode_posture(br#"{"listeners":"no_listener","nftables":"not_observed"}"#)
             .expect("legacy posture");
         assert_eq!(posture.billing_facts(), plain.billing_facts());
-        // The operator's screen lists the places; --json does not.
+        // The places are on the operator's screen (here, in the evidence
+        // `--details` prints); --json does not carry them.
         let done = completed(posture);
-        let Said::Text(text) = done.render(&server, false) else {
-            panic!("human report expected");
-        };
+        let text = done.evidence(&server);
         assert!(text.contains("/home/sol/validator-keypair.json"));
         assert!(text.contains("/root/.bash_history"));
-        let Said::Json(record) = done.render(&server, true) else {
+        let Said::Json(record) =
+            done.render(&server, true, false, super::posture_view::Look::PLAIN)
+        else {
             panic!("JSON report expected");
         };
         let record = record.to_string();
         for fragment in &local {
+            assert!(!record.contains(fragment), "{fragment} reached --json");
+        }
+    }
+
+    /// `--json` is as it was: the services' files stay on the screen.
+    #[test]
+    fn the_printed_json_carries_none_of_the_services_files() {
+        use crate::account::commands::Said;
+
+        let wire = sample_wire();
+        let done = completed(decode_posture(wire.to_string().as_bytes()).expect("sample"));
+        let server = sample_server();
+        let Said::Json(record) =
+            done.render(&server, true, false, super::posture_view::Look::PLAIN)
+        else {
+            panic!("JSON report expected");
+        };
+        let mut before = wire["metadata"].clone();
+        let metadata = before.as_object_mut().expect("metadata");
+        metadata.remove("files");
+        metadata.remove("files_more");
+        assert_eq!(record["posture"]["metadata"], before);
+        let printed = record.to_string();
+        for detail in [
+            "erpc-worker-example",
+            "/etc/example.env",
+            "\"files",
+            "files_more",
+        ] {
+            assert!(!printed.contains(detail), "{detail} in {printed}");
+        }
+        let Said::Text(text) = done.render(&server, false, false, super::posture_view::Look::PLAIN)
+        else {
+            panic!("report expected");
+        };
+        assert!(text.contains("erpc-worker-example.service → /etc/example.env (0644)"));
+        // --details adds today's evidence, which counts the files and names none.
+        let Said::Text(detailed) =
+            done.render(&server, false, true, super::posture_view::Look::PLAIN)
+        else {
+            panic!("report expected");
+        };
+        let evidence = done.evidence(&server);
+        assert_eq!(detailed, format!("{text}\n\nDetails\n{evidence}"));
+        assert!(evidence.starts_with("vps:100001  frankfurt\nNo listener observed on TCP 8899.\n"));
+        assert!(evidence.contains(
+            "Service EnvironmentFile references · owner only 0, group or other access 1, unknown 0"
+        ));
+        assert!(!evidence.contains("/etc/example.env"));
+    }
+
+    /// The units the parser takes are the ones the collector reads: its
+    /// fixed list and its pattern for ERPC units. Should either change, the
+    /// parser would refuse every report naming a file of such a unit.
+    #[test]
+    fn the_parser_takes_the_units_the_collector_reads() {
+        let script = erpc_ssh::command::NODE_SECURITY_POSTURE_SCRIPT;
+        let fixed = script
+            .split_once("FIXED_UNITS = (")
+            .and_then(|(_, rest)| rest.split_once(')'))
+            .map(|(list, _)| list)
+            .expect("the collector's fixed units");
+        let mut named: Vec<&str> = fixed
+            .split(',')
+            .map(|name| name.trim().trim_matches('"'))
+            .filter(|name| !name.is_empty())
+            .collect();
+        named.sort_unstable();
+        let mut parsed = super::posture_details::COLLECTOR_UNITS.to_vec();
+        parsed.sort_unstable();
+        assert_eq!(named, parsed);
+        let pattern =
+            r#"ERPC_UNIT = re.compile(r"erpc-(?:worker|waf|backup)-[a-z0-9-]{1,64}\.service\Z")"#;
+        assert_eq!(script.lines().filter(|line| *line == pattern).count(), 1);
+    }
+
+    #[test]
+    fn the_collector_keeps_to_the_service_file_bounds_the_parser_holds_it_to() {
+        use super::posture_details::{FILE_PATH_LIMIT, FILES_BUDGET, FILES_SHOWN};
+
+        let script = erpc_ssh::command::NODE_SECURITY_POSTURE_SCRIPT;
+        for (name, value) in [
+            ("FILES_SHOWN", FILES_SHOWN),
+            ("FILE_PATH_LIMIT", FILE_PATH_LIMIT),
+            ("FILES_BUDGET", FILES_BUDGET),
+        ] {
+            let line = format!("{name} = {value}");
+            assert_eq!(script.lines().filter(|l| *l == line).count(), 1, "{line}");
+        }
+    }
+
+    /// The services' files the parser takes: a unit the collector reads, a
+    /// path in the key search's encoding, a mode only for a file or a
+    /// directory, within the bounds, and never more of a kind than counted.
+    #[test]
+    fn the_strict_parser_refuses_service_files_out_of_bounds() {
+        use super::posture_details::{FILE_PATH_LIMIT, FILES_BUDGET, FILES_SHOWN};
+
+        let decoded = |files: serde_json::Value, broad: u16, truncated: bool| {
+            let mut wire = sample_wire();
+            wire["metadata"]["files"] = files;
+            wire["metadata"]["truncated"] = json!(truncated);
+            wire["metadata"]["environment_files"]["group_or_other_access"] = json!(broad);
+            decode_posture(wire.to_string().as_bytes()).is_ok()
+        };
+        let entry = |unit: &str, path: &str, kind: serde_json::Value, mode: serde_json::Value| json!({"source": "environment_file", "unit": unit, "path": path, "type": kind, "mode": mode});
+        let good = |unit: &str| entry(unit, "/etc/example.env", json!("file"), json!(0o644));
+        for unit in [
+            "ssh.service",
+            "fail2ban.service",
+            "erpc-worker-a.service",
+            "erpc-waf-x-1.service",
+            &format!("erpc-backup-{}.service", "a".repeat(64)),
+        ] {
+            assert!(decoded(json!([good(unit)]), 1, false), "{unit}");
+        }
+        for unit in [
+            "example.service",
+            "erpc-worker-.service",
+            "erpc-worker-A.service",
+            "erpc-other-a.service",
+            "erpc-worker-a.socket",
+            &format!("erpc-waf-{}.service", "a".repeat(65)),
+            "ssh.service\u{1b}",
+        ] {
+            assert!(!decoded(json!([good(unit)]), 1, false), "{unit}");
+        }
+        let unit = "ssh.service";
+        for (path, kind, mode) in [
+            ("etc/example.env", json!("file"), json!(0o644)),
+            ("/etc/%41.env", json!("file"), json!(0o644)),
+            ("/etc/a\"b", json!("file"), json!(0o644)),
+            ("/etc/example.env", json!("file"), json!(null)),
+            ("/etc/example.env", json!("other"), json!(0o644)),
+            ("/etc/example.env", json!(null), json!(0o644)),
+            ("/etc/example.env", json!("file"), json!(0o10000)),
+            ("/etc/example.env", json!("socket"), json!(null)),
+        ] {
+            assert!(
+                !decoded(
+                    json!([entry(unit, path, kind.clone(), mode.clone())]),
+                    1,
+                    false
+                ),
+                "{path} {kind} {mode}"
+            );
+        }
+        let long = format!("/{}", "a".repeat(FILE_PATH_LIMIT));
+        assert!(!decoded(
+            json!([entry(unit, &long, json!("file"), json!(0o644))]),
+            1,
+            false
+        ));
+        let path = |n: usize| format!("/etc/{n}.env");
+        let many: Vec<_> = (0..=FILES_SHOWN)
+            .map(|n| entry(unit, &path(n), json!("file"), json!(0o644)))
+            .collect();
+        assert!(!decoded(json!(many), 64, false));
+        assert!(decoded(json!(many[..FILES_SHOWN]), 64, false));
+        let costly = format!("/{}", "b".repeat(FILES_BUDGET / 2 - 3));
+        let over = vec![entry(unit, &costly, json!("file"), json!(0o644)); 2];
+        assert!(decoded(json!(over[..1]), 1, false));
+        assert!(!decoded(json!(over), 2, false));
+        // Two paths open to others when one was counted: refused, unless the
+        // collector ran out of room; one path of two units counts once.
+        let two = json!([
+            good(unit),
+            entry(unit, "/etc/other.env", json!("file"), json!(0o644))
+        ]);
+        assert!(!decoded(two.clone(), 1, false));
+        assert!(decoded(two, 1, true));
+        assert!(decoded(
+            json!([good("ssh.service"), good("sshd.service")]),
+            1,
+            false
+        ));
+        assert!(!decoded(
+            json!([entry(unit, "/etc/example.env", json!("file"), json!(0o600))]),
+            1,
+            false
+        ));
+        let mut unknown = sample_wire();
+        unknown["metadata"] = json!({"coverage": "unknown", "units_with_evidence": 0, "truncated": false,
+            "environment_files": {"owner_only": 0, "group_or_other_access": 0, "unknown": 0},
+            "service_env": {"owner_only": 0, "group_or_other_access": 0, "unknown": 0},
+            "credential_sources": {"owner_only": 0, "group_or_other_access": 0, "unknown": 0},
+            "files": [], "files_more": 1});
+        assert!(decode_posture(unknown.to_string().as_bytes()).is_err());
+    }
+
+    /// The collector's own code, run on a tree with a service's files in
+    /// it: what it reports is what the parser takes, its paths reach the
+    /// screen, and neither the request nor `--json` carries them.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_collectors_service_files_reach_the_screen_and_nothing_else() {
+        use crate::account::commands::Said;
+
+        let collector = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../erpc-ssh/src/node-security-posture.py");
+        let driver = "import json, runpy, sys, tempfile\n\
+            from pathlib import Path\n\
+            from unittest.mock import patch\n\
+            metadata = runpy.run_path(sys.argv[1])['metadata_policy']\n\
+            with tempfile.TemporaryDirectory() as d:\n    \
+                root = Path(d)\n    \
+                env = root / 'example.env'\n    \
+                env.write_text('fixture')\n    \
+                env.chmod(0o644)\n    \
+                token = root / 'token'\n    \
+                token.write_text('fixture')\n    \
+                token.chmod(0o600)\n    \
+                props = f'a(sb) 1 \"{env}\" false\\na(ss) 1 \"token\" \"{token}\"\\na(ss) 0\\n'.encode()\n    \
+                def capture(args, **_):\n        \
+                    if 'GetUnit' in args:\n            \
+                        return b'o \"/org/freedesktop/systemd1/unit/worker\"\\n', False\n        \
+                    return props, False\n    \
+                units = lambda _: (('erpc-worker-example.service',), set(), False, False)\n    \
+                with patch.dict(metadata.__globals__, capture=capture, unit_names=units):\n        \
+                    print(json.dumps({'metadata': metadata(set(), False), 'root': d}))\n";
+        let Ok(output) = std::process::Command::new("python3")
+            .arg("-I")
+            .arg("-c")
+            .arg(driver)
+            .arg(&collector)
+            .output()
+        else {
+            return;
+        };
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let reply: serde_json::Value = serde_json::from_slice(&output.stdout).expect("reply");
+        let root = reply["root"].as_str().expect("root");
+        let wire = json!({"listeners": "no_listener", "nftables": "not_observed", "metadata": reply["metadata"]});
+        let posture =
+            decode_posture(wire.to_string().as_bytes()).expect("the collector's metadata");
+        let server = sample_server();
+        let approved = billing::ApprovedReport::from_quote(
+            &quote_fixture(true, FixtureQuote::Customer),
+            server.rental,
+            |_| Ok(true),
+        )
+        .expect("approved quote")
+        .expect("approved");
+        let body = String::from_utf8(approved.submission(&posture).body).expect("text body");
+        let done = completed(posture);
+        let Said::Text(text) = done.render(&server, false, false, super::posture_view::Look::PLAIN)
+        else {
+            panic!("report expected");
+        };
+        assert!(
+            text.contains(&format!(
+                "erpc-worker-example.service → {root}/example.env (0644)"
+            )),
+            "{text}"
+        );
+        assert!(
+            text.contains(&format!("→ sudo chmod 600 {root}/example.env")),
+            "{text}"
+        );
+        let Said::Json(record) = done.render(&server, true, true, super::posture_view::Look::PLAIN)
+        else {
+            panic!("JSON expected");
+        };
+        let record = record.to_string();
+        for fragment in [root, "example.env", "erpc-worker-example", "token"] {
+            assert!(!body.contains(fragment), "{fragment} reached the request");
             assert!(!record.contains(fragment), "{fragment} reached --json");
         }
     }

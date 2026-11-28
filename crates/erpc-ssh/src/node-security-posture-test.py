@@ -14,6 +14,12 @@ from unittest.mock import patch
 POSTURE = runpy.run_path(Path(__file__).with_name("node-security-posture.py"))
 
 
+def without_files(metadata):
+    """The metadata report but the screen's list of service files, the only
+    part that names a path."""
+    return {key: value for key, value in metadata.items() if key != "files"}
+
+
 class PostureTests(unittest.TestCase):
     def test_all_scopes_and_bound_udp_use_process_names_not_port_guesses(self):
         source = (
@@ -173,7 +179,7 @@ class PostureTests(unittest.TestCase):
             report = metadata(set(), False)
         self.assertEqual(report["distinct_credential_sources"], {"as_is": 2, "encrypted": 2})
         self.assertEqual(observed_calls, [(), (), ("/fixture/dual", "/fixture/encrypted", "/fixture/raw")])
-        self.assertNotIn("/fixture", json.dumps(report))
+        self.assertNotIn("/fixture", json.dumps(without_files(report)))
         with patch.dict(metadata.__globals__, capture=lambda *args, **kw: (None, False)):
             unavailable = metadata(set(), False)
         self.assertEqual(unavailable["distinct_credential_sources"], {"as_is": None, "encrypted": None})
@@ -216,7 +222,7 @@ class PostureTests(unittest.TestCase):
                 self.assertEqual(report["coverage"], expected, report)
                 self.assertEqual(report["units_with_evidence"], 1)
                 self.assertEqual(report["environment_files"]["group_or_other_access"], int(first == positive))
-                self.assertNotIn("/fixture", json.dumps(report))
+                self.assertNotIn("/fixture", json.dumps(without_files(report)))
 
     def test_sampled_fixed_unit_disappearance_or_unreadable_properties_downgrade_coverage(self):
         report_linux = POSTURE["report_linux"]
@@ -386,7 +392,89 @@ class PostureTests(unittest.TestCase):
                 self.assertEqual(report["truncated"], capped)
                 self.assertEqual(report["environment_files"]["owner_only"], int(positive))
                 self.assertEqual(report["service_env"]["owner_only"], int(positive))
-                self.assertNotIn("/fixture", json.dumps(report))
+                self.assertNotIn("/fixture", json.dumps(without_files(report)))
+
+    def test_service_files_name_each_unit_path_and_mode_as_the_counts_judge_them(self):
+        metadata = POSTURE["metadata_policy"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            shared = root / "shared.env"
+            shared.write_text("fixture")
+            shared.chmod(0o644)
+            private = root / "caf\u00e9 100%.env"
+            private.write_text("fixture")
+            private.chmod(0o600)
+            source = root / "source"
+            source.mkdir()
+            source.chmod(0o750)
+            link = root / "link"
+            link.symlink_to(shared)
+            gone = root / "gone"
+            properties = {
+                "ssh": (f'a(sb) 2 "{shared}" false "{private}" false\n'
+                        f'a(ss) 2 "one" "{source}" "two" "{link}"\n'
+                        'a(ss) 1 "three" "credential-store-alias"\n'),
+                "worker": (f'a(sb) 2 "{shared}" false "{gone}" true\na(ss) 0\n'
+                           f'a(ss) 1 "four" "{root}/glob*"\n'),
+            }
+            names = ("erpc-worker-example.service", "ssh.service")
+
+            def capture(args, **_):
+                if "GetUnit" in args:
+                    unit = "ssh" if args[-1] == "ssh.service" else "worker"
+                    return f'o "/org/freedesktop/systemd1/unit/{unit}"\n'.encode("ascii"), False
+                unit = "ssh" if "/org/freedesktop/systemd1/unit/ssh" in args else "worker"
+                return properties[unit].encode(), False
+
+            with patch.dict(metadata.__globals__, capture=capture,
+                            unit_names=lambda _: (names, set(), False, False)):
+                report = metadata(set(), False)
+            worker, ssh = names
+            encoded = str(root)
+            self.assertEqual(report["files"], [
+                {"source": "credential", "unit": ssh, "path": f"{encoded}/source",
+                 "type": "directory", "mode": 0o750},
+                {"source": "environment_file", "unit": worker, "path": f"{encoded}/shared.env",
+                 "type": "file", "mode": 0o644},
+                {"source": "environment_file", "unit": ssh, "path": f"{encoded}/shared.env",
+                 "type": "file", "mode": 0o644},
+                {"source": "credential", "unit": worker, "path": f"{encoded}/glob*",
+                 "type": None, "mode": None},
+                {"source": "credential", "unit": ssh, "path": f"{encoded}/link",
+                 "type": "other", "mode": None},
+                {"source": "environment_file", "unit": worker, "path": f"{encoded}/gone",
+                 "type": None, "mode": None},
+                {"source": "environment_file", "unit": ssh, "path": f"{encoded}/caf%C3%A9 100%25.env",
+                 "type": "file", "mode": 0o600},
+            ])
+            self.assertEqual(report["files_more"], 0)
+            # The counts judge each path as its entry does.
+            self.assertEqual(report["environment_files"],
+                             {"owner_only": 1, "group_or_other_access": 1, "unknown": 1})
+            self.assertEqual(report["credential_sources"],
+                             {"owner_only": 0, "group_or_other_access": 1, "unknown": 3})
+            self.assertNotIn(str(root), json.dumps(without_files(report)))
+
+    def test_service_files_keep_to_their_bounds(self):
+        files = POSTURE["service_files"]
+        limit = POSTURE["FILE_PATH_LIMIT"]
+        shown, more = files({("environment_file", "ssh.service", "relative"),
+                             ("credential", "ssh.service", "/a\0b")})
+        self.assertEqual((shown, more), ([], 0))
+        many = {("environment_file", "ssh.service", f"/fixture/{index:02}") for index in range(20)}
+        shown, more = files(many)
+        self.assertEqual(len(shown), POSTURE["FILES_SHOWN"])
+        self.assertEqual(more, 20 - POSTURE["FILES_SHOWN"])
+        self.assertEqual([entry["path"] for entry in shown][:2], ["/fixture/00", "/fixture/01"])
+        # A path too long to show is left out; the budget takes as many as fit.
+        long = "/" + "a" * limit
+        shown, more = files({("environment_file", "ssh.service", long)})
+        self.assertEqual((shown, more), ([], 1))
+        fits = "/" + "b" * (limit - 1)
+        refs = {("environment_file", f"erpc-worker-{index}.service", fits) for index in range(3)}
+        shown, more = files(refs)
+        self.assertEqual((len(shown), more), (POSTURE["FILES_BUDGET"] // (limit + 3), 3 - len(shown)))
+        self.assertLessEqual(sum(len(entry["path"]) + 3 for entry in shown), POSTURE["FILES_BUDGET"])
 
 
 # The plain-text key search's tests run with these: CI runs this file.
