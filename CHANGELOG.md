@@ -237,8 +237,12 @@ whose version has no entry below.
   apps erpc knows on this machine to act on, each shown by its name and
   directory, and goes on with the one picked as with `--dir`. When erpc
   knows no app on this machine, it says so and points to `erpc worker
-  init` first. Under `--yes`, under `--json`, with no terminal or with
-  `TERM=dumb` it asks nothing and fails as before.
+  init` first. Only a command that reads, or that asks before it changes
+  anything, asks: under `--yes`, for a command that changes something or
+  runs the app's code without asking (`run`, `build`, `key new`, `key
+  import`, `secret put --generate` or `--from-account`, `secret rm`, `api`
+  with a method other than GET, `backup now`), under `--json`, with no
+  terminal or with `TERM=dumb` it asks nothing and fails as before.
 - At a terminal, the steps of `erpc worker build` and `erpc worker deploy`
   that can take minutes (the build, the wait for a new server to be ready,
   the wait for a server kept in the ERPC account to be ready for its first

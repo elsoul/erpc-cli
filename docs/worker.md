@@ -970,11 +970,29 @@ with nothing done. When erpc knows no app on this machine, or none it can
 read, it says so, and the hint starts with `erpc worker init`; when the list
 of apps (`workers.toml`) cannot be read, the error is that file's. The app is
 asked for before the command checks its own options, so a value it refuses
-(`erpc worker backup on --at 25:99`) is said after the pick. Nothing is
-asked, and the command fails with `there is no erpc.toml in … or above it`
-as before, under `--yes` (a key typed ahead must not choose what a command
-that goes ahead without asking acts on), under `--json`, with no terminal (a
-script, a pipe), and with `TERM=dumb`.
+(`erpc worker backup on --at 25:99`) is said after the pick.
+
+Only a command that reads, or that asks before it changes anything, asks
+for the app: a key typed ahead must not choose what a command that goes
+ahead without asking acts on. These ask nothing, and fail with `there is no
+erpc.toml in … or above it` as before:
+
+- any command given `--yes`;
+- the commands that change something, or run the app's code, with no
+  question of their own: `run` (and `run --check`), `build` (cargo runs the
+  app's build scripts), `key new`, `key import`, `secret put --generate` and
+  `secret put --from-account`, `secret rm`, `api` with a method other than
+  GET, and `backup now`;
+- any command under `--json`, with no terminal (a script, a pipe), or with
+  `TERM=dumb`.
+
+The commands that do ask are `check`, `key show`, `key balance`, `key send`
+(which always asks before it sends), `secret put` with a value typed,
+`secret list`, `server start`, `server end`, `deploy`, `bench`, `status`,
+`logs`, `api` with GET, `trades`, `start`, `stop`, `restart`, `rollback`,
+`releases`, `delete`, `move`, `firewall list`, `firewall allow`, `firewall
+deny`, `firewall sync`, `backup on`, `backup off` and `backup status`, each
+without `--yes`.
 
 At a terminal, results and failures are drawn with a mark on each line (✅
 done, ⚠️ to heed, 💡 a hint, 👉 the commands to run next) and progress with

@@ -339,7 +339,8 @@ pub(crate) fn above(print: impl FnOnce()) {
         if LIVE.load(Ordering::SeqCst) > 0 {
             STRAY.fetch_add(1, Ordering::SeqCst);
         }
-        drop(board);
+        // Printed with the lock held, so that no spinner is put up while
+        // the line is half out.
         print();
         return;
     };

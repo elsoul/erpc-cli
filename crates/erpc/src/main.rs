@@ -605,7 +605,7 @@ async fn dispatch(cli: Cli) -> ExitCode {
         Command::Node { args } => {
             node::tree::run(erpc_core::chain::Role::Node, &args, cli.json).await
         }
-        Command::Worker { action } => worker::run(cli.json, *action).await,
+        Command::Worker { action } => worker::run(cli.json, *action, worker::Asking::here()).await,
         Command::Config { action } => account::commands::config(cli.json, action.into()),
         Command::Storage { action } => storage::run(cli.json, action).await,
         Command::Backup { action } => storage::backup::run(cli.json, action).await,

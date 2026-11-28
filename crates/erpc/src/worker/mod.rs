@@ -1041,21 +1041,29 @@ fn parse_chain(name: &str) -> Result<Chain, String> {
 }
 
 /// Where the app a verb acts on goes when it was not named, and whether
-/// the verb was given `--yes`.
+/// the verb goes ahead without asking.
 struct AppSlot<'a> {
     /// Its `--dir`: what was given, or none.
     dir: &'a mut Option<PathBuf>,
-    /// `--yes`: go ahead without asking.
-    yes: bool,
+    /// It changes something, or runs the app, without a question of its
+    /// own: given `--yes`, or a verb that never asks.
+    goes_ahead: bool,
 }
 
 impl Action {
     /// Where the app this verb acts on goes when it was not named: its
-    /// `--dir` ([`Dir::unnamed`]), and whether the verb was given `--yes`.
-    /// `None` for a verb about no one app, and for an app given by name.
-    /// Every verb is listed, so that a new one says which it is.
+    /// `--dir` ([`Dir::unnamed`]), and whether the verb goes ahead without
+    /// asking. `None` for a verb about no one app, and for an app given by
+    /// name. Every verb is listed, so that a new one says which it is.
+    ///
+    /// A verb goes ahead when it is given `--yes`, and when it changes
+    /// something or runs code in the app with no question of its own:
+    /// `run` and `build` (cargo runs the app's build scripts), `key new`,
+    /// `key import`, `secret put --generate` or `--from-account`, `secret
+    /// rm`, `api` with a method other than GET, and `backup now`. The
+    /// others only read, or ask before they change anything.
     fn app_slot(&mut self) -> Option<AppSlot<'_>> {
-        let (dir, yes) = match self {
+        let (dir, goes_ahead) = match self {
             Self::Init { .. }
             | Self::Import { .. }
             | Self::Seal { .. }
@@ -1063,26 +1071,37 @@ impl Action {
             | Self::Secret {
                 action: SecretAction::Unlock | SecretAction::Lock,
             } => return None,
+            // Read, or ask first (`key send` always asks).
             Self::Check { dir, .. }
-            | Self::Run { dir, .. }
-            | Self::Build { dir }
             | Self::Key {
                 action:
-                    KeyAction::New { dir, .. }
-                    | KeyAction::Show { dir }
+                    KeyAction::Show { dir }
                     | KeyAction::Balance { dir, .. }
                     | KeyAction::Send { dir, .. },
             }
             | Self::Secret {
                 action: SecretAction::List { dir },
             } => (dir.unnamed(), false),
+            // Change something, or run the app's code, asking nothing.
+            Self::Run { dir, .. }
+            | Self::Build { dir }
+            | Self::Key {
+                action: KeyAction::New { dir, .. },
+            } => (dir.unnamed(), true),
             Self::Key {
                 action: KeyAction::Import { dir, .. },
             }
             | Self::Secret {
-                action: SecretAction::Put { dir, .. } | SecretAction::Rm { dir, .. },
-            } => (Some(&mut dir.dir), false),
-            Self::Api { app, .. } => (Some(&mut app.dir.dir), false),
+                action: SecretAction::Rm { dir, .. },
+            } => (Some(&mut dir.dir), true),
+            // A value typed is asked for; one made here or read from the
+            // account is not.
+            Self::Secret {
+                action: SecretAction::Put { dir, value, .. },
+            } => (Some(&mut dir.dir), value.value() != keys::Value::Typed),
+            Self::Api { app, method, .. } => {
+                (Some(&mut app.dir.dir), !method.eq_ignore_ascii_case("GET"))
+            }
             Self::Firewall {
                 action:
                     FirewallAction::Allow { app, yes, .. } | FirewallAction::Deny { app, yes, .. },
@@ -1096,8 +1115,11 @@ impl Action {
                 action: FirewallAction::List { app },
             }
             | Self::Backup {
-                action: BackupAction::Status { app } | BackupAction::Now { app },
+                action: BackupAction::Status { app },
             } => (app.dir.unnamed(), false),
+            Self::Backup {
+                action: BackupAction::Now { app },
+            } => (app.dir.unnamed(), true),
             Self::Deploy { app, yes, .. }
             | Self::Start { app, yes }
             | Self::Stop { app, yes, .. }
@@ -1115,17 +1137,34 @@ impl Action {
                 action: BackupAction::On { app, yes, .. } | BackupAction::Off { app, yes },
             } => (app.dir.unnamed(), *yes),
         };
-        dir.map(|dir| AppSlot { dir, yes })
+        dir.map(|dir| AppSlot { dir, goes_ahead })
+    }
+}
+
+/// Who answers [`run`]'s question of which app, when it asks one.
+pub(crate) struct Asking {
+    /// Whether standard input and standard error are terminals.
+    tty: bool,
+    /// What puts the app picked in the verb's `--dir`.
+    pick: fn(&mut Option<PathBuf>) -> Result<(), CliError>,
+}
+
+impl Asking {
+    /// This process's terminal, and the apps this machine knows.
+    pub(crate) fn here() -> Self {
+        Self {
+            tty: crate::account::session::has_terminal(),
+            pick: pick_here,
+        }
     }
 }
 
 /// Runs one `erpc worker` verb.
 #[allow(clippy::too_many_lines, reason = "one arm per verb, each a call")]
-pub(crate) async fn run(json: bool, mut action: Action) -> Outcome {
+pub(crate) async fn run(json: bool, mut action: Action, asking: Asking) -> Outcome {
     // No app named and none here: at a terminal, the person picks one of
     // the apps this machine knows, and the verb goes on with its directory.
-    let terminal = at_a_terminal(crate::account::session::has_terminal());
-    if let Err(e) = settle_app(&mut action, json, terminal, pick_here) {
+    if let Err(e) = settle_app(&mut action, json, at_a_terminal(asking.tty), asking.pick) {
         return e.into();
     }
     match action {
@@ -1608,10 +1647,11 @@ fn locate(dir: &Dir) -> Result<PathBuf, CliError> {
 
 /// Whether a verb given no app asks which one: at a terminal erpc draws on
 /// ([`at_a_terminal`]), not under `--json`, whose reader is a program, and
-/// not under `--yes`, which goes ahead without asking: a key typed ahead
-/// must not choose what such a verb acts on.
-const fn asks_for_app(json: bool, yes: bool, terminal: bool) -> bool {
-    !json && !yes && terminal
+/// not for a verb that goes ahead without asking (`--yes`, or one that
+/// never asks: [`Action::app_slot`]): a key typed ahead must not choose
+/// what such a verb acts on.
+const fn asks_for_app(json: bool, goes_ahead: bool, terminal: bool) -> bool {
+    !json && !goes_ahead && terminal
 }
 
 /// Whether a person at `tty` (stdin and stderr terminals) can be shown
@@ -1632,7 +1672,7 @@ fn settle_app(
     pick: impl FnOnce(&mut Option<PathBuf>) -> Result<(), CliError>,
 ) -> Result<(), CliError> {
     match action.app_slot() {
-        Some(slot) if slot.dir.is_none() && asks_for_app(json, slot.yes, terminal) => {
+        Some(slot) if slot.dir.is_none() && asks_for_app(json, slot.goes_ahead, terminal) => {
             pick(slot.dir)
         }
         _ => Ok(()),
@@ -2995,9 +3035,91 @@ mod tests {
         }
     }
 
-    /// Every verb that takes an app asks for it when it was not named, and
-    /// goes on with the directory picked in its `--dir`. A verb given the
-    /// app, one about no app, and one given `--yes`, run under `--json` or
+    /// The verbs that ask for the app: they read, or ask before they change anything.
+    const ASKING: [&str; 30] = [
+        "check",
+        "key show",
+        "key balance",
+        "key send --to 11111111111111111111111111111111 --all",
+        "secret put API_TOKEN",
+        "secret put API_TOKEN --replace",
+        "secret list",
+        "server start --cores 1 --region tokyo",
+        "server end",
+        "deploy",
+        "bench",
+        "status",
+        "logs",
+        "api /healthz",
+        "api /healthz -X get",
+        "trades",
+        "start",
+        "stop",
+        "restart",
+        "rollback",
+        "releases",
+        "delete",
+        "move --to account",
+        "firewall list",
+        "firewall sync",
+        "firewall allow 203.0.113.7",
+        "firewall deny 203.0.113.7",
+        "backup on",
+        "backup off",
+        "backup status",
+    ];
+    /// Verbs given `--yes`.
+    const TOLD: [&str; 14] = [
+        "server start --cores 1 --region tokyo --yes",
+        "server end --yes",
+        "deploy --yes",
+        "start --yes",
+        "stop --yes",
+        "restart --yes",
+        "rollback --yes",
+        "delete --yes",
+        "move --to account --yes",
+        "firewall sync --yes",
+        "firewall allow 203.0.113.7 --yes",
+        "firewall deny 203.0.113.7 --yes",
+        "backup on --yes",
+        "backup off --yes",
+    ];
+    /// Verbs that change something, or run the app's code, with no question.
+    const UNASKED: [&str; 14] = [
+        "run",
+        "run --check",
+        "build",
+        "key new",
+        "key import wallet.json",
+        "key import wallet.json --wipe",
+        "secret put API_TOKEN --generate",
+        "secret put ERPC_API_KEY --from-account",
+        "secret rm API_TOKEN",
+        "api /api/trade -X POST",
+        "api /api/trade -X PUT",
+        "api /api/trade -X DELETE",
+        "api /api/trade -X PATCH",
+        "backup now",
+    ];
+    /// Verbs given the app, and verbs about no app.
+    const GIVEN: [&str; 9] = [
+        "deploy hft-bot",
+        "status hft-bot",
+        "check hft-bot",
+        "init",
+        "import",
+        "list",
+        "seal list",
+        "secret lock",
+        "secret unlock",
+    ];
+
+    /// Every verb that takes an app and only reads, or asks before it
+    /// changes anything, asks for the app when it was not named, and goes
+    /// on with the directory picked in its `--dir`. A verb given the app,
+    /// one about no app, one given `--yes`, one that changes something or
+    /// runs the app's code without asking, and any run under `--json` or
     /// with no terminal ask nothing.
     #[test]
     fn each_verb_that_takes_an_app_asks_for_it_unless_told_to_go_ahead() {
@@ -3012,43 +3134,7 @@ mod tests {
             .expect("settled");
             asked.then(|| action.app_slot().and_then(|slot| slot.dir.clone()))
         };
-        let asking = [
-            "check",
-            "run",
-            "build",
-            "key new",
-            "key show",
-            "key balance",
-            "key send --to 11111111111111111111111111111111 --all",
-            "key import wallet.json",
-            "secret put API_TOKEN",
-            "secret list",
-            "secret rm API_TOKEN",
-            "server start --cores 1 --region tokyo",
-            "server end",
-            "deploy",
-            "bench",
-            "status",
-            "logs",
-            "api /healthz",
-            "trades",
-            "start",
-            "stop",
-            "restart",
-            "rollback",
-            "releases",
-            "delete",
-            "move --to account",
-            "firewall list",
-            "firewall sync",
-            "firewall allow 203.0.113.7",
-            "firewall deny 203.0.113.7",
-            "backup on",
-            "backup off",
-            "backup status",
-            "backup now",
-        ];
-        for line in asking {
+        for line in ASKING {
             assert_eq!(
                 picked(line, false, true),
                 Some(Some("/picked".into())),
@@ -3057,34 +3143,7 @@ mod tests {
             assert_eq!(picked(line, true, true), None, "{line} --json");
             assert_eq!(picked(line, false, false), None, "{line} off a terminal");
         }
-        let told = [
-            "server start --cores 1 --region tokyo --yes",
-            "server end --yes",
-            "deploy --yes",
-            "start --yes",
-            "stop --yes",
-            "restart --yes",
-            "rollback --yes",
-            "delete --yes",
-            "move --to account --yes",
-            "firewall sync --yes",
-            "firewall allow 203.0.113.7 --yes",
-            "firewall deny 203.0.113.7 --yes",
-            "backup on --yes",
-            "backup off --yes",
-        ];
-        let given = [
-            "deploy hft-bot",
-            "status hft-bot",
-            "check hft-bot",
-            "init",
-            "import",
-            "list",
-            "seal list",
-            "secret lock",
-            "secret unlock",
-        ];
-        for line in told.into_iter().chain(given) {
+        for line in TOLD.into_iter().chain(UNASKED).chain(GIVEN) {
             assert_eq!(picked(line, false, true), None, "{line}");
         }
         // A --dir given is the app: nothing is asked.
@@ -3092,6 +3151,35 @@ mod tests {
         assert_eq!(
             picked("secret put API_TOKEN --dir apps/bot", false, true),
             None
+        );
+    }
+
+    /// `run` asks through what it is handed, only at a terminal erpc draws
+    /// on, and never under `--json`: there, the verb goes on and says there
+    /// is no app here, as it always has.
+    #[tokio::test]
+    async fn run_asks_for_the_app_only_where_a_person_can_answer() {
+        fn asked(_: &mut Option<std::path::PathBuf>) -> Result<(), super::CliError> {
+            Err(super::CliError::new(super::Code::Failed, "asked"))
+        }
+        let asking = |tty| super::Asking { tty, pick: asked };
+        let check = || worker_action("erpc worker check");
+        let was_asked =
+            |outcome: &Outcome| matches!(outcome, Outcome::Error(e) if e.message == "asked");
+        crate::cli::ui::force_drawn(true);
+        assert!(was_asked(&super::run(false, check(), asking(true)).await));
+        assert!(
+            !was_asked(&super::run(true, check(), asking(true)).await),
+            "--json"
+        );
+        assert!(
+            !was_asked(&super::run(false, check(), asking(false)).await),
+            "no terminal"
+        );
+        crate::cli::ui::force_drawn(false);
+        assert!(
+            !was_asked(&super::run(false, check(), asking(true)).await),
+            "TERM=dumb"
         );
     }
 
