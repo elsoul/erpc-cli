@@ -320,6 +320,22 @@ impl Account {
         list_body(status, body)
     }
 
+    /// The price quote, or why there is none: the HTTP status and the
+    /// service's allowlisted error code, a timeout or a failed request.
+    async fn read_quote(&self) -> Result<Zeroizing<String>, Outcome> {
+        let token = self.access.access_token().await.map_err(|_| sign_in())?;
+        quote_reply(
+            self.client
+                .get_with_token_bounded(
+                    Audience::AuthApi,
+                    SECURITY_CHECK_QUOTE_URL,
+                    &token,
+                    QUOTE_LIMITS,
+                )
+                .await,
+        )
+    }
+
     async fn eligible(&self) -> Result<Vec<EligibleServer>, Outcome> {
         let body = self
             .read_list(SECURITY_CHECK_SERVERS_URL, INVENTORY_LIMITS)
@@ -347,6 +363,24 @@ impl Account {
                 _ => refused(),
             })?;
         Ok((status, Zeroizing::new(body)))
+    }
+}
+
+/// The quote's body, or what the operator is told instead.
+fn quote_reply(reply: Result<(u16, String), HttpError>) -> Result<Zeroizing<String>, Outcome> {
+    use billing::QuoteFailure as Failure;
+    let (status, body) = reply.map_err(|error| match error {
+        HttpError::ResponseLimit { status: 401, .. } => sign_in(),
+        HttpError::ResponseLimit { status, .. } => Failure::Oversized(status).outcome(),
+        HttpError::Timeout { .. } => Failure::Timeout.outcome(),
+        HttpError::Malformed { .. } => Failure::Unreadable.outcome(),
+        _ => Failure::Transport.outcome(),
+    })?;
+    let body = Zeroizing::new(body);
+    match status {
+        200 => Ok(body),
+        401 => Err(sign_in()),
+        _ => Err(Failure::refused(status, &body).outcome()),
     }
 }
 
@@ -677,14 +711,9 @@ async fn menu(
         &server,
         ask_confirmation,
         || async {
-            let unavailable = || Outcome::Failed(t!("node_check.quote_unavailable"));
-            tokio::time::timeout(
-                std::time::Duration::from_secs(45),
-                account.read_list(SECURITY_CHECK_QUOTE_URL, QUOTE_LIMITS),
-            )
-            .await
-            .map_err(|_| unavailable())?
-            .map_err(|_| unavailable())
+            tokio::time::timeout(std::time::Duration::from_secs(45), account.read_quote())
+                .await
+                .map_err(|_| billing::QuoteFailure::Timeout.outcome())?
         },
         async |rental| account.select_rental(rental).await,
         async |verified| collect_selected(verified, explicit_key).await,
@@ -1056,6 +1085,55 @@ mod tests {
             )
             .await;
             assert!(matches!(result, Err(Outcome::Failed(_))));
+        }
+    }
+
+    #[test]
+    fn each_quote_reply_maps_to_its_reason() {
+        use crate::account::commands::Outcome;
+        use erpc_auth::HttpError;
+
+        let host = "user-api.erpc.global";
+        let reason = |reply: Result<(u16, String), HttpError>| match super::quote_reply(reply) {
+            Ok(body) => format!("ok {}", body.as_str()),
+            Err(Outcome::NoSession(_)) => "sign in".to_owned(),
+            Err(Outcome::Failed(text)) => text.rsplit('\n').next().unwrap_or_default().to_owned(),
+            Err(_) => "other".to_owned(),
+        };
+        let transport = || HttpError::Transport {
+            host,
+            reason: "private peer detail".to_owned(),
+        };
+        for (reply, expected) in [
+            (Ok((200, "{}".to_owned())), "ok {}"),
+            (Ok((401, String::new())), "sign in"),
+            (
+                Ok((403, r#"{"error":"posture_report_not_funded"}"#.to_owned())),
+                "HTTP 403 (posture_report_not_funded)",
+            ),
+            (
+                Ok((502, "private peer detail".to_owned())),
+                "HTTP 502 (unknown_response)",
+            ),
+            (Err(HttpError::Timeout { host }), "[request_timeout]"),
+            (Err(transport()), "[request_transport]"),
+            (
+                Err(HttpError::Malformed {
+                    host,
+                    reason: "private peer detail".to_owned(),
+                }),
+                "[unreadable_reply]",
+            ),
+            (
+                Err(HttpError::ResponseLimit { host, status: 200 }),
+                "HTTP 200 (response_limit)",
+            ),
+            (
+                Err(HttpError::ResponseLimit { host, status: 401 }),
+                "sign in",
+            ),
+        ] {
+            assert_eq!(reason(reply), expected);
         }
     }
 

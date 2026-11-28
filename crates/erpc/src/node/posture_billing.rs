@@ -284,7 +284,7 @@ impl SettlementState {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
-enum FailureCode {
+pub(super) enum FailureCode {
     AccessUnavailable,
     RequestTimeout,
     RequestTransport,
@@ -313,6 +313,81 @@ pub(super) struct ReportFailure {
     http_status: Option<u16>,
 }
 
+/// The service's error code for `status`, if the body is exactly one
+/// allowlisted code for that status; otherwise `UnknownResponse`. Nothing
+/// else from the body is kept.
+fn service_code(status: u16, body: &str) -> FailureCode {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct ErrorBody {
+        error: FailureCode,
+    }
+    use FailureCode as Code;
+    if body.len() > REPORT_LIMITS.other_bytes {
+        return Code::UnknownResponse;
+    }
+    serde_json::from_str::<ErrorBody>(body).map_or(Code::UnknownResponse, |reply| {
+        match (status, reply.error) {
+            (400, code @ Code::InvalidPostureReport)
+            | (
+                403,
+                code @ (Code::PostureReportDenied
+                | Code::PostureReportConsentRequired
+                | Code::PostureReportNotFunded),
+            )
+            | (404, code @ (Code::NotFound | Code::SecurityCheckTargetUnavailable))
+            | (
+                409,
+                code @ (Code::PostureRequestExpired
+                | Code::PostureAlreadyAttempted
+                | Code::PostureReportReconciliationRequired
+                | Code::PostureReportNoActionableCandidates),
+            )
+            | (503, code @ Code::PostureReportUnavailable) => code,
+            _ => Code::UnknownResponse,
+        }
+    })
+}
+
+fn code_name(code: FailureCode) -> String {
+    serde_json::to_value(code)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "unknown_response".to_owned())
+}
+
+/// Why no verified quote is available, under the usual message: a
+/// local reason in brackets, or the HTTP status with the service's code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum QuoteFailure {
+    Timeout,
+    Transport,
+    Unreadable,
+    Oversized(u16),
+    Refused(u16, FailureCode),
+    Unverified,
+    RequestId,
+}
+
+impl QuoteFailure {
+    pub(super) fn refused(status: u16, body: &str) -> Self {
+        Self::Refused(status, service_code(status, body))
+    }
+
+    pub(super) fn outcome(self) -> Outcome {
+        let reason = match self {
+            Self::Timeout => "[request_timeout]".to_owned(),
+            Self::Transport => "[request_transport]".to_owned(),
+            Self::Unreadable => "[unreadable_reply]".to_owned(),
+            Self::Oversized(status) => format!("HTTP {status} (response_limit)"),
+            Self::Refused(status, code) => format!("HTTP {status} ({})", code_name(code)),
+            Self::Unverified => "[quote_not_verified]".to_owned(),
+            Self::RequestId => "[request_id]".to_owned(),
+        };
+        Outcome::Failed(format!("{}\n{reason}", t!("node_check.quote_unavailable")))
+    }
+}
+
 impl ReportFailure {
     const fn local(settlement: SettlementState, code: FailureCode) -> Self {
         Self {
@@ -335,37 +410,8 @@ impl ReportFailure {
     }
 
     pub(super) fn from_response(status: u16, body: &str) -> Self {
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct ErrorBody {
-            error: FailureCode,
-        }
         use FailureCode as Code;
-        let code = if body.len() <= REPORT_LIMITS.other_bytes {
-            serde_json::from_str::<ErrorBody>(body).map_or(Code::UnknownResponse, |reply| {
-                match (status, reply.error) {
-                    (400, code @ Code::InvalidPostureReport)
-                    | (
-                        403,
-                        code @ (Code::PostureReportDenied
-                        | Code::PostureReportConsentRequired
-                        | Code::PostureReportNotFunded),
-                    )
-                    | (404, code @ (Code::NotFound | Code::SecurityCheckTargetUnavailable))
-                    | (
-                        409,
-                        code @ (Code::PostureRequestExpired
-                        | Code::PostureAlreadyAttempted
-                        | Code::PostureReportReconciliationRequired
-                        | Code::PostureReportNoActionableCandidates),
-                    )
-                    | (503, code @ Code::PostureReportUnavailable) => code,
-                    _ => Code::UnknownResponse,
-                }
-            })
-        } else {
-            Code::UnknownResponse
-        };
+        let code = service_code(status, body);
         let settlement = match code {
             Code::PostureReportNoActionableCandidates | Code::PostureReportNotFunded => {
                 SettlementState::NoCharge
@@ -381,8 +427,7 @@ impl ReportFailure {
 
     pub(super) fn message(self, request: &str) -> String {
         let summary = self.settlement.message(request);
-        let code = serde_json::to_value(self.code).unwrap_or_default();
-        let code = code.as_str().unwrap_or("unknown_response");
+        let code = code_name(self.code);
         if let Some(status) = self.http_status {
             format!("{summary}\nHTTP {status} ({code})")
         } else {
@@ -398,14 +443,14 @@ impl ApprovedReport {
         rental: Server,
         confirm: impl FnOnce(String) -> Result<bool, Outcome>,
     ) -> Result<Option<Self>, Outcome> {
-        let unavailable = || Outcome::Failed(t!("node_check.quote_unavailable"));
-        let terms = parse_quote(body).ok_or_else(unavailable)?;
+        let terms = parse_quote(body).ok_or_else(|| QuoteFailure::Unverified.outcome())?;
         if !confirm(quote_prompt(&terms, rental))? {
             return Ok(None);
         }
+        let no_id = || QuoteFailure::RequestId.outcome();
         let mut bytes = [0u8; 16];
-        getrandom::fill(&mut bytes).map_err(|_| unavailable())?;
-        let request_id = uuid_v7(SystemTime::now(), bytes).ok_or_else(unavailable)?;
+        getrandom::fill(&mut bytes).map_err(|_| no_id())?;
+        let request_id = uuid_v7(SystemTime::now(), bytes).ok_or_else(no_id)?;
         Ok(Some(Self {
             request_id,
             rental,
@@ -779,6 +824,86 @@ mod tests {
                     assert!(prompt.contains("90"), "{prompt}");
                 }
             });
+        }
+    }
+
+    #[test]
+    fn a_missing_quote_names_the_status_and_only_an_allowlisted_code() {
+        let shown = |failure: QuoteFailure| match failure.outcome() {
+            Outcome::Failed(text) => text,
+            _ => panic!("a missing quote is a failure"),
+        };
+        for (status, body, reason) in [
+            (
+                403,
+                r#"{"error":"posture_report_not_funded"}"#,
+                "HTTP 403 (posture_report_not_funded)",
+            ),
+            (
+                403,
+                r#"{"error":"posture_report_denied"}"#,
+                "HTTP 403 (posture_report_denied)",
+            ),
+            (404, r#"{"error":"not_found"}"#, "HTTP 404 (not_found)"),
+            (
+                404,
+                r#"{"error":"security_check_target_unavailable"}"#,
+                "HTTP 404 (security_check_target_unavailable)",
+            ),
+            (
+                503,
+                r#"{"error":"posture_report_unavailable"}"#,
+                "HTTP 503 (posture_report_unavailable)",
+            ),
+            // A code for another status, a free-form code, an extra field,
+            // an empty body: only the status is shown.
+            (
+                404,
+                r#"{"error":"posture_report_not_funded"}"#,
+                "HTTP 404 (unknown_response)",
+            ),
+            (
+                403,
+                r#"{"error":"private peer diagnostic"}"#,
+                "HTTP 403 (unknown_response)",
+            ),
+            (
+                403,
+                r#"{"error":"posture_report_not_funded","message":"private peer diagnostic"}"#,
+                "HTTP 403 (unknown_response)",
+            ),
+            (500, "", "HTTP 500 (unknown_response)"),
+        ] {
+            let text = shown(QuoteFailure::refused(status, body));
+            assert!(text.ends_with(&format!("\n{reason}")), "{text}");
+            assert!(!text.contains("private"), "{text}");
+        }
+        for (failure, reason) in [
+            (QuoteFailure::Timeout, "[request_timeout]"),
+            (QuoteFailure::Transport, "[request_transport]"),
+            (QuoteFailure::Unreadable, "[unreadable_reply]"),
+            (QuoteFailure::Oversized(200), "HTTP 200 (response_limit)"),
+            (QuoteFailure::Unverified, "[quote_not_verified]"),
+            (QuoteFailure::RequestId, "[request_id]"),
+        ] {
+            let text = shown(failure);
+            assert!(
+                text.starts_with(&t!("node_check.quote_unavailable")),
+                "{text}"
+            );
+            assert!(text.ends_with(&format!("\n{reason}")), "{text}");
+        }
+        // A quote that does not verify stops before the price is asked.
+        let rental = Server {
+            kind: super::super::Kind::Vps,
+            id: 42,
+        };
+        let refused = ApprovedReport::from_quote(r#"{"model":"fixture-model-a"}"#, rental, |_| {
+            panic!("an unverified quote must not reach the operator")
+        });
+        match refused {
+            Err(Outcome::Failed(text)) => assert!(text.ends_with("\n[quote_not_verified]")),
+            _ => panic!("an unverified quote must fail"),
         }
     }
 
