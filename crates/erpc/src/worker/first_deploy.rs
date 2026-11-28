@@ -48,7 +48,7 @@ use crate::node::common::Say;
 use crate::worker::App;
 use crate::worker::account::{self as kept, Account};
 use crate::worker::deploy::{Picked, Where};
-use crate::worker::server::Region;
+use crate::worker::server::{Region, Size};
 
 fn failed(message: String) -> CliError {
     CliError::new(Code::Failed, message)
@@ -76,8 +76,6 @@ pub(crate) enum First {
 enum Why {
     /// A UDP Forwarding line (or its options) asked for, or `--forget-line`.
     Lines,
-    /// `--plan`.
-    Plan,
 }
 
 /// Which way a deploy goes, from `erpc.toml` and the command line alone.
@@ -118,9 +116,6 @@ fn way(env: Option<&Env>, at: &Where, (json, terminal): (bool, bool)) -> Way {
     if udp_or_forget(at) {
         return Way::Said(Why::Lines);
     }
-    if at.plan.is_some() {
-        return Way::Said(Why::Plan);
-    }
     if json || !terminal {
         return Way::NeedsTerminal;
     }
@@ -141,7 +136,6 @@ fn udp_or_forget(at: &Where) -> bool {
 fn why_said(why: Why) -> String {
     match why {
         Why::Lines => t!("worker_first_deploy.why_lines"),
-        Why::Plan => t!("worker_first_deploy.why_plan"),
     }
 }
 
@@ -219,16 +213,23 @@ pub(crate) trait Reach {
     /// Which server the environment runs on, asked at the terminal, a new
     /// one offered last as `offer` says ([`crate::worker::deploy::pick`]).
     async fn pick(&self, offer: String) -> Result<Picked, CliError>;
-    /// Starts its server in `region` ([`crate::worker::server::for_deploy`]),
-    /// `yes` answering the price, `agreed` run after the yes and before the
-    /// start is sent; what the account then keeps, said.
+    /// Starts its server of `size` in `region`
+    /// ([`crate::worker::server::for_deploy`]), `yes` answering the price,
+    /// `agreed` run after the yes and before the start is sent; what the
+    /// account then keeps, said.
     async fn start(
         &self,
         app: &App,
         m: &Manifest,
-        asked: (Region<'_>, bool),
+        asked: (Region<'_>, bool, Size<'_>),
         agreed: impl FnOnce() -> Result<(), CliError>,
     ) -> Result<String, CliError>;
+    /// The name of `--plan`'s product and the cores it says
+    /// ([`crate::worker::vps::plan_cores`]).
+    async fn plan_cores(&self, plan: &str) -> Result<(String, Option<u16>), CliError>;
+    /// What is free to be rented now, by cores and region
+    /// ([`crate::worker::vps::stock`]).
+    async fn stock(&self) -> Result<Vec<(u16, &'static str)>, CliError>;
 }
 
 /// This machine, its sign-in, the ERPC account and the terminal.
@@ -282,10 +283,20 @@ impl Reach for Live {
         &self,
         app: &App,
         m: &Manifest,
-        (region, yes): (Region<'_>, bool),
+        asked: (Region<'_>, bool, Size<'_>),
         agreed: impl FnOnce() -> Result<(), CliError>,
     ) -> Result<String, CliError> {
-        crate::worker::server::for_deploy(self.signed()?, app, m, (region, yes), agreed).await
+        crate::worker::server::for_deploy(self.signed()?, app, m, asked, agreed).await
+    }
+
+    async fn plan_cores(&self, plan: &str) -> Result<(String, Option<u16>), CliError> {
+        let api = crate::worker::vps::Api::open().await?;
+        crate::worker::vps::plan_cores(&api, plan).await
+    }
+
+    async fn stock(&self) -> Result<Vec<(u16, &'static str)>, CliError> {
+        let api = crate::worker::vps::Api::open().await?;
+        crate::worker::vps::stock(&api).await
     }
 }
 
@@ -361,13 +372,14 @@ async fn new_server(
         crate::worker::deploy_account::deployed_app(&m)?;
     }
     let written = core::cell::Cell::new(false);
-    let started = reach
-        .start(app, &m, (region, yes), || {
+    let agreed = || {
+        if !written.get() {
             keep_in_account(&path, app, &m.name)?;
             written.set(true);
-            Ok(())
-        })
-        .await;
+        }
+        Ok(())
+    };
+    let started = sized_start(reach, app, (&m, at.plan.as_deref()), (region, yes), &agreed).await;
     let text = match started {
         Ok(text) => text,
         // Once erpc.toml keeps it in the account, a stop says the deploy
@@ -421,6 +433,7 @@ async fn resume(
             if !at.lines.is_empty()
                 && !at.new_vps
                 && at.region.is_none()
+                && at.plan.is_none()
                 && !record.servers.is_empty()
                 && record.deployed.is_none() =>
         {
@@ -472,9 +485,175 @@ async fn resume(
     crate::worker::deploy_account::deployed_app(&m)?;
     // Nothing on this command line picked a new server: the price is asked.
     let yes = yes && at.new_vps;
-    let text = reach.start(app, &m, (region, yes), || Ok(())).await?;
+    let text = sized_start(reach, app, (&m, at.plan.as_deref()), (region, yes), &|| {
+        Ok(())
+    })
+    .await?;
     Say { quiet: false }.line(&text);
     Ok(First::Started)
+}
+
+/// The start of the first deploy's server: of the cheapest size, or of
+/// `--plan`'s (`plan`), offered another when it is not free now.
+async fn sized_start(
+    reach: &impl Reach,
+    app: &App,
+    (m, plan): (&Manifest, Option<&str>),
+    (region, yes): (Region<'_>, bool),
+    agreed: &dyn Fn() -> Result<(), CliError>,
+) -> Result<String, CliError> {
+    let Some(plan) = plan else {
+        return reach
+            .start(app, m, (region, yes, Size::Cheapest), agreed)
+            .await;
+    };
+    let (_, cores) = reach.plan_cores(plan).await?;
+    // A name erpc does not read: refused with the sizes the account offers,
+    // once read, before anything is bought.
+    let Some(cores) = cores else {
+        return reach
+            .start(app, m, (region, yes, Size::Unread(plan)), agreed)
+            .await;
+    };
+    let here = match region {
+        Region::Asked(r) | Region::Else(r) => r,
+    };
+    // What is free now; read or not, the start may still find it gone.
+    let free = reach.stock().await.ok();
+    let none_free = || not_free((cores, here), free.as_deref(), app);
+    let near = crate::worker::vps::nearest_region();
+    let (named_free, others) = offered(cores, (here, near), free.as_deref());
+    let say = Say { quiet: false };
+    if named_free {
+        match reach
+            .start(app, m, (region, yes, Size::Cores(cores)), agreed)
+            .await
+        {
+            // Out of stock though listed free: said, then the next.
+            Err(e) if crate::worker::server::out_of_stock(&e) => {
+                say.line(&format!("note: {}", e.message));
+            }
+            done => return done,
+        }
+    }
+    // Never another than named under --yes.
+    if yes {
+        return Err(none_free());
+    }
+    for (c, r) in others {
+        say.line(&t!(
+            "worker_first_deploy.plan_instead",
+            worker = worker_cored(cores),
+            region = here,
+            other = worker_cored(c),
+            other_region = r
+        ));
+        match reach
+            .start(app, m, (Region::Asked(r), false, Size::Cores(c)), agreed)
+            .await
+        {
+            // Declined, or a size the account does not start: the next.
+            Err(e) if matches!(e.code, Code::Declined | Code::Usage) => {}
+            Err(e) if crate::worker::server::out_of_stock(&e) => {
+                say.line(&format!("note: {}", e.message));
+            }
+            done => return done,
+        }
+    }
+    Err(none_free())
+}
+
+/// What is free now, as `free` lists it, each once, fewest cores first.
+fn free_said(free: &[(u16, &'static str)]) -> String {
+    let mut seen: Vec<(u16, &str)> = Vec::new();
+    for f in free {
+        if !seen.contains(f) {
+            seen.push(*f);
+        }
+    }
+    seen.sort_unstable();
+    seen.iter()
+        .map(|(c, r)| {
+            t!(
+                "worker_first_deploy.free_one",
+                worker = worker_cored(*c),
+                region = *r
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The stop of a `--plan` start whose size (`cores` in `here`) is not
+/// free: with what is free now, when it was read.
+fn not_free(
+    (cores, here): (u16, &str),
+    free: Option<&[(u16, &'static str)]>,
+    app: &App,
+) -> CliError {
+    let message = match free {
+        Some(free) => {
+            let listed = free_said(free);
+            t!(
+                "worker_first_deploy.plan_not_free",
+                worker = worker_cored(cores),
+                region = here,
+                free = if listed.is_empty() {
+                    t!("worker_first_deploy.free_none")
+                } else {
+                    listed
+                }
+            )
+        }
+        // What is free was not read: none is said.
+        None => t!(
+            "worker_first_deploy.plan_not_free_unread",
+            worker = worker_cored(cores),
+            region = here
+        ),
+    };
+    failed(message).hint(t!(
+        "worker_first_deploy.plan_not_free_hint",
+        scope = app.scope()
+    ))
+}
+
+/// The ERPC Worker of `cores`, as a person reads it.
+fn worker_cored(cores: u16) -> String {
+    use crate::worker::vps::{Spec, worker};
+    worker(&Spec::sized(Some(cores), None))
+}
+
+/// Whether `cores` in `here` is free now, by `free` (not read: taken to be),
+/// and what to offer in its place, in turn: a bigger size free in `here`,
+/// fewest cores first, then the same size in another region, `near` (this
+/// machine's) and those nearest it first.
+fn offered<'a>(
+    cores: u16,
+    (here, near): (&'a str, &'static str),
+    free: Option<&[(u16, &'static str)]>,
+) -> (bool, Vec<(u16, &'a str)>) {
+    let Some(free) = free else {
+        return (true, Vec::new());
+    };
+    let has = |c: u16, r: &str| free.contains(&(c, r));
+    let mut bigger: Vec<u16> = free
+        .iter()
+        .filter(|(c, r)| *c > cores && *r == here)
+        .map(|(c, _)| *c)
+        .collect();
+    bigger.sort_unstable();
+    bigger.dedup();
+    let mut others: Vec<(u16, &'a str)> = bigger.into_iter().map(|c| (c, here)).collect();
+    let mut regions = vec![near];
+    regions.extend(crate::worker::vps::regions_by_nearness(near));
+    others.extend(
+        regions
+            .into_iter()
+            .filter(|r| *r != here && has(cores, r))
+            .map(|r| (cores, r)),
+    );
+    (has(cores, here), others)
 }
 
 /// The deploy's options once its server was started here ([`First::Started`],
@@ -487,6 +666,7 @@ async fn resume(
 pub(crate) fn after_started(at: &mut Where) -> Vec<(LineKind, Option<String>)> {
     at.new_vps = false;
     at.region = None;
+    at.plan = None;
     std::mem::take(&mut at.lines)
 }
 
@@ -549,6 +729,17 @@ mod tests {
         went_through_before: bool,
         calls: RefCell<Vec<&'static str>>,
         sent: RefCell<Vec<Sent>>,
+        /// The cores `--plan`'s name says.
+        plan_cores: Option<u16>,
+        /// What the stock read lists free; none: it is not answered.
+        free: Option<Vec<(u16, &'static str)>>,
+        /// Each start in turn is refused as out of stock, before its
+        /// question, when `true`.
+        out_of_stock: RefCell<Vec<bool>>,
+        /// Each start's question is answered so, in turn (then yes).
+        answers_yes: RefCell<Vec<bool>>,
+        /// The size and region of each start, in turn.
+        sizes: RefCell<Vec<(Option<u16>, String)>>,
     }
 
     impl Fake {
@@ -564,6 +755,11 @@ mod tests {
                 went_through_before: false,
                 calls: RefCell::new(Vec::new()),
                 sent: RefCell::new(Vec::new()),
+                plan_cores: None,
+                free: None,
+                out_of_stock: RefCell::new(Vec::new()),
+                answers_yes: RefCell::new(Vec::new()),
+                sizes: RefCell::new(Vec::new()),
             }
         }
 
@@ -607,13 +803,28 @@ mod tests {
             &self,
             _: &App,
             _: &Manifest,
-            (region, yes): (Region<'_>, bool),
+            (region, yes, size): (Region<'_>, bool, Size<'_>),
             agreed: impl FnOnce() -> Result<(), CliError>,
         ) -> Result<String, CliError> {
             self.calls.borrow_mut().push("start");
             let region = match region {
                 Region::Asked(r) | Region::Else(r) => r.to_owned(),
             };
+            self.sizes
+                .borrow_mut()
+                .push((size_of(size), region.clone()));
+            if size == Size::Cores(16) {
+                return Err(CliError::new(Code::Usage, "not offered".to_owned()));
+            }
+            if let Size::Unread(plan) = size {
+                return Err(CliError::new(
+                    Code::Usage,
+                    format!("{plan} gives no size; offered: 1 vCPU, 2 vCPU"),
+                ));
+            }
+            if !self.answers_yes.borrow().is_empty() && !self.answers_yes.borrow_mut().remove(0) {
+                return Err(CliError::new(Code::Declined, "declined".to_owned()));
+            }
             if self.went_through_before {
                 return Ok("The environment's record names a server now.".to_owned());
             }
@@ -624,6 +835,11 @@ mod tests {
                 ));
             }
             agreed()?;
+            // The account answers out of stock after the yes, as it does.
+            if !self.out_of_stock.borrow().is_empty() && self.out_of_stock.borrow_mut().remove(0) {
+                return Err(CliError::new(Code::Failed, "nothing free".to_owned())
+                    .details(serde_json::json!({ "accountCode": "OUT_OF_STOCK" })));
+            }
             self.sent
                 .borrow_mut()
                 .push((self.kept_there(), region, yes));
@@ -631,6 +847,28 @@ mod tests {
                 return Err(CliError::new(Code::Failed, "no answer".to_owned()));
             }
             Ok("Started a new server for environment prod.".to_owned())
+        }
+
+        async fn plan_cores(&self, plan: &str) -> Result<(String, Option<u16>), CliError> {
+            self.calls.borrow_mut().push("plan");
+            Ok((plan.to_owned(), self.plan_cores))
+        }
+
+        async fn stock(&self) -> Result<Vec<(u16, &'static str)>, CliError> {
+            self.calls.borrow_mut().push("stock");
+            self.free
+                .clone()
+                .ok_or_else(|| CliError::new(Code::Network, "no answer".to_owned()))
+        }
+    }
+
+    /// A size as the stand-in records it: its cores, none for the
+    /// cheapest, 0 for a plan read as none.
+    fn size_of(size: Size<'_>) -> Option<u16> {
+        match size {
+            Size::Cheapest => None,
+            Size::Cores(c) => Some(c),
+            Size::Unread(_) => Some(0),
         }
     }
 
@@ -672,6 +910,226 @@ mod tests {
             "erpc.toml said account = true as the start was sent"
         );
         assert!(fake.kept_there());
+    }
+
+    fn planned(region: &str) -> Where {
+        Where {
+            plan: Some("prod_vps_2".to_owned()),
+            ..new_server_at(Some(region))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_plan_is_started_at_its_size_when_it_is_free() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let mut fake = Fake::new(&dir, TOML);
+        fake.plan_cores = Some(2);
+        fake.free = Some(vec![(2, "amsterdam"), (4, "amsterdam")]);
+        let first = go(&fake, &planned("amsterdam"), false, (false, true))
+            .await
+            .expect("started");
+        assert_eq!(first, First::Started);
+        assert_eq!(*fake.sizes.borrow(), [(Some(2), "amsterdam".to_owned())]);
+        assert!(fake.kept_there());
+        // The stock not read: the size named is started all the same.
+        let mut fake = Fake::new(&dir, TOML);
+        fake.plan_cores = Some(2);
+        go(&fake, &planned("amsterdam"), false, (false, true))
+            .await
+            .expect("started");
+        assert_eq!(*fake.sizes.borrow(), [(Some(2), "amsterdam".to_owned())]);
+        // A name that gives no size: refused with the sizes offered, the
+        // start asked for none.
+        let mut fake = Fake::new(&dir, TOML);
+        fake.plan_cores = None;
+        let e = go(&fake, &planned("amsterdam"), false, (false, true))
+            .await
+            .expect_err("refused");
+        assert_eq!(e.code, Code::Usage);
+        assert_eq!(*fake.sizes.borrow(), [(Some(0), "amsterdam".to_owned())]);
+        assert!(!fake.kept_there());
+    }
+
+    #[tokio::test]
+    async fn a_plan_not_free_is_offered_another_in_turn_each_asked() {
+        // The size named has no room: a bigger one there, then the same
+        // elsewhere, each asked; a no goes on to the next.
+        let dir = tempfile::tempdir().expect("a directory");
+        let mut fake = Fake::new(&dir, TOML);
+        fake.plan_cores = Some(2);
+        fake.free = Some(vec![(4, "amsterdam"), (2, "london")]);
+        *fake.answers_yes.borrow_mut() = vec![false, true];
+        let _ = crate::node::common::heard::take_printed();
+        let first = go(&fake, &planned("amsterdam"), false, (false, true))
+            .await
+            .expect("started");
+        assert_eq!(first, First::Started);
+        assert_eq!(
+            *fake.sizes.borrow(),
+            [
+                (Some(4), "amsterdam".to_owned()),
+                (Some(2), "london".to_owned())
+            ]
+        );
+        let printed = crate::node::common::heard::take_printed().join("\n");
+        assert!(
+            printed.contains("ERPC Worker (2 vCPU) in amsterdam, the size --plan names, is not free now; offered in its place: ERPC Worker (4 vCPU) in amsterdam."),
+            "{printed}"
+        );
+        // A yes to the size named, out of stock at the start, then a no to
+        // what is offered: erpc.toml keeps the environment in the account
+        // since the yes, and the stop says the deploy goes on from there.
+        let mut fake = Fake::new(&dir, TOML);
+        fake.plan_cores = Some(2);
+        fake.free = Some(vec![(2, "amsterdam"), (4, "amsterdam")]);
+        *fake.out_of_stock.borrow_mut() = vec![true];
+        *fake.answers_yes.borrow_mut() = vec![true, false];
+        let e = go(&fake, &planned("amsterdam"), false, (false, true))
+            .await
+            .expect_err("stopped");
+        assert!(fake.kept_there());
+        assert!(
+            e.hint
+                .as_deref()
+                .is_some_and(|h| h.contains("goes on from where this stopped")),
+            "{e:?}"
+        );
+        // Each declined: stopped, nothing started, what is free said.
+        let mut fake = Fake::new(&dir, TOML);
+        fake.plan_cores = Some(2);
+        fake.free = Some(vec![(4, "amsterdam")]);
+        *fake.answers_yes.borrow_mut() = vec![false];
+        let e = go(&fake, &planned("amsterdam"), false, (false, true))
+            .await
+            .expect_err("stopped");
+        assert!(
+            e.message
+                .contains("free now: ERPC Worker (4 vCPU) in amsterdam"),
+            "{}",
+            e.message
+        );
+        assert!(!fake.kept_there());
+        // An alternative the account does not start: the next asked.
+        let mut fake = Fake::new(&dir, TOML);
+        fake.plan_cores = Some(2);
+        fake.free = Some(vec![(16, "amsterdam"), (2, "london")]);
+        go(&fake, &planned("amsterdam"), false, (false, true))
+            .await
+            .expect("started");
+        assert_eq!(
+            *fake.sizes.borrow(),
+            [
+                (Some(16), "amsterdam".to_owned()),
+                (Some(2), "london".to_owned())
+            ]
+        );
+        // An alternative out of stock at the start: the next asked.
+        let mut fake = Fake::new(&dir, TOML);
+        fake.plan_cores = Some(2);
+        fake.free = Some(vec![(4, "amsterdam"), (2, "london")]);
+        *fake.out_of_stock.borrow_mut() = vec![true];
+        go(&fake, &planned("amsterdam"), false, (false, true))
+            .await
+            .expect("started");
+        assert_eq!(
+            *fake.sizes.borrow(),
+            [
+                (Some(4), "amsterdam".to_owned()),
+                (Some(2), "london".to_owned())
+            ]
+        );
+        // Out of stock at the start, though listed free: the next asked.
+        let mut fake = Fake::new(&dir, TOML);
+        fake.plan_cores = Some(2);
+        fake.free = Some(vec![(2, "amsterdam"), (2, "london")]);
+        *fake.out_of_stock.borrow_mut() = vec![true];
+        go(&fake, &planned("amsterdam"), false, (false, true))
+            .await
+            .expect("started");
+        assert_eq!(
+            *fake.sizes.borrow(),
+            [
+                (Some(2), "amsterdam".to_owned()),
+                (Some(2), "london".to_owned())
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn under_yes_a_plan_takes_only_the_size_named() {
+        // Not free: stopped, what is free said, nothing started.
+        let dir = tempfile::tempdir().expect("a directory");
+        let mut fake = Fake::new(&dir, TOML);
+        fake.plan_cores = Some(2);
+        fake.free = Some(vec![(4, "amsterdam"), (2, "london")]);
+        let e = go(&fake, &planned("amsterdam"), true, (false, true))
+            .await
+            .expect_err("stopped");
+        assert!(
+            e.message.contains(
+                "ERPC Worker (2 vCPU) in amsterdam, the size --plan names, is not free now"
+            ) && e.message.contains("ERPC Worker (2 vCPU) in london")
+                && e.message.contains("ERPC Worker (4 vCPU) in amsterdam"),
+            "{}",
+            e.message
+        );
+        assert!(fake.sizes.borrow().is_empty());
+        assert!(!fake.kept_there());
+        // Free, then out of stock at the start: stopped, nothing else.
+        let mut fake = Fake::new(&dir, TOML);
+        fake.plan_cores = Some(2);
+        fake.free = Some(vec![(2, "amsterdam"), (2, "london")]);
+        *fake.out_of_stock.borrow_mut() = vec![true];
+        let e = go(&fake, &planned("amsterdam"), true, (false, true))
+            .await
+            .expect_err("stopped");
+        assert!(e.message.contains("is not free now"), "{}", e.message);
+        assert_eq!(*fake.sizes.borrow(), [(Some(2), "amsterdam".to_owned())]);
+        // What is free not read, then out of stock: nothing said free.
+        let mut fake = Fake::new(&dir, TOML);
+        fake.plan_cores = Some(2);
+        *fake.out_of_stock.borrow_mut() = vec![true];
+        let e = go(&fake, &planned("amsterdam"), true, (false, true))
+            .await
+            .expect_err("stopped");
+        assert!(
+            e.message.contains("what is free could not be read")
+                && !e.message.contains("free now:"),
+            "{}",
+            e.message
+        );
+    }
+
+    #[test]
+    fn what_is_offered_in_place_of_a_plan_goes_bigger_there_then_nearest_first() {
+        let free = [
+            (8, "amsterdam"),
+            (4, "amsterdam"),
+            (2, "tokyo"),
+            (2, "frankfurt"),
+            (2, "london"),
+            (1, "amsterdam"),
+        ];
+        let (named, others) = offered(2, ("amsterdam", "amsterdam"), Some(&free));
+        assert!(!named);
+        assert_eq!(
+            others,
+            [
+                (4, "amsterdam"),
+                (8, "amsterdam"),
+                (2, "london"),
+                (2, "frankfurt"),
+                (2, "tokyo")
+            ]
+        );
+        // This machine's region first, when it is not the one asked.
+        let (_, others) = offered(2, ("amsterdam", "tokyo"), Some(&free));
+        assert_eq!(others[2], (2, "tokyo"));
+        let (named, others) = offered(2, ("london", "amsterdam"), Some(&free));
+        assert!(named);
+        assert!(!others.contains(&(2, "london")));
+        // Not read: the size named is taken to be free.
+        assert_eq!(offered(2, ("london", "london"), None), (true, Vec::new()));
     }
 
     #[tokio::test]
@@ -1003,6 +1461,15 @@ mod tests {
             .await
             .expect("as before");
         assert_eq!(first, First::AsBefore);
+        // With --plan too: as before, refused by the deploy that follows.
+        let grpc_plan = Where {
+            plan: Some("prod_vps_2".to_owned()),
+            ..grpc.clone()
+        };
+        let first = go(&fake, &grpc_plan, true, (false, true))
+            .await
+            .expect("as before");
+        assert_eq!(first, First::AsBefore);
     }
 
     fn empty_record() -> EnvDetail {
@@ -1164,11 +1631,10 @@ mod tests {
             plan: Some("vps-1".to_owned()),
             ..new()
         };
-        assert_eq!(way(None, &plan, at_terminal), Way::Said(Why::Plan));
-        // Each is said in words of its own.
-        let said: Vec<String> = [Why::Lines, Why::Plan].into_iter().map(why_said).collect();
-        assert!(said[0].contains("UDP Forwarding line"), "{}", said[0]);
-        assert!(said[1].contains("--plan"), "{}", said[1]);
+        // --plan goes the account way, at a terminal only.
+        assert_eq!(way(None, &plan, at_terminal), Way::New { asked: true });
+        assert_eq!(way(None, &plan, (true, false)), Way::NeedsTerminal);
+        assert!(why_said(Why::Lines).contains("UDP Forwarding line"));
     }
 
     #[test]

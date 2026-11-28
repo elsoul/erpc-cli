@@ -101,8 +101,9 @@ directory.
   key goes in and password logins go off. A new server for an environment erpc.toml has
   nothing for yet is started in the ERPC account instead, which makes the app an ERPC Worker
   there (an app with a `[wallet]` too, and a `--grpc`, `--shreds` or `--unlimited` line, started
-  there at its catalogue price, asked), unless the deploy has `--inline` or `--vault`, or, for
-  now, `--plan` or `--udp`; its first login is asked at a terminal only, so from `run_command` that deploy
+  there at its catalogue price, asked, and `--plan`, started at the size its name says, another
+  size or region offered and asked when that is not free), unless the deploy has `--inline` or
+  `--vault`, or, for now, `--udp`; its first login is asked at a terminal only, so from `run_command` that deploy
   is refused before anything is bought. Hand the user `erpc worker deploy <app>` to run at a
   terminal for that, or add `--inline` to keep the environment in erpc.toml as before.
 - **A start with no outcome:** when a deploy says a start "may or may not have gone

@@ -398,15 +398,18 @@ pub(crate) enum Action {
         /// Start a new hourly ERPC Worker for it (its price is shown first).
         /// For an environment erpc.toml has nothing for yet, it is started in
         /// the ERPC account, which keeps the environment from then on, and
-        /// needs a terminal, an app with a wallet or a data line too, which
-        /// is started there; --inline or --vault keep the environment out of
-        /// the account, and so do --plan and --udp, for now.
+        /// needs a terminal, an app with a wallet, --plan or a data line too,
+        /// which is started there; --inline or --vault keep the environment
+        /// out of the account, and so does --udp, for now.
         #[arg(long = "new-server", alias = "new-vps", conflicts_with_all = ["host", "server"])]
         new_vps: bool,
         /// The region of a new ERPC Worker (default: nearest by this machine's time zone).
         #[arg(long, value_name = "REGION")]
         region: Option<String>,
-        /// The hourly plan of a new ERPC Worker, by product id (default: the cheapest).
+        /// The hourly plan of a new ERPC Worker, by product id (default: the
+        /// cheapest). Started in the ERPC account at the size its name says;
+        /// when that is not free now, another size or region is offered,
+        /// each asked, never under --yes.
         #[arg(long, value_name = "PRODUCT_ID")]
         plan: Option<String>,
         /// Start an hourly gRPC line that lets in the server, and set

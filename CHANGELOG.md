@@ -265,8 +265,17 @@ whose version has no entry below.
   `--new-server` asks for a new server in that account. `--host`,
   `--server`, a server of the account picked at the terminal, `--inline`,
   `--vault` and an environment with anything in `erpc.toml` go as before;
-  so does a deploy that asks for a UDP Forwarding line, `--forget-line` or
-  `--plan`, with a note on stderr saying why. A gRPC, Shreds or Unlimited
+  so does a deploy that asks for a UDP Forwarding line or `--forget-line`,
+  with a note on stderr saying why. `--plan` is started in the account at
+  the size its product's name says (a name that gives none is refused with
+  the sizes the account starts, before anything is bought); when that size
+  has no room now (by user-api's stock read, or an `OUT_OF_STOCK` answer),
+  a bigger size there, then the same size in another region, nearest
+  first, are offered in turn at a terminal, each asked; under `--yes` only
+  the size named is started, and otherwise it stops saying what is free.
+  A start the account answers `OUT_OF_STOCK` now carries
+  `{"accountCode": "OUT_OF_STOCK"}` in its error's details under `--json`
+  (`erpc worker server start` too). A gRPC, Shreds or Unlimited
   RPC line asked on the first deploy is started in the account for the
   environment once its server is logged in to, at the hourly catalogue's
   price for its plan, asked at the terminal (`--yes` says it), under a key

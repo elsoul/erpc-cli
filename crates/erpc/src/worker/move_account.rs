@@ -1892,7 +1892,7 @@ mod tests {
                         "worker_move.loses_deploy",
                         &[
                             "deploy no longer takes --host",
-                            "and --new-server and --region only while the account's record names no server, address, line or deploy for it",
+                            "and --new-server, --region and --plan only while the account's record names no server, address, line or deploy for it",
                             "it takes --grpc, --shreds or --unlimited only before its first deploy there",
                             "its server cannot be chosen, no line can be taken off the record, nor added once it is deployed to",
                             "a deploy cannot bring it back into erpc.toml or 1Password",

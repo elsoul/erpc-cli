@@ -280,6 +280,10 @@ pub(crate) struct Asked<'a> {
     /// The cores asked for; `None`: those of the start kept here when it is
     /// sent again, else the cheapest size the account offers.
     pub(crate) cores: Option<u16>,
+    /// The `--plan` asked for, when its product's name gives no size erpc
+    /// reads: the start is refused with the sizes the account offers, once
+    /// they are read, before anything is bought.
+    pub(crate) unread: Option<&'a str>,
     /// The region.
     pub(crate) region: Region<'a>,
     /// `--yes`.
@@ -290,6 +294,18 @@ pub(crate) struct Asked<'a> {
     pub(crate) terminal: bool,
     /// The command that starts it.
     pub(crate) by: By,
+}
+
+/// The size a first deploy's start asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Size<'a> {
+    /// The cheapest the account offers.
+    Cheapest,
+    /// These cores (`--plan`'s, read from its product's name, or another
+    /// size offered for it).
+    Cores(u16),
+    /// `--plan`, whose product's name gives no size erpc reads.
+    Unread(&'a str),
 }
 
 /// The region of a start.
@@ -351,7 +367,12 @@ fn size_said(price: &ServerPrice) -> String {
 /// The size asked for, from `prices` (`None`: the cheapest): refused when
 /// the account prices it in a currency erpc does not show, starts none, or
 /// does not offer it.
-fn priced(prices: &ServerPrices, env: &str, cores: Option<u16>) -> Result<ServerPrice, CliError> {
+fn priced(
+    prices: &ServerPrices,
+    env: &str,
+    cores: Option<u16>,
+    unread: Option<&str>,
+) -> Result<ServerPrice, CliError> {
     if prices.currency != "eur" {
         return Err(failed(t!(
             "worker_server.currency",
@@ -360,6 +381,18 @@ fn priced(prices: &ServerPrices, env: &str, cores: Option<u16>) -> Result<Server
     }
     if prices.options.is_empty() {
         return Err(failed(t!("worker_server.no_sizes", env)));
+    }
+    // `--plan`, whose name gives no size: refused with the sizes offered.
+    if let Some(plan) = unread {
+        let offered: Vec<String> = prices.options.iter().map(size_said).collect();
+        return Err(CliError::new(
+            Code::Usage,
+            t!(
+                "worker_server.plan_unread",
+                plan = crate::storage::clean(plan),
+                offered = offered.join(", ")
+            ),
+        ));
     }
     let found = match cores {
         Some(cores) => prices.options.iter().find(|o| o.cores == cores),
@@ -557,7 +590,20 @@ fn refused(e: &WorkerError, then: After, name: &str, app: &App, fate: &KeyFate) 
         error.hint = hint.or(error.hint);
     }
     error.message = format!("{}\n{}", error.message, fate.said());
+    // What a first deploy offers another size or region for: in the
+    // details, as the account's code.
+    if code_is(e, &AccountCode::OutOfStock) {
+        error.details = Some(json!({ "accountCode": "OUT_OF_STOCK" }));
+    }
     error
+}
+
+/// Whether `e`, a start's stop, is the account's answer that nothing of
+/// the size is free in the region now ([`refused`] marks it).
+pub(crate) fn out_of_stock(e: &CliError) -> bool {
+    e.details
+        .as_ref()
+        .is_some_and(|d| d["accountCode"] == "OUT_OF_STOCK")
 }
 
 /// The refusal of a start while one of the environment's is open; `kept`
@@ -1003,6 +1049,7 @@ pub(crate) async fn run_with(
         &prices,
         env,
         again.as_ref().map(|a| a.cores).or(asked.cores),
+        asked.unread.filter(|_| again.is_none()),
     )?;
     let region = match (&again, asked.region) {
         (Some(again), _) => again.region.as_str(),
@@ -1095,6 +1142,7 @@ async fn run(
     let store = crate::account::session::beside_config(FILE).map_err(failed)?;
     let asked = Asked {
         cores: Some(cores),
+        unread: None,
         region: Region::Asked(region),
         yes,
         json,
@@ -1128,12 +1176,18 @@ pub(crate) async fn for_deploy(
     signed: &kept::Signed,
     app: &App,
     m: &erpc_worker::manifest::Manifest,
-    (region, yes): (Region<'_>, bool),
+    (region, yes, size): (Region<'_>, bool, Size<'_>),
     agreed: impl FnOnce() -> Result<(), CliError>,
 ) -> Result<String, CliError> {
     let store = crate::account::session::beside_config(FILE).map_err(failed)?;
+    let (cores, unread) = match size {
+        Size::Cheapest => (None, None),
+        Size::Cores(cores) => (Some(cores), None),
+        Size::Unread(plan) => (None, Some(plan)),
+    };
     let asked = Asked {
-        cores: None,
+        cores,
+        unread,
         region,
         yes,
         json: false,
@@ -1515,6 +1569,7 @@ mod tests {
     fn asked(cores: u16, yes: bool, json: bool, terminal: bool) -> Asked<'static> {
         Asked {
             cores: Some(cores),
+            unread: None,
             region: Region::Asked("amsterdam"),
             by: By::ServerStart,
             yes,
@@ -1557,6 +1612,7 @@ mod tests {
     fn by_deploy(region: Region<'static>, yes: bool) -> Asked<'static> {
         Asked {
             cores: None,
+            unread: None,
             region,
             yes,
             json: false,
@@ -2367,6 +2423,43 @@ mod tests {
             assert_eq!(fake.sent.borrow()[0].0, NEW_KEY);
             assert_eq!(fake.kept(), None);
         }
+    }
+
+    #[tokio::test]
+    async fn a_plan_whose_name_gives_no_size_is_refused_with_the_sizes_offered() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let fake = Fake::new(&dir);
+        let unread = Asked {
+            cores: None,
+            unread: Some("prod_vps_x"),
+            ..asked(1, true, false, true)
+        };
+        let (out, question) = go(&fake, &unread, &MAKING, true).await;
+        let e = out.expect_err("refused");
+        assert_eq!(e.code, Code::Usage);
+        assert!(
+            e.message
+                .contains("the name of plan prod_vps_x gives no size")
+                && e.message
+                    .contains("ERPC Worker (1 vCPU, 2 GB memory), €0.07 an hour"),
+            "{}",
+            e.message
+        );
+        assert!(question.is_none());
+        assert_eq!(fake.starts(), 0);
+    }
+
+    #[tokio::test]
+    async fn an_out_of_stock_answer_is_marked_for_the_first_deploy() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let mut fake = Fake::new(&dir);
+        fake.answer = Answer::Refused(409, "OUT_OF_STOCK", Value::Null);
+        let (out, _) = go(&fake, &asked(1, true, false, true), &MAKING, true).await;
+        let e = out.expect_err("refused");
+        assert!(super::out_of_stock(&e), "{e:?}");
+        fake.answer = Answer::Refused(402, "insufficient_credit", Value::Null);
+        let (out, _) = go(&fake, &asked(1, true, false, true), &MAKING, true).await;
+        assert!(!super::out_of_stock(&out.expect_err("refused")));
     }
 
     #[tokio::test]

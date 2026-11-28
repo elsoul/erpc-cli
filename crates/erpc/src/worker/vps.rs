@@ -1601,6 +1601,125 @@ pub(crate) async fn line_plan(
     })
 }
 
+/// The name of the hourly ERPC Worker plan `id` (a `--plan`), and the
+/// cores it says in the known form ([`Spec::of_title`]); none when it does
+/// not. Refused when the hourly catalogue does not offer the plan.
+pub(crate) async fn plan_cores(api: &Api, id: &str) -> Result<(String, Option<u16>), CliError> {
+    let chosen = plan(api, "vps", Some(id)).await?;
+    let cores = Spec::of_title(&chosen.name).cores;
+    Ok((chosen.name, cores))
+}
+
+/// What is free to be rented now of the standard ERPC Worker, as
+/// user-api's stock read lists it, every page: each box's cores and region.
+/// A box of another type is left out; a row whose type, cores (digits) or
+/// region erpc does not read, or a list that does not end within
+/// [`STOCK_PAGES`] pages, makes the whole read unread: an error, never a
+/// shorter list. It is free now, not held: a start may still find it gone.
+pub(crate) async fn stock(api: &Api) -> Result<Vec<(u16, &'static str)>, CliError> {
+    let unread = || CliError::new(Code::Network, t!("worker_first_deploy.stock_unread"));
+    let mut free = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..STOCK_PAGES {
+        let url = match &cursor {
+            Some(c) => format!("{}?cursor={c}", account::Server::Vps.stock_url()),
+            None => account::Server::Vps.stock_url().to_owned(),
+        };
+        let reply = api.read(&url).await?;
+        free.extend(stock_rows(&reply).ok_or_else(unread)?);
+        if reply.get("hasMore").and_then(Value::as_bool) != Some(true) {
+            return Ok(free);
+        }
+        cursor = match reply.get("nextCursor") {
+            Some(Value::String(c))
+                if !c.is_empty()
+                    && c.chars()
+                        .all(|ch| ch.is_ascii_alphanumeric() || "-_.~".contains(ch)) =>
+            {
+                Some(c.clone())
+            }
+            Some(Value::Number(n)) => Some(n.to_string()),
+            _ => return Err(unread()),
+        };
+    }
+    Err(unread())
+}
+
+/// The most pages of the stock read [`stock`] reads.
+const STOCK_PAGES: u32 = 10;
+
+/// [`stock`]'s rows of one page, `reply`: none when a row is not one erpc
+/// reads.
+pub(crate) fn stock_rows(reply: &Value) -> Option<Vec<(u16, &'static str)>> {
+    let rows = reply
+        .get("message")
+        .or_else(|| reply.get("data"))
+        .and_then(Value::as_array)?;
+    let mut free = Vec::new();
+    for row in rows {
+        let kind = row["vpsType"].as_str()?;
+        let cores = match &row["cpu"] {
+            Value::String(s)
+                if (1..=3).contains(&s.len()) && s.chars().all(|c| c.is_ascii_digit()) =>
+            {
+                s.parse::<u16>().ok()
+            }
+            Value::Number(n) => n.as_u64().and_then(|n| u16::try_from(n).ok()),
+            _ => None,
+        }
+        .filter(|cores| *cores > 0)?;
+        let region = row["region"].as_str()?;
+        let region = REGIONS.into_iter().find(|r| *r == region)?;
+        if kind == "standard" {
+            free.push((cores, region));
+        }
+    }
+    Some(free)
+}
+
+/// Where each region's city is, in degrees of latitude and longitude.
+const REGION_PLACES: [(&str, f64, f64); 7] = [
+    ("amsterdam", 52.37, 4.90),
+    ("frankfurt", 50.11, 8.68),
+    ("london", 51.51, -0.13),
+    ("ny", 40.71, -74.01),
+    ("tokyo", 35.68, 139.69),
+    ("singapore", 1.35, 103.82),
+    ("sydney", -33.87, 151.21),
+];
+
+/// The regions other than `from`, nearest it first, by the great-circle
+/// distance between their cities.
+pub(crate) fn regions_by_nearness(from: &str) -> Vec<&'static str> {
+    let place = |r: &str| {
+        REGION_PLACES
+            .iter()
+            .find(|(n, ..)| *n == r)
+            .map(|(_, a, b)| (*a, *b))
+    };
+    let Some(here) = place(from) else {
+        return REGIONS.into_iter().filter(|r| *r != from).collect();
+    };
+    let apart = |(la1, lo1): (f64, f64), (la2, lo2): (f64, f64)| {
+        let (la1, lo1, la2, lo2) = (
+            la1.to_radians(),
+            lo1.to_radians(),
+            la2.to_radians(),
+            lo2.to_radians(),
+        );
+        let h = ((la2 - la1) / 2.0).sin().powi(2)
+            + la1.cos() * la2.cos() * ((lo2 - lo1) / 2.0).sin().powi(2);
+        2.0 * h.sqrt().asin()
+    };
+    let mut others: Vec<&'static str> = REGIONS.into_iter().filter(|r| *r != from).collect();
+    others.sort_by(|a, b| {
+        let da = place(a).map_or(f64::MAX, |p| apart(here, p));
+        let db = place(b).map_or(f64::MAX, |p| apart(here, p));
+        da.total_cmp(&db)
+    });
+    others
+}
+
 /// The name of product `id`, as user-api gives it.
 async fn product_name(api: &Api, id: &str) -> Option<String> {
     let url = account::product_url(id).ok()?;
@@ -5694,6 +5813,60 @@ mod tests {
         "🛰\u{fe0f} SLV VPS - 1 vCPU AMD EPYC4G x 4 GB DDR5 - 960 GB SSD NVMe4 x 2 + 100 GB HDD",
         "SLV VPS - 8 vCPU AMD EPYC 9654 x 32 GB DDR5 - 100 GB NVMe",
     ];
+
+    #[test]
+    fn the_stock_read_gives_standard_boxes_by_cores_and_region_or_is_unread() {
+        use super::stock_rows;
+        let reply = json!({ "message": [
+            { "cpu": "2", "ram": "4096", "disk": "10G", "region": "amsterdam", "vpsType": "standard" },
+            { "cpu": 4, "region": "tokyo", "vpsType": "standard" },
+            { "cpu": "2", "region": "amsterdam", "vpsType": "super" },
+            { "cpu": "2", "region": "amsterdam" },
+            { "cpu": "two", "region": "amsterdam", "vpsType": "standard" },
+            { "cpu": "0", "region": "amsterdam", "vpsType": "standard" },
+            { "cpu": "1000", "region": "amsterdam", "vpsType": "standard" },
+            { "cpu": "2", "region": "mars", "vpsType": "standard" },
+            { "cpu": "2", "vpsType": "standard" }
+        ]});
+        // A row erpc does not read: the whole page is unread.
+        assert_eq!(stock_rows(&reply), None);
+        let reply = json!({ "message": [
+            { "cpu": "2", "ram": "4096", "disk": "10G", "region": "amsterdam", "vpsType": "standard" },
+            { "cpu": 4, "region": "tokyo", "vpsType": "standard" },
+            { "cpu": "2", "region": "amsterdam", "vpsType": "super" }
+        ]});
+        assert_eq!(
+            stock_rows(&reply),
+            Some(vec![(2, "amsterdam"), (4, "tokyo")])
+        );
+        for odd in [
+            json!({ "cpu": "2", "region": "amsterdam" }),
+            json!({ "cpu": "two", "region": "amsterdam", "vpsType": "standard" }),
+            json!({ "cpu": "0", "region": "amsterdam", "vpsType": "standard" }),
+            json!({ "cpu": "1000", "region": "amsterdam", "vpsType": "standard" }),
+            json!({ "cpu": "2", "region": "mars", "vpsType": "standard" }),
+            json!({ "cpu": "2", "vpsType": "standard" }),
+        ] {
+            assert_eq!(stock_rows(&json!({ "message": [odd] })), None, "{odd}");
+        }
+        assert_eq!(stock_rows(&json!({ "message": [] })), Some(Vec::new()));
+        assert_eq!(stock_rows(&json!({})), None);
+    }
+
+    #[test]
+    fn regions_are_ordered_by_how_near_they_are() {
+        use super::{REGIONS, regions_by_nearness};
+        assert_eq!(
+            regions_by_nearness("amsterdam"),
+            ["london", "frankfurt", "ny", "tokyo", "singapore", "sydney"]
+        );
+        assert_eq!(regions_by_nearness("sydney")[0], "singapore");
+        for r in REGIONS {
+            let others = regions_by_nearness(r);
+            assert_eq!(others.len(), REGIONS.len() - 1);
+            assert!(!others.contains(&r));
+        }
+    }
 
     #[test]
     fn every_name_the_reviews_tried_gives_only_what_it_says() {

@@ -1547,7 +1547,9 @@ encrypted by restic. A storage plan is needed (`erpc storage buy 5`).
       terminal (`--yes` says it on stderr instead). On a yes, `erpc.toml`
       gets `account = true` for the environment, and only then is the start
       sent, under a key kept on this machine. A no leaves `erpc.toml` as it
-      was.
+      was; once a yes wrote `account = true`, it stays, whatever follows
+      (another size or region declined, a line not started), and `erpc
+      worker deploy` goes on from there.
     - Then the deploy goes on as one to an environment kept there: it waits
       for the server, logs in to it once after a yes at the terminal (**The
       first login** below), asks whether to trust what the account then
@@ -1578,7 +1580,8 @@ encrypted by restic. A storage plan is needed (`erpc storage buy 5`).
       a gRPC or Shreds line lets the server's address in, an Unlimited RPC
       is started in the server's region. Its price is the hourly catalogue's
       for the plan, asked at the terminal (`--yes` says it on stderr
-      instead); the account's line start takes no price, and the line is
+      instead, on a run again of a deploy that stopped too); the account's
+      line start takes no price, and the line is
       charged its own. The start's key is kept on this machine
       (`worker_line_starts.json`, beside erpc's config) before it is sent.
       A run again buys no second line: a line of the kind on the record is
@@ -1595,8 +1598,26 @@ encrypted by restic. A storage plan is needed (`erpc storage buy 5`).
       for `--host`, `--server`, a server of the account picked at the
       terminal, `--inline` and `--vault`. It goes as before too, with a
       note on stderr saying why, for a deploy that asks for a UDP Forwarding
-      line (`--udp` and its options) or `--forget-line`, or `--plan`, which
-      a deploy there does not take yet.
+      line (`--udp` and its options) or `--forget-line`, which a deploy
+      there does not take yet.
+    - `--plan` names the hourly plan by its product id: its size is read
+      from the product's name, in the known form (**ERPC Worker** above),
+      and started in the account. A name that gives no size is refused,
+      once the account's records are made (free), with the sizes the
+      account starts, before anything is bought. Before the start, erpc
+      reads what is free now (user-api's stock read of the standard ERPC
+      Worker: a box free now, not held; when that read fails, the size named
+      is started all the same). When the size named has no room in
+      the region, at a terminal erpc offers in its place, each with its own
+      question and price: a bigger size there, fewest cores first, then the
+      same size in another region, this machine's nearest and those nearest
+      it first (by the distance between the regions' cities); a no, or a
+      size the account does not start, goes on to the next, and when none
+      is left, it stops, saying what is free.
+      A start the account answers out of stock (`OUT_OF_STOCK`), though
+      listed free, is offered the next the same way. Under `--yes`, only
+      the size named is started: not free, or out of stock, it stops and
+      says what is free now, nothing bought.
     - An app whose `erpc.toml` names a wallet goes the account way too: its
       record is made with the wallet's public side (`pubkey`, and where its
       key is kept, as `erpc worker move` makes it; without a `pubkey`, with
@@ -1795,12 +1816,12 @@ encrypted by restic. A storage plan is needed (`erpc storage buy 5`).
         not check its ports and lists, which are in the account.
     - **Deploy.**
       - It no longer takes `--host`, `--user`, `--port`, `--fingerprint`,
-        `--server`, `--plan`, `--udp`, `--udp-port`, `--udp-region`,
+        `--server`, `--udp`, `--udp-port`, `--udp-region`,
         `--udp-any-source`, `--forget-line`, `--vault` or `--inline`. It
         takes `--grpc`, `--shreds` or `--unlimited` only before its first
         deploy there (the record names no deploy yet), when the line is
         started in the account, its price asked, as on a first deploy; and
-        `--new-server` and `--region` only while the account's record names
+        `--new-server`, `--region` and `--plan` only while the account's record names
         no server, address, line or deploy for it (as after `server end` of
         a server moved in, with no deploy since), when it starts a server as
         the first deploy does. Its server cannot be chosen, no line taken off
