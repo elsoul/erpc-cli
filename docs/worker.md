@@ -967,9 +967,14 @@ app: the apps erpc knows on this machine (`erpc worker list`) whose
 then goes on with the app picked as if its directory had been given with
 `--dir`, and the commands its hints name carry that `--dir`. Esc ends it
 with nothing done. When erpc knows no app on this machine, or none it can
-read, it says so, and the hint starts with `erpc worker init`. Under
-`--json`, or with no terminal (a script, a pipe), nothing is asked: the
-command fails with `there is no erpc.toml in … or above it`, as before.
+read, it says so, and the hint starts with `erpc worker init`; when the list
+of apps (`workers.toml`) cannot be read, the error is that file's. The app is
+asked for before the command checks its own options, so a value it refuses
+(`erpc worker backup on --at 25:99`) is said after the pick. Nothing is
+asked, and the command fails with `there is no erpc.toml in … or above it`
+as before, under `--yes` (a key typed ahead must not choose what a command
+that goes ahead without asking acts on), under `--json`, with no terminal (a
+script, a pipe), and with `TERM=dumb`.
 
 At a terminal, results and failures are drawn with a mark on each line (✅
 done, ⚠️ to heed, 💡 a hint, 👉 the commands to run next) and progress with

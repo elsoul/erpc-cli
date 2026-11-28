@@ -1040,20 +1040,29 @@ fn parse_chain(name: &str) -> Result<Chain, String> {
     })
 }
 
+/// Where the app a verb acts on goes when it was not named, and whether
+/// the verb was given `--yes`.
+struct AppSlot<'a> {
+    /// Its `--dir`: what was given, or none.
+    dir: &'a mut Option<PathBuf>,
+    /// `--yes`: go ahead without asking.
+    yes: bool,
+}
+
 impl Action {
     /// Where the app this verb acts on goes when it was not named: its
-    /// `--dir` ([`Dir::unnamed`]). `None` for a verb about no one app, and
-    /// for an app given by name. Every verb is listed, so that a new one
-    /// says which it is.
-    fn app_dir(&mut self) -> Option<&mut Option<PathBuf>> {
-        match self {
+    /// `--dir` ([`Dir::unnamed`]), and whether the verb was given `--yes`.
+    /// `None` for a verb about no one app, and for an app given by name.
+    /// Every verb is listed, so that a new one says which it is.
+    fn app_slot(&mut self) -> Option<AppSlot<'_>> {
+        let (dir, yes) = match self {
             Self::Init { .. }
             | Self::Import { .. }
             | Self::Seal { .. }
             | Self::List { .. }
             | Self::Secret {
                 action: SecretAction::Unlock | SecretAction::Lock,
-            } => None,
+            } => return None,
             Self::Check { dir, .. }
             | Self::Run { dir, .. }
             | Self::Build { dir }
@@ -1066,43 +1075,47 @@ impl Action {
             }
             | Self::Secret {
                 action: SecretAction::List { dir },
-            } => dir.unnamed(),
+            } => (dir.unnamed(), false),
             Self::Key {
                 action: KeyAction::Import { dir, .. },
             }
             | Self::Secret {
                 action: SecretAction::Put { dir, .. } | SecretAction::Rm { dir, .. },
-            } => Some(&mut dir.dir),
-            Self::Api { app, .. }
-            | Self::Firewall {
-                action: FirewallAction::Allow { app, .. } | FirewallAction::Deny { app, .. },
-            } => Some(&mut app.dir.dir),
-            Self::Deploy { app, .. }
-            | Self::Bench { app, .. }
+            } => (Some(&mut dir.dir), false),
+            Self::Api { app, .. } => (Some(&mut app.dir.dir), false),
+            Self::Firewall {
+                action:
+                    FirewallAction::Allow { app, yes, .. } | FirewallAction::Deny { app, yes, .. },
+            } => (Some(&mut app.dir.dir), *yes),
+            Self::Bench { app, .. }
             | Self::Status { app }
             | Self::Logs { app, .. }
             | Self::Trades { app, .. }
-            | Self::Start { app, .. }
-            | Self::Stop { app, .. }
-            | Self::Restart { app, .. }
-            | Self::Rollback { app, .. }
             | Self::Releases { app }
-            | Self::Delete { app, .. }
-            | Self::Move { app, .. }
-            | Self::Server {
-                action: ServerAction::Start { app, .. } | ServerAction::End { app, .. },
-            }
             | Self::Firewall {
-                action: FirewallAction::List { app } | FirewallAction::Sync { app, .. },
+                action: FirewallAction::List { app },
             }
             | Self::Backup {
-                action:
-                    BackupAction::On { app, .. }
-                    | BackupAction::Off { app, .. }
-                    | BackupAction::Status { app }
-                    | BackupAction::Now { app },
-            } => app.dir.unnamed(),
-        }
+                action: BackupAction::Status { app } | BackupAction::Now { app },
+            } => (app.dir.unnamed(), false),
+            Self::Deploy { app, yes, .. }
+            | Self::Start { app, yes }
+            | Self::Stop { app, yes, .. }
+            | Self::Restart { app, yes }
+            | Self::Rollback { app, yes, .. }
+            | Self::Delete { app, yes, .. }
+            | Self::Move { app, yes, .. }
+            | Self::Server {
+                action: ServerAction::Start { app, yes, .. } | ServerAction::End { app, yes },
+            }
+            | Self::Firewall {
+                action: FirewallAction::Sync { app, yes },
+            }
+            | Self::Backup {
+                action: BackupAction::On { app, yes, .. } | BackupAction::Off { app, yes },
+            } => (app.dir.unnamed(), *yes),
+        };
+        dir.map(|dir| AppSlot { dir, yes })
     }
 }
 
@@ -1111,9 +1124,8 @@ impl Action {
 pub(crate) async fn run(json: bool, mut action: Action) -> Outcome {
     // No app named and none here: at a terminal, the person picks one of
     // the apps this machine knows, and the verb goes on with its directory.
-    if let Some(dir) = action.app_dir()
-        && let Err(e) = pick_app(json, dir)
-    {
+    let terminal = at_a_terminal(crate::account::session::has_terminal());
+    if let Err(e) = settle_app(&mut action, json, terminal, pick_here) {
         return e.into();
     }
     match action {
@@ -1594,41 +1606,59 @@ fn locate(dir: &Dir) -> Result<PathBuf, CliError> {
     })
 }
 
-/// Whether a verb given no app asks which one: at a terminal, and not
-/// under `--json`, whose reader is a program.
-const fn asks_for_app(json: bool, terminal: bool) -> bool {
-    !json && terminal
+/// Whether a verb given no app asks which one: at a terminal erpc draws on
+/// ([`at_a_terminal`]), not under `--json`, whose reader is a program, and
+/// not under `--yes`, which goes ahead without asking: a key typed ahead
+/// must not choose what such a verb acts on.
+const fn asks_for_app(json: bool, yes: bool, terminal: bool) -> bool {
+    !json && !yes && terminal
 }
 
-/// When no app was given (`dir` is empty: no name, no `--dir`) and there
-/// is no erpc.toml in the current directory or above it: at a terminal,
-/// the app the person picks of those this machine knows (`erpc worker
-/// list`), its directory put in `dir`, so that the verb and its hints go
-/// on with it as with `--dir`. Anywhere else nothing changes, and the
-/// verb says there is no app here, as it always has.
-fn pick_app(json: bool, dir: &mut Option<PathBuf>) -> Result<(), CliError> {
+/// Whether a person at `tty` (stdin and stderr terminals) can be shown
+/// the picker: erpc draws on that terminal, so not with `TERM=dumb`.
+fn at_a_terminal(tty: bool) -> bool {
+    tty && crate::cli::ui::stderr_drawn()
+}
+
+/// No app named, no `--dir`, and no erpc.toml here ([`pick_app_with`]):
+/// when the verb asks ([`asks_for_app`]), the app picked through `pick`,
+/// its directory put in the verb's `--dir`, so that the verb and its hints
+/// go on with it as with `--dir`. Otherwise nothing changes, and the verb
+/// says there is no app here, as it always has.
+fn settle_app(
+    action: &mut Action,
+    json: bool,
+    terminal: bool,
+    pick: impl FnOnce(&mut Option<PathBuf>) -> Result<(), CliError>,
+) -> Result<(), CliError> {
+    match action.app_slot() {
+        Some(slot) if slot.dir.is_none() && asks_for_app(json, slot.yes, terminal) => {
+            pick(slot.dir)
+        }
+        _ => Ok(()),
+    }
+}
+
+/// [`pick_app_with`] here: the current directory, the apps this machine
+/// knows (`erpc worker list`), the question at the terminal.
+fn pick_here(dir: &mut Option<PathBuf>) -> Result<(), CliError> {
     pick_app_with(
         dir,
-        asks_for_app(json, crate::account::session::has_terminal()),
         || std::env::current_dir().ok(),
         || index_path().and_then(|p| Index::load(&p).map_err(|e| CliError::new(Code::Failed, e))),
         |question, options| prompt::pick(question, options, None),
     )
 }
 
-/// [`pick_app`], asking only when `asks`, with the current directory from
-/// `here`, the apps this machine knows from `index`, and the question put
-/// through `pick`.
+/// For a verb given no app: when there is no erpc.toml at or above the
+/// current directory (`here`), the app picked through `pick` of those
+/// `index` has, its directory put in `dir`.
 fn pick_app_with(
     dir: &mut Option<PathBuf>,
-    asks: bool,
     here: impl FnOnce() -> Option<PathBuf>,
     index: impl FnOnce() -> Result<Index, CliError>,
     pick: impl FnOnce(&str, &[String]) -> Result<usize, String>,
 ) -> Result<(), CliError> {
-    if dir.is_some() || !asks {
-        return Ok(());
-    }
     // A current directory that cannot be read is said by the lookup.
     let Some(here) = here() else {
         return Ok(());
@@ -2926,13 +2956,143 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// Asked only at a terminal, and never under `--json`.
+    /// Asked only at a terminal erpc draws on, never under `--json` or
+    /// `--yes`.
     #[test]
     fn a_verb_given_no_app_asks_only_a_person_at_a_terminal() {
-        assert!(super::asks_for_app(false, true));
-        assert!(!super::asks_for_app(true, true));
-        assert!(!super::asks_for_app(false, false));
-        assert!(!super::asks_for_app(true, false));
+        assert!(super::asks_for_app(false, false, true));
+        for (json, yes, terminal) in [
+            (true, false, true),
+            (false, true, true),
+            (true, true, true),
+            (false, false, false),
+            (true, false, false),
+            (false, true, false),
+            (true, true, false),
+        ] {
+            assert!(
+                !super::asks_for_app(json, yes, terminal),
+                "json {json}, yes {yes}, terminal {terminal}"
+            );
+        }
+        // A terminal erpc does not draw on (TERM=dumb) is not one to ask at.
+        crate::cli::ui::force_drawn(false);
+        assert!(!super::at_a_terminal(true));
+        crate::cli::ui::force_drawn(true);
+        assert!(super::at_a_terminal(true));
+        assert!(!super::at_a_terminal(false));
+        crate::cli::ui::force_drawn(false);
+    }
+
+    /// A worker command line, parsed.
+    fn worker_action(line: &str) -> super::Action {
+        match <crate::Cli as clap::Parser>::try_parse_from(line.split_whitespace())
+            .unwrap_or_else(|e| panic!("{line}: {e}"))
+            .command
+        {
+            Some(crate::Command::Worker { action }) => *action,
+            _ => panic!("not a worker command: {line}"),
+        }
+    }
+
+    /// Every verb that takes an app asks for it when it was not named, and
+    /// goes on with the directory picked in its `--dir`. A verb given the
+    /// app, one about no app, and one given `--yes`, run under `--json` or
+    /// with no terminal ask nothing.
+    #[test]
+    fn each_verb_that_takes_an_app_asks_for_it_unless_told_to_go_ahead() {
+        let picked = |line: &str, json: bool, terminal: bool| {
+            let mut action = worker_action(&format!("erpc worker {line}"));
+            let mut asked = false;
+            super::settle_app(&mut action, json, terminal, |dir| {
+                asked = true;
+                *dir = Some("/picked".into());
+                Ok(())
+            })
+            .expect("settled");
+            asked.then(|| action.app_slot().and_then(|slot| slot.dir.clone()))
+        };
+        let asking = [
+            "check",
+            "run",
+            "build",
+            "key new",
+            "key show",
+            "key balance",
+            "key send --to 11111111111111111111111111111111 --all",
+            "key import wallet.json",
+            "secret put API_TOKEN",
+            "secret list",
+            "secret rm API_TOKEN",
+            "server start --cores 1 --region tokyo",
+            "server end",
+            "deploy",
+            "bench",
+            "status",
+            "logs",
+            "api /healthz",
+            "trades",
+            "start",
+            "stop",
+            "restart",
+            "rollback",
+            "releases",
+            "delete",
+            "move --to account",
+            "firewall list",
+            "firewall sync",
+            "firewall allow 203.0.113.7",
+            "firewall deny 203.0.113.7",
+            "backup on",
+            "backup off",
+            "backup status",
+            "backup now",
+        ];
+        for line in asking {
+            assert_eq!(
+                picked(line, false, true),
+                Some(Some("/picked".into())),
+                "{line}"
+            );
+            assert_eq!(picked(line, true, true), None, "{line} --json");
+            assert_eq!(picked(line, false, false), None, "{line} off a terminal");
+        }
+        let told = [
+            "server start --cores 1 --region tokyo --yes",
+            "server end --yes",
+            "deploy --yes",
+            "start --yes",
+            "stop --yes",
+            "restart --yes",
+            "rollback --yes",
+            "delete --yes",
+            "move --to account --yes",
+            "firewall sync --yes",
+            "firewall allow 203.0.113.7 --yes",
+            "firewall deny 203.0.113.7 --yes",
+            "backup on --yes",
+            "backup off --yes",
+        ];
+        let given = [
+            "deploy hft-bot",
+            "status hft-bot",
+            "check hft-bot",
+            "init",
+            "import",
+            "list",
+            "seal list",
+            "secret lock",
+            "secret unlock",
+        ];
+        for line in told.into_iter().chain(given) {
+            assert_eq!(picked(line, false, true), None, "{line}");
+        }
+        // A --dir given is the app: nothing is asked.
+        assert_eq!(picked("deploy --dir somewhere", false, true), None);
+        assert_eq!(
+            picked("secret put API_TOKEN --dir apps/bot", false, true),
+            None
+        );
     }
 
     /// Apps for the picker's tests: two with a name, one whose directory
@@ -2995,7 +3155,6 @@ mod tests {
         let mut asked = None;
         super::pick_app_with(
             &mut dir,
-            true,
             || Some(here.clone()),
             || Ok(k.index.clone()),
             |question, options| {
@@ -3031,58 +3190,25 @@ mod tests {
         );
     }
 
-    /// An app named, a `--dir`, an erpc.toml at or above the current
-    /// directory, or no one to answer: nothing is asked or read, and the
+    /// An erpc.toml at or above the current directory, or a current
+    /// directory that cannot be read: nothing is asked or read, and the
     /// verb finds its app (or says there is none) as it always has.
     #[test]
-    fn nothing_is_asked_when_the_app_is_given_or_found_or_no_one_can_answer() {
+    fn nothing_is_asked_when_the_app_is_given_or_found_here() {
         let k = known();
         let unread = || -> Result<erpc_worker::index::Index, super::CliError> {
             panic!("the list of apps was read")
         };
         let unasked =
             |_: &str, _: &[String]| -> Result<usize, String> { panic!("the person was asked") };
-        let elsewhere = k.root.path().join("elsewhere");
-        let given = std::path::PathBuf::from("somewhere");
-        let mut dir = Some(given.clone());
-        super::pick_app_with(&mut dir, true, || Some(elsewhere.clone()), unread, unasked)
-            .expect("nothing to do");
-        assert_eq!(dir, Some(given));
         let mut dir = None;
-        super::pick_app_with(&mut dir, false, || Some(elsewhere.clone()), unread, unasked)
-            .expect("nothing to do");
-        assert_eq!(dir, None);
         let inside = k.bot.join("src");
         std::fs::create_dir_all(&inside).expect("src");
-        super::pick_app_with(&mut dir, true, || Some(inside.clone()), unread, unasked)
+        super::pick_app_with(&mut dir, || Some(inside.clone()), unread, unasked)
             .expect("nothing to do");
         assert_eq!(dir, None);
-        super::pick_app_with(&mut dir, true, || None, unread, unasked).expect("nothing to do");
+        super::pick_app_with(&mut dir, || None, unread, unasked).expect("nothing to do");
         assert_eq!(dir, None);
-        // An app given by name leaves nothing to pick; one given by --dir
-        // only, or by a verb that takes --dir alone, does when it is empty.
-        let action = |line: &str| match <crate::Cli as clap::Parser>::try_parse_from(
-            line.split_whitespace(),
-        )
-        .expect("parsed")
-        .command
-        {
-            Some(crate::Command::Worker { action }) => *action,
-            _ => panic!("not a worker command"),
-        };
-        assert!(action("erpc worker deploy hft-bot").app_dir().is_none());
-        assert!(action("erpc worker init").app_dir().is_none());
-        assert!(action("erpc worker secret lock").app_dir().is_none());
-        assert_eq!(action("erpc worker deploy").app_dir(), Some(&mut None));
-        assert_eq!(action("erpc worker build").app_dir(), Some(&mut None));
-        assert_eq!(
-            action("erpc worker secret put API_TOKEN --dir apps/bot").app_dir(),
-            Some(&mut Some(std::path::PathBuf::from("apps/bot")))
-        );
-        assert_eq!(
-            action("erpc worker firewall allow 203.0.113.7").app_dir(),
-            Some(&mut None)
-        );
     }
 
     /// With no app to pick, that is said plainly, with `erpc worker init`
@@ -3142,7 +3268,6 @@ mod tests {
         let mut dir = None;
         let e = super::pick_app_with(
             &mut dir,
-            true,
             || Some(here.clone()),
             || Ok(k.index.clone()),
             |_, _| Err("nothing was chosen".to_owned()),
