@@ -999,14 +999,16 @@ free before their own question:
 
 - `server start` makes the app's and the environment's records in the ERPC
   account when they are missing (they cost nothing);
-- `deploy` looks at the Rust toolchain in the app's directory: it runs
-  `rustc` there (and `rustup`, to cross-build). Which `rustc` that is comes
-  from `RUSTC` or `CARGO_BUILD_RUSTC` when one is set, else from
-  `RUSTUP_TOOLCHAIN` or the app's `rust-toolchain.toml` (a `path` toolchain
-  included), and rustup can install the toolchain the file names;
+- `deploy` looks at the Rust toolchain in the app's directory, unless the
+  app ships a `build.prebuilt` binary (which is not built) or cargo is not
+  installed: it runs `rustc` there (and `rustup`, to cross-build). Which
+  `rustc` that is comes from `RUSTC` or `CARGO_BUILD_RUSTC` when one is
+  set, else from `RUSTUP_TOOLCHAIN` or the app's `rust-toolchain.toml` (a
+  `path` toolchain included), and rustup can install the toolchain the file
+  names;
 - `server end`, run again after a stop, may first finish clearing the
-  address of a server whose end was already said yes to, before it asks
-  anything new.
+  address of a server whose end was already said yes to, and then asks
+  nothing more in that run.
 
 At a terminal, results and failures are drawn with a mark on each line (✅
 done, ⚠️ to heed, 💡 a hint, 👉 the commands to run next) and progress with

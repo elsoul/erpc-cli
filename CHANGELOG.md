@@ -237,21 +237,23 @@ whose version has no entry below.
   erpc knows on this machine to act on, each shown by its name and
   directory, and goes on with the one picked as with `--dir`. When erpc
   knows no app on this machine, it says so and points to `erpc worker init`
-  first. It asks for a command that only reads, or that asks before it buys,
-  ends, deletes, sends or changes anything. The app is picked first; then
-  three of those do something free before their own question: `server start`
-  makes the app's and the environment's records in the ERPC account when
-  they are missing (they cost nothing); `deploy` runs `rustc` (and `rustup`,
-  to cross-build) in the app's directory, the `rustc` that `RUSTC` or
+  first. It asks nothing, and fails as before, under `--yes`, for a command
+  that changes something or runs the app's code without asking (`run`,
+  `build`, `key new`, `key import`, `secret put --generate` or
+  `--from-account`, `secret rm`, `api` with a method other than GET, `backup
+  now`), under `--json`, with no terminal or with `TERM=dumb`. It asks for a
+  command that only reads, or that asks before it buys, ends, deletes, sends
+  or changes anything. The app is picked first; then three of those do
+  something free before their own question: `server start` makes the app's
+  and the environment's records in the ERPC account when they are missing
+  (they cost nothing); `deploy`, unless the app ships a `build.prebuilt`
+  binary or cargo is not installed, runs `rustc` (and `rustup`, to
+  cross-build) in the app's directory, the `rustc` that `RUSTC` or
   `CARGO_BUILD_RUSTC` names, else the one `RUSTUP_TOOLCHAIN` or the app's
   `rust-toolchain.toml` (a `path` toolchain included) picks, and rustup can
   install the toolchain the file names; and `server end`, run again after a
   stop, may first finish clearing the address of a server whose end was
-  already said yes to. Under `--yes`, for a command that changes something
-  or runs the app's code without asking (`run`, `build`, `key new`, `key
-  import`, `secret put --generate` or `--from-account`, `secret rm`, `api`
-  with a method other than GET, `backup now`), under `--json`, with no
-  terminal or with `TERM=dumb` it asks nothing and fails as before.
+  already said yes to, and then asks nothing more in that run.
 - At a terminal, the steps of `erpc worker build` and `erpc worker deploy`
   that can take minutes (the build, the wait for a new server to be ready,
   the wait for a server kept in the ERPC account to be ready for its first

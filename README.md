@@ -339,12 +339,12 @@ erpc worker status               # running? which release? what it costs per hou
 
 Run them in the app's directory, or name the app (`erpc worker status hft-bot`);
 at a terminal, one run where there is no app asks which of the apps on this
-machine you mean. It asks for a command that only reads, or that asks before it
-buys, ends, deletes, sends or changes anything (three of those do something free
+machine you mean. It asks nothing under `--yes` or `--json`, with `TERM=dumb`,
+or for a command that changes something without asking, such as `build`, `run`
+or `secret rm`. It asks for a command that only reads, or that asks before it
+buys, ends, deletes, sends or changes anything; three of those do something free
 between the pick and their own question, which [the
-guide](docs/worker.md#running-it) names); not under `--yes` or `--json`, not
-with `TERM=dumb`, and not for a command that changes something without asking,
-such as `build`, `run` or `secret rm`.
+guide](docs/worker.md#running-it) names.
 
 `erpc worker` compiles your app to a native Linux binary and runs it on a
 latest-generation ERPC server, or a server of your own. No Docker and no runtime

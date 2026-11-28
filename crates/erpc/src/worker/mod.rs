@@ -1065,9 +1065,10 @@ impl Action {
     /// change anything. After the pick, three do something free before
     /// their own question: `server start` (the account's records of the
     /// app and environment, made when missing), `deploy` (`rustc`, and
-    /// `rustup` to cross-build, in the app's directory) and `server end`
-    /// run again after a stop (it finishes clearing the address of an end
-    /// already said yes to).
+    /// `rustup` to cross-build, in the app's directory, for an app it
+    /// builds) and `server end` run again after a stop (it may finish
+    /// clearing the address of an end already said yes to, and then asks
+    /// nothing more).
     fn app_slot(&mut self) -> Option<AppSlot<'_>> {
         let (dir, goes_ahead) = match self {
             Self::Init { .. }
@@ -3042,7 +3043,9 @@ mod tests {
     }
 
     /// The verbs that ask for the app: they read, or ask before they buy,
-    /// end, delete, send or change anything.
+    /// end, delete, send or change anything; three of them (server start,
+    /// deploy, server end run again) do something free after the pick and
+    /// before their own question ([`super::Action::app_slot`]).
     const ASKING: [&str; 30] = [
         "check",
         "key show",
@@ -3123,11 +3126,12 @@ mod tests {
     ];
 
     /// Every verb that takes an app and only reads, or asks before it buys,
-    /// ends, deletes, sends or changes anything, asks for the app when it
-    /// was not named, and goes on with the directory picked in its `--dir`. A verb given the app,
-    /// one about no app, one given `--yes`, one that changes something or
-    /// runs the app's code without asking, and any run under `--json` or
-    /// with no terminal ask nothing.
+    /// ends, deletes, sends or changes anything (three of them after a free
+    /// step: [`super::Action::app_slot`]), asks for the app when it was not
+    /// named, and goes on with the directory picked in its `--dir`. A verb
+    /// given the app, one about no app, one given `--yes`, one that changes
+    /// something or runs the app's code without asking, and any run under
+    /// `--json` or with no terminal ask nothing.
     #[test]
     fn each_verb_that_takes_an_app_asks_for_it_unless_told_to_go_ahead() {
         let picked = |line: &str, json: bool, terminal: bool| {

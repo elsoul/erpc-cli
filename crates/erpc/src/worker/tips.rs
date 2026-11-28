@@ -438,7 +438,8 @@ mod tests {
 
     /// At a terminal: the line is the spinner's while the step runs, and
     /// said once it ends; two steps at once share one spinner, which goes
-    /// with the last.
+    /// with the last; a line said meanwhile is printed with the spinner
+    /// taken down and the board held.
     #[test]
     fn at_a_terminal_a_step_is_the_spinners_line_and_said_when_it_ends() {
         let _one = ONE_AT_A_TIME
@@ -468,8 +469,11 @@ mod tests {
         wait.again(&say, "waiting for server 1, again".to_owned());
         assert!(heard::take_printed().is_empty(), "a round is not a line");
         // A line said meanwhile is printed with the spinner taken down,
-        // and the spinner is put up again.
-        above(|| {});
+        // while this thread holds the board, and the spinner is put up
+        // again.
+        let mut held = false;
+        above(|| held = HOLDING.with(std::cell::Cell::get));
+        assert!(held, "printed with the board held");
         assert_eq!(session(), Some((first, 2)));
         Say { quiet: false }.line("said meanwhile");
         assert_eq!(heard::take_printed(), ["said meanwhile"]);
@@ -483,10 +487,20 @@ mod tests {
         crate::cli::ui::force_drawn(false);
     }
 
-    /// A line is printed with the board held by the call that prints it,
-    /// spinner up or not, so that none can be put up while it is half out.
+    /// With no spinner up, a line is printed with the board held by the
+    /// call that prints it, so that none can be put up while it is half
+    /// out. (With one up: `at_a_terminal_a_step_is_the_spinners_line_and_said_when_it_ends`.)
+    /// Only the tests that take `ONE_AT_A_TIME` put a spinner up, so with
+    /// it held none is.
     #[test]
     fn a_line_with_no_spinner_up_is_printed_with_the_board_held() {
+        let _one = ONE_AT_A_TIME
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(
+            board().session.as_ref().is_none_or(|s| s.spinner.is_none()),
+            "no spinner up"
+        );
         assert!(!HOLDING.with(std::cell::Cell::get));
         let mut held = false;
         above(|| held = HOLDING.with(std::cell::Cell::get));
