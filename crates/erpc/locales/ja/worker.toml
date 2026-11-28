@@ -21,6 +21,11 @@ unknown_hint = "登録済みのアプリは `erpc worker list` で確認でき�
 unreadable = "{name} は登録されていますが、その erpc.toml を今のままでは読めません：{path}"
 ambiguous = "{name} という名前のアプリが複数あります：{dirs}"
 ambiguous_hint = "どのアプリかを --dir <ディレクトリ> で指定してください"
+which = "どのアプリですか？このディレクトリとその上位のディレクトリに {file} がありません"
+none_known = "{dir} とその上位のディレクトリに {file} がなく、このマシンで erpc に登録されたアプリもまだありません"
+none_known_hint = "`erpc worker init` でアプリを作成するか、お持ちのアプリを `erpc worker import` で取り込んでください"
+none_readable = "{dir} とその上位のディレクトリに {file} がなく、このマシンで erpc に登録されたアプリにも、読める erpc.toml を持つものがありません"
+none_readable_hint = "`erpc worker init` でアプリを作成してください。登録済みのアプリは `erpc worker list` で確認できます"
 
 [manifest]
 fix = "{file} を修正して `erpc worker check{dir_scope}` を実行してください"

@@ -21,6 +21,11 @@ unknown_hint = "`erpc worker list` покажет известные прило�
 unreadable = "erpc знает {name}, но его erpc.toml сейчас не читается: {path}"
 ambiguous = "приложений с именем {name} больше одного: {dirs}"
 ambiguous_hint = "укажите нужное через --dir <каталог>"
+which = "Какое приложение? В этом каталоге и выше нет {file}"
+none_known = "в {dir} и выше нет {file}, и erpc пока не знает ни одного приложения на этой машине"
+none_known_hint = "запустите `erpc worker init`, чтобы создать приложение, или `erpc worker import`, чтобы взять уже имеющееся"
+none_readable = "в {dir} и выше нет {file}, и ни у одного приложения, которое erpc знает на этой машине, erpc.toml не читается"
+none_readable_hint = "запустите `erpc worker init`, чтобы создать приложение; `erpc worker list` покажет приложения, которые знает erpc"
 
 [manifest]
 fix = "исправьте {file} и запустите `erpc worker check{dir_scope}`"
