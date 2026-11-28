@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
 # SPDX-License-Identifier: Apache-2.0
 
-not_yet = "环境 {env} 保存在 ERPC 账户中，向其部署仅在账户中没有该环境的服务器、地址、线路或部署记录时才接受 --new-server 和 --region，且暂不支持选择服务器、添加、更改或从记录中移除线路，或改存到别处；请不带这些选项进行部署"
+not_yet = "环境 {env} 保存在 ERPC 账户中，向其部署仅在账户中没有该环境的服务器、地址、线路或部署记录时才接受 --new-server、--region 和 --plan；仅在首次向其部署之前、记录中什么都没有，或有服务器而无部署且未另要服务器时，才接受数据线路的选项（--grpc、--shreds、--unlimited 及其套餐）；暂不支持选择服务器、UDP Forwarding 线路、部署之后添加或更改线路、从记录中移除线路，或改存到别处；请不带这些选项进行部署"
 moving = "ERPC 账户中环境 {env} 的服务器正在更换"
 udp = "环境 {env} 在 ERPC 账户中有一条 UDP Forwarding 线路，而在那里的部署暂时还不能处理它"
 line_pending = "ERPC 账户中环境 {env} 的 {kind} 线路还没有端点"
@@ -20,7 +20,8 @@ pin_not_updated = "ERPC 账户已接受该写入，但本机的信任记录未�
 line_hint = "`erpc worker status{scope}` 可查看账户中的内容；erpc 暂时还不能在那里更改：请联系 ERPC 支持"
 moving_hint = "`erpc worker status{scope}` 可查看；erpc 暂时还不能完成或撤销服务器的更换：请联系 ERPC 支持"
 not_reread = "交出前无法再次读取 ERPC 账户中环境 {env} 的记录（{error}）；未交出密钥和机密"
-missing_line_hint = "{first} 来自 ERPC 账户为此环境列出的线路，而其中没有正在使用的；erpc 暂不在那里开通线路"
+missing_line_hint = "{first} 来自 ERPC 账户为此环境列出的线路，而其中没有正在使用的：在首次向其部署之前，`erpc worker deploy --{flag}{scope}` 会先询问价格，再在 ERPC 账户中开通一条；部署之后，erpc 暂不在那里开通线路"
+missing_udp_line_hint = "{first} 来自 ERPC 账户为此环境列出的线路，而其中没有正在使用的；erpc 暂不在那里开通 UDP Forwarding 线路"
 not_handed_over = "{why}；版本已在服务器上，但未交出密钥和机密"
 changed_before_hand_over_hint = "`erpc worker status{scope}` 可查看记录；若变化来自本次部署自己的写入（可连接 SSH 的地址），请再次部署并信任它"
 line_pending_hint = "待其有端点后再部署；`erpc worker status{scope}` 可查看，如一直如此，请联系 ERPC 支持"

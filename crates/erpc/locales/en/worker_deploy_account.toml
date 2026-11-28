@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
 # SPDX-License-Identifier: Apache-2.0
 
-not_yet = "environment {env} is kept in the ERPC account, and a deploy there takes --new-server and --region only while the account names no server, address, line or deploy for it, and does not yet choose a server, add, change or forget a line, or keep it elsewhere; deploy without those options"
+not_yet = "environment {env} is kept in the ERPC account, and a deploy there takes --new-server, --region and --plan only while the account names no server, address, line or deploy for it, and a data line's flag (--grpc, --shreds, --unlimited and their plans) only before its first deploy there, while the record names nothing, or a server and no deploy with nothing else for a server asked; it does not yet choose a server, take a UDP Forwarding line, add or change a line once deployed to, forget a line, or keep it elsewhere; deploy without those options"
 moving = "the ERPC account has a server coming in or going out for environment {env}"
 udp = "environment {env} has a UDP Forwarding line in the ERPC account, and a deploy there does not handle one yet"
 line_pending = "the {kind} line of environment {env} in the ERPC account has no endpoint yet"
@@ -20,7 +20,8 @@ pin_not_updated = "the ERPC account took the write, and this machine's record of
 line_hint = "`erpc worker status{scope}` shows what the account has; erpc cannot change it there yet: contact ERPC support"
 moving_hint = "`erpc worker status{scope}` shows it; erpc cannot finish or undo a change of server yet: contact ERPC support"
 not_reread = "the ERPC account's record of environment {env} could not be read again before the hand-over ({error}); the key and the secrets were not handed over"
-missing_line_hint = "{first} comes from a line the ERPC account names for this environment, and it names none in use; erpc does not start one there yet"
+missing_line_hint = "{first} comes from a line the ERPC account names for this environment, and it names none in use: before the environment's first deploy there, `erpc worker deploy --{flag}{scope}` starts one in the ERPC account, its price asked; once it is deployed to, erpc does not start one there yet"
+missing_udp_line_hint = "{first} comes from a line the ERPC account names for this environment, and it names none in use; erpc does not start a UDP Forwarding line there yet"
 not_handed_over = "{why}; the release is on the server, and the key and the secrets were not handed over"
 changed_before_hand_over_hint = "`erpc worker status{scope}` shows the record; when the change is this deploy's own (who may reach SSH), deploy again and trust it"
 line_pending_hint = "deploy once it has one; `erpc worker status{scope}` shows it, and if it stays so, contact ERPC support"

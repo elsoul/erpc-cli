@@ -488,6 +488,18 @@ impl Signed {
         account::money::start_server(&self.client, &self.token().await?, name, env, key, body).await
     }
 
+    /// Starts a data line for environment `env` of app `name`, paid for
+    /// by the hour, under `key`, which the caller has kept before.
+    pub(crate) async fn start_line(
+        &self,
+        name: &str,
+        env: &str,
+        key: &account::money::StartKey,
+        body: &account::money::StartLine,
+    ) -> Result<account::Written<EnvDetail>, WorkerError> {
+        account::money::start_line(&self.client, &self.token().await?, name, env, key, body).await
+    }
+
     /// The account's own id, which its pins are kept under.
     async fn uid(&self) -> Result<String, CliError> {
         let token = self.token().await.map_err(|e| {

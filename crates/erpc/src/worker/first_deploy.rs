@@ -16,38 +16,47 @@
 //! `--server`, a server of the account picked at the terminal, and
 //! `--inline` or `--vault`, which name where a new environment is kept.
 //! So does a deploy that asks for what an environment kept in the account
-//! does not take yet (a data line, `--plan`) or whose app names a wallet
-//! (whose record in the account this erpc does not make yet), and it says
-//! why.
+//! does not take yet (a UDP Forwarding line, `--forget-line`), and it says
+//! why. A gRPC, Shreds or Unlimited line asked is started in the account
+//! ([`crate::worker::line_start`]), and `--plan` at the cores its name
+//! says ([`sized_start`]). An app whose `erpc.toml` names a wallet goes the
+//! account way too: its record is made with the wallet's public side, and
+//! its key is handed over at the terminal as on any deploy.
 //!
 //! Everything that would refuse the deploy is asked before anything is
 //! written or bought: a terminal and no `--json` (the first login is asked
-//! there only), what the deploy needs on this machine, the sign-in. The
-//! account's records of the app and the environment are made when missing
-//! (free, said on stderr); the price is said and asked (`--yes` says it on
-//! stderr instead); then `erpc.toml` gets `account = true`, and only then
-//! is the start sent, under a key kept on this machine.
+//! there only), what the deploy needs on this machine, the sign-in, each
+//! line's plan in the hourly catalogue. The account's records of the app
+//! and the environment are made when missing (free, said on stderr); the
+//! server's price is said and asked, then each line's (`--yes` says them on
+//! stderr instead); then the lines asked are kept on this machine, owed,
+//! `erpc.toml` gets `account = true`, and only then is the start sent,
+//! under a key kept on this machine.
 //!
 //! A run that stopped is run again: an environment `erpc.toml` keeps in the
 //! account whose record names no server, no address, no line and no
 //! deploy goes the same way, a start kept on this machine or open in the
 //! account first, and buys no second server. There `--yes` answers the
-//! price only with `--new-server`. One the account signed in to has no
-//! record of at all (another account's, or deleted: a first deploy makes
-//! the records before it writes `account = true`) is refused as before,
-//! unless `--new-server` asks for a new server in the account signed in to.
+//! prices only with `--new-server`, and takes only the size `--plan`
+//! names. One whose record names a server and no deploy, with a line asked
+//! or kept on this machine for it, has its lines started before the deploy
+//! ([`First::Owed`]). One the account signed in to has no record of at all
+//! (another account's, or deleted: a first deploy makes the records before
+//! it writes `account = true`) is refused as before, unless `--new-server`
+//! asks for a new server in the account signed in to.
 
 use std::path::{Path, PathBuf};
 
 use erpc_api::worker::{Code as AccountCode, EnvDetail, WorkerError};
-use erpc_worker::manifest::{Env, Manifest};
+use erpc_worker::manifest::{Env, LineKind, Manifest};
 
 use crate::cli::error::{CliError, Code};
 use crate::node::common::Say;
 use crate::worker::App;
 use crate::worker::account::{self as kept, Account};
 use crate::worker::deploy::{Picked, Where};
-use crate::worker::server::Region;
+use crate::worker::line_start::{Agreed, Lines, Owing};
+use crate::worker::server::{Region, Size};
 
 fn failed(message: String) -> CliError {
     CliError::new(Code::Failed, message)
@@ -62,19 +71,36 @@ pub(crate) enum First {
     /// `--server` would.
     Picked(i64),
     /// `erpc.toml` keeps the environment in the account, and its server is
-    /// on the account's record: the deploy to it follows.
+    /// on the account's record: the deploy to it follows, the data lines
+    /// asked started first ([`crate::worker::line_start`]).
     Started,
+    /// A first deploy that stopped after its server was started, or an
+    /// environment moved into the account, before its first deploy there:
+    /// the data lines asked, and those kept on this machine for it, are
+    /// started, then the deploy to it follows.
+    Owed,
+}
+
+/// What the deploy does next, and the lines it starts once its server is
+/// logged in to (none: it starts none).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Next {
+    pub(crate) first: First,
+    pub(crate) lines: Option<Lines>,
+}
+
+impl Next {
+    /// `first`, starting no line.
+    const fn without_lines(first: First) -> Self {
+        Self { first, lines: None }
+    }
 }
 
 /// Why a first deploy keeps the environment in `erpc.toml`, as before.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Why {
-    /// A data line asked for.
+    /// A UDP Forwarding line (or its options) asked for, or `--forget-line`.
     Lines,
-    /// `--plan`.
-    Plan,
-    /// A wallet in `erpc.toml`.
-    Wallet,
 }
 
 /// Which way a deploy goes, from `erpc.toml` and the command line alone.
@@ -94,9 +120,9 @@ enum Way {
 }
 
 /// Which way the deploy of environment `env` (`None`: `erpc.toml` has no
-/// table for it) goes, asked as `at` asks, for an app with a wallet or
-/// not, under `--json` or not, at a terminal or not.
-fn way(env: Option<&Env>, wallet: bool, at: &Where, (json, terminal): (bool, bool)) -> Way {
+/// table for it) goes, asked as `at` asks, under `--json` or not, at a
+/// terminal or not.
+fn way(env: Option<&Env>, at: &Where, (json, terminal): (bool, bool)) -> Way {
     match env {
         Some(env) if *env == crate::worker::EnvRecord::kept_in_account() => return Way::Resume,
         Some(env) if *env != Env::default() => return Way::AsBefore,
@@ -110,19 +136,10 @@ fn way(env: Option<&Env>, wallet: bool, at: &Where, (json, terminal): (bool, boo
     if !at.new_vps && !terminal {
         return Way::AsBefore;
     }
-    let lines = !at.lines.is_empty()
-        || at.udp_port.is_some()
-        || at.udp_region.is_some()
-        || at.udp_any_source
-        || !at.forget_lines.is_empty();
-    if lines {
+    // The account's deploy takes no UDP Forwarding line yet; the other
+    // data lines are started in the account.
+    if udp_or_forget(at) {
         return Way::Said(Why::Lines);
-    }
-    if at.plan.is_some() {
-        return Way::Said(Why::Plan);
-    }
-    if wallet {
-        return Way::Said(Why::Wallet);
     }
     if json || !terminal {
         return Way::NeedsTerminal;
@@ -130,12 +147,20 @@ fn way(env: Option<&Env>, wallet: bool, at: &Where, (json, terminal): (bool, boo
     Way::New { asked: at.new_vps }
 }
 
+/// Whether `at` asks for a UDP Forwarding line, or one of its options, or
+/// forgets a line: what a deploy the account way does not take yet.
+fn udp_or_forget(at: &Where) -> bool {
+    at.lines.iter().any(|(kind, _)| *kind == LineKind::Udp)
+        || at.udp_port.is_some()
+        || at.udp_region.is_some()
+        || at.udp_any_source
+        || !at.forget_lines.is_empty()
+}
+
 /// Why, as the note says it.
 fn why_said(why: Why) -> String {
     match why {
         Why::Lines => t!("worker_first_deploy.why_lines"),
-        Why::Plan => t!("worker_first_deploy.why_plan"),
-        Why::Wallet => t!("worker_first_deploy.why_wallet"),
     }
 }
 
@@ -213,16 +238,42 @@ pub(crate) trait Reach {
     /// Which server the environment runs on, asked at the terminal, a new
     /// one offered last as `offer` says ([`crate::worker::deploy::pick`]).
     async fn pick(&self, offer: String) -> Result<Picked, CliError>;
-    /// Starts its server in `region` ([`crate::worker::server::for_deploy`]),
-    /// `yes` answering the price, `agreed` run after the yes and before the
-    /// start is sent; what the account then keeps, said.
+    /// Starts its server of `size` in `region`
+    /// ([`crate::worker::server::for_deploy`]), `yes` answering the price,
+    /// `agreed` run after the yes and before the start is sent; what the
+    /// account then keeps, said.
     async fn start(
         &self,
         app: &App,
         m: &Manifest,
-        asked: (Region<'_>, bool),
+        asked: (Region<'_>, bool, Size<'_>),
         agreed: impl FnOnce() -> Result<(), CliError>,
     ) -> Result<String, CliError>;
+    /// The name of `--plan`'s product and the cores it says
+    /// ([`crate::worker::vps::plan_cores`]).
+    async fn plan_cores(&self, plan: &str) -> Result<(String, Option<u16>), CliError>;
+    /// What is free to be rented now, by cores and region
+    /// ([`crate::worker::vps::stock`]).
+    async fn stock(&self) -> Result<Vec<(u16, &'static str)>, CliError>;
+    /// The lines `lines` asks for, each one's plan read, and those kept on
+    /// this machine for environment `app.env` of the app named `name`
+    /// ([`crate::worker::line_start::owing`]); `fresh` when `erpc.toml` has
+    /// nothing for it.
+    async fn owing(
+        &self,
+        app_name: (&App, &str),
+        lines: &[(LineKind, Option<String>)],
+        fresh: bool,
+    ) -> Result<Owing, CliError>;
+    /// The kinds of the lines kept on this machine for environment
+    /// `app.env` of the app named `name`: read only.
+    async fn kept_kinds(&self, app: &App, name: &str) -> Result<Vec<LineKind>, CliError>;
+    /// Asks `question` at the terminal.
+    fn confirm(&self, question: &str) -> Result<bool, String>;
+    /// Whether a server start this machine kept for environment `app.env`
+    /// of the app named `name` is to be sent again under its key
+    /// ([`crate::worker::server::kept_to_send_again`]).
+    async fn kept_server(&self, app: &App, name: &str) -> Result<bool, CliError>;
 }
 
 /// This machine, its sign-in, the ERPC account and the terminal.
@@ -276,19 +327,52 @@ impl Reach for Live {
         &self,
         app: &App,
         m: &Manifest,
-        (region, yes): (Region<'_>, bool),
+        asked: (Region<'_>, bool, Size<'_>),
         agreed: impl FnOnce() -> Result<(), CliError>,
     ) -> Result<String, CliError> {
-        crate::worker::server::for_deploy(self.signed()?, app, m, (region, yes), agreed).await
+        crate::worker::server::for_deploy(self.signed()?, app, m, asked, agreed).await
+    }
+
+    async fn plan_cores(&self, plan: &str) -> Result<(String, Option<u16>), CliError> {
+        let api = crate::worker::vps::Api::open().await?;
+        crate::worker::vps::plan_cores(&api, plan).await
+    }
+
+    async fn stock(&self) -> Result<Vec<(u16, &'static str)>, CliError> {
+        let api = crate::worker::vps::Api::open().await?;
+        crate::worker::vps::stock(&api).await
+    }
+
+    async fn owing(
+        &self,
+        (app, name): (&App, &str),
+        lines: &[(LineKind, Option<String>)],
+        fresh: bool,
+    ) -> Result<Owing, CliError> {
+        crate::worker::line_start::owing(self.signed()?, (app, name), lines, fresh).await
+    }
+
+    fn confirm(&self, question: &str) -> Result<bool, String> {
+        crate::node::common::confirm(question)
+    }
+
+    async fn kept_server(&self, app: &App, name: &str) -> Result<bool, CliError> {
+        crate::worker::server::kept_to_send_again(self.signed()?, app, name).await
+    }
+
+    async fn kept_kinds(&self, app: &App, name: &str) -> Result<Vec<LineKind>, CliError> {
+        crate::worker::line_start::kinds_kept_for(self.signed()?, (app, name)).await
     }
 }
 
-/// The deploy's first step: [`First`] says what follows. Refused before
-/// anything is written or bought when a first deploy cannot go through.
-pub(crate) async fn first(json: bool, app: &App, at: &Where, yes: bool) -> Result<First, CliError> {
+/// The deploy's first step: [`Next`] says what follows, with the lines
+/// its deploy starts once its server is logged in to (those this run's own
+/// yes agreed to are not asked again). Refused before anything is written
+/// or bought when a first deploy cannot go through.
+pub(crate) async fn first(json: bool, app: &App, at: &Where, yes: bool) -> Result<Next, CliError> {
     let Ok((_, m)) = crate::worker::load(&app.dir) else {
         // Said by the deploy, as before.
-        return Ok(First::AsBefore);
+        return Ok(Next::without_lines(First::AsBefore));
     };
     let asking = (json, crate::account::session::has_terminal());
     Box::pin(first_with(&Live::default(), app, (at, yes), &m, asking)).await
@@ -302,16 +386,16 @@ async fn first_with(
     (at, yes): (&Where, bool),
     m: &Manifest,
     (json, terminal): (bool, bool),
-) -> Result<First, CliError> {
+) -> Result<Next, CliError> {
     let env = app.env.as_str();
-    match way(m.env.get(env), m.wallet.is_some(), at, (json, terminal)) {
-        Way::AsBefore => Ok(First::AsBefore),
+    match way(m.env.get(env), at, (json, terminal)) {
+        Way::AsBefore => Ok(Next::without_lines(First::AsBefore)),
         Way::Said(why) => {
             Say { quiet: false }.line(&format!(
                 "note: {}",
                 t!("worker_first_deploy.as_before", env, why = why_said(why))
             ));
-            Ok(First::AsBefore)
+            Ok(Next::without_lines(First::AsBefore))
         }
         Way::NeedsTerminal => Err(CliError::new(
             Code::NeedsTerminal,
@@ -335,7 +419,7 @@ async fn new_server(
     app: &App,
     (at, yes): (&Where, bool),
     asked: bool,
-) -> Result<First, CliError> {
+) -> Result<Next, CliError> {
     let region = region(at)?;
     let (path, m) = reach.ready(app, at)?;
     // What the account keeps of the app is checked for a server started
@@ -350,45 +434,80 @@ async fn new_server(
         };
         let offer = t!("worker_first_deploy.new_option", region = near);
         if let Picked::Server(id) = reach.pick(offer).await? {
-            return Ok(First::Picked(id));
+            return Ok(Next::without_lines(First::Picked(id)));
         }
         crate::worker::deploy_account::deployed_app(&m)?;
     }
+    // Each line's plan read, before anything is made or bought; a line
+    // start kept here from an earlier environment of these names refuses.
+    let owing = reach.owing((app, &m.name), &at.lines, true).await?;
+    owing.refuse_kept_starts(&m.name)?;
+    let agreed_now = core::cell::Cell::new(Agreed::default());
     let written = core::cell::Cell::new(false);
-    let started = reach
-        .start(app, &m, (region, yes), || {
+    // After the server's yes: each line's price asked, the lines kept,
+    // owed, then erpc.toml written.
+    let agreed = || {
+        if !written.get() {
+            agreed_now.set(owing.agree(&|q| reach.confirm(q), yes)?);
             keep_in_account(&path, app, &m.name)?;
             written.set(true);
-            Ok(())
-        })
-        .await;
+        }
+        Ok(())
+    };
+    let started = sized_start(
+        reach,
+        app,
+        (&m, at.plan.as_deref()),
+        (region, yes, yes),
+        &agreed,
+    )
+    .await;
     let text = match started {
         Ok(text) => text,
         // Once erpc.toml keeps it in the account, a stop says the deploy
         // goes on from there.
-        Err(e) if written.get() => {
-            return Err(and_hint(
-                e,
-                t!(
-                    "worker_first_deploy.kept_now_hint",
-                    env = app.env.as_str(),
-                    scope = app.scope()
-                ),
-            ));
-        }
+        Err(e) if written.get() => return Err(and_hint(e, kept_now(app, at))),
         Err(e) => return Err(e),
     };
     // A start this machine kept that went through before this run sends
-    // nothing and asks nothing: erpc.toml is made to say so now.
+    // nothing and asks nothing: erpc.toml is made to say so now, and the
+    // lines asked are kept, to be asked when they are started.
+    if !written.get() {
+        owing.keep(false)?;
+    }
     keep_in_account(&path, app, &m.name)?;
     Say { quiet: false }.line(&text);
-    Ok(First::Started)
+    Ok(Next {
+        first: First::Started,
+        lines: Some(Lines {
+            named: Vec::new(),
+            agreed: agreed_now.get(),
+            yes,
+        }),
+    })
+}
+
+/// What a stop says once `erpc.toml` keeps the environment in the account:
+/// the deploy goes on from there, at the `--plan` asked.
+fn kept_now(app: &App, at: &Where) -> String {
+    let (env, scope) = (app.env.as_str(), app.scope());
+    match at.plan.as_deref() {
+        Some(plan) => t!(
+            "worker_first_deploy.kept_now_plan_hint",
+            env,
+            plan = crate::storage::clean(plan),
+            scope
+        ),
+        None => t!("worker_first_deploy.kept_now_hint", env, scope),
+    }
 }
 
 /// An environment `erpc.toml` keeps in the account: started for as a new
 /// one is when the account's record names no server, no address, no line
 /// and no deploy, or, with `--new-server`, when the account has no record
-/// of it; refused as before when it has none and nothing asked for a new
+/// of it; its lines started before the deploy when the record names a
+/// server and no deploy, and a line is asked or kept on this machine for
+/// it; refused as before when it has none and nothing asked for a new
 /// server; as before otherwise.
 async fn resume(
     reach: &impl Reach,
@@ -396,18 +515,30 @@ async fn resume(
     (at, yes): (&Where, bool),
     m: &Manifest,
     (json, terminal): (bool, bool),
-) -> Result<First, CliError> {
+) -> Result<Next, CliError> {
     let mut start = at.clone();
     after_started(&mut start);
-    // What a deploy there does not take is refused as before, unread.
-    if crate::worker::deploy_account::refuse_options(&start, app).is_err() {
-        return Ok(First::AsBefore);
+    // What a deploy there does not take is refused as before, unread; a
+    // UDP Forwarding line among them.
+    if udp_or_forget(at) || crate::worker::deploy_account::refuse_options(&start, app).is_err() {
+        return Ok(Next::without_lines(First::AsBefore));
     }
     let region = region(at)?;
     reach.sign_in().await?;
     let env = app.env.as_str();
-    match reach.record(app, &m.name).await? {
-        Some(record) if names_something(&record) => return Ok(First::AsBefore),
+    let record = reach.record(app, &m.name).await?;
+    // Its server there, never deployed to (a first deploy that stopped
+    // after its start, or one moved in), nothing else for a server asked:
+    // the lines asked, and those kept here, are started before the deploy.
+    if let Some(record) = &record
+        && let Some(next) = owed(reach, app, (at, yes), m, (record, json || !terminal)).await?
+    {
+        return Ok(next);
+    }
+    match record {
+        Some(record) if names_something(&record) => {
+            return Ok(Next::without_lines(First::AsBefore));
+        }
         // A first deploy that stopped made the records before it wrote
         // `account = true`: none at all is another account's, or deleted,
         // and is refused as before, unless a new server is asked for.
@@ -426,35 +557,314 @@ async fn resume(
         Some(_) | None => {}
     }
     if json || !terminal {
-        return Err(CliError::new(
-            Code::NeedsTerminal,
-            t!("worker_first_deploy.resume_needs_terminal", env),
-        )
-        .hint(t!(
-            "worker_first_deploy.resume_needs_terminal_hint",
-            scope = app.scope()
-        )));
+        return Err(resume_needs_terminal(app));
     }
+    // Every line to be started asked before the server is bought, those
+    // kept here owed too; a line start kept here refuses first.
+    let owing = reach.owing((app, &m.name), &at.lines, false).await?;
+    owing.refuse_kept_starts(&m.name)?;
     let checked = Where {
         kept: Some(m.clone()),
+        lines: owing.kinds().into_iter().map(|k| (k, None)).collect(),
         ..start
     };
     let (_, m) = reach.ready(app, &checked)?;
     crate::worker::deploy_account::deployed_app(&m)?;
-    // Nothing on this command line picked a new server: the price is asked.
-    let yes = yes && at.new_vps;
-    let text = reach.start(app, &m, (region, yes), || Ok(())).await?;
+    // Nothing on this command line picked a new server: the prices are
+    // asked, and --yes takes only the size named.
+    let yes_price = yes && at.new_vps;
+    let agreed_now = core::cell::Cell::new(Agreed::default());
+    let agreed_once = core::cell::Cell::new(false);
+    let agreed = || {
+        if !agreed_once.get() {
+            agreed_now.set(owing.agree(&|q| reach.confirm(q), yes_price)?);
+            agreed_once.set(true);
+        }
+        Ok(())
+    };
+    let text = sized_start(
+        reach,
+        app,
+        (&m, at.plan.as_deref()),
+        (region, yes_price, yes),
+        &agreed,
+    )
+    .await?;
+    // A start that went through before this run asked nothing: the lines
+    // asked are kept, to be asked when they are started.
+    if !agreed_once.get() {
+        owing.keep(false)?;
+    }
     Say { quiet: false }.line(&text);
-    Ok(First::Started)
+    Ok(Next {
+        first: First::Started,
+        lines: Some(Lines {
+            named: Vec::new(),
+            agreed: agreed_now.get(),
+            yes: yes_price,
+        }),
+    })
 }
 
-/// The deploy's options once its server was started here ([`First::Started`]):
-/// `--new-server` and `--region` were for the start, and the deploy to an
-/// environment kept in the account that follows refuses both
-/// ([`crate::worker::deploy_account::refuse_options`]).
-pub(crate) fn after_started(at: &mut Where) {
+/// [`First::Owed`] for an environment kept in the account whose `record`
+/// names a server and no deploy, with nothing else for a server asked and
+/// a line asked or kept here: at a terminal only (`nobody` when there is
+/// none, or `--json`), once what refuses the deploy is checked, the lines
+/// asked kept here. `None` when the run is not owed lines.
+async fn owed(
+    reach: &impl Reach,
+    app: &App,
+    (at, yes): (&Where, bool),
+    m: &Manifest,
+    (record, nobody): (&EnvDetail, bool),
+) -> Result<Option<Next>, CliError> {
+    if record.servers.is_empty()
+        || record.deployed.is_some()
+        || at.new_vps
+        || at.region.is_some()
+        || at.plan.is_some()
+    {
+        return Ok(None);
+    }
+    // Whether a line is asked or kept here, read only; nothing more before
+    // the terminal is known to be there.
+    if at.lines.is_empty() && reach.kept_kinds(app, &m.name).await?.is_empty() {
+        return Ok(None);
+    }
+    if nobody {
+        return Err(resume_needs_terminal(app));
+    }
+    let owing = reach.owing((app, &m.name), &at.lines, false).await?;
+    if owing.kinds().is_empty() {
+        return Ok(None);
+    }
+    let mut start = at.clone();
+    after_started(&mut start);
+    let checked = Where {
+        kept: Some(m.clone()),
+        lines: owing.kinds().into_iter().map(|k| (k, None)).collect(),
+        ..start
+    };
+    let (_, m) = reach.ready(app, &checked)?;
+    crate::worker::deploy_account::deployed_app(&m)?;
+    crate::worker::deploy_account::refuse_record(app, record)?;
+    owing.keep(false)?;
+    // A run again: --yes says a line's price only with --new-server, which
+    // this path is never taken with.
+    Ok(Some(Next {
+        first: First::Owed,
+        lines: Some(Lines {
+            named: at.lines.clone(),
+            agreed: Agreed::default(),
+            yes: yes && at.new_vps,
+        }),
+    }))
+}
+
+/// The refusal of a run again that starts something with nobody at a
+/// terminal to log in once, or under `--json`.
+fn resume_needs_terminal(app: &App) -> CliError {
+    CliError::new(
+        Code::NeedsTerminal,
+        t!(
+            "worker_first_deploy.resume_needs_terminal",
+            env = app.env.as_str()
+        ),
+    )
+    .hint(t!(
+        "worker_first_deploy.resume_needs_terminal_hint",
+        scope = app.scope()
+    ))
+}
+
+/// The start of the first deploy's server: of the cheapest size, or of
+/// `--plan`'s (`plan`), offered another when it is not free now. `yes`
+/// answers the price; `only_named` (`--yes`) offers no other size or
+/// region. A stop of `agreed` (a line's price declined, say) stops it,
+/// whatever size it was for.
+async fn sized_start(
+    reach: &impl Reach,
+    app: &App,
+    (m, plan): (&Manifest, Option<&str>),
+    (region, yes, only_named): (Region<'_>, bool, bool),
+    agreed: &dyn Fn() -> Result<(), CliError>,
+) -> Result<String, CliError> {
+    let stopped = core::cell::Cell::new(false);
+    let agreed = || agreed().inspect_err(|_| stopped.set(true));
+    let Some(plan) = plan else {
+        return reach
+            .start(app, m, (region, yes, Size::Cheapest), agreed)
+            .await;
+    };
+    let (_, cores) = reach.plan_cores(plan).await?;
+    // A name erpc does not read: refused with the sizes the account offers,
+    // once read, before anything is bought.
+    let Some(cores) = cores else {
+        return reach
+            .start(app, m, (region, yes, Size::Unread(plan)), agreed)
+            .await;
+    };
+    // A start kept here to send again skips the stock read and what is
+    // offered in its place: run_with sends it again while the account
+    // lists it open, else makes a new start of the size named, asked.
+    if reach.kept_server(app, &m.name).await? {
+        return reach
+            .start(app, m, (region, yes, Size::Cores(cores)), agreed)
+            .await;
+    }
+    let here = match region {
+        Region::Asked(r) | Region::Else(r) => r,
+    };
+    // What is free now; read or not, the start may still find it gone.
+    let free = reach.stock().await.ok();
+    let none_free = || not_free((cores, here), free.as_deref(), app);
+    let near = crate::worker::vps::nearest_region();
+    let (named_free, others) = offered(cores, (here, near), free.as_deref());
+    let say = Say { quiet: false };
+    if named_free {
+        match reach
+            .start(app, m, (region, yes, Size::Cores(cores)), agreed)
+            .await
+        {
+            // Out of stock though listed free: said, then the next.
+            Err(e) if crate::worker::server::out_of_stock(&e) => {
+                say.line(&format!("note: {}", e.message));
+            }
+            done => return done,
+        }
+    }
+    // Never another than named under --yes.
+    if only_named {
+        return Err(none_free());
+    }
+    for (c, r) in others {
+        say.line(&t!(
+            "worker_first_deploy.plan_instead",
+            worker = worker_cored(cores),
+            region = here,
+            other = worker_cored(c),
+            other_region = r
+        ));
+        match reach
+            .start(app, m, (Region::Asked(r), false, Size::Cores(c)), agreed)
+            .await
+        {
+            // Declined, or a size the account does not start: the next.
+            Err(e) if !stopped.get() && matches!(e.code, Code::Declined | Code::Usage) => {}
+            Err(e) if crate::worker::server::out_of_stock(&e) => {
+                say.line(&format!("note: {}", e.message));
+            }
+            done => return done,
+        }
+    }
+    Err(none_free())
+}
+
+/// What is free now, as `free` lists it, each once, fewest cores first.
+fn free_said(free: &[(u16, &'static str)]) -> String {
+    let mut seen: Vec<(u16, &str)> = Vec::new();
+    for f in free {
+        if !seen.contains(f) {
+            seen.push(*f);
+        }
+    }
+    seen.sort_unstable();
+    seen.iter()
+        .map(|(c, r)| {
+            t!(
+                "worker_first_deploy.free_one",
+                worker = worker_cored(*c),
+                region = *r
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The stop of a `--plan` start whose size (`cores` in `here`) is not
+/// free: with what is free now, when it was read.
+fn not_free(
+    (cores, here): (u16, &str),
+    free: Option<&[(u16, &'static str)]>,
+    app: &App,
+) -> CliError {
+    let message = match free {
+        Some(free) => {
+            let listed = free_said(free);
+            t!(
+                "worker_first_deploy.plan_not_free",
+                worker = worker_cored(cores),
+                region = here,
+                free = if listed.is_empty() {
+                    t!("worker_first_deploy.free_none")
+                } else {
+                    listed
+                }
+            )
+        }
+        // What is free was not read: none is said.
+        None => t!(
+            "worker_first_deploy.plan_not_free_unread",
+            worker = worker_cored(cores),
+            region = here
+        ),
+    };
+    failed(message).hint(t!(
+        "worker_first_deploy.plan_not_free_hint",
+        scope = app.scope()
+    ))
+}
+
+/// The ERPC Worker of `cores`, as a person reads it.
+fn worker_cored(cores: u16) -> String {
+    use crate::worker::vps::{Spec, worker};
+    worker(&Spec::sized(Some(cores), None))
+}
+
+/// Whether `cores` in `here` is free now, by `free` (not read: taken to be),
+/// and what to offer in its place, in turn: a bigger size free in `here`,
+/// fewest cores first, then the same size in another region, `near` (this
+/// machine's) and those nearest it first.
+fn offered<'a>(
+    cores: u16,
+    (here, near): (&'a str, &'static str),
+    free: Option<&[(u16, &'static str)]>,
+) -> (bool, Vec<(u16, &'a str)>) {
+    let Some(free) = free else {
+        return (true, Vec::new());
+    };
+    let has = |c: u16, r: &str| free.contains(&(c, r));
+    let mut bigger: Vec<u16> = free
+        .iter()
+        .filter(|(c, r)| *c > cores && *r == here)
+        .map(|(c, _)| *c)
+        .collect();
+    bigger.sort_unstable();
+    bigger.dedup();
+    let mut others: Vec<(u16, &'a str)> = bigger.into_iter().map(|c| (c, here)).collect();
+    let mut regions = vec![near];
+    regions.extend(crate::worker::vps::regions_by_nearness(near));
+    others.extend(
+        regions
+            .into_iter()
+            .filter(|r| *r != here && has(cores, r))
+            .map(|r| (cores, r)),
+    );
+    (has(cores, here), others)
+}
+
+/// The deploy's options once its server was started here ([`First::Started`],
+/// [`First::Owed`]): `--new-server` and `--region` were for the start, and
+/// the data lines asked are started before the deploy
+/// ([`crate::worker::line_start`]); the deploy to an environment kept in
+/// the account that follows refuses all of them
+/// ([`crate::worker::deploy_account::refuse_options`]). The lines it took
+/// off come back.
+pub(crate) fn after_started(at: &mut Where) -> Vec<(LineKind, Option<String>)> {
     at.new_vps = false;
     at.region = None;
+    at.plan = None;
+    std::mem::take(&mut at.lines)
 }
 
 /// What the deploy reads of an environment kept in the account (`held`),
@@ -501,6 +911,10 @@ mod tests {
     type Sent = (bool, String, bool);
 
     /// This machine, the account and the terminal, in memory.
+    #[allow(
+        clippy::struct_excessive_bools,
+        reason = "each says how one call of the stand-in answers"
+    )]
     struct Fake {
         path: PathBuf,
         /// The account's record of the environment.
@@ -516,6 +930,29 @@ mod tests {
         went_through_before: bool,
         calls: RefCell<Vec<&'static str>>,
         sent: RefCell<Vec<Sent>>,
+        /// The cores `--plan`'s name says.
+        plan_cores: Option<u16>,
+        /// What the stock read lists free; none: it is not answered.
+        free: Option<Vec<(u16, &'static str)>>,
+        /// Each start in turn is refused as out of stock, before its
+        /// question, when `true`.
+        out_of_stock: RefCell<Vec<bool>>,
+        /// Each start's question is answered so, in turn (then yes).
+        answers_yes: RefCell<Vec<bool>>,
+        /// The size and region of each start, in turn.
+        sizes: RefCell<Vec<(Option<u16>, String)>>,
+        /// Where the lines asked are kept.
+        store: PathBuf,
+        /// Whether the hourly catalogue offers the lines' plans.
+        plans_offered: bool,
+        /// Each line's question, in turn.
+        line_asked: RefCell<Vec<String>>,
+        /// Each line's question is answered so, in turn (then yes).
+        line_yes: RefCell<Vec<bool>>,
+        /// The lines each check of what the deploy needs was given.
+        ready_lines: RefCell<Vec<Vec<LineKind>>>,
+        /// Whether a server start kept here is to be sent again.
+        kept_server_start: bool,
     }
 
     impl Fake {
@@ -531,7 +968,63 @@ mod tests {
                 went_through_before: false,
                 calls: RefCell::new(Vec::new()),
                 sent: RefCell::new(Vec::new()),
+                plan_cores: None,
+                free: None,
+                out_of_stock: RefCell::new(Vec::new()),
+                answers_yes: RefCell::new(Vec::new()),
+                sizes: RefCell::new(Vec::new()),
+                store: dir.path().join("worker_line_starts.json"),
+                plans_offered: true,
+                line_asked: RefCell::new(Vec::new()),
+                line_yes: RefCell::new(Vec::new()),
+                ready_lines: RefCell::new(Vec::new()),
+                kept_server_start: false,
             }
+        }
+
+        /// The kinds of the lines kept here for the environment, and
+        /// whether each was agreed to.
+        fn lines_kept(&self) -> Vec<(String, bool)> {
+            let text = std::fs::read(&self.store).unwrap_or_default();
+            if text.is_empty() {
+                return Vec::new();
+            }
+            let v: serde_json::Value = serde_json::from_slice(&text).expect("json");
+            v["starts"]
+                .as_object()
+                .expect("starts")
+                .iter()
+                .map(|(k, line)| {
+                    (
+                        k.rsplit(' ').next().unwrap_or_default().to_owned(),
+                        line["agreed"].as_bool().unwrap_or(false),
+                    )
+                })
+                .collect()
+        }
+
+        /// Keeps a line of `kind` here, owed, agreed to, as an earlier run
+        /// did.
+        fn owe(&self, kind: LineKind) {
+            let pin = kept::pin_key("user-100001", "bot", "prod");
+            let owing = Owing::read(
+                &self.store,
+                (pin, "prod"),
+                (
+                    vec![(
+                        kind,
+                        crate::worker::line_start::Plan {
+                            id: "prod_grpc_1".to_owned(),
+                            cents: 12.5,
+                            name: "Geyser gRPC Shared".to_owned(),
+                        },
+                    )],
+                    Vec::new(),
+                ),
+                false,
+            )
+            .expect("read");
+            owing.agree(&|_| Ok(true), true).expect("kept");
         }
 
         fn kept_there(&self) -> bool {
@@ -550,6 +1043,9 @@ mod tests {
     impl Reach for Fake {
         fn ready(&self, _: &App, at: &Where) -> Result<(PathBuf, Manifest), CliError> {
             self.calls.borrow_mut().push("ready");
+            self.ready_lines
+                .borrow_mut()
+                .push(at.lines.iter().map(|(k, _)| *k).collect());
             let m = at.kept.clone().unwrap_or_else(|| self.manifest());
             Ok((self.path.clone(), m))
         }
@@ -574,13 +1070,28 @@ mod tests {
             &self,
             _: &App,
             _: &Manifest,
-            (region, yes): (Region<'_>, bool),
+            (region, yes, size): (Region<'_>, bool, Size<'_>),
             agreed: impl FnOnce() -> Result<(), CliError>,
         ) -> Result<String, CliError> {
             self.calls.borrow_mut().push("start");
             let region = match region {
                 Region::Asked(r) | Region::Else(r) => r.to_owned(),
             };
+            self.sizes
+                .borrow_mut()
+                .push((size_of(size), region.clone()));
+            if size == Size::Cores(16) {
+                return Err(CliError::new(Code::Usage, "not offered".to_owned()));
+            }
+            if let Size::Unread(plan) = size {
+                return Err(CliError::new(
+                    Code::Usage,
+                    format!("{plan} gives no size; offered: 1 vCPU, 2 vCPU"),
+                ));
+            }
+            if !self.answers_yes.borrow().is_empty() && !self.answers_yes.borrow_mut().remove(0) {
+                return Err(CliError::new(Code::Declined, "declined".to_owned()));
+            }
             if self.went_through_before {
                 return Ok("The environment's record names a server now.".to_owned());
             }
@@ -591,6 +1102,11 @@ mod tests {
                 ));
             }
             agreed()?;
+            // The account answers out of stock after the yes, as it does.
+            if !self.out_of_stock.borrow().is_empty() && self.out_of_stock.borrow_mut().remove(0) {
+                return Err(CliError::new(Code::Failed, "nothing free".to_owned())
+                    .details(serde_json::json!({ "accountCode": "OUT_OF_STOCK" })));
+            }
             self.sent
                 .borrow_mut()
                 .push((self.kept_there(), region, yes));
@@ -598,6 +1114,77 @@ mod tests {
                 return Err(CliError::new(Code::Failed, "no answer".to_owned()));
             }
             Ok("Started a new server for environment prod.".to_owned())
+        }
+
+        async fn plan_cores(&self, plan: &str) -> Result<(String, Option<u16>), CliError> {
+            self.calls.borrow_mut().push("plan");
+            Ok((plan.to_owned(), self.plan_cores))
+        }
+
+        async fn stock(&self) -> Result<Vec<(u16, &'static str)>, CliError> {
+            self.calls.borrow_mut().push("stock");
+            self.free
+                .clone()
+                .ok_or_else(|| CliError::new(Code::Network, "no answer".to_owned()))
+        }
+
+        async fn owing(
+            &self,
+            (_, name): (&App, &str),
+            lines: &[(LineKind, Option<String>)],
+            fresh: bool,
+        ) -> Result<Owing, CliError> {
+            self.calls.borrow_mut().push("owing");
+            if !lines.is_empty() && !self.plans_offered {
+                return Err(CliError::new(Code::Usage, "plan not offered".to_owned()));
+            }
+            let plan = |id: Option<String>| crate::worker::line_start::Plan {
+                id: id.unwrap_or_else(|| "prod_grpc_1".to_owned()),
+                cents: 12.5,
+                name: "Geyser gRPC Shared".to_owned(),
+            };
+            let asked = lines
+                .iter()
+                .map(|(kind, id)| (*kind, plan(id.clone())))
+                .collect();
+            let pin = kept::pin_key("user-100001", name, "prod");
+            let again = Owing::owed_again(&self.store, &pin, lines, fresh)?
+                .into_iter()
+                .map(|(kind, id)| (kind, plan(Some(id))))
+                .collect();
+            Owing::read(&self.store, (pin, "prod"), (asked, again), fresh)
+        }
+
+        fn confirm(&self, question: &str) -> Result<bool, String> {
+            self.line_asked.borrow_mut().push(question.to_owned());
+            Ok(if self.line_yes.borrow().is_empty() {
+                true
+            } else {
+                self.line_yes.borrow_mut().remove(0)
+            })
+        }
+
+        async fn kept_server(&self, _: &App, _: &str) -> Result<bool, CliError> {
+            self.calls.borrow_mut().push("kept_server");
+            Ok(self.kept_server_start)
+        }
+
+        async fn kept_kinds(&self, _: &App, name: &str) -> Result<Vec<LineKind>, CliError> {
+            self.calls.borrow_mut().push("kept_kinds");
+            crate::worker::line_start::kinds_kept_in(
+                &self.store,
+                &kept::pin_key("user-100001", name, "prod"),
+            )
+        }
+    }
+
+    /// A size as the stand-in records it: its cores, none for the
+    /// cheapest, 0 for a plan read as none.
+    fn size_of(size: Size<'_>) -> Option<u16> {
+        match size {
+            Size::Cheapest => None,
+            Size::Cores(c) => Some(c),
+            Size::Unread(_) => Some(0),
         }
     }
 
@@ -611,6 +1198,29 @@ mod tests {
         yes: bool,
         (json, terminal): (bool, bool),
     ) -> Result<First, CliError> {
+        go_next(fake, at, yes, (json, terminal))
+            .await
+            .map(|next| next.first)
+    }
+
+    /// [`go`], with the lines the run's own yes agreed to.
+    async fn go_agreed(
+        fake: &Fake,
+        at: &Where,
+        yes: bool,
+        (json, terminal): (bool, bool),
+    ) -> Result<(First, Agreed), CliError> {
+        let next = go_next(fake, at, yes, (json, terminal)).await?;
+        Ok((next.first, next.lines.map(|l| l.agreed).unwrap_or_default()))
+    }
+
+    /// [`go`], with what follows whole.
+    async fn go_next(
+        fake: &Fake,
+        at: &Where,
+        yes: bool,
+        (json, terminal): (bool, bool),
+    ) -> Result<Next, CliError> {
         let m = fake.manifest();
         first_with(fake, &app(fake), (at, yes), &m, (json, terminal)).await
     }
@@ -632,13 +1242,595 @@ mod tests {
             .expect("started");
         assert_eq!(first, First::Started);
         // Checked here first, signed in, then started: no picker.
-        assert_eq!(*fake.calls.borrow(), ["ready", "sign_in", "start"]);
+        assert_eq!(*fake.calls.borrow(), ["ready", "sign_in", "owing", "start"]);
         assert_eq!(
             *fake.sent.borrow(),
             [(true, "tokyo".to_owned(), true)],
             "erpc.toml said account = true as the start was sent"
         );
         assert!(fake.kept_there());
+    }
+
+    fn planned(region: &str) -> Where {
+        Where {
+            plan: Some("prod_vps_2".to_owned()),
+            ..new_server_at(Some(region))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_plan_is_started_at_its_size_when_it_is_free() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let mut fake = Fake::new(&dir, TOML);
+        fake.plan_cores = Some(2);
+        fake.free = Some(vec![(2, "amsterdam"), (4, "amsterdam")]);
+        let first = go(&fake, &planned("amsterdam"), false, (false, true))
+            .await
+            .expect("started");
+        assert_eq!(first, First::Started);
+        assert_eq!(*fake.sizes.borrow(), [(Some(2), "amsterdam".to_owned())]);
+        assert!(fake.kept_there());
+        // The stock not read: the size named is started all the same.
+        let mut fake = Fake::new(&dir, TOML);
+        fake.plan_cores = Some(2);
+        go(&fake, &planned("amsterdam"), false, (false, true))
+            .await
+            .expect("started");
+        assert_eq!(*fake.sizes.borrow(), [(Some(2), "amsterdam".to_owned())]);
+        // A name that gives no size: refused with the sizes offered, the
+        // start asked for none.
+        let mut fake = Fake::new(&dir, TOML);
+        fake.plan_cores = None;
+        let e = go(&fake, &planned("amsterdam"), false, (false, true))
+            .await
+            .expect_err("refused");
+        assert_eq!(e.code, Code::Usage);
+        assert_eq!(*fake.sizes.borrow(), [(Some(0), "amsterdam".to_owned())]);
+        assert!(!fake.kept_there());
+    }
+
+    #[tokio::test]
+    async fn a_plan_not_free_is_offered_another_in_turn_each_asked() {
+        // The size named has no room: a bigger one there, then the same
+        // elsewhere, each asked; a no goes on to the next.
+        let dir = tempfile::tempdir().expect("a directory");
+        let mut fake = Fake::new(&dir, TOML);
+        fake.plan_cores = Some(2);
+        fake.free = Some(vec![(4, "amsterdam"), (2, "london")]);
+        *fake.answers_yes.borrow_mut() = vec![false, true];
+        let _ = crate::node::common::heard::take_printed();
+        let first = go(&fake, &planned("amsterdam"), false, (false, true))
+            .await
+            .expect("started");
+        assert_eq!(first, First::Started);
+        assert_eq!(
+            *fake.sizes.borrow(),
+            [
+                (Some(4), "amsterdam".to_owned()),
+                (Some(2), "london".to_owned())
+            ]
+        );
+        let printed = crate::node::common::heard::take_printed().join("\n");
+        assert!(
+            printed.contains("ERPC Worker (2 vCPU) in amsterdam, the size --plan names, is not free now; offered in its place: ERPC Worker (4 vCPU) in amsterdam."),
+            "{printed}"
+        );
+        // A yes to the size named, out of stock at the start, then a no to
+        // what is offered: erpc.toml keeps the environment in the account
+        // since the yes, and the stop says the deploy goes on from there.
+        let mut fake = Fake::new(&dir, TOML);
+        fake.plan_cores = Some(2);
+        fake.free = Some(vec![(2, "amsterdam"), (4, "amsterdam")]);
+        *fake.out_of_stock.borrow_mut() = vec![true];
+        *fake.answers_yes.borrow_mut() = vec![true, false];
+        let e = go(&fake, &planned("amsterdam"), false, (false, true))
+            .await
+            .expect_err("stopped");
+        assert!(fake.kept_there());
+        assert!(
+            e.hint.as_deref().is_some_and(|h| {
+                h.contains("`erpc worker deploy --plan prod_vps_2 --env prod")
+                    && h.contains("goes on from where this stopped")
+            }),
+            "{e:?}"
+        );
+        // Each declined: stopped, nothing started, what is free said.
+        let mut fake = Fake::new(&dir, TOML);
+        fake.plan_cores = Some(2);
+        fake.free = Some(vec![(4, "amsterdam")]);
+        *fake.answers_yes.borrow_mut() = vec![false];
+        let e = go(&fake, &planned("amsterdam"), false, (false, true))
+            .await
+            .expect_err("stopped");
+        assert!(
+            e.message
+                .contains("free now: ERPC Worker (4 vCPU) in amsterdam"),
+            "{}",
+            e.message
+        );
+        assert!(!fake.kept_there());
+        // An alternative the account does not start: the next asked.
+        let mut fake = Fake::new(&dir, TOML);
+        fake.plan_cores = Some(2);
+        fake.free = Some(vec![(16, "amsterdam"), (2, "london")]);
+        go(&fake, &planned("amsterdam"), false, (false, true))
+            .await
+            .expect("started");
+        assert_eq!(
+            *fake.sizes.borrow(),
+            [
+                (Some(16), "amsterdam".to_owned()),
+                (Some(2), "london".to_owned())
+            ]
+        );
+        // An alternative out of stock at the start: the next asked.
+        let mut fake = Fake::new(&dir, TOML);
+        fake.plan_cores = Some(2);
+        fake.free = Some(vec![(4, "amsterdam"), (2, "london")]);
+        *fake.out_of_stock.borrow_mut() = vec![true];
+        go(&fake, &planned("amsterdam"), false, (false, true))
+            .await
+            .expect("started");
+        assert_eq!(
+            *fake.sizes.borrow(),
+            [
+                (Some(4), "amsterdam".to_owned()),
+                (Some(2), "london".to_owned())
+            ]
+        );
+        // Out of stock at the start, though listed free: the next asked.
+        let mut fake = Fake::new(&dir, TOML);
+        fake.plan_cores = Some(2);
+        fake.free = Some(vec![(2, "amsterdam"), (2, "london")]);
+        *fake.out_of_stock.borrow_mut() = vec![true];
+        go(&fake, &planned("amsterdam"), false, (false, true))
+            .await
+            .expect("started");
+        assert_eq!(
+            *fake.sizes.borrow(),
+            [
+                (Some(2), "amsterdam".to_owned()),
+                (Some(2), "london".to_owned())
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn under_yes_a_plan_takes_only_the_size_named() {
+        // Not free: stopped, what is free said, nothing started.
+        let dir = tempfile::tempdir().expect("a directory");
+        let mut fake = Fake::new(&dir, TOML);
+        fake.plan_cores = Some(2);
+        fake.free = Some(vec![(4, "amsterdam"), (2, "london")]);
+        let e = go(&fake, &planned("amsterdam"), true, (false, true))
+            .await
+            .expect_err("stopped");
+        assert!(
+            e.message.contains(
+                "ERPC Worker (2 vCPU) in amsterdam, the size --plan names, is not free now"
+            ) && e.message.contains("ERPC Worker (2 vCPU) in london")
+                && e.message.contains("ERPC Worker (4 vCPU) in amsterdam"),
+            "{}",
+            e.message
+        );
+        assert!(fake.sizes.borrow().is_empty());
+        assert!(!fake.kept_there());
+        // Free, then out of stock at the start: stopped, nothing else.
+        let mut fake = Fake::new(&dir, TOML);
+        fake.plan_cores = Some(2);
+        fake.free = Some(vec![(2, "amsterdam"), (2, "london")]);
+        *fake.out_of_stock.borrow_mut() = vec![true];
+        let e = go(&fake, &planned("amsterdam"), true, (false, true))
+            .await
+            .expect_err("stopped");
+        assert!(e.message.contains("is not free now"), "{}", e.message);
+        assert_eq!(*fake.sizes.borrow(), [(Some(2), "amsterdam".to_owned())]);
+        // What is free not read, then out of stock: nothing said free.
+        let mut fake = Fake::new(&dir, TOML);
+        fake.plan_cores = Some(2);
+        *fake.out_of_stock.borrow_mut() = vec![true];
+        let e = go(&fake, &planned("amsterdam"), true, (false, true))
+            .await
+            .expect_err("stopped");
+        assert!(
+            e.message.contains("what is free could not be read")
+                && !e.message.contains("free now:"),
+            "{}",
+            e.message
+        );
+    }
+
+    #[tokio::test]
+    async fn on_a_run_again_yes_takes_only_the_size_named_and_answers_no_price() {
+        // --plan --yes, no --new-server: the price asked, and no other size
+        // or region offered.
+        let dir = tempfile::tempdir().expect("a directory");
+        let mut fake = Fake::new(&dir, &kept_toml());
+        fake.record = Some(empty_record());
+        fake.plan_cores = Some(2);
+        fake.free = Some(vec![(4, "amsterdam"), (2, "london")]);
+        let at = Where {
+            plan: Some("prod_vps_2".to_owned()),
+            region: Some("amsterdam".to_owned()),
+            ..Where::default()
+        };
+        let e = go(&fake, &at, true, (false, true))
+            .await
+            .expect_err("stopped");
+        assert!(e.message.contains("is not free now"), "{}", e.message);
+        assert!(fake.sizes.borrow().is_empty(), "{:?}", fake.sizes.borrow());
+        // Free: started, its price asked.
+        fake.free = Some(vec![(2, "amsterdam")]);
+        go(&fake, &at, true, (false, true)).await.expect("started");
+        assert!(!fake.sent.borrow()[0].2, "asked");
+        // Without --yes: what is free offered in turn, as on a first deploy.
+        let dir = tempfile::tempdir().expect("a directory");
+        let mut fake = Fake::new(&dir, &kept_toml());
+        fake.record = Some(empty_record());
+        fake.plan_cores = Some(2);
+        fake.free = Some(vec![(4, "amsterdam")]);
+        go(&fake, &at, false, (false, true)).await.expect("started");
+        assert_eq!(*fake.sizes.borrow(), [(Some(4), "amsterdam".to_owned())]);
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each step of a first deploy's lines, one after another"
+    )]
+    #[tokio::test]
+    async fn each_line_is_read_before_anything_and_asked_after_the_servers_price() {
+        let grpc = Where {
+            lines: vec![(LineKind::Grpc, None)],
+            ..new_server_at(None)
+        };
+        // A plan the hourly catalogue does not offer: refused before
+        // anything is made or bought.
+        let dir = tempfile::tempdir().expect("a directory");
+        let mut fake = Fake::new(&dir, TOML);
+        fake.plans_offered = false;
+        let e = go(&fake, &grpc, false, (false, true))
+            .await
+            .expect_err("refused");
+        assert_eq!(e.code, Code::Usage);
+        assert_eq!(*fake.calls.borrow(), ["ready", "sign_in", "owing"]);
+        assert!(!fake.kept_there() && fake.sent.borrow().is_empty());
+        // Asked after the server's yes, before its start: kept here, owed,
+        // agreed to, then erpc.toml written, then the start sent.
+        let dir = tempfile::tempdir().expect("a directory");
+        let fake = Fake::new(&dir, TOML);
+        let (first, agreed) = go_agreed(&fake, &grpc, false, (false, true))
+            .await
+            .expect("started");
+        assert_eq!(first, First::Started);
+        // The deploy that follows starts it without asking again: this
+        // run's yes agreed to it.
+        assert!(agreed.has(LineKind::Grpc) && !agreed.has(LineKind::Shreds));
+        let asked = fake.line_asked.borrow().clone();
+        assert_eq!(asked.len(), 1);
+        assert!(
+            asked[0].contains("gRPC line")
+                && asked[0].contains("lets in the ERPC Worker's address"),
+            "{}",
+            asked[0]
+        );
+        assert_eq!(fake.lines_kept(), [("grpc".to_owned(), true)]);
+        assert!(
+            fake.sent.borrow()[0].0,
+            "erpc.toml written before the start"
+        );
+        assert_eq!(*fake.ready_lines.borrow(), [vec![LineKind::Grpc]]);
+        // A no to the line: nothing sent, erpc.toml as it was, nothing kept.
+        let dir = tempfile::tempdir().expect("a directory");
+        let fake = Fake::new(&dir, TOML);
+        fake.line_yes.borrow_mut().push(false);
+        let e = go(&fake, &grpc, false, (false, true))
+            .await
+            .expect_err("declined");
+        assert_eq!(e.code, Code::Declined);
+        assert!(fake.sent.borrow().is_empty());
+        assert!(!fake.kept_there());
+        assert!(fake.lines_kept().is_empty());
+        // Under --yes: said, not asked.
+        let dir = tempfile::tempdir().expect("a directory");
+        let fake = Fake::new(&dir, TOML);
+        let _ = crate::node::common::heard::take_printed();
+        go(&fake, &grpc, true, (false, true))
+            .await
+            .expect("started");
+        assert!(fake.line_asked.borrow().is_empty());
+        let printed = crate::node::common::heard::take_printed().join("\n");
+        assert!(printed.contains("Starting a gRPC line"), "{printed}");
+        // A no to the line with --plan: no other size is offered for it.
+        let dir = tempfile::tempdir().expect("a directory");
+        let mut fake = Fake::new(&dir, TOML);
+        fake.plan_cores = Some(2);
+        fake.free = Some(vec![(2, "amsterdam"), (4, "amsterdam")]);
+        fake.line_yes.borrow_mut().push(false);
+        let planned_grpc = Where {
+            lines: vec![(LineKind::Grpc, None)],
+            ..planned("amsterdam")
+        };
+        let e = go(&fake, &planned_grpc, false, (false, true))
+            .await
+            .expect_err("declined");
+        assert_eq!(e.code, Code::Declined);
+        assert_eq!(*fake.sizes.borrow(), [(Some(2), "amsterdam".to_owned())]);
+        assert!(!fake.kept_there());
+        // A no to the line on a size offered in place of the one named: no
+        // further size is offered.
+        let dir = tempfile::tempdir().expect("a directory");
+        let mut fake = Fake::new(&dir, TOML);
+        fake.plan_cores = Some(2);
+        fake.free = Some(vec![(4, "amsterdam"), (2, "london")]);
+        fake.line_yes.borrow_mut().push(false);
+        let e = go(&fake, &planned_grpc, false, (false, true))
+            .await
+            .expect_err("declined");
+        assert_eq!(e.code, Code::Declined);
+        assert_eq!(*fake.sizes.borrow(), [(Some(4), "amsterdam".to_owned())]);
+        assert!(fake.sent.borrow().is_empty());
+        // Asked once, on the first yes, though another size is offered.
+        let dir = tempfile::tempdir().expect("a directory");
+        let mut fake = Fake::new(&dir, TOML);
+        fake.plan_cores = Some(2);
+        fake.free = Some(vec![(2, "amsterdam"), (4, "amsterdam")]);
+        *fake.out_of_stock.borrow_mut() = vec![true];
+        go(&fake, &planned_grpc, false, (false, true))
+            .await
+            .expect("started");
+        assert_eq!(fake.sizes.borrow().len(), 2);
+        assert_eq!(fake.line_asked.borrow().len(), 1);
+        // A start that went through before this run: nothing asked, the
+        // line kept, to be asked when it is started.
+        let dir = tempfile::tempdir().expect("a directory");
+        let mut fake = Fake::new(&dir, TOML);
+        fake.went_through_before = true;
+        go(&fake, &grpc, false, (false, true))
+            .await
+            .expect("started");
+        assert!(fake.line_asked.borrow().is_empty());
+        assert_eq!(fake.lines_kept(), [("grpc".to_owned(), false)]);
+        // On a run again, the lines are asked as the server's price is.
+        let dir = tempfile::tempdir().expect("a directory");
+        let mut fake = Fake::new(&dir, &kept_toml());
+        fake.record = Some(empty_record());
+        let at = Where {
+            lines: vec![(LineKind::Grpc, None)],
+            ..Where::default()
+        };
+        let (_, agreed) = go_agreed(&fake, &at, true, (false, true))
+            .await
+            .expect("started");
+        assert!(agreed.has(LineKind::Grpc));
+        assert_eq!(
+            fake.line_asked.borrow().len(),
+            1,
+            "--yes without --new-server"
+        );
+        assert_eq!(fake.lines_kept(), [("grpc".to_owned(), true)]);
+        // There too, a start that went through before keeps the lines
+        // asked, to be asked when they are started.
+        let dir = tempfile::tempdir().expect("a directory");
+        let mut fake = Fake::new(&dir, &kept_toml());
+        fake.record = Some(empty_record());
+        fake.went_through_before = true;
+        go(&fake, &at, false, (false, true)).await.expect("started");
+        assert!(fake.line_asked.borrow().is_empty());
+        assert_eq!(fake.lines_kept(), [("grpc".to_owned(), false)]);
+        // And one an earlier run agreed to is asked again there, before
+        // the server is bought, said so first; this run's yes agreed to it.
+        let dir = tempfile::tempdir().expect("a directory");
+        let mut fake = Fake::new(&dir, &kept_toml());
+        fake.record = Some(empty_record());
+        fake.owe(LineKind::Shreds);
+        let _ = crate::node::common::heard::take_printed();
+        let (_, agreed) = go_agreed(&fake, &Where::default(), false, (false, true))
+            .await
+            .expect("started");
+        assert_eq!(fake.line_asked.borrow().len(), 1);
+        assert!(agreed.has(LineKind::Shreds));
+        let printed = crate::node::common::heard::take_printed().join("\n");
+        assert!(printed.contains("agreed to on an earlier run"), "{printed}");
+        assert_eq!(*fake.ready_lines.borrow(), [vec![LineKind::Shreds]]);
+        // A no there: nothing bought, the line kept here let go.
+        let dir = tempfile::tempdir().expect("a directory");
+        let mut fake = Fake::new(&dir, &kept_toml());
+        fake.record = Some(empty_record());
+        fake.owe(LineKind::Shreds);
+        fake.line_yes.borrow_mut().push(false);
+        let e = go(&fake, &Where::default(), false, (false, true))
+            .await
+            .expect_err("declined");
+        assert_eq!(e.code, Code::Declined);
+        assert!(fake.sent.borrow().is_empty());
+        assert!(fake.lines_kept().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_first_step_says_which_lines_the_deploy_starts_and_whether_yes_says_them() {
+        let grpc = vec![(LineKind::Grpc, None)];
+        // A first deploy: none named, those its yes agreed to, its --yes.
+        for yes in [false, true] {
+            let dir = tempfile::tempdir().expect("a directory");
+            let fake = Fake::new(&dir, TOML);
+            let at = Where {
+                lines: grpc.clone(),
+                ..new_server_at(None)
+            };
+            let next = go_next(&fake, &at, yes, (false, true))
+                .await
+                .expect("started");
+            let lines = next.lines.expect("lines started");
+            assert!(lines.named.is_empty());
+            assert!(lines.agreed.has(LineKind::Grpc));
+            assert_eq!(lines.yes, yes);
+        }
+        // A run again, the record naming nothing: --yes says the line
+        // prices only with --new-server.
+        for (new_vps, yes, says) in [
+            (false, true, false),
+            (true, true, true),
+            (true, false, false),
+        ] {
+            let dir = tempfile::tempdir().expect("a directory");
+            let mut fake = Fake::new(&dir, &kept_toml());
+            fake.record = Some(empty_record());
+            let at = Where {
+                lines: grpc.clone(),
+                new_vps,
+                ..Where::default()
+            };
+            let next = go_next(&fake, &at, yes, (false, true))
+                .await
+                .expect("started");
+            let lines = next.lines.expect("lines started");
+            assert!(lines.agreed.has(LineKind::Grpc), "{new_vps} {yes}");
+            assert_eq!(lines.yes, says, "{new_vps} {yes}");
+        }
+        // Owed: the lines named, none agreed in this run, --yes saying none.
+        let dir = tempfile::tempdir().expect("a directory");
+        let mut fake = Fake::new(&dir, &kept_toml());
+        fake.record = Some(record_with_server());
+        let at = Where {
+            lines: grpc.clone(),
+            ..Where::default()
+        };
+        let next = go_next(&fake, &at, true, (false, true))
+            .await
+            .expect("owed");
+        assert_eq!(next.first, First::Owed);
+        let lines = next.lines.expect("lines started");
+        assert_eq!(lines.named, grpc);
+        assert_eq!(lines.agreed, Agreed::default());
+        assert!(!lines.yes);
+        // As before, or a server picked: none.
+        let dir = tempfile::tempdir().expect("a directory");
+        let mut fake = Fake::new(&dir, TOML);
+        fake.picked = Picked::Server(100_001);
+        let next = go_next(&fake, &Where::default(), false, (false, true))
+            .await
+            .expect("picked");
+        assert_eq!(next, Next::without_lines(First::Picked(100_001)));
+        let mut fake = Fake::new(&dir, &kept_toml());
+        fake.record = Some(record_with_server());
+        let next = go_next(&fake, &Where::default(), false, (false, true))
+            .await
+            .expect("as before");
+        assert_eq!(next, Next::without_lines(First::AsBefore));
+    }
+
+    #[tokio::test]
+    async fn a_line_start_kept_from_an_earlier_environment_refuses_before_anything() {
+        for kept_toml_first in [false, true] {
+            let dir = tempfile::tempdir().expect("a directory");
+            let mut fake = if kept_toml_first {
+                let mut fake = Fake::new(&dir, &kept_toml());
+                fake.record = Some(empty_record());
+                fake
+            } else {
+                Fake::new(&dir, TOML)
+            };
+            fake.plans_offered = true;
+            let text = r#"{"starts": {"PIN grpc": {"product_id": "prod_grpc_1", "name": "Geyser gRPC Shared",
+                "price": "0.1250", "agreed": true, "key": "ffffffffffffffffffffffffffffffff",
+                "ip": "198.51.100.7", "resend": true, "start": "5d1e2f3a-4b5c-4d6e-8f70-819a2b3c4d5e"}}}"#
+                .replace("PIN", &kept::pin_key("user-100001", "bot", "prod"));
+            std::fs::write(&fake.store, text).expect("kept");
+            let e = go(&fake, &new_server_at(None), false, (false, true))
+                .await
+                .expect_err("refused");
+            assert!(
+                e.message.contains("from an earlier environment or server")
+                    && e.message.contains("5d1e2f3a-4b5c-4d6e-8f70-819a2b3c4d5e"),
+                "{}",
+                e.message
+            );
+            assert!(
+                e.hint
+                    .as_deref()
+                    .is_some_and(|h| h.contains("ERPC support")),
+                "{e:?}"
+            );
+            assert!(fake.sent.borrow().is_empty() && fake.sizes.borrow().is_empty());
+            assert!(!fake.calls.borrow().contains(&"start"));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_server_start_kept_to_send_again_goes_whatever_the_stock_lists() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let mut fake = Fake::new(&dir, &kept_toml());
+        fake.record = Some(empty_record());
+        fake.plan_cores = Some(2);
+        fake.free = Some(vec![(4, "amsterdam")]);
+        fake.kept_server_start = true;
+        let at = Where {
+            plan: Some("prod_vps_2".to_owned()),
+            region: Some("amsterdam".to_owned()),
+            ..Where::default()
+        };
+        go(&fake, &at, false, (false, true)).await.expect("started");
+        assert_eq!(*fake.sizes.borrow(), [(Some(2), "amsterdam".to_owned())]);
+        assert!(!fake.calls.borrow().contains(&"stock"));
+    }
+
+    #[test]
+    fn what_is_offered_in_place_of_a_plan_goes_bigger_there_then_nearest_first() {
+        let free = [
+            (8, "amsterdam"),
+            (4, "amsterdam"),
+            (2, "tokyo"),
+            (2, "frankfurt"),
+            (2, "london"),
+            (1, "amsterdam"),
+        ];
+        let (named, others) = offered(2, ("amsterdam", "amsterdam"), Some(&free));
+        assert!(!named);
+        assert_eq!(
+            others,
+            [
+                (4, "amsterdam"),
+                (8, "amsterdam"),
+                (2, "london"),
+                (2, "frankfurt"),
+                (2, "tokyo")
+            ]
+        );
+        // This machine's region first, when it is not the one asked.
+        let (_, others) = offered(2, ("amsterdam", "tokyo"), Some(&free));
+        assert_eq!(others[2], (2, "tokyo"));
+        let (named, others) = offered(2, ("london", "amsterdam"), Some(&free));
+        assert!(named);
+        assert!(!others.contains(&(2, "london")));
+        // Not read: the size named is taken to be free.
+        assert_eq!(offered(2, ("london", "london"), None), (true, Vec::new()));
+    }
+
+    #[tokio::test]
+    async fn a_wallet_apps_first_deploy_goes_the_account_way_too() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let toml = format!(
+            "{TOML}\n[wallet]\nsource = \"keychain:erpc-worker/bot.wallet\"\n\
+             pubkey = \"7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU\"\n"
+        );
+        let fake = Fake::new(&dir, &toml);
+        let _ = crate::node::common::heard::take_printed();
+        let first = go(&fake, &new_server_at(None), true, (false, true))
+            .await
+            .expect("started");
+        assert_eq!(first, First::Started);
+        assert_eq!(*fake.calls.borrow(), ["ready", "sign_in", "owing", "start"]);
+        assert!(fake.kept_there());
+        let printed = crate::node::common::heard::take_printed().join("\n");
+        assert!(!printed.contains("as before"), "{printed}");
+        // Under --json, or with nobody at a terminal, it is refused first,
+        // as any first deploy the account way is.
+        let fake = Fake::new(&dir, &toml);
+        let e = go(&fake, &new_server_at(None), true, (true, true))
+            .await
+            .expect_err("refused");
+        assert_eq!(e.code, Code::NeedsTerminal);
+        assert!(fake.calls.borrow().is_empty());
     }
 
     #[tokio::test]
@@ -660,7 +1852,10 @@ mod tests {
             .await
             .expect("started");
         assert_eq!(first, First::Started);
-        assert_eq!(*fake.calls.borrow(), ["ready", "sign_in", "pick", "start"]);
+        assert_eq!(
+            *fake.calls.borrow(),
+            ["ready", "sign_in", "pick", "owing", "start"]
+        );
         assert!(fake.kept_there());
     }
 
@@ -763,7 +1958,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("a directory");
         let fake = Fake::new(&dir, TOML);
         let lines = Where {
-            lines: vec![(LineKind::Grpc, None)],
+            lines: vec![(LineKind::Udp, None)],
             ..new_server_at(None)
         };
         let first = go(&fake, &lines, true, (true, false))
@@ -805,6 +2000,10 @@ mod tests {
         format!("{TOML}\n[env.prod]\naccount = true\n")
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each way a run that stopped is run again, one after another"
+    )]
     #[tokio::test]
     async fn a_run_that_stopped_is_resumed_only_while_the_account_names_nothing() {
         let dir = tempfile::tempdir().expect("a directory");
@@ -825,7 +2024,7 @@ mod tests {
             assert_eq!(first, First::Started);
             assert_eq!(
                 *fake.calls.borrow(),
-                ["sign_in", "record", "ready", "start"]
+                ["sign_in", "record", "owing", "ready", "start"]
             );
             assert_eq!(fake.sent.borrow()[0].2, said, "{new_vps} {yes}");
         }
@@ -870,7 +2069,10 @@ mod tests {
             .await
             .expect_err("refused");
         assert!(e.message.contains("128"), "{}", e.message);
-        assert_eq!(*fake.calls.borrow(), ["sign_in", "record", "ready"]);
+        assert_eq!(
+            *fake.calls.borrow(),
+            ["sign_in", "record", "owing", "ready"]
+        );
         // A record that names a server: deployed to as before, nothing
         // started.
         let mut fake = Fake::new(&dir, &kept_toml());
@@ -891,7 +2093,7 @@ mod tests {
         // What a deploy there does not take: as before, unread.
         let fake = Fake::new(&dir, &kept_toml());
         let lines = Where {
-            lines: vec![(LineKind::Grpc, None)],
+            lines: vec![(LineKind::Udp, None)],
             ..Where::default()
         };
         let first = go(&fake, &lines, true, (false, true))
@@ -899,6 +2101,158 @@ mod tests {
             .expect("as before");
         assert_eq!(first, First::AsBefore);
         assert!(fake.calls.borrow().is_empty());
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each way a line is owed, or not, one after another"
+    )]
+    #[tokio::test]
+    async fn a_line_asked_or_kept_here_before_the_first_deploy_is_owed_once_the_deploy_is_checked()
+    {
+        let dir = tempfile::tempdir().expect("a directory");
+        let grpc = Where {
+            lines: vec![(LineKind::Grpc, None)],
+            ..Where::default()
+        };
+        // Asked of one whose server was started and never deployed to:
+        // owed, once what refuses the deploy is checked, and kept here, to
+        // be asked when it is started.
+        let mut fake = Fake::new(&dir, &kept_toml());
+        fake.record = Some(record_with_server());
+        let first = go(&fake, &grpc, true, (false, true)).await.expect("owed");
+        assert_eq!(first, First::Owed);
+        assert_eq!(
+            *fake.calls.borrow(),
+            ["sign_in", "record", "owing", "ready"]
+        );
+        assert_eq!(fake.lines_kept(), [("grpc".to_owned(), false)]);
+        // Refused first with nobody at a terminal, nothing kept.
+        let dir = tempfile::tempdir().expect("a directory");
+        let mut fake = Fake::new(&dir, &kept_toml());
+        fake.record = Some(record_with_server());
+        let e = go(&fake, &grpc, true, (true, true))
+            .await
+            .expect_err("refused");
+        assert_eq!(e.code, Code::NeedsTerminal);
+        assert!(fake.lines_kept().is_empty());
+        // Kept here by an earlier run, nothing on the command line: owed,
+        // as the plain deploy a stop names goes on.
+        let mut fake = Fake::new(&dir, &kept_toml());
+        fake.record = Some(record_with_server());
+        fake.owe(LineKind::Grpc);
+        let (first, agreed) = go_agreed(&fake, &Where::default(), false, (false, true))
+            .await
+            .expect("owed");
+        assert_eq!(first, First::Owed);
+        // Agreed to on an earlier run, not this one: asked when started.
+        assert_eq!(agreed, Agreed::default());
+        assert_eq!(fake.lines_kept(), [("grpc".to_owned(), true)]);
+        // The deploy's checks see the line kept here as one asked: a
+        // setting it gives does not refuse the deploy.
+        assert_eq!(*fake.ready_lines.borrow(), [vec![LineKind::Grpc]]);
+        // Neither asked nor kept here: as before, under --json too, with
+        // nothing read but what is kept here.
+        let dir = tempfile::tempdir().expect("a directory");
+        let mut fake = Fake::new(&dir, &kept_toml());
+        fake.record = Some(record_with_server());
+        let first = go(&fake, &Where::default(), false, (false, true))
+            .await
+            .expect("as before");
+        assert_eq!(first, First::AsBefore);
+        let mut fake = Fake::new(&dir, &kept_toml());
+        fake.record = Some(record_with_server());
+        let first = go(&fake, &Where::default(), false, (true, false))
+            .await
+            .expect("as before");
+        assert_eq!(first, First::AsBefore);
+        assert_eq!(*fake.calls.borrow(), ["sign_in", "record", "kept_kinds"]);
+        // Kept here, under --json: refused before the catalogue is read or
+        // anything kept here is changed.
+        let json_dir = tempfile::tempdir().expect("a directory");
+        let mut fake = Fake::new(&json_dir, &kept_toml());
+        fake.record = Some(record_with_server());
+        fake.owe(LineKind::Grpc);
+        let e = go(&fake, &Where::default(), false, (true, false))
+            .await
+            .expect_err("refused");
+        assert_eq!(e.code, Code::NeedsTerminal);
+        assert!(!fake.calls.borrow().contains(&"owing"));
+        // With anything else for a server (--new-server, --region,
+        // --plan), on a record with no server, or once deployed to: as
+        // before, refused by the deploy that follows.
+        let mut deployed = record_with_server();
+        deployed.deployed = Some(erpc_api::worker::Deployed::new(
+            "r1",
+            "2026-11-27T00:00:00Z",
+        ));
+        let mut address_only = empty_record();
+        address_only.facts.host = Some("203.0.113.10".to_owned());
+        for (at, record) in [
+            (
+                Where {
+                    new_vps: true,
+                    ..grpc.clone()
+                },
+                record_with_server(),
+            ),
+            (
+                Where {
+                    region: Some("tokyo".to_owned()),
+                    ..grpc.clone()
+                },
+                record_with_server(),
+            ),
+            (
+                Where {
+                    plan: Some("prod_vps_2".to_owned()),
+                    ..grpc.clone()
+                },
+                record_with_server(),
+            ),
+            (grpc.clone(), address_only),
+            (grpc.clone(), deployed),
+        ] {
+            let mut fake = Fake::new(&dir, &kept_toml());
+            fake.record = Some(record);
+            let first = go(&fake, &at, true, (false, true))
+                .await
+                .expect("as before");
+            assert_eq!(first, First::AsBefore, "{at:?}");
+            assert!(fake.lines_kept().is_empty());
+        }
+        // One moved in, never deployed to: owed the same.
+        let mut moved = record_with_server();
+        moved.servers[0].hourly = false;
+        let mut fake = Fake::new(&dir, &kept_toml());
+        fake.record = Some(moved);
+        let first = go(&fake, &grpc, true, (false, true)).await.expect("owed");
+        assert_eq!(first, First::Owed);
+        // What refuses the deploy refuses before a line is owed: more
+        // settings than the account keeps, a server coming in.
+        let many =
+            (0..=crate::worker::deploy_account::NAMES_MAX).fold(String::new(), |mut vars, i| {
+                use std::fmt::Write as _;
+                let _ = writeln!(vars, "V{i} = \"x\"");
+                vars
+            });
+        let dir = tempfile::tempdir().expect("a directory");
+        let mut fake = Fake::new(&dir, &format!("{}\n[vars]\n{many}", kept_toml()));
+        fake.record = Some(record_with_server());
+        let e = go(&fake, &grpc, true, (false, true))
+            .await
+            .expect_err("refused");
+        assert!(e.message.contains("128"), "{}", e.message);
+        assert!(fake.lines_kept().is_empty());
+        let mut coming = record_with_server();
+        coming.servers[0].slot = erpc_api::worker::Slot::Outgoing;
+        let mut fake = Fake::new(&dir, &kept_toml());
+        fake.record = Some(coming);
+        let e = go(&fake, &grpc, true, (false, true))
+            .await
+            .expect_err("refused");
+        assert!(e.message.contains("going out"), "{}", e.message);
+        assert!(fake.lines_kept().is_empty());
     }
 
     fn empty_record() -> EnvDetail {
@@ -938,11 +2292,11 @@ mod tests {
         // No table, or an empty one: --new-server, or the picker.
         for env in [None, Some(Env::default())] {
             assert_eq!(
-                way(env.as_ref(), false, &new, at_terminal),
+                way(env.as_ref(), &new, at_terminal),
                 Way::New { asked: true }
             );
             assert_eq!(
-                way(env.as_ref(), false, &fresh(), at_terminal),
+                way(env.as_ref(), &fresh(), at_terminal),
                 Way::New { asked: false }
             );
         }
@@ -951,10 +2305,7 @@ mod tests {
             region: Some("tokyo".to_owned()),
             ..new.clone()
         };
-        assert_eq!(
-            way(None, false, &tokyo, at_terminal),
-            Way::New { asked: true }
-        );
+        assert_eq!(way(None, &tokyo, at_terminal), Way::New { asked: true });
     }
 
     #[test]
@@ -981,7 +2332,7 @@ mod tests {
             },
         ];
         for at in &named {
-            assert_eq!(way(None, false, at, at_terminal), Way::AsBefore, "{at:?}");
+            assert_eq!(way(None, at, at_terminal), Way::AsBefore, "{at:?}");
         }
         // Anything in the table: a server, an address, a start on record,
         // a 1Password item, a firewall list.
@@ -1006,10 +2357,10 @@ mod tests {
             ..fresh()
         };
         for env in &tables {
-            assert_eq!(way(Some(env), false, &new, at_terminal), Way::AsBefore);
+            assert_eq!(way(Some(env), &new, at_terminal), Way::AsBefore);
         }
         // Nobody to pick and nothing asked for: refused as before.
-        assert_eq!(way(None, false, &fresh(), (false, false)), Way::AsBefore);
+        assert_eq!(way(None, &fresh(), (false, false)), Way::AsBefore);
     }
 
     #[test]
@@ -1019,39 +2370,54 @@ mod tests {
             ..fresh()
         };
         let at_terminal = (false, true);
+        // A gRPC, Shreds or Unlimited RPC line goes the account way, at a
+        // terminal only.
+        for kind in [LineKind::Grpc, LineKind::Shreds, LineKind::Unlimited] {
+            let line = Where {
+                lines: vec![(kind, None)],
+                ..new()
+            };
+            assert_eq!(way(None, &line, at_terminal), Way::New { asked: true });
+            assert_eq!(way(None, &line, (true, false)), Way::NeedsTerminal);
+        }
+        // A UDP Forwarding line, or one of its options, goes as before.
         let lines = Where {
-            lines: vec![(LineKind::Grpc, None)],
+            lines: vec![(LineKind::Grpc, None), (LineKind::Udp, None)],
             ..new()
         };
-        assert_eq!(way(None, false, &lines, at_terminal), Way::Said(Why::Lines));
+        assert_eq!(way(None, &lines, at_terminal), Way::Said(Why::Lines));
         // Without a terminal too: as before, where --yes answers all.
-        assert_eq!(
-            way(None, false, &lines, (true, false)),
-            Way::Said(Why::Lines)
-        );
+        assert_eq!(way(None, &lines, (true, false)), Way::Said(Why::Lines));
+        for udp in [
+            Where {
+                udp_port: Some(10_001),
+                ..new()
+            },
+            Where {
+                udp_region: Some("tokyo".to_owned()),
+                ..new()
+            },
+            Where {
+                udp_any_source: true,
+                ..new()
+            },
+        ] {
+            assert_eq!(way(None, &udp, at_terminal), Way::Said(Why::Lines));
+        }
         // A line taken off the record is a line asked about too.
         let forget = Where {
             forget_lines: vec!["200002".to_owned()],
             ..new()
         };
-        assert_eq!(
-            way(None, false, &forget, at_terminal),
-            Way::Said(Why::Lines)
-        );
+        assert_eq!(way(None, &forget, at_terminal), Way::Said(Why::Lines));
         let plan = Where {
             plan: Some("vps-1".to_owned()),
             ..new()
         };
-        assert_eq!(way(None, false, &plan, at_terminal), Way::Said(Why::Plan));
-        assert_eq!(way(None, true, &new(), at_terminal), Way::Said(Why::Wallet));
-        // Each is said in words of its own.
-        let said: Vec<String> = [Why::Lines, Why::Plan, Why::Wallet]
-            .into_iter()
-            .map(why_said)
-            .collect();
-        assert!(said[0].contains("data line"), "{}", said[0]);
-        assert!(said[1].contains("--plan"), "{}", said[1]);
-        assert!(said[2].contains("wallet"), "{}", said[2]);
+        // --plan goes the account way, at a terminal only.
+        assert_eq!(way(None, &plan, at_terminal), Way::New { asked: true });
+        assert_eq!(way(None, &plan, (true, false)), Way::NeedsTerminal);
+        assert!(why_said(Why::Lines).contains("UDP Forwarding line"));
     }
 
     #[test]
@@ -1062,13 +2428,13 @@ mod tests {
         };
         for (json, terminal) in [(true, true), (false, false), (true, false)] {
             assert_eq!(
-                way(None, false, &new, (json, terminal)),
+                way(None, &new, (json, terminal)),
                 Way::NeedsTerminal,
                 "{json} {terminal}"
             );
         }
         // The picker under --json too.
-        assert_eq!(way(None, false, &fresh(), (true, true)), Way::NeedsTerminal);
+        assert_eq!(way(None, &fresh(), (true, true)), Way::NeedsTerminal);
     }
 
     #[test]
@@ -1082,7 +2448,7 @@ mod tests {
             },
         ] {
             for (json, terminal) in [(false, true), (true, false)] {
-                assert_eq!(way(Some(&kept), false, &at, (json, terminal)), Way::Resume);
+                assert_eq!(way(Some(&kept), &at, (json, terminal)), Way::Resume);
             }
         }
     }
@@ -1109,11 +2475,16 @@ mod tests {
                 upto: crate::worker::deploy::Upto::Prepared,
                 ..Where::default()
             },
+            Where {
+                plan: Some("prod_vps_2".to_owned()),
+                lines: vec![(LineKind::Grpc, None)],
+                ..Where::default()
+            },
         ];
         for at in asked {
             let routed = [
-                way(None, false, &at, (false, true)),
-                way(Some(&kept), false, &at, (false, true)),
+                way(None, &at, (false, true)),
+                way(Some(&kept), &at, (false, true)),
             ];
             assert!(
                 matches!(routed, [Way::New { .. }, Way::Resume]),
@@ -1125,9 +2496,9 @@ mod tests {
                 crate::worker::deploy_account::refuse_options(&after, &app).is_ok(),
                 "{at:?}"
             );
-            // Not taken as it was, when it asked for a new server or a
-            // region.
-            if at.new_vps || at.region.is_some() {
+            // Not taken as it was, when it asked for a new server, a
+            // region, a plan or a line.
+            if at.new_vps || at.region.is_some() || at.plan.is_some() || !at.lines.is_empty() {
                 assert!(crate::worker::deploy_account::refuse_options(&at, &app).is_err());
             }
         }

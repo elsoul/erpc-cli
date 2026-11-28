@@ -88,8 +88,9 @@ whose version has no entry below.
     revision read before the price, which the account refuses, buying nothing,
     when the environment changed meanwhile (a start sent again under its key
     while still open is answered as before). It makes the app's and the
-    environment's records when the account has none (the app's not yet when
-    its `erpc.toml` names a wallet). The question says that `erpc worker
+    environment's records when the account has none (an app's with its
+    wallet's public side when its `erpc.toml` names one; an app the account
+    has with another wallet is refused). The question says that `erpc worker
     deploy` then waits for the server, logs in to it once after a yes at a
     terminal and deploys to it, and that erpc ends it with `erpc worker delete
     --release-server` at a terminal, which deletes the environment's record
@@ -251,9 +252,10 @@ whose version has no entry below.
   command that only reads, or that asks before it buys, ends, deletes, sends
   or changes anything. The app is picked first; then four of those may do
   something that costs nothing before a question of their own, or with none
-  in that run: `server start` makes the app's and the environment's records
-  in the ERPC account when they are missing (they cost nothing), before its
-  price question; `deploy`, unless the app ships a `build.prebuilt` binary
+  in that run:
+  `server start` makes the app's and the environment's records in the ERPC
+  account when they are missing (they cost nothing), before its price
+  question; `deploy`, unless the app ships a `build.prebuilt` binary
   or cargo is not installed, runs `rustc` (and `rustup`, to cross-build) in
   the app's directory, the `rustc` that `RUSTC` or `CARGO_BUILD_RUSTC`
   names, else the one `RUSTUP_TOOLCHAIN` or the app's `rust-toolchain.toml`
@@ -261,9 +263,15 @@ whose version has no entry below.
   the file names, and a first deploy that starts a new server in the account
   (`--new-server`, or the new server picked at the terminal, or one run
   again after it stopped) makes the same records as `server start`, before
-  its price question (or, when a start kept on this machine went through
-  before, writes `account = true` to `erpc.toml` as the yes to that start
-  agreed); `server end`, run again after a stop, may first finish clearing
+  its price question (and with a `--plan` whose name gives no size, stops
+  there, nothing asked), keeps the data lines asked on this machine only
+  after their price questions, which follow the server's (or, when a start
+  kept on this machine went through before, writes `account = true` to
+  `erpc.toml` as the yes to that start agreed, and keeps the lines asked,
+  to be asked when they are started), and a deploy of an environment kept
+  in the account whose record names a server and no deploy keeps the lines
+  asked on this machine before any question, and starts none without a yes
+  in that run; `server end`, run again after a stop, may first finish clearing
   the address of a server whose end was already said yes to, and then asks
   nothing more in that run; and `delete --release-server` of an environment
   kept in the account that the account no longer has, when this machine
@@ -313,8 +321,64 @@ whose version has no entry below.
   `--new-server` asks for a new server in that account. `--host`,
   `--server`, a server of the account picked at the terminal, `--inline`,
   `--vault` and an environment with anything in `erpc.toml` go as before;
-  so do a deploy that asks for a data line or `--plan`, and an app whose
-  `erpc.toml` names a wallet, each with a note on stderr saying why. Before,
+  so does a deploy that asks for a UDP Forwarding line or `--forget-line`,
+  with a note on stderr saying why. `--plan` is started in the account by
+  the vCPUs its product's name says alone, at the account's price for that
+  size (a name that gives none is refused with the sizes the account
+  starts, before anything is bought); when that size has no room now (by
+  user-api's stock read, every page, or an `OUT_OF_STOCK` answer), a bigger
+  size there, then the same size in another region, nearest first, are
+  offered in turn at a terminal, each asked; under `--yes` (on a run again
+  too) only the size named is started, and otherwise it stops saying what
+  is free; a stop once `erpc.toml` keeps the environment names `--plan` in
+  the command that goes on.
+  A start the account answers `OUT_OF_STOCK` now carries
+  `{"accountCode": "OUT_OF_STOCK"}` in its error's details under `--json`
+  (`erpc worker server start` too). A gRPC, Shreds or Unlimited
+  RPC line asked on the first deploy has its plan read from the hourly
+  catalogue before anything is bought (one not offered is refused then)
+  and its price, the catalogue's, asked right after the server's (`--yes`
+  says it), a no buying nothing; the lines asked are kept on this machine
+  (`worker_line_starts.json`) and started in the account for the
+  environment once its server is logged in to, each only after a yes in
+  that run (said under `--yes`): one that run's own question agreed to is
+  not asked again while its price is the one agreed to; a later run asks
+  it once more at the catalogue's price now, and asks every other start,
+  each line before any is sent (a no lets the line kept here go, and the
+  deploy goes on without it unless the app needs it, when it stops,
+  starting no line; once deployed to, erpc does not add a line there yet).
+  On a run again that buys the server, every line to be started, one kept
+  here from an earlier run too, is asked before the server is bought, and
+  `--yes` says the line prices only with `--new-server`; a run again whose
+  record names a server asks each line at the terminal. A line start kept
+  on this machine under a key for the same app and environment names
+  refuses a deploy that would buy a server, before anything is bought; one
+  the account answered bought a line it did not put on the record
+  (`start_mismatch`) is never let go or replaced, and stops only a run whose
+  app needs that line (one that does not goes on without it, the start kept
+  and named on stderr). With `--plan`, a server start kept to send again
+  skips the stock read: it is sent again while the account lists it open,
+  else a new start of the size named is made, its price asked. A line kept
+  here owed is let go only when the catalogue says it no longer offers its
+  plan; a catalogue that cannot be read stops the run, the line kept.
+  Each line start is sent
+  under a key kept here before it is sent, as not to be sent again; the
+  account's answer decides what becomes of it, as its contract says (an
+  answer that bought nothing lets the key go and keeps the line asked; one
+  that says to send it again, or none, sends it again under the same key
+  on a run again, which buys no second line; any other keeps it, never
+  sent again, the stop naming the start and ERPC support, and a start
+  after it, once nothing of the kind is open or on record, comes only after
+  a yes at a terminal to let it go, as a new purchase). Every open start is
+  read: one erpc cannot tell, two of the kind, or one it did not keep to
+  send again, refuses the run. The deploy then waits for the line to be
+  active. A first deploy that stopped after its server was started, run
+  again (with the line's flag, or plainly, a line kept here for it), starts
+  the lines before the deploy, once what refuses the deploy is checked, and
+  so does a deploy of an environment `erpc worker move` took into the
+  account, before its first deploy there; `move` says so. An app whose `erpc.toml` names a wallet goes the
+  account way too: its record is made with the wallet's public side, and
+  its key is handed over at the terminal as on every deploy. Before,
   that first deploy bought a VPS through user-api and wrote its facts into
   `erpc.toml`, and the account had no record of the app.
 - `erpc worker delete --release-server` of an environment kept in the ERPC
@@ -353,8 +417,9 @@ whose version has no entry below.
   as the ERPC Worker it is; `erpc ai` itself is as it was, and a reason
   user-api or `erpc ai` gives for a failure is quoted as it came. A spec
   is read from the product's name only when all of the name, the
-  product's own name too, is in the known form; any other name shows
-  `ERPC Worker` and the id alone. Servers on
+  product's own name too, is in the known form (the names the account
+  sells its plans under among them, `🛰️ EPYC VPS+` to `VPS+++` too); any
+  other name shows `ERPC Worker` and the id alone. Servers on
   this machine's list are still told apart by their kind and id, not by
   how they are named.
 - `erpc worker deploy` names the server it deploys to as a server, not a

@@ -2165,11 +2165,18 @@ fn app_ready_in(
             .join(", ");
         // A line's setting comes from the line's flag, not from a secret.
         let hint = match LineKind::ALL.into_iter().find(|k| k.setting() == first) {
-            // An environment kept in the account takes no line from a flag
-            // yet: its lines are the account's.
-            Some(_) if at.kept.is_some() => {
-                t!("worker_deploy_account.missing_line_hint", first)
+            // An environment kept in the account takes no UDP Forwarding
+            // line yet, and another line's flag only before its first
+            // deploy there: its lines are the account's.
+            Some(LineKind::Udp) if at.kept.is_some() => {
+                t!("worker_deploy_account.missing_udp_line_hint", first)
             }
+            Some(kind) if at.kept.is_some() => t!(
+                "worker_deploy_account.missing_line_hint",
+                first,
+                flag = kind.flag(),
+                scope = app.scope()
+            ),
             Some(kind) => t!(
                 "worker_deploy.missing_line_hint",
                 first,
@@ -3111,6 +3118,45 @@ mod tests {
             let command = format!("`erpc worker secret put API_TOKEN --generate{scope}`");
             assert!(there.contains(&command), "{there}");
             assert!(!there.contains('{'), "{there}");
+        }
+    }
+
+    /// An environment kept in the account: a setting a line gives, missing,
+    /// names the line's flag, which starts one there before its first
+    /// deploy; a UDP Forwarding line's says erpc does not start one there.
+    #[test]
+    fn a_missing_line_setting_of_an_environment_kept_in_the_account_names_what_starts_it() {
+        use super::{Where, app_ready_in};
+        use erpc_secret::gate::Context;
+        let home = tempfile::tempdir().expect("a directory");
+        let app = super::App {
+            dir: crate::worker::Dir::at(home.path()),
+            env: "prod".to_owned(),
+        };
+        let scope = app.scope();
+        for (setting, said) in [
+            (
+                "GRPC_ENDPOINT",
+                format!("`erpc worker deploy --grpc{scope}` starts one in the ERPC account"),
+            ),
+            (
+                "SHREDS_UDP_BIND",
+                "erpc does not start a UDP Forwarding line there yet".to_owned(),
+            ),
+        ] {
+            let text = format!(
+                "name = \"bot\"\nchain = \"solana\"\n[run]\nrequires = [\"{setting}\"]\n\n[env.prod]\naccount = true\n"
+            );
+            std::fs::write(home.path().join("erpc.toml"), text).expect("erpc.toml");
+            let m = erpc_worker::manifest::Manifest::load(&home.path().join("erpc.toml"))
+                .expect("reads");
+            let at = Where {
+                kept: Some(m),
+                ..Where::default()
+            };
+            let e = app_ready_in(Context::empty(), &app, &at).expect_err("missing");
+            let hint = e.hint.expect("a hint");
+            assert!(hint.contains(&said), "{setting}: {hint}");
         }
     }
 

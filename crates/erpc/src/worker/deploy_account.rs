@@ -40,13 +40,15 @@ pub(crate) const NAMES_MAX: usize = 128;
 const ALLOW_MAX: usize = crate::worker::firewall::ACCOUNT_SSH_MAX;
 
 /// Refuses the options a deploy to an environment kept in the account
-/// does not take yet: choose a server, add, change or forget a line, or
-/// keep the environment elsewhere, each before the account or the server
-/// is reached; and `--new-server` and `--region`, which the first deploy's
-/// start takes while the account's record names nothing for the
-/// environment ([`crate::worker::first_deploy`], which clears them once
-/// it started the server), only once that record was read and names
-/// something.
+/// does not take yet: choose a server, take a UDP Forwarding line, forget
+/// a line, or keep the environment elsewhere, each before the account or
+/// the server is reached; and `--new-server`, `--region`, `--plan` and a
+/// gRPC, Shreds or Unlimited line's flag, which the first deploy takes
+/// while the account's record names nothing for the environment (a line's
+/// flag too while it names a server and no deploy)
+/// ([`crate::worker::first_deploy`], which clears them once it started the
+/// server or owes the lines), only once that record was read and names
+/// what they are not taken with.
 pub(crate) fn refuse_options(at: &Where, app: &App) -> Result<(), CliError> {
     let asked = at.host.is_some()
         || at.user.is_some()
@@ -140,7 +142,7 @@ fn record_carried(app: &App, record: &EnvDetail) -> Result<(), CliError> {
 }
 
 /// Whether a line the account names is ended: gone from it, or cancelled.
-fn ended(state: &account::State) -> bool {
+pub(crate) fn ended(state: &account::State) -> bool {
     *state == account::State::Gone || state.as_str() == "cancelled"
 }
 

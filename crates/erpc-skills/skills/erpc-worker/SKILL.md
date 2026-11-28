@@ -74,8 +74,10 @@ directory.
   - For an app with a `[wallet]`: `run`, `deploy`, `start`, `restart`, `rollback`. The key
     gate needs a person at a terminal; from `run_command` it refuses with "no terminal is
     attached". What you can do for such an app is everything but the key: once `erpc worker
-    build <app>` has finished, `erpc worker deploy <app> --new-server --grpc --yes --prepare`
-    gets the server, the firewall, the lines and a release in place and starts, stops and
+    build <app>` has finished, `erpc worker deploy <app> --new-server --inline --grpc --yes
+    --prepare` (`--inline` keeps the environment in erpc.toml: without it, a new
+    environment's deploy goes the ERPC account way, which needs a terminal) gets the server,
+    the firewall, the lines and a release in place and starts, stops and
     restarts nothing: an app that runs there runs on, under the agent it had, even when a
     newer agent was installed (the command says so). Then hand over one line, `erpc worker
     deploy <app>`, which hands the key over and starts the app: it builds and installs a
@@ -100,8 +102,12 @@ directory.
   first login to a server erpc has not made key-only yet (a new one, or `--server <ID>`): its
   key goes in and password logins go off. A new server for an environment erpc.toml has
   nothing for yet is started in the ERPC account instead, which makes the app an ERPC Worker
-  there, unless the deploy has `--inline` or `--vault`, `--plan`, a line's flag, or the app a
-  `[wallet]`; its first login is asked at a terminal only, so from `run_command` that deploy
+  there (an app with a `[wallet]` too; a `--grpc`, `--shreds` or `--unlimited` line, its
+  catalogue price asked right after the server's, before anything is bought, kept on this
+  machine and started once the server is logged in to; and `--plan`, started by the vCPUs its
+  name says at the account's price for that size, another size or region offered and asked
+  when that is not free), unless the deploy has `--inline` or `--vault`, or, for now, `--udp`
+  or `--forget-line`; its first login is asked at a terminal only, so from `run_command` that deploy
   is refused before anything is bought. Hand the user `erpc worker deploy <app>` to run at a
   terminal for that, or add `--inline` to keep the environment in erpc.toml as before.
 - **A start with no outcome:** when a deploy says a start "may or may not have gone

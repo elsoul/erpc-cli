@@ -96,7 +96,9 @@ pub(crate) enum Disk {
 /// The words a product's own name, before its first ` - `, may hold: those
 /// of the names the account's servers are sold under. Any other word there
 /// gives no spec.
-const NAME_WORDS: [&str; 8] = ["🛰️", "🛰", "slv", "vps", "super", "premium", "max", "plus"];
+const NAME_WORDS: [&str; 12] = [
+    "🛰️", "🛰", "slv", "epyc", "vps", "vps+", "vps++", "vps+++", "super", "premium", "max", "plus",
+];
 /// What may follow a CPU part's `<n> vCPU`: the makers and lines the
 /// account's names use, as they go together. Anything else there gives no
 /// spec.
@@ -235,7 +237,8 @@ impl Spec {
 
     /// The spec in the name of a product, read only when all of the name
     /// is in the known form, word by word, case aside but for `GB` and
-    /// `TB`: the product's own name from [`NAME_WORDS`] (`🛰️ SLV VPS`), then
+    /// `TB`: the product's own name from [`NAME_WORDS`] (`🛰️ SLV VPS`,
+    /// `🛰️ EPYC VPS++`, a `+` there only within `VPS+`, `VPS++` or `VPS+++`), then
     /// parts split by ` - `, each one of `<n> vCPU` (1 to 3 digits, then
     /// CPU words as in [`CPU_NAMES`] and, if given, `x <n> GB <memory
     /// words>`), `<n> GB <memory words>` ([`MEMORY_WORDS`]) and `<n> GB|TB
@@ -1444,7 +1447,7 @@ pub(crate) struct Server {
     pub(crate) resource: Resource,
 }
 
-/// The account's VPSs that are running, as (id, address, region, plan).
+/// The account's VPSs that are running, as (id, address, region, spec).
 pub(crate) async fn running(api: &Api) -> Result<Vec<(i64, String, String, Spec)>, CliError> {
     let reply = api
         .read(erpc_ai::ready::vps_status_url().map_err(failed)?)
@@ -1585,6 +1588,167 @@ struct Plan {
     name: String,
 }
 
+/// The plan of the hourly catalogue a data line of `kind` starts at:
+/// `asked`, or the cheapest; its product id, price by the hour in cents of
+/// a euro and name.
+pub(crate) async fn line_plan(
+    api: &Api,
+    kind: LineKind,
+    asked: Option<&str>,
+) -> Result<crate::worker::line_start::Plan, CliError> {
+    let chosen = plan(api, line_product(kind).family, asked).await?;
+    Ok(crate::worker::line_start::Plan {
+        id: chosen.id,
+        cents: chosen.cents,
+        name: chosen.name,
+    })
+}
+
+/// The plan `id` of the hourly catalogue for a data line of `kind`, when
+/// the catalogue offers it; `None` when it does not. A catalogue that
+/// cannot be read is an error, never `None`.
+pub(crate) async fn offered_line_plan(
+    api: &Api,
+    kind: LineKind,
+    id: &str,
+) -> Result<Option<crate::worker::line_start::Plan>, CliError> {
+    let Some((id, cents)) = catalog_plans(api, line_product(kind).family)
+        .await?
+        .into_iter()
+        .find(|(p, _)| p == id)
+    else {
+        return Ok(None);
+    };
+    let name = product_name(api, &id).await.unwrap_or_else(|| id.clone());
+    Ok(Some(crate::worker::line_start::Plan { id, cents, name }))
+}
+
+/// The name of the hourly ERPC Worker plan `id` (a `--plan`), and the
+/// cores it says in the known form ([`Spec::of_title`]); none when it does
+/// not. Refused when the hourly catalogue does not offer the plan.
+pub(crate) async fn plan_cores(api: &Api, id: &str) -> Result<(String, Option<u16>), CliError> {
+    let chosen = plan(api, "vps", Some(id)).await?;
+    let cores = Spec::of_title(&chosen.name).cores;
+    Ok((chosen.name, cores))
+}
+
+/// What is free to be rented now of the standard ERPC Worker, as
+/// user-api's stock read lists it, every page: each box's cores and region.
+/// The read is of the standard tier, so a box that names no type is one, and
+/// a box of another type is left out; a row whose type (not text), cores
+/// (digits) or region erpc does not read, or a list that does not end within
+/// [`STOCK_PAGES`] pages, makes the whole read unread: an error, never a
+/// shorter list. It is free now, not held: a start may still find it gone.
+pub(crate) async fn stock(api: &Api) -> Result<Vec<(u16, &'static str)>, CliError> {
+    let unread = || CliError::new(Code::Network, t!("worker_first_deploy.stock_unread"));
+    let mut free = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..STOCK_PAGES {
+        let url = match &cursor {
+            Some(c) => format!("{}?cursor={c}", account::Server::Vps.stock_url()),
+            None => account::Server::Vps.stock_url().to_owned(),
+        };
+        let reply = api.read(&url).await?;
+        free.extend(stock_rows(&reply).ok_or_else(unread)?);
+        if reply.get("hasMore").and_then(Value::as_bool) != Some(true) {
+            return Ok(free);
+        }
+        cursor = match reply.get("nextCursor") {
+            Some(Value::String(c))
+                if !c.is_empty()
+                    && c.chars()
+                        .all(|ch| ch.is_ascii_alphanumeric() || "-_.~".contains(ch)) =>
+            {
+                Some(c.clone())
+            }
+            Some(Value::Number(n)) => Some(n.to_string()),
+            _ => return Err(unread()),
+        };
+    }
+    Err(unread())
+}
+
+/// The most pages of the stock read [`stock`] reads.
+const STOCK_PAGES: u32 = 10;
+
+/// [`stock`]'s rows of one page, `reply`: none when a row is not one erpc
+/// reads.
+pub(crate) fn stock_rows(reply: &Value) -> Option<Vec<(u16, &'static str)>> {
+    let rows = reply
+        .get("message")
+        .or_else(|| reply.get("data"))
+        .and_then(Value::as_array)?;
+    let mut free = Vec::new();
+    for row in rows {
+        // The route lists the standard tier: a row that names no type is
+        // one; a row of another type is left out.
+        let kind = match &row["vpsType"] {
+            Value::Null => None,
+            Value::String(kind) => Some(kind.as_str()),
+            _ => return None,
+        };
+        let cores = match &row["cpu"] {
+            Value::String(s)
+                if (1..=3).contains(&s.len()) && s.chars().all(|c| c.is_ascii_digit()) =>
+            {
+                s.parse::<u16>().ok()
+            }
+            Value::Number(n) => n.as_u64().and_then(|n| u16::try_from(n).ok()),
+            _ => None,
+        }
+        .filter(|cores| *cores > 0)?;
+        let region = row["region"].as_str()?;
+        let region = REGIONS.into_iter().find(|r| *r == region)?;
+        if kind.is_none_or(|kind| kind == "standard") {
+            free.push((cores, region));
+        }
+    }
+    Some(free)
+}
+
+/// Where each region's city is, in degrees of latitude and longitude.
+const REGION_PLACES: [(&str, f64, f64); 7] = [
+    ("amsterdam", 52.37, 4.90),
+    ("frankfurt", 50.11, 8.68),
+    ("london", 51.51, -0.13),
+    ("ny", 40.71, -74.01),
+    ("tokyo", 35.68, 139.69),
+    ("singapore", 1.35, 103.82),
+    ("sydney", -33.87, 151.21),
+];
+
+/// The regions other than `from`, nearest it first, by the great-circle
+/// distance between their cities.
+pub(crate) fn regions_by_nearness(from: &str) -> Vec<&'static str> {
+    let place = |r: &str| {
+        REGION_PLACES
+            .iter()
+            .find(|(n, ..)| *n == r)
+            .map(|(_, a, b)| (*a, *b))
+    };
+    let Some(here) = place(from) else {
+        return REGIONS.into_iter().filter(|r| *r != from).collect();
+    };
+    let apart = |(la1, lo1): (f64, f64), (la2, lo2): (f64, f64)| {
+        let (la1, lo1, la2, lo2) = (
+            la1.to_radians(),
+            lo1.to_radians(),
+            la2.to_radians(),
+            lo2.to_radians(),
+        );
+        let h = ((la2 - la1) / 2.0).sin().powi(2)
+            + la1.cos() * la2.cos() * ((lo2 - lo1) / 2.0).sin().powi(2);
+        2.0 * h.sqrt().asin()
+    };
+    let mut others: Vec<&'static str> = REGIONS.into_iter().filter(|r| *r != from).collect();
+    others.sort_by(|a, b| {
+        let da = place(a).map_or(f64::MAX, |p| apart(here, p));
+        let db = place(b).map_or(f64::MAX, |p| apart(here, p));
+        da.total_cmp(&db)
+    });
+    others
+}
+
 /// The name of product `id`, as user-api gives it.
 async fn product_name(api: &Api, id: &str) -> Option<String> {
     let url = account::product_url(id).ok()?;
@@ -1598,11 +1762,12 @@ async fn product_name(api: &Api, id: &str) -> Option<String> {
         .filter(|n| !n.is_empty())
 }
 
-/// The cheapest plan of hourly `family` the catalogue offers (for a VPS,
-/// one to run an app on), or the one asked for.
-async fn plan(api: &Api, family: &str, asked: Option<&str>) -> Result<Plan, CliError> {
+/// The plans of hourly `family` the catalogue offers, by product id with
+/// their price by the hour in cents of a euro. A catalogue that cannot be
+/// read is an error.
+async fn catalog_plans(api: &Api, family: &str) -> Result<Vec<(String, f64)>, CliError> {
     let catalog = api.read(hourly::CATALOG_URL).await?;
-    let plans: Vec<(String, f64)> = catalog["families"]
+    Ok(catalog["families"]
         .as_array()
         .into_iter()
         .flatten()
@@ -1614,7 +1779,13 @@ async fn plan(api: &Api, family: &str, asked: Option<&str>) -> Result<Plan, CliE
                 p["hourlyCents"].as_f64()?,
             ))
         })
-        .collect();
+        .collect())
+}
+
+/// The cheapest plan of hourly `family` the catalogue offers (for a VPS,
+/// one to run an app on), or the one asked for.
+async fn plan(api: &Api, family: &str, asked: Option<&str>) -> Result<Plan, CliError> {
+    let plans = catalog_plans(api, family).await?;
     if let Some(id) = asked {
         let (id, cents) = plans.into_iter().find(|(p, _)| p == id).ok_or_else(|| {
             failed(t!(
@@ -5681,6 +5852,213 @@ mod tests {
     ];
 
     #[test]
+    fn the_stock_read_gives_standard_boxes_by_cores_and_region_or_is_unread() {
+        use super::stock_rows;
+        let reply = json!({ "message": [
+            { "cpu": "2", "ram": "4096", "disk": "10G", "region": "amsterdam", "vpsType": "standard" },
+            { "cpu": 4, "region": "tokyo", "vpsType": "standard" },
+            { "cpu": "2", "region": "amsterdam", "vpsType": "super" },
+            { "cpu": "2", "region": "amsterdam", "vpsType": 2 },
+            { "cpu": "two", "region": "amsterdam", "vpsType": "standard" },
+            { "cpu": "0", "region": "amsterdam", "vpsType": "standard" },
+            { "cpu": "1000", "region": "amsterdam", "vpsType": "standard" },
+            { "cpu": "2", "region": "mars", "vpsType": "standard" },
+            { "cpu": "2", "vpsType": "standard" }
+        ]});
+        // A row erpc does not read: the whole page is unread.
+        assert_eq!(stock_rows(&reply), None);
+        let reply = json!({ "message": [
+            { "cpu": "2", "ram": "4096", "disk": "10G", "region": "amsterdam", "vpsType": "standard" },
+            { "cpu": 4, "region": "tokyo", "vpsType": "standard" },
+            { "cpu": "2", "region": "amsterdam", "vpsType": "super" },
+            { "cpu": "8", "region": "london" },
+            { "cpu": "1", "region": "ny", "vpsType": null }
+        ]});
+        // No type: the tier the route lists; another type: left out.
+        assert_eq!(
+            stock_rows(&reply),
+            Some(vec![
+                (2, "amsterdam"),
+                (4, "tokyo"),
+                (8, "london"),
+                (1, "ny")
+            ])
+        );
+        for odd in [
+            json!({ "cpu": "2", "region": "amsterdam", "vpsType": 2 }),
+            json!({ "cpu": "two", "region": "amsterdam", "vpsType": "standard" }),
+            json!({ "cpu": "0", "region": "amsterdam", "vpsType": "standard" }),
+            json!({ "cpu": "1000", "region": "amsterdam", "vpsType": "standard" }),
+            json!({ "cpu": "2", "region": "mars", "vpsType": "standard" }),
+            json!({ "cpu": "2", "vpsType": "standard" }),
+        ] {
+            assert_eq!(stock_rows(&json!({ "message": [odd] })), None, "{odd}");
+        }
+        assert_eq!(stock_rows(&json!({ "message": [] })), Some(Vec::new()));
+        assert_eq!(stock_rows(&json!({})), None);
+    }
+
+    #[tokio::test]
+    async fn a_plans_cores_come_from_its_product_name_in_the_hourly_catalogue() {
+        use super::stub::{Request, Stub};
+        let stub = Stub::serve(|request: &Request| {
+            let path = request.path.as_str();
+            let body = if path.starts_with("/v3/billing/hourly-catalog") {
+                json!({ "families": [
+                    { "family": "vps", "plans": [
+                        { "productId": "prod_vps_1", "hourlyCents": 7.0 },
+                        { "productId": "prod_vps_x", "hourlyCents": 9.0 }
+                    ] },
+                    { "family": "grpc", "plans": [
+                        { "productId": "prod_grpc_1", "hourlyCents": 12.5 }
+                    ] }
+                ] })
+            } else if path.ends_with("productId=prod_vps_1") {
+                json!({ "message": {
+                    "name": "🛰️ SLV VPS - 1 vCPU AMD EPYC4G x 4 GB DDR5 - 10 GB SSD NVMe4" } })
+            } else {
+                json!({ "message": { "name": "Something else" } })
+            };
+            (200, body)
+        })
+        .await;
+        let api = stub.api();
+        let (name, cores) = super::plan_cores(&api, "prod_vps_1").await.expect("read");
+        assert!(name.contains("1 vCPU"), "{name}");
+        assert_eq!(cores, Some(1));
+        // A name that gives no size: none.
+        assert_eq!(
+            super::plan_cores(&api, "prod_vps_x").await.expect("read").1,
+            None
+        );
+        // A plan of another family: refused.
+        assert!(super::plan_cores(&api, "prod_grpc_1").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_line_plan_is_not_offered_only_when_the_catalogue_says_so() {
+        use super::stub::{Request, Stub};
+        use erpc_worker::manifest::LineKind;
+        let stub = Stub::serve(|request: &Request| {
+            if request.path.starts_with("/v3/billing/hourly-catalog") {
+                (
+                    200,
+                    json!({ "families": [{ "family": "grpc", "plans": [
+                        { "productId": "prod_grpc_1", "hourlyCents": 12.5 }
+                    ] }] }),
+                )
+            } else {
+                (200, json!({ "message": { "name": "Geyser gRPC Shared" } }))
+            }
+        })
+        .await;
+        let api = stub.api();
+        let plan = super::offered_line_plan(&api, LineKind::Grpc, "prod_grpc_1")
+            .await
+            .expect("read")
+            .expect("offered");
+        assert_eq!((plan.id.as_str(), plan.cents), ("prod_grpc_1", 12.5));
+        assert!(
+            super::offered_line_plan(&api, LineKind::Grpc, "prod_grpc_9")
+                .await
+                .expect("read")
+                .is_none()
+        );
+        // A catalogue that cannot be read: an error, never "not offered".
+        let down = Stub::serve(|_: &Request| (503, json!({ "message": "down" }))).await;
+        assert!(
+            super::offered_line_plan(&down.api(), LineKind::Grpc, "prod_grpc_1")
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn the_stock_read_reads_every_page_and_stops_at_its_bound() {
+        use super::stub::{Request, Stub};
+        let stub = Stub::serve(|request: &Request| {
+            let body = if request.path.ends_with("?cursor=p2") {
+                json!({ "message": [{ "cpu": "4", "region": "tokyo" }], "hasMore": false })
+            } else {
+                json!({ "message": [{ "cpu": "2", "region": "amsterdam" }],
+                    "hasMore": true, "nextCursor": "p2" })
+            };
+            (200, body)
+        })
+        .await;
+        let free = super::stock(&stub.api()).await.expect("read");
+        assert_eq!(free, [(2, "amsterdam"), (4, "tokyo")]);
+        assert_eq!(
+            stub.asked(),
+            [
+                "GET /v3/vps/search-available-vps",
+                "GET /v3/vps/search-available-vps?cursor=p2"
+            ]
+        );
+        // A list that does not end: unread, never a shorter list.
+        let stub = Stub::serve(|_: &Request| {
+            (
+                200,
+                json!({ "message": [], "hasMore": true, "nextCursor": "again" }),
+            )
+        })
+        .await;
+        assert!(super::stock(&stub.api()).await.is_err());
+        assert_eq!(stub.seen().len(), 10);
+    }
+
+    #[test]
+    fn regions_are_ordered_by_how_near_they_are() {
+        use super::{REGIONS, regions_by_nearness};
+        assert_eq!(
+            regions_by_nearness("amsterdam"),
+            ["london", "frankfurt", "ny", "tokyo", "singapore", "sydney"]
+        );
+        assert_eq!(regions_by_nearness("sydney")[0], "singapore");
+        for r in REGIONS {
+            let others = regions_by_nearness(r);
+            assert_eq!(others.len(), REGIONS.len() - 1);
+            assert!(!others.contains(&r));
+        }
+    }
+
+    #[test]
+    fn the_names_the_account_sells_its_plans_under_give_their_spec() {
+        use super::{Spec, worker};
+        for (name, said) in [
+            (
+                "🛰️ SLV VPS - 1 vCPU AMD EPYC4G x 4 GB DDR5 - 10 GB SSD NVMe4",
+                "ERPC Worker (1 vCPU, 4 GB memory, 10 GB NVMe)",
+            ),
+            (
+                "🛰️ EPYC VPS+ - 2 vCPU AMD EPYC4G x 8 GB DDR5 - 20 GB SSD NVMe4",
+                "ERPC Worker (2 vCPU, 8 GB memory, 20 GB NVMe)",
+            ),
+            (
+                "🛰️ EPYC VPS++ - 4 vCPU AMD EPYC4G x 16 GB DDR5 - 50 GB SSD NVMe4",
+                "ERPC Worker (4 vCPU, 16 GB memory, 50 GB NVMe)",
+            ),
+            (
+                "🛰️ EPYC VPS+++ - 8 vCPU AMD EPYC4G x 32 GB DDR5 - 100 GB SSD NVMe4",
+                "ERPC Worker (8 vCPU, 32 GB memory, 100 GB NVMe)",
+            ),
+        ] {
+            assert_eq!(worker(&Spec::of_title(name)), said, "{name}");
+        }
+        // A `+` in the product's name only within those words; after the
+        // first ` - ` as before.
+        for name in [
+            "🛰️ EPYC VPS ++ - 2 vCPU",
+            "🛰️ EPYC VPS++++ - 2 vCPU",
+            "🛰️ EPYC + VPS - 2 vCPU",
+            "🛰️ EPYC+ VPS - 2 vCPU",
+            "🛰️ EPYC VPS+ - 2 vCPU + 8 GB DDR5",
+        ] {
+            assert_eq!(Spec::of_title(name), Spec::default(), "{name}");
+        }
+    }
+
+    #[test]
     fn every_name_the_reviews_tried_gives_only_what_it_says() {
         use super::{Spec, worker};
         // Every name the reviews tried.
@@ -5875,8 +6253,6 @@ mod tests {
             "ERPC Worker (2 vCPU, 8 GB memory)"
         );
         assert_eq!(worker(&Spec::sized(Some(2), None)), "ERPC Worker (2 vCPU)");
-        // A row of the account's running servers: its product's name read
-        // for the spec, else its version's; never shown as it is.
         // A row in the shape the account's VPS status rows have: its
         // product's name read for the spec, in the known form or not at all.
         let row = |product: &str| {
@@ -5890,6 +6266,21 @@ mod tests {
             "ERPC Worker 100001 (1 vCPU, 4 GB memory)"
         );
         assert_eq!(running_spec(&row("EPYC VPS+")), Spec::default());
+        // Parts in the known form after a product's name that is not: none.
+        assert_eq!(
+            running_spec(&row("Mystery - 1 vCPU x 4 GB DDR5")),
+            Spec::default()
+        );
+        // A name the account sells its plans under: read.
+        assert_eq!(
+            worker_id(
+                100_001,
+                &running_spec(&row(
+                    "🛰️ EPYC VPS+ - 2 vCPU AMD EPYC4G x 8 GB DDR5 - 20 GB SSD NVMe4"
+                ))
+            ),
+            "ERPC Worker 100001 (2 vCPU, 8 GB memory, 20 GB NVMe)"
+        );
         assert_eq!(
             worker_id(100_001, &running_spec(&row("EPYC VPS+"))),
             "ERPC Worker 100001"

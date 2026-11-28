@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 ELSOUL LABO B.V.
 # SPDX-License-Identifier: Apache-2.0
 
-not_yet = "環境 {env} は ERPC のアカウントに保管されています。そこへのデプロイが --new-server と --region を受け付けるのは、アカウントにその環境のサーバー、アドレス、回線、デプロイが何もない間だけで、サーバーの選択、回線の追加・変更・記録から外すこと、別の保管場所への移動にはまだ対応していません。それらのオプションを付けずにデプロイしてください"
+not_yet = "環境 {env} は ERPC のアカウントに保管されています。そこへのデプロイが --new-server、--region、--plan を受け付けるのは、アカウントにその環境のサーバー、アドレス、回線、デプロイが何もない間だけです。データ回線のフラグ（--grpc、--shreds、--unlimited とそのプラン）を受け付けるのは、そこへの最初のデプロイの前、記録に何もないか、サーバーがあってデプロイがなく、サーバーについてほかに何も求めていない間だけです。サーバーの選択、UDP Forwarding 回線、デプロイしたあとの回線の追加・変更、回線を記録から外すこと、別の保管場所への移動にはまだ対応していません。それらのオプションを付けずにデプロイしてください"
 moving = "ERPC のアカウントでは、環境 {env} のサーバーが入れ替わりの途中です"
 udp = "環境 {env} には ERPC のアカウントに UDP Forwarding 回線があり、そこへのデプロイはまだそれを扱えません"
 line_pending = "ERPC のアカウントの環境 {env} の {kind} 回線には、まだエンドポイントがありません"
@@ -20,7 +20,8 @@ pin_not_updated = "ERPC のアカウントは書き込みを受け取りまし�
 line_hint = "アカウントにある内容は `erpc worker status{scope}` で確認できます。erpc はまだそこを変えられないので、ERPC のサポートに連絡してください"
 moving_hint = "`erpc worker status{scope}` で確認できます。erpc はまだサーバーの入れ替わりを終えることも戻すこともできません。ERPC のサポートに連絡してください"
 not_reread = "鍵を渡す前に ERPC のアカウントの環境 {env} の記録をもう一度読めませんでした（{error}）。鍵とシークレットは渡していません"
-missing_line_hint = "{first} は ERPC のアカウントがこの環境に示す回線から来ますが、使用中の回線がありません。erpc はそこでまだ回線を開始しません"
+missing_line_hint = "{first} は ERPC のアカウントがこの環境に示す回線から来ますが、使用中の回線がありません。そこへの最初のデプロイの前なら、`erpc worker deploy --{flag}{scope}` が値段を聞いてから ERPC のアカウントで回線を開始します。デプロイしたあとは、erpc はそこでまだ回線を開始しません"
+missing_udp_line_hint = "{first} は ERPC のアカウントがこの環境に示す回線から来ますが、使用中の回線がありません。erpc はそこでまだ UDP Forwarding 回線を開始しません"
 not_handed_over = "{why}。リリースはサーバーに置いてありますが、鍵とシークレットは渡していません"
 changed_before_hand_over_hint = "記録は `erpc worker status{scope}` で確認できます。変わったのがこのデプロイ自身の書き込み（SSH の接続元）なら、もう一度デプロイして信頼してください"
 line_pending_hint = "エンドポイントができてからデプロイしてください。`erpc worker status{scope}` で確認でき、そのままなら ERPC のサポートに連絡してください"

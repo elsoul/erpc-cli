@@ -27,6 +27,7 @@ pub(crate) mod import;
 pub(crate) mod inventory;
 pub(crate) mod keys;
 pub(crate) mod keystore;
+pub(crate) mod line_start;
 pub(crate) mod move_account;
 pub(crate) mod remote;
 pub(crate) mod run;
@@ -407,15 +408,21 @@ pub(crate) enum Action {
         vps: Option<i64>,
         /// Start a new hourly ERPC Worker for it (its price is shown first).
         /// For an environment erpc.toml has nothing for yet, it is started in
-        /// the ERPC account, which keeps the environment from then on, and
-        /// needs a terminal; --inline, --vault, --plan, a data line or a
-        /// wallet keep the environment out of the account, as before.
+        /// the ERPC account, which keeps the environment from then on, and it
+        /// needs a terminal. An app with a wallet goes there too, and so do
+        /// --plan and a data line, started there; --inline or --vault keep
+        /// the environment out of the account, and so do --udp and
+        /// --forget-line, for now.
         #[arg(long = "new-server", alias = "new-vps", conflicts_with_all = ["host", "server"])]
         new_vps: bool,
         /// The region of a new ERPC Worker (default: nearest by this machine's time zone).
         #[arg(long, value_name = "REGION")]
         region: Option<String>,
-        /// The hourly plan of a new ERPC Worker, by product id (default: the cheapest).
+        /// The hourly plan of a new ERPC Worker, by product id (default: the
+        /// cheapest). Started in the ERPC account by the vCPUs its name says
+        /// alone, at the account's price for that size; when that is not free
+        /// now, another size or region is offered, each asked, never under
+        /// --yes.
         #[arg(long, value_name = "PRODUCT_ID")]
         plan: Option<String>,
         /// Start an hourly gRPC line that lets in the server, and set
@@ -481,8 +488,10 @@ pub(crate) enum Action {
         /// is still asked about, and so are a server on record, never reached,
         /// that is not on the account signed in to, a new ERPC Worker for an
         /// environment kept in the ERPC account that the command line does
-        /// not ask for with --new-server, and the first login to a server
-        /// kept in the ERPC account, at a terminal).
+        /// not ask for with --new-server, and its lines, every line of an
+        /// environment kept there whose record names a server and no deploy,
+        /// and the first login to a server kept in the ERPC account, at a
+        /// terminal).
         #[arg(long, short = 'y')]
         yes: bool,
     },
@@ -1391,19 +1400,20 @@ pub(crate) async fn run(json: bool, mut action: Action, asking: Asking) -> Outco
             // The first deploy that starts a new server makes the app an
             // ERPC Worker in the account, and its server is started there:
             // the deploy then goes on as one to an environment kept there.
-            let started =
+            // The data lines a first deploy starts in the account, once its
+            // server is logged in to: what the first step says of them.
+            let next =
                 match Box::pin(crate::worker::first_deploy::first(json, &app, &at, yes)).await {
-                    Ok(crate::worker::first_deploy::First::AsBefore) => false,
-                    Ok(crate::worker::first_deploy::First::Picked(id)) => {
-                        at.vps = Some(id);
-                        false
-                    }
-                    Ok(crate::worker::first_deploy::First::Started) => {
-                        crate::worker::first_deploy::after_started(&mut at);
-                        true
-                    }
+                    Ok(next) => next,
                     Err(e) => return e.into(),
                 };
+            if let crate::worker::first_deploy::First::Picked(id) = next.first {
+                at.vps = Some(id);
+            }
+            let started = next.lines.is_some();
+            if started {
+                let _ = crate::worker::first_deploy::after_started(&mut at);
+            }
             let then = |e: CliError| {
                 if started {
                     crate::worker::first_deploy::after_start(e, &app)
@@ -1427,6 +1437,13 @@ pub(crate) async fn run(json: bool, mut action: Action, asking: Asking) -> Outco
                     json, &app, &m.name,
                 ))
                 .await
+            {
+                return then(e).into();
+            }
+            // The lines asked, and those kept on this machine for it, once
+            // its server is logged in to.
+            if let Some(lines) = &next.lines
+                && let Err(e) = Box::pin(crate::worker::line_start::for_deploy(&app, lines)).await
             {
                 return then(e).into();
             }
@@ -3454,6 +3471,7 @@ mod tests {
             ("worker/inventory.rs", include_str!("inventory.rs")),
             ("worker/keys.rs", include_str!("keys.rs")),
             ("worker/keystore.rs", include_str!("keystore.rs")),
+            ("worker/line_start.rs", include_str!("line_start.rs")),
             ("worker/move_account.rs", include_str!("move_account.rs")),
             ("worker/remote.rs", include_str!("remote.rs")),
             ("worker/run.rs", include_str!("run.rs")),

@@ -33,7 +33,8 @@ use std::path::Path;
 
 use erpc_api::worker::money::{ServerPrice, ServerPrices, StartKey, StartOf, StartServer};
 use erpc_api::worker::{
-    self as account, Code as AccountCode, EnvDetail, Facts, PutApp, PutEnv, WorkerError, Written,
+    self as account, Code as AccountCode, EnvDetail, Facts, PutApp, PutEnv, PutWallet, WorkerError,
+    Written,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -260,7 +261,7 @@ fn let_go(path: &Path, file_key: &str, key: &str) -> Result<(), String> {
 }
 
 /// A new start's key: 16 random bytes, in lowercase hex.
-fn new_key() -> Result<StartKey, CliError> {
+pub(crate) fn new_key() -> Result<StartKey, CliError> {
     let mut bytes = [0_u8; 16];
     getrandom::fill(&mut bytes)
         .map_err(|e| failed(t!("worker_server.no_key", error = e.to_string())))?;
@@ -279,6 +280,10 @@ pub(crate) struct Asked<'a> {
     /// The cores asked for; `None`: those of the start kept here when it is
     /// sent again, else the cheapest size the account offers.
     pub(crate) cores: Option<u16>,
+    /// The `--plan` asked for, when its product's name gives no size erpc
+    /// reads: the start is refused with the sizes the account offers, once
+    /// they are read, before anything is bought.
+    pub(crate) unread: Option<&'a str>,
     /// The region.
     pub(crate) region: Region<'a>,
     /// `--yes`.
@@ -289,6 +294,18 @@ pub(crate) struct Asked<'a> {
     pub(crate) terminal: bool,
     /// The command that starts it.
     pub(crate) by: By,
+}
+
+/// The size a first deploy's start asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Size<'a> {
+    /// The cheapest the account offers.
+    Cheapest,
+    /// These cores (`--plan`'s, read from its product's name, or another
+    /// size offered for it).
+    Cores(u16),
+    /// `--plan`, whose product's name gives no size erpc reads.
+    Unread(&'a str),
 }
 
 /// The region of a start.
@@ -350,7 +367,12 @@ fn size_said(price: &ServerPrice) -> String {
 /// The size asked for, from `prices` (`None`: the cheapest): refused when
 /// the account prices it in a currency erpc does not show, starts none, or
 /// does not offer it.
-fn priced(prices: &ServerPrices, env: &str, cores: Option<u16>) -> Result<ServerPrice, CliError> {
+fn priced(
+    prices: &ServerPrices,
+    env: &str,
+    cores: Option<u16>,
+    unread: Option<&str>,
+) -> Result<ServerPrice, CliError> {
     if prices.currency != "eur" {
         return Err(failed(t!(
             "worker_server.currency",
@@ -359,6 +381,18 @@ fn priced(prices: &ServerPrices, env: &str, cores: Option<u16>) -> Result<Server
     }
     if prices.options.is_empty() {
         return Err(failed(t!("worker_server.no_sizes", env)));
+    }
+    // `--plan`, whose name gives no size: refused with the sizes offered.
+    if let Some(plan) = unread {
+        let offered: Vec<String> = prices.options.iter().map(size_said).collect();
+        return Err(CliError::new(
+            Code::Usage,
+            t!(
+                "worker_server.plan_unread",
+                plan = crate::storage::clean(plan),
+                offered = offered.join(", ")
+            ),
+        ));
     }
     let found = match cores {
         Some(cores) => prices.options.iter().find(|o| o.cores == cores),
@@ -556,7 +590,20 @@ fn refused(e: &WorkerError, then: After, name: &str, app: &App, fate: &KeyFate) 
         error.hint = hint.or(error.hint);
     }
     error.message = format!("{}\n{}", error.message, fate.said());
+    // What a first deploy offers another size or region for: in the
+    // details, as the account's code.
+    if code_is(e, &AccountCode::OutOfStock) {
+        error.details = Some(json!({ "accountCode": "OUT_OF_STOCK" }));
+    }
     error
+}
+
+/// Whether `e`, a start's stop, is the account's answer that nothing of
+/// the size is free in the region now ([`refused`] marks it).
+pub(crate) fn out_of_stock(e: &CliError) -> bool {
+    e.details
+        .as_ref()
+        .is_some_and(|d| d["accountCode"] == "OUT_OF_STOCK")
 }
 
 /// The refusal of a start while one of the environment's is open; `kept`
@@ -728,8 +775,10 @@ pub(crate) struct Making<'a> {
     pub(crate) chain: &'a str,
     /// The template it was made from.
     pub(crate) template: Option<&'a str>,
-    /// Whether it names a wallet.
-    pub(crate) wallet: bool,
+    /// Its wallet's public side, as the app's record takes it: `None` for
+    /// an app without a wallet, or one whose `erpc.toml` gives no public key
+    /// (as the move makes it).
+    pub(crate) wallet: Option<PutWallet>,
 }
 
 /// The failure `e` of a read or write the start makes before it is sent,
@@ -764,8 +813,9 @@ fn not_found(e: &WorkerError, code: &AccountCode) -> bool {
 }
 
 /// Whether the account has the record of the app named `name`. An app of
-/// that name for another chain is refused, and so is one whose record this
-/// version does not make yet (one with a wallet).
+/// that name for another chain is refused, and so is one with another
+/// wallet: one whose public key is not `erpc.toml`'s, or one where
+/// `erpc.toml` gives none.
 async fn app_record(
     api: &impl Buying,
     app: &App,
@@ -774,12 +824,7 @@ async fn app_record(
 ) -> Result<bool, CliError> {
     let found = match api.app(name).await {
         Ok(found) => found,
-        Err(e) if not_found(&e, &AccountCode::WorkerNotFound) => {
-            if making.wallet {
-                return Err(failed(t!("worker_server.wallet", app = name)));
-            }
-            return Ok(false);
-        }
+        Err(e) if not_found(&e, &AccountCode::WorkerNotFound) => return Ok(false),
         Err(e) => {
             return Err(read_failed(
                 name,
@@ -795,6 +840,14 @@ async fn app_record(
             app = name,
             chain = crate::storage::clean(&found.chain)
         )));
+    }
+    let ours = making.wallet.as_ref().map(PutWallet::pubkey);
+    if found
+        .wallet
+        .as_ref()
+        .is_some_and(|w| Some(w.pubkey.as_str()) != ours)
+    {
+        return Err(failed(t!("worker_server.other_wallet", app = name)));
     }
     Ok(true)
 }
@@ -912,7 +965,12 @@ async fn make(
     let say = Say { quiet: false };
     let env = app.env.as_str();
     if !has_app {
-        let body = PutApp::new(0, making.chain, making.template.map(str::to_owned), None);
+        let body = PutApp::new(
+            0,
+            making.chain,
+            making.template.map(str::to_owned),
+            making.wallet.clone(),
+        );
         api.put_app(name, &body)
             .await
             .map_err(|e| read_failed(name, app, &e, &t!("worker_server.what_app", app = name)))?;
@@ -991,6 +1049,7 @@ pub(crate) async fn run_with(
         &prices,
         env,
         again.as_ref().map(|a| a.cores).or(asked.cores),
+        asked.unread.filter(|_| again.is_none()),
     )?;
     let region = match (&again, asked.region) {
         (Some(again), _) => again.region.as_str(),
@@ -1083,6 +1142,7 @@ async fn run(
     let store = crate::account::session::beside_config(FILE).map_err(failed)?;
     let asked = Asked {
         cores: Some(cores),
+        unread: None,
         region: Region::Asked(region),
         yes,
         json,
@@ -1092,7 +1152,7 @@ async fn run(
     let making = Making {
         chain: m.chain.as_str(),
         template: m.template.as_deref(),
-        wallet: m.wallet.is_some(),
+        wallet: crate::worker::move_account::wallet_of(&m)?,
     };
     run_with(
         &signed,
@@ -1116,12 +1176,18 @@ pub(crate) async fn for_deploy(
     signed: &kept::Signed,
     app: &App,
     m: &erpc_worker::manifest::Manifest,
-    (region, yes): (Region<'_>, bool),
+    (region, yes, size): (Region<'_>, bool, Size<'_>),
     agreed: impl FnOnce() -> Result<(), CliError>,
 ) -> Result<String, CliError> {
     let store = crate::account::session::beside_config(FILE).map_err(failed)?;
+    let (cores, unread) = match size {
+        Size::Cheapest => (None, None),
+        Size::Cores(cores) => (Some(cores), None),
+        Size::Unread(plan) => (None, Some(plan)),
+    };
     let asked = Asked {
-        cores: None,
+        cores,
+        unread,
         region,
         yes,
         json: false,
@@ -1131,7 +1197,7 @@ pub(crate) async fn for_deploy(
     let making = Making {
         chain: m.chain.as_str(),
         template: m.template.as_deref(),
-        wallet: m.wallet.is_some(),
+        wallet: crate::worker::move_account::wallet_of(m)?,
     };
     run_with(
         signed,
@@ -1144,6 +1210,27 @@ pub(crate) async fn for_deploy(
     )
     .await
     .map(|(_, text)| text)
+}
+
+/// Whether a start this machine kept for environment `app.env` of the app
+/// named `name`, through the signed-in `signed`, is one the account said
+/// to send again under its key.
+pub(crate) async fn kept_to_send_again(
+    signed: &kept::Signed,
+    app: &App,
+    name: &str,
+) -> Result<bool, CliError> {
+    let uid = Buying::uid(signed).await?;
+    let store = crate::account::session::beside_config(FILE).map_err(failed)?;
+    kept_resendable(&store, &kept::pin_key(&uid, name, &app.env))
+}
+
+/// Whether the start kept in `store` under `file_key` is one the account
+/// said to send again under its key.
+fn kept_resendable(store: &Path, file_key: &str) -> Result<bool, CliError> {
+    let saved =
+        kept_start(store, file_key).map_err(|error| failed(t!("worker_server.not_read", error)))?;
+    Ok(saved.is_some_and(|s| s.resend))
 }
 
 /// `erpc worker server start`.
@@ -1173,7 +1260,7 @@ mod tests {
     const MAKING: Making<'static> = Making {
         chain: "solana",
         template: Some("solana/hello@1"),
-        wallet: false,
+        wallet: None,
     };
 
     fn env_record(servers: &Value) -> EnvDetail {
@@ -1503,6 +1590,7 @@ mod tests {
     fn asked(cores: u16, yes: bool, json: bool, terminal: bool) -> Asked<'static> {
         Asked {
             cores: Some(cores),
+            unread: None,
             region: Region::Asked("amsterdam"),
             by: By::ServerStart,
             yes,
@@ -1545,6 +1633,7 @@ mod tests {
     fn by_deploy(region: Region<'static>, yes: bool) -> Asked<'static> {
         Asked {
             cores: None,
+            unread: None,
             region,
             yes,
             json: false,
@@ -2357,6 +2446,63 @@ mod tests {
         }
     }
 
+    #[test]
+    fn only_a_start_kept_to_send_again_is_one_the_first_deploy_sends_past_the_stock() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let fake = Fake::new(&dir);
+        assert!(!kept_resendable(&fake.store, &file_key()).expect("read"));
+        fake.keep(OLD_KEY, false);
+        assert!(!kept_resendable(&fake.store, &file_key()).expect("read"));
+        fake.keep(OLD_KEY, true);
+        assert!(kept_resendable(&fake.store, &file_key()).expect("read"));
+    }
+
+    #[tokio::test]
+    async fn a_plan_whose_name_gives_no_size_is_refused_with_the_sizes_offered() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let fake = Fake::new(&dir);
+        let unread = Asked {
+            cores: None,
+            unread: Some("prod_vps_x"),
+            ..asked(1, true, false, true)
+        };
+        let (out, question) = go(&fake, &unread, &MAKING, true).await;
+        let e = out.expect_err("refused");
+        assert_eq!(e.code, Code::Usage);
+        assert!(
+            e.message
+                .contains("the name of plan prod_vps_x gives no size")
+                && e.message
+                    .contains("ERPC Worker (1 vCPU, 2 GB memory), €0.07 an hour"),
+            "{}",
+            e.message
+        );
+        assert!(question.is_none());
+        assert_eq!(fake.starts(), 0);
+        // A start kept here to send again is sent as it was kept: the plan
+        // asked does not refuse it.
+        let dir = tempfile::tempdir().expect("a directory");
+        let fake = Fake::new(&dir);
+        *fake.open.borrow_mut() = vec![server_start(1, "amsterdam")];
+        fake.keep(OLD_KEY, true);
+        let (out, _) = go(&fake, &unread, &MAKING, true).await;
+        out.expect("sent again");
+        assert_eq!(fake.sent.borrow()[0].0, OLD_KEY);
+    }
+
+    #[tokio::test]
+    async fn an_out_of_stock_answer_is_marked_for_the_first_deploy() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let mut fake = Fake::new(&dir);
+        fake.answer = Answer::Refused(409, "OUT_OF_STOCK", Value::Null);
+        let (out, _) = go(&fake, &asked(1, true, false, true), &MAKING, true).await;
+        let e = out.expect_err("refused");
+        assert!(super::out_of_stock(&e), "{e:?}");
+        fake.answer = Answer::Refused(402, "insufficient_credit", Value::Null);
+        let (out, _) = go(&fake, &asked(1, true, false, true), &MAKING, true).await;
+        assert!(!super::out_of_stock(&out.expect_err("refused")));
+    }
+
     #[tokio::test]
     async fn a_size_not_offered_or_not_priced_in_euros_starts_nothing() {
         let dir = tempfile::tempdir().expect("a directory");
@@ -2729,22 +2875,56 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_app_of_another_chain_is_refused_and_one_with_a_wallet_has_no_record_made() {
+    async fn an_app_of_another_chain_or_wallet_is_refused_and_a_wallet_apps_record_is_made() {
         let dir = tempfile::tempdir().expect("a directory");
         let fake = Fake::new(&dir);
         *fake.app.borrow_mut() = Some(app_record("ethereum"));
         let (out, _) = go(&fake, &asked(1, true, false, false), &MAKING, true).await;
         assert!(out.expect_err("other chain").message.contains("ethereum"));
         // erpc.toml names a wallet and the account has no record of the
-        // app: none is made, nor anything else.
-        *fake.app.borrow_mut() = None;
+        // app: it is made with the wallet's public side.
+        let pubkey = "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU";
         let wallet = Making {
-            wallet: true,
+            wallet: Some(
+                PutWallet::new(pubkey, account::WalletSource::Keychain).expect("a public key"),
+            ),
             ..MAKING
         };
+        let dir2 = tempfile::tempdir().expect("a directory");
+        let made = Fake::new(&dir2);
+        *made.app.borrow_mut() = None;
+        *made.env.borrow_mut() = None;
+        let (out, _) = go(&made, &asked(1, true, false, false), &wallet, true).await;
+        out.expect("started");
+        let body = made.made.borrow()[0].clone();
+        assert_eq!(body["wallet"]["pubkey"], pubkey);
+        assert_eq!(body["wallet"]["sourceKind"], "keychain");
+        // An app the account has with another wallet, or with one where
+        // erpc.toml has none: refused, nothing made or started.
+        let mut other = app_record("solana");
+        other.wallet = serde_json::from_value(
+            json!({ "pubkey": "11111111111111111111111111111111", "sourceKind": "keychain" }),
+        )
+        .expect("a wallet");
+        for making in [&wallet, &MAKING] {
+            *fake.app.borrow_mut() = Some(other.clone());
+            fake.calls.borrow_mut().clear();
+            let (out, _) = go(&fake, &asked(1, true, false, false), making, true).await;
+            assert!(
+                out.expect_err("another wallet")
+                    .message
+                    .contains("another wallet"),
+            );
+            assert_eq!(*fake.calls.borrow(), ["app"]);
+        }
+        // The same wallet: used as it is.
+        let mut same = app_record("solana");
+        same.wallet = serde_json::from_value(json!({ "pubkey": pubkey })).expect("a wallet");
+        *fake.app.borrow_mut() = Some(same);
+        *fake.env.borrow_mut() = None;
+        fake.calls.borrow_mut().clear();
         let (out, _) = go(&fake, &asked(1, true, false, false), &wallet, true).await;
-        assert!(out.expect_err("wallet").message.contains("wallet"));
-        assert_eq!(*fake.calls.borrow(), ["app", "app"]);
+        out.expect("started");
         // A wallet app the account has on another chain: refused.
         *fake.app.borrow_mut() = Some(app_record("ethereum"));
         let (out, _) = go(&fake, &asked(1, true, false, false), &wallet, true).await;
