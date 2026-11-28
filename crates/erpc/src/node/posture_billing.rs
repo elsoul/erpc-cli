@@ -61,8 +61,9 @@ enum Consent {
     ExternalV1,
 }
 
-/// What the operator approved: the consent, and the model named for each
-/// rate. The names come from the quote; the rates are fixed here.
+/// What the operator approved: the consent, and the model the quote named
+/// for each rate. The names come from the quote and are checked against the
+/// receipt, and nothing printed shows them; the rates are fixed here.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Terms {
     consent: Consent,
@@ -70,7 +71,8 @@ struct Terms {
     fallback: Option<String>,
 }
 
-/// A model name from the quote, shown to the operator and sent back as is.
+/// A model name from the quote, sent back as is (the fallback's header) and
+/// matched against the receipt. Neither the screen nor `--json` shows it.
 fn model_name(name: &str) -> bool {
     (1..=64).contains(&name.len())
         && name
@@ -208,15 +210,13 @@ fn quote_prompt(terms: &Terms, rental: Server) -> String {
         maximum = Price::PRIMARY.maximum(),
         base = BASE,
         input = Price::PRIMARY.input,
-        output = Price::PRIMARY.output,
-        model = &terms.model
+        output = Price::PRIMARY.output
     );
-    let Some(model) = &terms.fallback else {
+    if terms.fallback.is_none() {
         return format!("{scope}\n{price}");
-    };
+    }
     let fallback = t!(
         "node_check.quote_fallback",
-        model = model,
         maximum = Price::FALLBACK.maximum(),
         base = BASE,
         input = Price::FALLBACK.input,
@@ -562,6 +562,10 @@ struct Billing {
 #[serde(deny_unknown_fields)]
 pub(super) struct Receipt {
     status: String,
+    /// The model the report was charged for: read from the reply and
+    /// checked against the quote's names and rates, never printed, on
+    /// screen or in `--json`.
+    #[serde(skip_serializing)]
     model: String,
     findings: Vec<FindingId>,
     billing: Billing,
@@ -603,7 +607,6 @@ impl Receipt {
             .join("\n");
         t!(
             "node_check.billing_settled",
-            model = &self.model,
             charged = self.billing.charged_credits,
             base = BASE,
             input = self.billing.input_tokens,
@@ -726,17 +729,14 @@ mod tests {
                 let external = quote_prompt(&external(), rental);
                 let fallback = quote_prompt(&with_fallback(), rental);
                 assert!(!quote.contains("vps:42"));
-                assert!(quote.contains(PRIMARY), "{quote}");
                 assert!(external.contains("vps:42"), "{external}");
                 assert!(external.contains("90"), "{external}");
                 assert!(external.contains("28160"), "{external}");
-                assert!(!external.contains(FALLBACK), "{external}");
-                assert!(fallback.contains(FALLBACK), "{fallback}");
+                assert!(!external.contains("9472"), "{external}");
                 for expected in ["28160", "9472"] {
                     assert!(fallback.contains(expected), "{fallback}");
                 }
                 let summary = receipt.summary();
-                assert!(summary.contains(PRIMARY), "{summary}");
                 let quote_numbers = quote
                     .split(|c: char| !c.is_ascii_digit())
                     .collect::<Vec<_>>();
@@ -767,6 +767,70 @@ mod tests {
                         .message(request)
                         .contains(request)
                 );
+            });
+        }
+    }
+
+    /// The questions ask for ERPC AI, and for a fallback model when the
+    /// quote has one, at its rate and maximum, one model charged; neither
+    /// they nor the charge name a model of the quote or the receipt.
+    #[test]
+    fn the_price_questions_and_the_charge_name_no_model() {
+        use erpc_core::i18n::Lang;
+
+        let rental = Server {
+            kind: super::super::Kind::Vps,
+            id: 42,
+        };
+        let mut by_fallback = example();
+        by_fallback["model"] = json!(FALLBACK);
+        by_fallback["billing"]["chargedCredits"] = json!(1090);
+        let receipts: Vec<Receipt> = [example(), by_fallback]
+            .into_iter()
+            .map(|value| serde_json::from_value(value).expect("receipt"))
+            .collect();
+        for (language, question, fallback_model, one_model) in [
+            (
+                Lang::En,
+                "Run this report with ERPC AI?",
+                "authorize a fallback model at a maximum of 9472",
+                "charges for one model only",
+            ),
+            (
+                Lang::Ja,
+                "ERPC AI でレポートを生成しますか？",
+                "代替モデルの使用も許可し",
+                "モデルは1つだけ",
+            ),
+            (
+                Lang::Zh,
+                "使用 ERPC AI 生成报告吗？",
+                "您也授权使用备用模型，上限为 9472",
+                "只按一个模型收费",
+            ),
+            (
+                Lang::Ru,
+                "Создать отчёт с помощью ERPC AI?",
+                "использовать резервную модель с лимитом 9472",
+                "по тарифу одной модели",
+            ),
+        ] {
+            crate::cli::i18n::speaking(language, || {
+                let fallback = quote_prompt(&with_fallback(), rental);
+                assert!(fallback.contains(question), "{fallback}");
+                assert!(fallback.contains(fallback_model), "{fallback}");
+                assert!(fallback.contains(one_model), "{fallback}");
+                let mut shown = vec![
+                    fallback,
+                    quote_prompt(&internal(), rental),
+                    quote_prompt(&external(), rental),
+                ];
+                shown.extend(receipts.iter().map(Receipt::summary));
+                for text in &shown {
+                    for name in [PRIMARY, FALLBACK, "fixture-model"] {
+                        assert!(!text.contains(name), "{name} in {text}");
+                    }
+                }
             });
         }
     }
@@ -1069,7 +1133,7 @@ mod tests {
         assert!(!fallback.valid(&external()));
         assert!(fallback.valid(&with_fallback()));
         let summary = fallback.summary();
-        assert!(summary.contains(FALLBACK), "{summary}");
+        assert!(!summary.contains(FALLBACK), "{summary}");
         assert!(summary.contains("1090"), "{summary}");
         let primary: Receipt = serde_json::from_value(example()).expect("receipt");
         assert!(primary.valid(&with_fallback()));

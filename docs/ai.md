@@ -82,13 +82,24 @@ word is `/security-check` stays local in the console, with `--message`, and
 on standard input. In builds with the feature it points to the terminal command.
 `/node-check` locally displays the migration message.
 
+The CLI logs in with the `.pub` the `ssh_key` setting names, or
+`~/.ssh/id_ed25519.pub` when it is unset, as `erpc worker` does. The
+private half comes from the `SSH_AUTH_SOCK` agent when that agent holds
+the key, otherwise from the file beside the `.pub`. The CLI checks the
+server against the host key erpc pinned when it made that VPS key-only,
+or against an independently verified Ed25519 host public key you supply
+with `--host-key '<public-key>' --ssh-user '<login>'` for this check.
+Bare-metal rentals have no pin, so they need those two options. Once a
+rental is selected, before the first question, the CLI checks on this
+machine that it has both the key's `.pub` and the host key. When either
+is missing, it stops before anything is quoted or reserved and says which:
+for the key, how to set it with `erpc config set ssh_key`; for the host
+key, the command to run again with `--host-key` and `--ssh-user`.
+
 Before inspection, confirm that you own the selected server or have
 authorization to assess it and agree to use the check without reselling
 it. ERPC then revalidates the rental, provisioning state and public IPv4
-assignment before any SSH connection. The CLI uses the SSH identity in
-`ssh_key` and the saved VPS host key pin for that rental. You can supply
-an independently verified Ed25519 host public key with
-`--host-key '<public-key>' --ssh-user '<login>'` for this check.
+assignment before any SSH connection.
 
 The collector reads bounded evidence from the remote Linux SSH login's
 network namespace and available system configuration.
@@ -205,15 +216,18 @@ The inventory accepts up to 256 rentals and a 128 KiB reply. Quote and
 rental verification replies are capped at 4 KiB each. An oversized reply
 stops the check before SSH.
 
-The pricing prompt shows the model named in the quote, the maximum
-reservation of 28,160 ERPC AI tokens and the rate for a completed report.
-The current rate is 512 tokens plus 3 per model input token and 12 per
-model output token. The CLI checks every rate and limit in the quote
-against its own copy and shows the model name as the quote gives it (a
-lower-case letter followed by up to 63 lower-case letters, digits, dots
-and hyphens); a
-completed report must name a model the quote offered, at that model's
-rate. The check requires approval of a verified quote before opening SSH.
+The pricing prompt asks to run the report with ERPC AI and shows the
+maximum reservation of 28,160 ERPC AI tokens and the rate for a completed
+report. It names no model. The current rate is 512 tokens plus 3 per
+model input token and 12 per model output token. The CLI checks every
+rate and limit in the quote against its own copy, and each model name the
+quote gives against a fixed form (a lower-case letter followed by up to
+63 lower-case letters, digits, dots and hyphens); a completed report must
+name a model the quote offered, at that model's rate. No model name is
+printed, on screen or in `--json`: the questions and the charge name
+none, and `modelReport` in `--json` carries the receipt's status,
+findings and billing without its `model`. The check requires approval of
+a verified quote before opening SSH.
 When there is none, the message says why:
 - `HTTP <status> (<code>)` when the service refuses. The code is the
   service's error code if the reply is exactly one code the CLI knows for
@@ -245,8 +259,9 @@ applies to that run only. If the quote offers a fallback model, the same
 approval covers that rate of 512 tokens plus 1 per input token and 3 per
 output token, up to 9,472 tokens. ERPC may use it if the request could
 not be sent to the primary model. The overall reservation remains at
-most 28,160 tokens. A completed report identifies the single model used
-for billing.
+most 28,160 tokens. A completed report is charged for one model only.
+The screen and `modelReport` in `--json` show the charge and the token
+counts, without the model.
 
 ## Wallet: `erpc wallet`
 
