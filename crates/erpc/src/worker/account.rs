@@ -452,8 +452,9 @@ impl Signed {
         &self,
         name: &str,
         env: &str,
+        adopt: Option<(account::ServerKind, u64)>,
     ) -> Result<account::money::ServerPrices, WorkerError> {
-        account::money::server_prices(&self.client, &self.token().await?, name, env).await
+        account::money::server_prices(&self.client, &self.token().await?, name, env, adopt).await
     }
 
     /// The first login of server `server` of environment `env` of app
@@ -543,6 +544,15 @@ pub(crate) trait Account {
         env: &str,
         body: &account::PutEnv,
     ) -> Result<account::Written<EnvDetail>, WorkerError>;
+    /// What taking server `id` of `kind` into environment `env` of the app
+    /// named `name` does to its price; `None` when the account does not say.
+    async fn adopt_price(
+        &self,
+        name: &str,
+        env: &str,
+        kind: account::ServerKind,
+        id: u64,
+    ) -> Result<Option<(String, account::money::AdoptPrice)>, WorkerError>;
     /// Takes a server the account already has into it.
     async fn adopt_server(
         &self,
@@ -636,6 +646,18 @@ impl Account for Signed {
         body: &account::PutEnv,
     ) -> Result<account::Written<EnvDetail>, WorkerError> {
         account::put_env(&self.client, &self.token().await?, name, env, body).await
+    }
+
+    async fn adopt_price(
+        &self,
+        name: &str,
+        env: &str,
+        kind: account::ServerKind,
+        id: u64,
+    ) -> Result<Option<(String, account::money::AdoptPrice)>, WorkerError> {
+        self.server_prices(name, env, Some((kind, id)))
+            .await
+            .map(|prices| prices.adopt.map(|adopt| (prices.currency, adopt)))
     }
 
     async fn adopt_server(
@@ -784,6 +806,7 @@ fn server_json(s: &Server) -> Value {
         "memoryGb": s.memory_gb,
         "region": s.region.as_deref().map(shown),
         "hourly": s.hourly,
+        "hourlyCents": s.hourly_cents,
         "appRunning": s.app_running,
         "state": s.state.as_str(),
     })
@@ -895,6 +918,14 @@ pub(crate) fn account_said(env: &EnvDetail) -> Vec<String> {
                 region = s.region.as_deref().map_or_else(String::new, shown),
                 state = state_said(&s.state),
                 hourly = yes_no(s.hourly),
+                // What the account charges for it by the hour, when it says.
+                price =
+                    s.hourly_cents
+                        .filter(|cents| *cents > 0)
+                        .map_or_else(String::new, |cents| t!(
+                            "worker_account.status.price",
+                            price = format!("{}.{:02}", cents / 100, cents % 100)
+                        )),
                 running
             )
             .split_whitespace()
@@ -1550,6 +1581,16 @@ pub(crate) mod stand_in {
             unreachable!("not asked of this stand-in")
         }
 
+        async fn adopt_price(
+            &self,
+            _: &str,
+            _: &str,
+            _: account::ServerKind,
+            _: u64,
+        ) -> Result<Option<(String, account::money::AdoptPrice)>, WorkerError> {
+            unreachable!("not asked of this stand-in")
+        }
+
         async fn adopt_server(
             &self,
             _: &str,
@@ -1856,6 +1897,18 @@ mod tests {
         assert_eq!(json["deployed"]["release"], "20261029T154037Z-6914df5f");
         assert!(json["servers"][0].get("refId").is_none());
         assert_eq!(json["lines"][0]["bundlePart"], false);
+        // No price the account gives for the server: none said.
+        assert!(!said.contains("an hour"), "{said}");
+        assert_eq!(json["servers"][0]["hourlyCents"], Value::Null);
+        // One it gives: said with the server, and in `--json`.
+        let mut charged = env_detail();
+        charged.servers[0].hourly_cents = Some(11);
+        let said = account_said(&charged).join("\n");
+        assert!(said.contains("hourly €0.11 an hour app running"), "{said}");
+        assert_eq!(account_json(&charged)["servers"][0]["hourlyCents"], 11);
+        // Nought: none said.
+        charged.servers[0].hourly_cents = Some(0);
+        assert!(!account_said(&charged).join("\n").contains("an hour"));
         // A line bought as part of a Bundle: said so in place of whether
         // it is paid by the hour.
         let mut part = env_detail();

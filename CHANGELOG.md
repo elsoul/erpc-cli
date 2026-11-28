@@ -281,6 +281,37 @@ whose version has no entry below.
 
 ### Changed
 
+- `erpc worker server start`, the first deploy's start and the take-in of
+  a server by `erpc worker move --to account` are sent at the price of one
+  hour the person was shown (`expectedHourlyCents`; `null` only for a
+  server on a contract the account gives no price by the hour for, said
+  to keep its contract's price). The move asks the account what taking
+  the server in does to its price first, shows a price by the hour (now,
+  once taken in and the difference, or once taken in alone) and asks at
+  a terminal (`--yes` says it), says one by the hour that stays, stops on
+  a price it cannot show (none, nought, not in euros), and goes as before
+  when the account says nothing of it; then, and when a move run again
+  finds the server in already, it says the price applied, when the
+  account's answer gives one. When the account answers that the price
+  changed (`price_changed`), nothing is bought or taken in. A start, at a
+  terminal, is asked again with the price now and needs a new yes (it
+  then goes as a new one, under a new key); under `--yes`, or when the
+  price now is not said, it stops and says so. A take-in stops the move,
+  at a terminal and under `--yes` alike, saying the price now (by the
+  hour, or its contract's) or that the account does not say it; a run
+  again reads the price now and says or asks it, as any move does, before
+  the server is taken in. After a
+  start, the price by the hour the account applies is said when it gives
+  one, and a start sent
+  again under its key that had reached the account earlier at another
+  price is said as such; a start found done is said at the price applied
+  alone. A size priced at nought is never sent. A start kept on this
+  machine keeps the price it was sent at, and is sent again at it; one an
+  earlier erpc kept with no price is sent again, and kept, at the price
+  shown in that run.
+  `status` of an environment kept in the account shows each server's
+  price by the hour when the account gives it (`hourlyCents` under
+  `--json`).
 - The first `erpc worker deploy` that starts a new server makes the app an
   ERPC Worker in the ERPC account, in that one command. For an environment
   `erpc.toml` has nothing for yet (no `[env.<name>]`, or an empty one),

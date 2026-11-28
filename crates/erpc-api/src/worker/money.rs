@@ -129,6 +129,16 @@ pub struct StartServer {
     /// checked as a new start is.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expected_revision: Option<u64>,
+    /// The price of one hour the person was shown for it, in cents: the
+    /// account refuses a start at any other price
+    /// ([`super::Code::PriceChanged`], with [`Refusal::hourly_cents`]),
+    /// buying nothing. A start sent again under its key while it is open,
+    /// or once it is done, is answered as before, whatever this says; after
+    /// a [`super::Code::PriceChanged`] the key holds nothing, and a send
+    /// under it is checked again, as a new start is. Left out, the start is
+    /// priced as the account prices it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected_hourly_cents: Option<u64>,
 }
 
 impl StartServer {
@@ -139,7 +149,15 @@ impl StartServer {
             cores,
             region: region.into(),
             expected_revision: None,
+            expected_hourly_cents: None,
         }
+    }
+
+    /// The same start, made only at the price of one hour shown, `cents`.
+    #[must_use]
+    pub const fn at_price(mut self, cents: Option<u64>) -> Self {
+        self.expected_hourly_cents = cents;
+        self
     }
 
     /// The same start, made only while the environment is at `revision`.
@@ -178,6 +196,35 @@ pub struct ServerPrices {
     /// server for the environment (its server in use is a bare-metal one,
     /// or of a plan it does not know).
     pub options: Vec<ServerPrice>,
+    /// What a server asked about ([`server_prices`]'s `adopt`) costs by the
+    /// hour now and once taken into the environment; `None` when it was not
+    /// asked about, or the account does not say yet.
+    #[serde(default)]
+    pub adopt: Option<AdoptPrice>,
+}
+
+/// What taking a server into an environment does to its price, as the
+/// account says it ([`server_prices`] asked with the server).
+///
+/// The names of these fields are the account's as far as they are known
+/// now: they are read here only, and only here would they change.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct AdoptPrice {
+    /// How it is paid for: [`super::Billing::Hourly`] or
+    /// [`super::Billing::Contract`]; `None` when the answer does not say.
+    #[serde(default)]
+    pub billing: Option<super::Billing>,
+    /// What it costs by the hour now, in cents; `None` for one paid by
+    /// contract.
+    #[serde(default)]
+    pub current_hourly_cents: Option<u64>,
+    /// What it costs by the hour once taken in, in cents, which the take-in
+    /// is sent with ([`super::AdoptServer::expecting`]); `None`: it keeps the
+    /// price of its contract.
+    #[serde(default)]
+    pub hourly_cents: Option<u64>,
 }
 
 /// The body that starts a data line.
@@ -440,6 +487,17 @@ impl Refusal {
         self.data.get("retry").and_then(Value::as_bool) == Some(true)
     }
 
+    /// The price of one hour now, in cents, on [`super::Code::PriceChanged`]
+    /// (`data.hourlyCents`); `None` when the refusal does not say (a server
+    /// paid by contract, or an answer of another shape).
+    #[must_use]
+    pub fn hourly_cents(&self) -> Option<u64> {
+        self.data
+            .get("hourlyCents")
+            .and_then(Value::as_u64)
+            .filter(|cents| *cents > 0)
+    }
+
     /// The reason the refusal gives (`data.reason`), cleaned to the letters,
     /// digits, `_`, `-` and `.` the account uses: safe to print.
     #[must_use]
@@ -683,21 +741,38 @@ pub async fn start_server(
 }
 
 /// The sizes a server start takes for the environment `env` of `app` now,
-/// each with its price by the hour. Reads only: nothing is bought.
+/// each with its price by the hour, and, asked with the server `adopt`
+/// (its kind and number), what taking it in does to its price
+/// ([`ServerPrices::adopt`]). Reads only: nothing is bought.
 ///
 /// # Errors
 ///
 /// [`super::Code::WorkerNotFound`] or [`super::Code::EnvNotFound`] when there is no such
-/// app or environment, and [`WorkerError`] otherwise.
+/// app or environment, [`super::Code::ResourceNotFound`] when `adopt` is
+/// not the person's, and [`WorkerError`] otherwise.
 pub async fn server_prices(
     client: &AuthClient,
     access_token: &SecretString,
     app: &str,
     env: &str,
+    adopt: Option<(super::ServerKind, u64)>,
 ) -> Result<ServerPrices, WorkerError> {
-    let url = route_url(app, env, Route::ServerPrices)?;
+    let url = prices_url(app, env, adopt)?;
     let (status, text) = super::get(client, access_token, &url).await?;
     reply::<ServerPrices>(status, &text).map(|w| w.record)
+}
+
+/// The URL [`server_prices`] reads, with the server asked about, if any.
+fn prices_url(
+    app: &str,
+    env: &str,
+    adopt: Option<(super::ServerKind, u64)>,
+) -> Result<String, WorkerError> {
+    let url = route_url(app, env, Route::ServerPrices)?;
+    Ok(match adopt {
+        Some((kind, id)) => format!("{url}?adoptKind={}&adoptId={id}", kind.as_str()),
+        None => url,
+    })
 }
 
 /// Starts a data line for the environment `env` of `app`, paid for by the
@@ -1120,6 +1195,21 @@ mod tests {
             serde_json::to_value(StartServer::new(2, "amsterdam").at_revision(7)).expect("encodes"),
             json!({ "cores": 2, "region": "amsterdam", "expectedRevision": 7 })
         );
+        // At the price shown: sent as `expectedHourlyCents`; none, left out.
+        assert_eq!(
+            serde_json::to_value(
+                StartServer::new(2, "amsterdam")
+                    .at_revision(7)
+                    .at_price(Some(13))
+            )
+            .expect("encodes"),
+            json!({ "cores": 2, "region": "amsterdam", "expectedRevision": 7,
+                "expectedHourlyCents": 13 })
+        );
+        assert_eq!(
+            serde_json::to_value(StartServer::new(2, "amsterdam").at_price(None)).expect("encodes"),
+            json!({ "cores": 2, "region": "amsterdam" })
+        );
         let grpc = StartLine::new(
             LineKind::Grpc,
             "grpc-1",
@@ -1217,6 +1307,77 @@ mod tests {
             .map(|w| w.record)
             .expect("reads");
         assert!(none.options.is_empty());
+        assert_eq!(none.adopt, None, "not asked about, or not said yet");
+        // Asked with a server: what taking it in does to its price.
+        let (status, text) = answer(
+            200,
+            &json!({ "currency": "eur", "options": [], "adopt": {
+                "billing": "hourly", "currentHourlyCents": 7, "hourlyCents": 11 } }),
+        );
+        let adopt = reply::<ServerPrices>(status, &text)
+            .map(|w| w.record)
+            .expect("reads")
+            .adopt
+            .expect("said");
+        assert_eq!(adopt.billing, Some(super::super::Billing::Hourly));
+        assert_eq!(
+            (adopt.current_hourly_cents, adopt.hourly_cents),
+            (Some(7), Some(11))
+        );
+        let (status, text) = answer(
+            200,
+            &json!({ "currency": "eur", "options": [], "adopt": {
+                "billing": "contract", "currentHourlyCents": null, "hourlyCents": null } }),
+        );
+        let contract = reply::<ServerPrices>(status, &text)
+            .map(|w| w.record)
+            .expect("reads")
+            .adopt
+            .expect("said");
+        assert_eq!(contract.billing, Some(super::super::Billing::Contract));
+        assert_eq!(contract.hourly_cents, None);
+        // Another shape is an error, never read as nothing said.
+        let (status, text) = answer(
+            200,
+            &json!({ "currency": "eur", "options": [], "adopt": { "hourlyCents": "11" } }),
+        );
+        assert!(reply::<ServerPrices>(status, &text).is_err());
+    }
+
+    #[test]
+    fn the_prices_of_a_server_to_take_in_are_asked_with_its_kind_and_number() {
+        assert_eq!(
+            prices_url("pump-sniper", "prod", None).expect("a url"),
+            format!("{ENV}/server/prices")
+        );
+        for (kind, said) in [
+            (super::super::ServerKind::Vps, "vps"),
+            (super::super::ServerKind::SuperVps, "super-vps"),
+            (super::super::ServerKind::PremiumVps, "premium-vps"),
+            (super::super::ServerKind::BareMetal, "bare-metal"),
+        ] {
+            assert_eq!(
+                prices_url("pump-sniper", "prod", Some((kind, 100_001))).expect("a url"),
+                format!("{ENV}/server/prices?adoptKind={said}&adoptId=100001")
+            );
+            // The same word the take-in's body sends.
+            assert_eq!(serde_json::to_value(kind).expect("encodes"), json!(said));
+        }
+    }
+
+    #[test]
+    fn a_price_changed_refusal_says_the_price_now_when_it_does() {
+        let r = |data: Value| Refusal {
+            status: 409,
+            code: Some(super::super::Code::from("price_changed")),
+            message: None,
+            data,
+        };
+        assert_eq!(r(json!({})).code, Some(super::super::Code::PriceChanged));
+        assert_eq!(r(json!({ "hourlyCents": 11 })).hourly_cents(), Some(11));
+        assert_eq!(r(json!({ "hourlyCents": null })).hourly_cents(), None);
+        assert_eq!(r(json!({ "hourlyCents": "11" })).hourly_cents(), None);
+        assert_eq!(r(Value::Null).hourly_cents(), None);
     }
 
     #[test]
