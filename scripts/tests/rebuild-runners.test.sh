@@ -112,11 +112,48 @@ fi
 #    install are the only lines where the word may appear.
 agent_free=$(printf '%s\n' "$job" \
   | grep -vxE '[[:space:]]*run: scripts/build-worker-agents\.sh' \
-  | grep -vxE '[[:space:]]*tool: cargo-dist@0\.32\.0,cargo-auditable,cargo-zigbuild@0\.24\.0')
+  | grep -vxE '[[:space:]]*tool: cargo-dist@0\.32\.0,cargo-zigbuild@0\.24\.0')
 if printf '%s\n' "$agent_free" | grep -q zigbuild; then
   bad "the rebuild does not use cargo-zigbuild for erpc" "zig links differently from the native musl-gcc build"
 else
   ok "the rebuild does not use cargo-zigbuild for erpc"
+fi
+
+# 4b. cargo-auditable decides the format of the audit data it embeds, so
+#     the rebuild must install it exactly as release.yml does: with the
+#     plan's own command, and in no other way. The step's own script is run
+#     here against stub plans.
+step=$(awk '
+  /- name: install cargo-auditable as the release build does/ { inside = 1; next }
+  inside && /^      - / { exit }
+  inside && /^        run: \|/ { run = 1; next }
+  inside && run { sub(/^          /, ""); print }
+' "$custom")
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+stub_plan() { # $1 target, $2 command or empty
+  if [ -n "$2" ]; then
+    jq -n --arg t "$1" --arg c "$2" '{ci:{github:{artifacts_matrix:{include:[{targets:[$t],install_cargo_auditable:{run:$c}}]}}}}'
+  else
+    jq -n --arg t "$1" '{ci:{github:{artifacts_matrix:{include:[{targets:[$t]}]}}}}'
+  fi
+}
+ran_ok=no; refused_ok=no; failed_ok=no
+if [ -n "$step" ]; then
+  PLAN=$(stub_plan aarch64-unknown-linux-musl "touch $tmp/ran") TARGET=aarch64-unknown-linux-musl \
+    bash -c "$step" >/dev/null 2>&1 && [ -f "$tmp/ran" ] && ran_ok=yes
+  PLAN=$(stub_plan aarch64-unknown-linux-musl "") TARGET=aarch64-unknown-linux-musl \
+    bash -c "$step" >/dev/null 2>&1 || refused_ok=yes
+  PLAN=$(stub_plan aarch64-unknown-linux-musl "false") TARGET=aarch64-unknown-linux-musl \
+    bash -c "$step" >/dev/null 2>&1 || failed_ok=yes
+fi
+other=$(printf '%s\n' "$job" | grep -vF -- "$step" | grep -nE 'cargo-auditable|cargo install[^|]*auditable' \
+  | grep -vE '^[0-9]+:[[:space:]]*- name: install cargo-auditable as the release build does$' || true)
+if [ "$ran_ok" = yes ] && [ "$refused_ok" = yes ] && [ "$failed_ok" = yes ] && [ -z "$other" ] \
+   && grep -q 'matrix.install_cargo_auditable.run' "$repo_root/.github/workflows/release.yml"; then
+  ok "the rebuild installs cargo-auditable with the plan's command, and in no other way"
+else
+  bad "the rebuild installs cargo-auditable with the plan's command, and in no other way" \
+      "runs the plan's command: $ran_ok; stops with none: $refused_ok; stops when it fails: $failed_ok; other installs: ${other:-none}"
 fi
 
 # 5. The rebuild embeds the worker agents as the release build does, or the
