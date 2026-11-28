@@ -99,7 +99,7 @@ keeps_charging = "; its hourly {items} are not ended by this: any that still run
 
 [unreached]
 message = "could not reach the server {host}{vps}; it may have been ended or be down"
-which = " (server {id})"
+which = " (ERPC Worker {id})"
 plain = "if the server can no longer be reached and the worker does not run there, `{command}` leaves it unreached"
 charged = "if the server can no longer be reached and the worker does not run there, `{command}` leaves it unreached and ends what is charged by the hour"
 backup = "; `{command}` revokes its backup keys now, whether or not the server answers"
@@ -119,7 +119,7 @@ lines = " Its data lines are ended."
 dropped = " {line} was not among what the account is charged for; it leaves the record."
 server = " The hourly server is ended."
 server_gone = " {kind} {id} is not on the account you are signed in to ({account}): it was not ended, and it leaves the record."
-no_server = " There was no hourly ERPC server on record to end."
+no_server = " There was no hourly ERPC Worker on record to end."
 kept = "{line} is not billed by the hour, so erpc did not end it; it still runs until it is ended in the dashboard"
 
 [release]

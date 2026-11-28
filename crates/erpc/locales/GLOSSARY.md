@@ -10,8 +10,13 @@ One term per concept, in every catalog of a language (here and in
 term here and in every file at once.
 
 Never translated: command names, flags, `erpc.toml` keys, env names,
-paths, ERPC, VPS, Unlimited RPC, Shreds, gRPC, ERPC Global Storage,
-1Password, restic, systemd, Solana, EURC.
+paths, ERPC, VPS, ERPC Worker, Unlimited RPC, Shreds, gRPC, ERPC Global
+Storage, 1Password, restic, systemd, Solana, EURC.
+
+**ERPC Worker** is what `erpc worker` calls an ERPC server it shows a person,
+followed by its spec (`ERPC Worker (1 vCPU, 4 GB memory, 10 GB NVMe)`) or its
+id (`ERPC Worker 100001`); never "VPS" or the product's own name there. A
+server of your own stays a server (サーバー, 服务器, сервер).
 
 | English | ja | zh | ru |
 |---|---|---|---|

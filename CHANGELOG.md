@@ -152,7 +152,9 @@ whose version has no entry below.
     the environment holds, a Bundle's line aside (below), and delete its
     record, then drops this
     machine's record of what it trusts for it and the table in
-    `erpc.toml`; the app's record in the account stays, with its secrets.
+    `erpc.toml`; the app's record in the account stays, with its secrets,
+    while the app has another environment there (with its last one it goes
+    too: under Changed).
     It asks first at a terminal, sends the first delete at the revision
     asked about, and says "nothing was ended" only when the account's
     answers and its record show it. A record with an address and no server
@@ -209,8 +211,12 @@ whose version has no entry below.
     refused before the server's firewall changes. What it says of the
     firewall and the WAF names the account's lists. Only lines in use are
     handed to the app, one of each kind. It
-    buys nothing and changes no line yet, and refuses the options that
-    would before the account or the server is reached.
+    changes no line yet. It refuses `--server`, `--host`, `--plan`, a
+    line's flag, `--forget-line`, `--vault` and `--inline` before the
+    account or the server is reached, and `--new-server` and `--region` once the account's
+    record is read (signed in first) and names a server, an address, a line
+    or a deploy; while it names none of them, the deploy starts a server
+    first, as the first deploy does (under Changed).
   - `start` and `restart` reach the server first, then record in the
     account that the app runs, before the key and secrets are handed over
     and the app is started; they start nothing when the account does not
@@ -235,6 +241,73 @@ whose version has no entry below.
 
 ### Changed
 
+- The first `erpc worker deploy` that starts a new server makes the app an
+  ERPC Worker in the ERPC account, in that one command. For an environment
+  `erpc.toml` has nothing for yet (no `[env.<name>]`, or an empty one),
+  `--new-server`, or "start a new one" picked at the terminal, makes the
+  app's and the environment's records in the account when it has none,
+  starts the cheapest size the account offers in `--region` (one the
+  account names) or the region nearest this machine, with its price asked
+  (said on stderr under `--yes`), writes `account = true` for the
+  environment after the yes and before the start is sent, then waits for
+  the server, logs in to it once at the terminal, asks whether to trust
+  what the account then has, and deploys. It needs a terminal and no
+  `--json`, since the first login is asked there only, and without one it
+  is refused before anything is bought or written; `--new-server --inline`
+  keeps the environment in `erpc.toml` as before. A run that stopped is run
+  again: a deploy of an environment kept in the account whose record names
+  no server, address, line or deploy starts one the same way, a start kept
+  on this machine or open in the account first, and never a second while
+  one is open or on the record; there `--yes` answers the price only with
+  `--new-server`. One the account signed in to has no record of at all
+  (another account's, or deleted) is refused as before unless
+  `--new-server` asks for a new server in that account. `--host`,
+  `--server`, a server of the account picked at the terminal, `--inline`,
+  `--vault` and an environment with anything in `erpc.toml` go as before;
+  so do a deploy that asks for a data line or `--plan`, and an app whose
+  `erpc.toml` names a wallet, each with a note on stderr saying why. Before,
+  that first deploy bought a VPS through user-api and wrote its facts into
+  `erpc.toml`, and the account had no record of the app.
+- `erpc worker delete --release-server` of an environment kept in the ERPC
+  account that is the app's last one there deletes the app's record too,
+  with the settings and secrets the account keeps for the app, so that what
+  the first deploy made goes as a whole. The question says so (under `--yes`
+  it is said on stderr). The app's record is deleted only after the
+  environment's, read again first and only when it is the app the person
+  was asked about with no environment left, with the account's
+  `DELETE /v3/worker/apps/<app>` at the revision read, which ends nothing;
+  a record that moved meanwhile is read and sent again. A run that stops
+  there says the environment is deleted and the app's record not yet, and
+  keeps `erpc.toml` and this machine's records until the same command
+  finishes it. While another environment remains, the app's record stays
+  as before. `--json` says `app_deleted`, and the help of `delete --yes`
+  says the app's record goes with its last environment kept there.
+- What `erpc worker` shows a person calls an ERPC server an ERPC Worker,
+  followed by its spec as the ERPC account or the product's name gives it
+  (`ERPC Worker (1 vCPU, 4 GB memory, 10 GB NVMe)`; what neither gives is
+  left out), or by its id where one is needed (`ERPC Worker 100001`), never
+  "VPS" or the product's own name. So say the server picker's rows (by id,
+  address, region and the spec its product's name gives) and its "start a new one", the line said
+  before a new server is bought, the `server start` question, note, sizes
+  and refusals, `status` of an environment kept in the account, the
+  question of `server end`, the count of servers `delete --release-server`
+  ends, `check`, what `status` says is charged, and every message that
+  named a `VPS <id>`, a `server <id>` or an ERPC server, in en, ja, zh and
+  ru, and the help of `deploy --server`, `--new-server`, `--region`,
+  `--plan`, `--yes`, `delete --release-server`, `server`, `server start`
+  and `server end`. A server of your own stays a server.
+  `--vps`, `--new-vps`, `kind = "vps"` in `erpc.toml` and the `--json`
+  field names are as they were; a `--json` `name` that said `VPS <id>` now
+  says `ERPC Worker <id>`. For an environment kept in `erpc.toml`, the
+  price question of a deploy that buys its server and the end question of
+  `delete --release-server` are `erpc ai`'s, with the product's name said
+  as the ERPC Worker it is; `erpc ai` itself is as it was, and a reason
+  user-api or `erpc ai` gives for a failure is quoted as it came. A spec
+  is read from the product's name only when all of the name, the
+  product's own name too, is in the known form; any other name shows
+  `ERPC Worker` and the id alone. Servers on
+  this machine's list are still told apart by their kind and id, not by
+  how they are named.
 - `erpc worker deploy` names the server it deploys to as a server, not a
   VPS: `--server <ID>` and `--new-server`, in every language's help and
   message. `--vps` and `--new-vps`, the names before, still work, so a

@@ -98,23 +98,23 @@ unbilled = "時間単位の課金ではなく、user-api の一覧にもあり�
 not_seen_yet = "開始済みですが、user-api の一覧にもアカウントの課金にもまだ表示されていません"
 
 [vps]
-named = "サーバー {id}"
-not_kept = "サーバー {id} を開始しましたが、記録できませんでした：{error}"
+named = "ERPC Worker {id}"
+not_kept = "ERPC Worker {id} を開始しましたが、記録できませんでした：{error}"
 not_kept_hint = "時間単位で課金されます。`erpc worker deploy --server {id}{scope}` で引き継ぐか、ダッシュボードで終了してください"
-taking_up = "以前のデプロイで記録されたサーバー {id} を引き継ぎます"
-missing = "以前のデプロイで記録され一度も接続していない VPS {id} は、サインイン中のアカウント（{account}）にありません。終了済みか、別のアカウントのものです。記録から外してよいかは端末の前にいる人しか答えられません。何もデプロイしていません"
-missing_hint = "このデプロイか `{delete}` を、端末でご自身で `--json` を付けずに実行してください。どちらも、この VPS を終了せずに記録から外せます（delete は環境のデータ回線も終了します）。または、その VPS を持つアカウントでサインインしてください"
-missing_ask = "以前のデプロイで記録され一度も接続していない VPS {id} は、サインイン中のアカウント（{account}）にありません。終了済みか、別のアカウントのものです。記録から外して（何も終了しません）、サーバーを選びますか？"
-missing_kept = "VPS {id} は記録に残したままです。何もデプロイしていません"
-dropped = "VPS {id} を記録から外しました。新しい環境と同じようにサーバーを選びます"
-not_dropped = "VPS {id} を記録から外せませんでした：{error}"
+taking_up = "以前のデプロイで記録された ERPC Worker {id} を引き継ぎます"
+missing = "以前のデプロイで記録され一度も接続していない ERPC Worker {id} は、サインイン中のアカウント（{account}）にありません。終了済みか、別のアカウントのものです。記録から外してよいかは端末の前にいる人しか答えられません。何もデプロイしていません"
+missing_hint = "このデプロイか `{delete}` を、端末でご自身で `--json` を付けずに実行してください。どちらも、この ERPC Worker を終了せずに記録から外せます（delete は環境のデータ回線も終了します）。または、その ERPC Worker を持つアカウントでサインインしてください"
+missing_ask = "以前のデプロイで記録され一度も接続していない ERPC Worker {id} は、サインイン中のアカウント（{account}）にありません。終了済みか、別のアカウントのものです。記録から外して（何も終了しません）、サーバーを選びますか？"
+missing_kept = "ERPC Worker {id} は記録に残したままです。何もデプロイしていません"
+dropped = "ERPC Worker {id} を記録から外しました。新しい環境と同じようにサーバーを選びます"
+not_dropped = "ERPC Worker {id} を記録から外せませんでした：{error}"
 udp_left = "UDP Forwarding 回線 {line} は記録にあり、時間単位で課金されていますが、その送信先だったサーバーは記録にありません。--udp を付けないデプロイでは、回線の送信先は今のままで、これから使うサーバーには向きません。何も購入していません"
 udp_left_hint = "`erpc worker deploy --udp{scope}` で回線を新しいサーバーに向けてください。この回線だけを終了するなら、ダッシュボード（または `erpc ai` の `end_hourly_product`）で終了し、`--forget-line {line}` を付けてデプロイしてください。`erpc worker delete --release-server{scope}` は、環境のほかの回線と一緒に終了します"
 
 [server]
 no_terminal = "erpc.toml に [env.{env}] がなく、ターミナルがないためサーバーを選べません"
-no_terminal_hint = "--server <id>、--new-server、--host <address> のいずれかを指定してください"
-new_vps = "時間課金のサーバーを新しく開始する（{region} 付近の最安プラン。先に料金を表示）"
+no_terminal_hint = "--server <id> か --host <address>、または --new-server --inline を指定してください。後者は ERPC のアカウントの外に置く時間課金の新しい ERPC Worker で、その料金と最初のログインには --yes が答えます"
+new_vps = "時間課金の ERPC Worker を新しく開始する（{region} 付近の最安プラン。先に料金を表示）"
 which = "どのサーバーで実行しますか？"
 
 [failed]
@@ -148,4 +148,4 @@ udp_line_closed_hourly = "{name} の送信先はこのサーバーの UDP ポー
 udp_pending_charged = "{name} は記録にありますが、送信先がどのサーバーにも設定されていません。何も送信しておらず、`erpc worker delete --release-server{scope}` で終了するまで時間単位で課金されます。`erpc worker deploy{scope} --udp` でこのサーバーを送信先に設定できます。"
 udp_pending_uncharged = "{name} は記録にありますが、送信先がどのサーバーにも設定されていません。何も送信しておらず、アカウントの時間課金には現在含まれていません（Premium 回線は送信先が設定されてから課金されます）。`erpc worker deploy{scope} --udp` でこのサーバーを送信先に設定でき、`erpc worker delete --release-server{scope}` で終了できます。"
 udp_pending = "{name} は記録にありますが、送信先がどのサーバーにも設定されていません。何も送信していません。Standard 回線は開始時から、Premium 回線は送信先が設定されてから、`erpc worker delete --release-server{scope}` で終了するまで時間単位で課金されます。`erpc worker deploy{scope} --udp` でこのサーバーを送信先に設定できます。"
-hourly_vps = "これは時間課金のサーバーです。`erpc worker delete --release-server{scope}` で終了するまで課金されます。"
+hourly_vps = "これは時間課金の ERPC Worker です。`erpc worker delete --release-server{scope}` で終了するまで課金されます。"

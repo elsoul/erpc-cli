@@ -21,6 +21,12 @@
 //! (the server is on record, the purchase was ended, or the start was
 //! refused before anything was bought); otherwise it is kept, and is sent
 //! again only when the account said to.
+//!
+//! The first `erpc worker deploy` that starts a new server
+//! ([`crate::worker::first_deploy`]) starts it here too ([`for_deploy`]):
+//! the cheapest size the account offers, near this machine unless
+//! `--region` says otherwise, and `account = true` written to `erpc.toml`
+//! after the yes and before the start is sent.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -270,16 +276,48 @@ fn new_key() -> Result<StartKey, CliError> {
 
 /// What was asked, and who can answer.
 pub(crate) struct Asked<'a> {
-    /// The cores asked for.
-    pub(crate) cores: u16,
-    /// The region asked for.
-    pub(crate) region: &'a str,
+    /// The cores asked for; `None`: those of the start kept here when it is
+    /// sent again, else the cheapest size the account offers.
+    pub(crate) cores: Option<u16>,
+    /// The region.
+    pub(crate) region: Region<'a>,
     /// `--yes`.
     pub(crate) yes: bool,
     /// `--json`.
     pub(crate) json: bool,
     /// Whether a person is at a terminal.
     pub(crate) terminal: bool,
+    /// The command that starts it.
+    pub(crate) by: By,
+}
+
+/// The region of a start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Region<'a> {
+    /// Asked for (`--region`).
+    Asked(&'a str),
+    /// Not asked for: that of the start kept here when it is sent again,
+    /// else this one (the nearest by this machine's time zone).
+    Else(&'a str),
+}
+
+impl<'a> Region<'a> {
+    /// The region asked for, if one was.
+    const fn asked(self) -> Option<&'a str> {
+        match self {
+            Self::Asked(region) => Some(region),
+            Self::Else(_) => None,
+        }
+    }
+}
+
+/// The command that starts the server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum By {
+    /// `erpc worker server start`.
+    ServerStart,
+    /// The first `erpc worker deploy` that starts a new server.
+    Deploy,
 }
 
 /// `cents` of a euro, as a price is said: `0.07`.
@@ -287,19 +325,32 @@ fn euros(cents: u64) -> String {
     format!("{}.{:02}", cents / 100, cents % 100)
 }
 
+/// The server of `price`'s size, as a person reads it: "ERPC Worker" and
+/// its spec ([`crate::worker::vps::worker`]).
+fn worker_of(price: &ServerPrice) -> String {
+    use crate::worker::vps::{Spec, worker};
+    worker(&Spec::sized(Some(price.cores), Some(price.memory_gb)))
+}
+
+/// A server of `cores` cores, as a person reads it.
+fn worker_cored(cores: u16) -> String {
+    use crate::worker::vps::{Spec, worker};
+    worker(&Spec::sized(Some(cores), None))
+}
+
 /// One size and its price, as the refusal of another lists it.
 fn size_said(price: &ServerPrice) -> String {
     t!(
         "worker_server.size",
-        cores = price.cores,
-        memory = price.memory_gb,
+        worker = worker_of(price),
         price = euros(price.hourly_cents)
     )
 }
 
-/// The size asked for, from `prices`: refused when the account prices it
-/// in a currency erpc does not show, starts none, or does not offer it.
-fn priced(prices: &ServerPrices, env: &str, cores: u16) -> Result<ServerPrice, CliError> {
+/// The size asked for, from `prices` (`None`: the cheapest): refused when
+/// the account prices it in a currency erpc does not show, starts none, or
+/// does not offer it.
+fn priced(prices: &ServerPrices, env: &str, cores: Option<u16>) -> Result<ServerPrice, CliError> {
     if prices.currency != "eur" {
         return Err(failed(t!(
             "worker_server.currency",
@@ -309,22 +360,29 @@ fn priced(prices: &ServerPrices, env: &str, cores: u16) -> Result<ServerPrice, C
     if prices.options.is_empty() {
         return Err(failed(t!("worker_server.no_sizes", env)));
     }
-    prices
-        .options
-        .iter()
-        .find(|o| o.cores == cores)
-        .cloned()
-        .ok_or_else(|| {
+    let found = match cores {
+        Some(cores) => prices.options.iter().find(|o| o.cores == cores),
+        None => prices
+            .options
+            .iter()
+            .min_by_key(|o| (o.hourly_cents, o.cores)),
+    };
+    match (found, cores) {
+        (Some(found), _) => Ok(found.clone()),
+        (None, Some(cores)) => {
             let offered: Vec<String> = prices.options.iter().map(size_said).collect();
-            CliError::new(
+            Err(CliError::new(
                 Code::Usage,
                 t!(
                     "worker_server.not_offered",
-                    cores,
+                    worker = worker_cored(cores),
                     offered = offered.join(", ")
                 ),
-            )
-        })
+            ))
+        }
+        // Offered sizes, so the cheapest is one of them.
+        (None, None) => Err(failed(t!("worker_server.no_sizes", env))),
+    }
 }
 
 /// Asks `question` before the start: at a terminal, unless `--yes`, which
@@ -509,7 +567,7 @@ fn open_refused(env: &str, open: &Open, kept: Option<bool>) -> CliError {
     let what = match (open.server, open.cores, open.region.as_deref()) {
         (true, Some(cores), Some(region)) => t!(
             "worker_server.open_server",
-            cores,
+            worker = worker_cored(cores),
             region = crate::storage::clean(region)
         ),
         (true, _, _) => t!("worker_server.open_server_unsaid"),
@@ -584,51 +642,77 @@ fn to_send_again(
             ));
         }
     };
-    if (again.cores, again.region.as_str()) != (asked.cores, asked.region) {
+    // What was not asked for is taken as the kept start has it.
+    let cores = asked.cores.unwrap_or(again.cores);
+    let region = asked.region.asked().unwrap_or(again.region.as_str());
+    if (again.cores, again.region.as_str()) != (cores, region) {
+        let scope = app.scope();
+        let hint = match asked.by {
+            By::ServerStart => t!(
+                "worker_server.differs_hint",
+                cores = again.cores,
+                region = again.region.as_str(),
+                scope = scope.as_str()
+            ),
+            By::Deploy => t!(
+                "worker_first_deploy.differs_hint",
+                region = again.region.as_str(),
+                scope = scope.as_str()
+            ),
+        };
         return Err(CliError::new(
             Code::Usage,
             t!(
                 "worker_server.differs",
-                kept_cores = again.cores,
+                kept = worker_cored(again.cores),
                 kept_region = again.region.as_str(),
-                cores = asked.cores,
-                region = asked.region
+                asked = worker_cored(cores),
+                region
             ),
         )
-        .hint(t!(
-            "worker_server.differs_hint",
-            cores = again.cores,
-            region = again.region.as_str(),
-            scope = app.scope()
-        )));
+        .hint(hint));
     }
     Ok(Some(again))
 }
 
-/// The question asked before the start, and the note said in its place
-/// under `--yes`.
-fn asking(app: &App, asked: &Asked<'_>, price: &ServerPrice, again: bool) -> (String, String) {
+/// The question asked before the start of `price`'s size in `region`, and
+/// the note said in its place under `--yes`; `name` is the app's.
+fn asking(
+    (app, name): (&App, &str),
+    asked: &Asked<'_>,
+    (price, region): (&ServerPrice, &str),
+    again: bool,
+) -> (String, String) {
     let (env, scope) = (app.env.as_str(), app.scope());
-    let (cores, memory, region) = (asked.cores, price.memory_gb, asked.region);
+    let worker = worker_of(price);
     let price = euros(price.hourly_cents);
-    let question = t!(
-        "worker_server.question",
-        env,
-        cores,
-        memory,
-        region,
-        price = price.as_str(),
-        scope = scope.as_str()
-    );
-    let note = t!(
-        "worker_server.note",
-        env,
-        cores,
-        memory,
-        region,
-        price = price.as_str(),
-        scope = scope.as_str()
-    );
+    let (price, scope) = (price.as_str(), scope.as_str());
+    let (question, note) = match asked.by {
+        By::ServerStart => (
+            t!("worker_server.question", env, worker, region, price, scope),
+            t!("worker_server.note", env, worker, region, price, scope),
+        ),
+        By::Deploy => (
+            t!(
+                "worker_first_deploy.question",
+                app = name,
+                env,
+                worker,
+                region,
+                price,
+                scope
+            ),
+            t!(
+                "worker_first_deploy.note",
+                app = name,
+                env,
+                worker,
+                region,
+                price,
+                scope
+            ),
+        ),
+    };
     if again {
         let same = t!("worker_server.same_start");
         (format!("{same}\n{question}"), format!("{same}\n{note}"))
@@ -790,7 +874,16 @@ fn decide(
                     None => Ok(Plan::Done),
                 }
             } else {
-                Err(failed(t!("worker_server.holds", env)))
+                let holds = failed(t!("worker_server.holds", env));
+                Err(match asked.by {
+                    By::ServerStart => holds,
+                    // erpc.toml may not say yet that the account keeps it.
+                    By::Deploy => holds.hint(t!(
+                        "worker_first_deploy.holds_hint",
+                        env,
+                        scope = app.scope()
+                    )),
+                })
             };
         }
         // An address and no server: a server of the person's own, or one
@@ -840,14 +933,18 @@ fn nobody() -> CliError {
 }
 
 /// The start, through `api`: what the account holds read, the price said
-/// and agreed to, the key kept in `store`, then the start sent.
+/// and agreed to (`confirm`), `agreed` done, the key kept in `store`, then
+/// the start sent.
 pub(crate) async fn run_with(
     api: &impl Buying,
     app: &App,
     name: &str,
     store: &Path,
     (making, asked): (&Making<'_>, &Asked<'_>),
-    confirm: impl FnOnce(&str) -> Result<bool, String>,
+    (confirm, agreed): (
+        impl FnOnce(&str) -> Result<bool, String>,
+        impl FnOnce() -> Result<(), CliError>,
+    ),
     make_key: impl FnOnce() -> Result<StartKey, CliError>,
 ) -> Result<(Value, String), CliError> {
     let env = app.env.as_str();
@@ -888,8 +985,18 @@ pub(crate) async fn run_with(
         .prices(name, env)
         .await
         .map_err(|e| read_failed(name, app, &e, &t!("worker_server.what_prices", env)))?;
-    let price = priced(&prices, env, asked.cores)?;
-    let (question, note) = asking(app, asked, &price, again.is_some());
+    // A start sent again is sent as it was kept; a new one as asked, the
+    // cheapest size when none was.
+    let price = priced(
+        &prices,
+        env,
+        again.as_ref().map(|a| a.cores).or(asked.cores),
+    )?;
+    let region = match (&again, asked.region) {
+        (Some(again), _) => again.region.as_str(),
+        (None, Region::Asked(region) | Region::Else(region)) => region,
+    };
+    let (question, note) = asking((app, name), asked, (&price, region), again.is_some());
     ask(asked, (&question, &note), confirm)?;
     // Read again after the yes, the starts first: a start or a server that
     // came meanwhile, from another run or another machine, sends nothing.
@@ -898,6 +1005,9 @@ pub(crate) async fn run_with(
     if decide(record.as_ref(), &open, saved, asked, app)? != plan {
         return Err(failed(t!("worker_server.changed", env)).hint(t!("worker_server.changed_hint")));
     }
+    // What the yes was for, before anything is sent: a stop between the two
+    // leaves it done and nothing bought.
+    agreed()?;
     let key = match &again {
         Some(again) => StartKey::new(again.key.as_str()).map_err(|e| failed(e.to_string()))?,
         None => make_key()?,
@@ -907,13 +1017,13 @@ pub(crate) async fn run_with(
     let before = again.as_ref().is_some_and(|a| a.resend);
     let mut start = Kept {
         key: key.as_str().to_owned(),
-        cores: asked.cores,
-        region: asked.region.to_owned(),
+        cores: price.cores,
+        region: region.to_owned(),
         resend: false,
     };
     keep_over(store, &file_key, &start, was.as_deref())
         .map_err(|error| failed(t!("worker_server.not_kept", error)))?;
-    let body = StartServer::new(asked.cores, asked.region).at_revision(revision);
+    let body = StartServer::new(price.cores, region).at_revision(revision);
     match api.start(name, env, &key, &body).await {
         Ok(written) => Ok(done(
             (store, &file_key, key.as_str()),
@@ -972,11 +1082,12 @@ async fn run(
     let signed = kept::Signed::open().await?;
     let store = crate::account::session::beside_config(FILE).map_err(failed)?;
     let asked = Asked {
-        cores,
-        region,
+        cores: Some(cores),
+        region: Region::Asked(region),
         yes,
         json,
         terminal: crate::account::session::has_terminal(),
+        by: By::ServerStart,
     };
     let making = Making {
         chain: m.chain.as_str(),
@@ -989,10 +1100,50 @@ async fn run(
         &m.name,
         &store,
         (&making, &asked),
-        crate::node::common::confirm,
+        (crate::node::common::confirm, || Ok(())),
         new_key,
     )
     .await
+}
+
+/// The start the first `erpc worker deploy` makes, through the signed-in
+/// `signed`, for environment `app.env` of `m`: in `region`, at the
+/// cheapest size the account offers (a start kept here is sent again as
+/// it was kept), after a yes at the terminal (`yes` says the price on
+/// stderr instead). `agreed` runs after the yes, before the start is sent.
+/// What the account then keeps of the environment, said.
+pub(crate) async fn for_deploy(
+    signed: &kept::Signed,
+    app: &App,
+    m: &erpc_worker::manifest::Manifest,
+    (region, yes): (Region<'_>, bool),
+    agreed: impl FnOnce() -> Result<(), CliError>,
+) -> Result<String, CliError> {
+    let store = crate::account::session::beside_config(FILE).map_err(failed)?;
+    let asked = Asked {
+        cores: None,
+        region,
+        yes,
+        json: false,
+        terminal: true,
+        by: By::Deploy,
+    };
+    let making = Making {
+        chain: m.chain.as_str(),
+        template: m.template.as_deref(),
+        wallet: m.wallet.is_some(),
+    };
+    run_with(
+        signed,
+        app,
+        &m.name,
+        &store,
+        (&making, &asked),
+        (crate::node::common::confirm, agreed),
+        new_key,
+    )
+    .await
+    .map(|(_, text)| text)
 }
 
 /// `erpc worker server start`.
@@ -1351,8 +1502,9 @@ mod tests {
 
     fn asked(cores: u16, yes: bool, json: bool, terminal: bool) -> Asked<'static> {
         Asked {
-            cores,
-            region: "amsterdam",
+            cores: Some(cores),
+            region: Region::Asked("amsterdam"),
+            by: By::ServerStart,
             yes,
             json,
             terminal,
@@ -1375,14 +1527,196 @@ mod tests {
             "bot",
             &fake.store,
             (making, asked),
-            |q| {
-                *question.borrow_mut() = Some(q.to_owned());
-                Ok(say_yes)
-            },
+            (
+                |q: &str| {
+                    *question.borrow_mut() = Some(q.to_owned());
+                    Ok(say_yes)
+                },
+                || Ok(()),
+            ),
             || Ok(StartKey::new(NEW_KEY).expect("a key")),
         )
         .await;
         (out, question.into_inner())
+    }
+
+    /// What the first deploy asks: the cheapest size, a region not asked
+    /// for (`region`), and `yes`.
+    fn by_deploy(region: Region<'static>, yes: bool) -> Asked<'static> {
+        Asked {
+            cores: None,
+            region,
+            yes,
+            json: false,
+            terminal: true,
+            by: By::Deploy,
+        }
+    }
+
+    /// The start as the first deploy makes it through `fake`, the person
+    /// answering `say_yes`, `agreed` said as a call (`"agreed"`) and
+    /// refused when `agreed_fails`; with the question asked, if any.
+    async fn go_deploy(
+        fake: &Fake,
+        asked: &Asked<'_>,
+        say_yes: bool,
+        agreed_fails: bool,
+    ) -> (Result<(Value, String), CliError>, Option<String>) {
+        let question = RefCell::new(None);
+        let app = App::at(fake.store.parent().expect("a directory"), "prod");
+        let out = run_with(
+            fake,
+            &app,
+            "bot",
+            &fake.store,
+            (&MAKING, asked),
+            (
+                |q: &str| {
+                    *question.borrow_mut() = Some(q.to_owned());
+                    Ok(say_yes)
+                },
+                || {
+                    fake.calls.borrow_mut().push("agreed");
+                    if agreed_fails {
+                        Err(failed("erpc.toml could not be written".to_owned()))
+                    } else {
+                        Ok(())
+                    }
+                },
+            ),
+            || Ok(StartKey::new(NEW_KEY).expect("a key")),
+        )
+        .await;
+        (out, question.into_inner())
+    }
+
+    #[tokio::test]
+    async fn the_first_deploy_starts_the_cheapest_size_near_and_agrees_after_the_yes_before_the_start()
+     {
+        let dir = tempfile::tempdir().expect("a directory");
+        let mut fake = Fake::new(&dir);
+        // Offered most expensive first: the cheapest is still the one.
+        fake.prices = json!({ "currency": "eur", "options": [
+            { "cores": 4, "memoryGb": 16, "hourlyCents": 120 },
+            { "cores": 2, "memoryGb": 4, "hourlyCents": 13 },
+            { "cores": 1, "memoryGb": 2, "hourlyCents": 7 }
+        ] });
+        let (out, question) =
+            go_deploy(&fake, &by_deploy(Region::Else("tokyo"), false), true, false).await;
+        out.expect("started");
+        let question = question.expect("asked");
+        assert!(
+            question.contains(
+                "Run bot on a new ERPC Worker (1 vCPU, 2 GB memory) in your ERPC account"
+            ) && question.contains("€0.07")
+                && question.contains("tokyo")
+                && question.contains("`account = true`"),
+            "{question}"
+        );
+        assert_eq!(
+            *fake.calls.borrow(),
+            [
+                "app", "starts", "env", "prices", "starts", "env", "agreed", "start"
+            ]
+        );
+        let sent = fake.sent.borrow();
+        assert_eq!((sent[0].1, sent[0].2.as_str()), (1, "tokyo"));
+    }
+
+    #[tokio::test]
+    async fn the_first_deploy_agrees_to_nothing_on_a_no_and_sends_nothing_when_agreeing_fails() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let fake = Fake::new(&dir);
+        let (out, _) = go_deploy(
+            &fake,
+            &by_deploy(Region::Else("tokyo"), false),
+            false,
+            false,
+        )
+        .await;
+        assert_eq!(out.expect_err("declined").code, Code::Declined);
+        assert!(!fake.calls.borrow().contains(&"agreed"));
+        let (out, _) = go_deploy(&fake, &by_deploy(Region::Else("tokyo"), true), true, true).await;
+        let e = out.expect_err("not agreed");
+        assert!(e.message.contains("erpc.toml"), "{}", e.message);
+        assert_eq!(fake.starts(), 0);
+        assert_eq!(fake.kept(), None);
+    }
+
+    #[tokio::test]
+    async fn the_first_deploy_sends_a_kept_start_again_as_it_was_kept() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let fake = Fake::new(&dir);
+        // Kept as a 2-core server in amsterdam (not the cheapest size, which
+        // a first deploy asks for), which the account asked to send again;
+        // this machine is near tokyo now.
+        *fake.open.borrow_mut() = vec![server_start(2, "amsterdam")];
+        let kept = Kept {
+            key: OLD_KEY.to_owned(),
+            cores: 2,
+            region: "amsterdam".to_owned(),
+            resend: true,
+        };
+        keep(&fake.store, &file_key(), Some(&kept)).expect("kept");
+        let (out, _) = go_deploy(
+            &fake,
+            &by_deploy(Region::Asked("frankfurt"), true),
+            true,
+            false,
+        )
+        .await;
+        let e = out.expect_err("differs");
+        assert_eq!(e.code, Code::Usage);
+        let hint = e.hint.unwrap_or_default();
+        assert!(
+            hint.contains("`erpc worker deploy --env prod") && hint.contains("--region amsterdam"),
+            "{hint}"
+        );
+        assert_eq!(fake.starts(), 0);
+        // At the price of its own size, asked at the terminal.
+        let (out, question) =
+            go_deploy(&fake, &by_deploy(Region::Else("tokyo"), false), true, false).await;
+        out.expect("sent again");
+        let question = question.expect("asked");
+        assert!(
+            question.contains("ERPC Worker (2 vCPU, 4 GB memory)") && question.contains("€0.13"),
+            "{question}"
+        );
+        assert!(!question.contains("€0.07"), "{question}");
+        let sent = fake.sent.borrow();
+        assert_eq!(
+            (sent[0].0.as_str(), sent[0].1, sent[0].2.as_str()),
+            (OLD_KEY, 2, "amsterdam")
+        );
+    }
+
+    #[tokio::test]
+    async fn two_first_deploys_whose_first_answer_was_lost_send_one_start() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let mut fake = Fake::new(&dir);
+        fake.answer = Answer::Silent;
+        let (out, _) = go_deploy(&fake, &by_deploy(Region::Else("tokyo"), true), true, false).await;
+        out.expect_err("no answer");
+        assert!(fake.kept().is_some(), "the key stays");
+        // It went through: the server is on the record now.
+        *fake.env.borrow_mut() = Some(holding());
+        let (out, _) = go_deploy(&fake, &by_deploy(Region::Else("tokyo"), true), true, false).await;
+        let (answer, _) = out.expect("done before");
+        assert_eq!(answer["already"], true);
+        assert_eq!(fake.starts(), 1);
+        assert_eq!(fake.kept(), None);
+        // A record with a server and no start kept here starts nothing, and
+        // says how a deploy reaches it.
+        let (out, _) = go_deploy(&fake, &by_deploy(Region::Else("tokyo"), true), true, false).await;
+        let e = out.expect_err("holds");
+        assert!(
+            e.hint
+                .unwrap_or_default()
+                .contains("`account = true` under [env.prod]"),
+            "{}",
+            e.message
+        );
+        assert_eq!(fake.starts(), 1);
     }
 
     #[tokio::test]
@@ -1393,7 +1727,8 @@ mod tests {
         let (answer, text) = out.expect("started");
         let question = question.expect("asked");
         assert!(
-            question.contains("€0.07") && question.contains("1-core") && question.contains("2 GB"),
+            question.contains("€0.07")
+                && question.contains("Start a new ERPC Worker (1 vCPU, 2 GB memory)"),
             "{question}"
         );
         assert!(question.contains("amsterdam"), "{question}");
@@ -1428,7 +1763,7 @@ mod tests {
         assert_eq!(fake.kept(), None);
         assert_eq!(answer["started"], true);
         assert_eq!(answer["already"], false);
-        assert!(text.contains("Started a new server"), "{text}");
+        assert!(text.contains("Started a new ERPC Worker"), "{text}");
     }
 
     #[tokio::test]
@@ -1436,7 +1771,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("a directory");
         let fake = Fake::new(&dir);
         let frankfurt = Asked {
-            region: "frankfurt",
+            region: Region::Asked("frankfurt"),
             ..asked(2, true, false, false)
         };
         let (out, _) = go(&fake, &frankfurt, &MAKING, true).await;
@@ -1655,7 +1990,7 @@ mod tests {
         fake.breaks_store = Some("garbage");
         let (out, _) = go(&fake, &asked(1, true, false, false), &MAKING, true).await;
         let (answer, text) = out.expect("started");
-        assert!(text.contains("Started a new server"), "{text}");
+        assert!(text.contains("Started a new ERPC Worker"), "{text}");
         assert!(text.contains("could not be updated"), "{text}");
         assert!(text.contains("the next run stops at it"), "{text}");
         assert!(!text.contains("nothing was started"), "{text}");
@@ -1826,13 +2161,13 @@ mod tests {
         let dir = tempfile::tempdir().expect("a directory");
         let fake = Fake::new(&dir);
         let frankfurt = Asked {
-            region: "frankfurt",
+            region: Region::Asked("frankfurt"),
             ..asked(2, false, false, true)
         };
         let (out, question) = go(&fake, &frankfurt, &MAKING, true).await;
         out.expect("started");
         let question = question.expect("asked");
-        for words in ["2-core", "4 GB", "€0.13", "frankfurt"] {
+        for words in ["ERPC Worker (2 vCPU, 4 GB memory)", "€0.13", "frankfurt"] {
             assert!(question.contains(words), "{words}: {question}");
         }
         assert!(!question.contains("€0.07"), "{question}");
@@ -1843,7 +2178,7 @@ mod tests {
         let (out, _) = go(&fake, &asked(4, true, false, false), &MAKING, true).await;
         out.expect("started");
         let printed = crate::node::common::heard::take_printed().join("\n");
-        for words in ["4-core", "16 GB", "€1.20"] {
+        for words in ["ERPC Worker (4 vCPU, 16 GB memory)", "€1.20"] {
             assert!(printed.contains(words), "{words}: {printed}");
         }
         assert!(!printed.contains("€0.07"), "{printed}");
@@ -1984,7 +2319,7 @@ mod tests {
         fake.keep(OLD_KEY, true);
         // Asked for another size, or another region: nothing is sent.
         let frankfurt = Asked {
-            region: "frankfurt",
+            region: Region::Asked("frankfurt"),
             ..asked(1, true, false, false)
         };
         for other in [asked(2, true, false, false), frankfurt] {
@@ -2030,9 +2365,13 @@ mod tests {
         let e = out.expect_err("not offered");
         assert_eq!(e.code, Code::Usage);
         assert!(
-            e.message.contains("1-core (2 GB, €0.07 an hour)")
-                && e.message.contains("2-core (4 GB, €0.13 an hour)")
-                && e.message.contains("4-core (16 GB, €1.20 an hour)"),
+            e.message.contains("ERPC Worker (8 vCPU) is not offered")
+                && e.message
+                    .contains("ERPC Worker (1 vCPU, 2 GB memory), €0.07 an hour")
+                && e.message
+                    .contains("ERPC Worker (2 vCPU, 4 GB memory), €0.13 an hour")
+                && e.message
+                    .contains("ERPC Worker (4 vCPU, 16 GB memory), €1.20 an hour"),
             "{}",
             e.message
         );
