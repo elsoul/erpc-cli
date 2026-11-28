@@ -326,8 +326,9 @@ whose version has no entry below.
   as the ERPC Worker it is; `erpc ai` itself is as it was, and a reason
   user-api or `erpc ai` gives for a failure is quoted as it came. A spec
   is read from the product's name only when all of the name, the
-  product's own name too, is in the known form; any other name shows
-  `ERPC Worker` and the id alone. Servers on
+  product's own name too, is in the known form (the names the account
+  sells its plans under among them, `🛰️ EPYC VPS+` to `VPS+++` too); any
+  other name shows `ERPC Worker` and the id alone. Servers on
   this machine's list are still told apart by their kind and id, not by
   how they are named.
 - `erpc worker deploy` names the server it deploys to as a server, not a

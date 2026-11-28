@@ -96,7 +96,9 @@ pub(crate) enum Disk {
 /// The words a product's own name, before its first ` - `, may hold: those
 /// of the names the account's servers are sold under. Any other word there
 /// gives no spec.
-const NAME_WORDS: [&str; 8] = ["🛰️", "🛰", "slv", "vps", "super", "premium", "max", "plus"];
+const NAME_WORDS: [&str; 12] = [
+    "🛰️", "🛰", "slv", "epyc", "vps", "vps+", "vps++", "vps+++", "super", "premium", "max", "plus",
+];
 /// What may follow a CPU part's `<n> vCPU`: the makers and lines the
 /// account's names use, as they go together. Anything else there gives no
 /// spec.
@@ -235,7 +237,8 @@ impl Spec {
 
     /// The spec in the name of a product, read only when all of the name
     /// is in the known form, word by word, case aside but for `GB` and
-    /// `TB`: the product's own name from [`NAME_WORDS`] (`🛰️ SLV VPS`), then
+    /// `TB`: the product's own name from [`NAME_WORDS`] (`🛰️ SLV VPS`,
+    /// `🛰️ EPYC VPS++`, a `+` there only within `VPS+`, `VPS++` or `VPS+++`), then
     /// parts split by ` - `, each one of `<n> vCPU` (1 to 3 digits, then
     /// CPU words as in [`CPU_NAMES`] and, if given, `x <n> GB <memory
     /// words>`), `<n> GB <memory words>` ([`MEMORY_WORDS`]) and `<n> GB|TB
@@ -5869,6 +5872,42 @@ mod tests {
     }
 
     #[test]
+    fn the_names_the_account_sells_its_plans_under_give_their_spec() {
+        use super::{Spec, worker};
+        for (name, said) in [
+            (
+                "🛰️ SLV VPS - 1 vCPU AMD EPYC4G x 4 GB DDR5 - 10 GB SSD NVMe4",
+                "ERPC Worker (1 vCPU, 4 GB memory, 10 GB NVMe)",
+            ),
+            (
+                "🛰️ EPYC VPS+ - 2 vCPU AMD EPYC4G x 8 GB DDR5 - 20 GB SSD NVMe4",
+                "ERPC Worker (2 vCPU, 8 GB memory, 20 GB NVMe)",
+            ),
+            (
+                "🛰️ EPYC VPS++ - 4 vCPU AMD EPYC4G x 16 GB DDR5 - 50 GB SSD NVMe4",
+                "ERPC Worker (4 vCPU, 16 GB memory, 50 GB NVMe)",
+            ),
+            (
+                "🛰️ EPYC VPS+++ - 8 vCPU AMD EPYC4G x 32 GB DDR5 - 100 GB SSD NVMe4",
+                "ERPC Worker (8 vCPU, 32 GB memory, 100 GB NVMe)",
+            ),
+        ] {
+            assert_eq!(worker(&Spec::of_title(name)), said, "{name}");
+        }
+        // A `+` in the product's name only within those words; after the
+        // first ` - ` as before.
+        for name in [
+            "🛰️ EPYC VPS ++ - 2 vCPU",
+            "🛰️ EPYC VPS++++ - 2 vCPU",
+            "🛰️ EPYC + VPS - 2 vCPU",
+            "🛰️ EPYC+ VPS - 2 vCPU",
+            "🛰️ EPYC VPS+ - 2 vCPU + 8 GB DDR5",
+        ] {
+            assert_eq!(Spec::of_title(name), Spec::default(), "{name}");
+        }
+    }
+
+    #[test]
     fn every_name_the_reviews_tried_gives_only_what_it_says() {
         use super::{Spec, worker};
         // Every name the reviews tried.
@@ -6078,8 +6117,18 @@ mod tests {
         assert_eq!(running_spec(&row("EPYC VPS+")), Spec::default());
         // Parts in the known form after a product's name that is not: none.
         assert_eq!(
-            running_spec(&row("EPYC - 1 vCPU x 4 GB DDR5")),
+            running_spec(&row("Mystery - 1 vCPU x 4 GB DDR5")),
             Spec::default()
+        );
+        // A name the account sells its plans under: read.
+        assert_eq!(
+            worker_id(
+                100_001,
+                &running_spec(&row(
+                    "🛰️ EPYC VPS+ - 2 vCPU AMD EPYC4G x 8 GB DDR5 - 20 GB SSD NVMe4"
+                ))
+            ),
+            "ERPC Worker 100001 (2 vCPU, 8 GB memory, 20 GB NVMe)"
         );
         assert_eq!(
             worker_id(100_001, &running_spec(&row("EPYC VPS+"))),

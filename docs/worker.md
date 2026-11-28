@@ -352,8 +352,10 @@ name. What neither gives is left out (a server kept in the ERPC account
 has its vCPUs and memory, and no disk). A spec is read from the product's
 name only when all of the name is in the known form, word by word, case
 aside but for `GB` and `TB`:
-- the product's own name, before the first ` - `, only of 🛰️, SLV, VPS,
-  Super, Premium, Max and Plus;
+- the product's own name, before the first ` - `, only of 🛰️, SLV, EPYC,
+  VPS, VPS+, VPS++, VPS+++, Super, Premium, Max and Plus (a `+` there
+  only within those words), as the account names its plans (`🛰️ EPYC
+  VPS++ - 4 vCPU AMD EPYC4G x 16 GB DDR5 - 50 GB SSD NVMe4`);
 - then parts split by ` - `: a CPU part, `<n> vCPU` (1 to 3 digits), then
   nothing, AMD, Intel, EPYC, EPYC4G, Xeon, Ryzen, AMD EPYC, AMD EPYC4G,
   AMD Ryzen or Intel Xeon, then, if given, `x <n> GB <memory>`; a memory
