@@ -11,4 +11,5 @@
 "ai --id" = "Use the numeric part of the ERPC rental ID shown by --list"
 "ai --host-key" = "Verify SSH against this independently trusted Ed25519 host public key"
 "ai --ssh-user" = "Use this SSH login with the independently trusted host public key"
+"ai --details" = "After the report, print every result the check read, as a detailed list. --json is the same with or without it"
 "ai --security-check" = "Run a metered, read-only posture check for an eligible ERPC rental"

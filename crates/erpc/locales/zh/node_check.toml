@@ -122,3 +122,114 @@ fix_unencrypted_keystore = "用口令加密密钥库，或将密钥移入密码�
 fix_secret_in_env_file = "不要把机密放在环境变量文件中：在应用启动时从密码管理器或钥匙串读取。"
 fix_secret_in_process_env = "通过管道或文件描述符而不是环境变量把机密传给进程。"
 fix_secret_in_shell_history = "从历史文件中删除这些行，并更换该机密：它已经泄露。"
+view_title = "ERPC Security Check — {server}"
+view_look = "需要查看"
+view_fine = "没有问题"
+view_unknown = "无法检查"
+view_details = "详细信息"
+view_listening_all_one = "{port} 在服务器的所有地址上监听，而不只是在服务器内部"
+view_listening_interface_one = "{port} 在服务器的一个网络地址上监听，而不只是在服务器内部"
+view_listening_all = "所有地址：{ports}"
+view_listening_interface = "特定地址：{ports}"
+view_firewall_filters = "防火墙默认丢弃未被允许的入站连接：请确认它只放行你预期的连接"
+view_firewall_lets_in = "防火墙并不默认丢弃所有入站连接：请确认哪些来源能访问这些端口"
+view_firewall_unread = "无法读取防火墙规则：请确认哪些来源能访问这些端口"
+view_inside_only = "仅在服务器内部：{ports}"
+view_no_ports = "没有监听端口"
+view_redis = "Redis 或 Valkey 在服务器的网络地址上监听，而不只是在服务器内部"
+view_redis_fix = "如果没有其他机器使用它，请在其配置中将它绑定到 127.0.0.1"
+view_unclassified = "有 erpc 无法识别的程序正在监听：请确认每一个都是你自己部署的"
+view_ports_unread = "监听端口：无法读取套接字列表"
+view_ports_partial = "部分监听端口：套接字列表只读取了一部分，或者端口数超过了检查可列出的数量"
+view_programs_unseen = "在 {ports} 上监听的程序：此 SSH 登录无法看到"
+view_ports_absent = "监听端口：检查没有读取"
+view_rpc_open = "TCP 8899 在服务器的网络地址上监听，而不只是在服务器内部"
+view_rpc_inside = "TCP 8899 仅在服务器内部监听"
+view_firewall_drops = "防火墙（{families}）默认丢弃入站连接"
+view_firewall_none = "没有找到过滤入站连接的 nftables 设置（{families}）"
+view_firewall_accepts = "没有发现防火墙（{families}）丢弃任何入站连接的设置"
+view_firewall_rules_only = "防火墙（{families}）不会默认丢弃入站连接：只有其规则丢弃一部分"
+view_firewall_set_up = "用 nftables 设置为默认丢弃入站连接，并放行 SSH"
+view_firewall_unknown = "防火墙（{families}）：此 SSH 登录无法读取其规则，或规则过长无法读取"
+view_firewall_no_tables = "服务器上没有找到 nftables 防火墙"
+view_firewall_absent = "防火墙：检查没有读取其规则"
+view_jail_ok = "fail2ban 监控 SSH"
+view_jail_missing = "fail2ban 运行时没有 SSH 监控规则，因此不会阻止反复失败的 SSH 登录"
+view_jail_fix = "在 /etc/fail2ban/jail.local 中启用 sshd 监控规则（[sshd] enabled = true），然后运行 sudo systemctl restart fail2ban"
+view_jail_unknown = "fail2ban：没有响应此 SSH 登录，或者没有安装"
+view_jail_absent = "fail2ban：检查没有询问它"
+view_ssh_password = "SSH 的设置允许用密码登录，而密码可能被猜中"
+view_ssh_keyboard = "SSH 的设置允许键盘交互式登录，它通常要求输入可能被猜中的密码"
+view_ssh_both = "SSH 的设置允许用密码和键盘交互式方式登录，可能被猜中"
+view_ssh_fix = "在 /etc/ssh/sshd_config 中设置 PasswordAuthentication no 和 KbdInteractiveAuthentication no，然后运行 sudo systemctl reload ssh"
+view_ssh_unread = "SSH 密码登录：此 SSH 登录无法读取 SSH 服务器的设置，或者设置中没有说明"
+view_ssh_configured_off = "SSH 密码登录：SSH 服务器的设置对此登录关闭了它；正在运行的服务器和其他登录没有检查"
+view_ssh_try = "从另一台机器尝试用密码登录：应当被拒绝"
+view_ssh_absent = "SSH 密码登录：检查没有读取 SSH 的设置"
+view_env_fix = "在应用启动时从密码管理器或钥匙串加载机密，而不是从环境文件加载"
+view_chmod_words = "将每一个设为仅所有者可读（文件用 chmod 600）"
+view_file_other = "不是文件或目录"
+view_file_unknown = "没有读取到权限"
+view_ls_fix = "用 sudo ls -l 检查每一个的所有者和权限"
+view_credentials_owner = "服务的凭据文件仅其所有者可读"
+view_services_none = "检查读取的服务没有加载环境文件或凭据文件"
+view_services_partial = "部分服务的设置：此 SSH 登录无法全部读取，或者数量超过了检查读取的范围"
+view_services_unread = "服务的环境文件和凭据文件：此 SSH 登录无法读取任何服务的设置"
+view_services_absent = "服务的环境文件和凭据文件：检查没有读取"
+view_services_fix = "用 sudo systemctl cat 加上服务名查看服务的设置"
+view_updates_none = "软件包列表中没有待安装的安全更新"
+view_updates_unknown = "安全更新：无法读取服务器的软件包列表"
+view_updates_absent = "安全更新：检查没有读取软件包列表"
+view_readable_owner = "仅所有者可读"
+view_readable_group = "其所属组可读"
+view_readable_world = "所有账户可读"
+view_world_above = "上方标为“{who}”的位置"
+view_identity_owner = "验证者的 identity 密钥对仅其所有者可读"
+view_keys_none = "没有明文私钥或助记词"
+view_keys_none_readable = "可读取的范围内没有明文私钥或助记词"
+view_keys_partial = "明文密钥：此 SSH 登录无法读取某些文件、目录或进程，或者搜索达到了上限"
+view_keys_unreadable = "明文密钥：此 SSH 登录什么也无法读取，或者搜索没有按时完成"
+view_keys_absent = "明文密钥：检查没有搜索"
+view_keys_fix = "用能够读取它们的 SSH 登录再次运行检查"
+
+[view_count_look]
+other = "需要查看 {n} 项"
+
+[view_count_fine]
+other = "没有问题 {n} 项"
+
+[view_count_unknown]
+other = "无法检查 {n} 项"
+
+[view_charged]
+other = "已扣除 {charged} 个 ERPC AI 代币（上限 {maximum}）"
+
+[view_listening_many]
+other = "{n} 个端口在服务器的网络地址上监听，而不只是在服务器内部"
+
+[view_env_readable]
+other = "服务的 {n} 个环境文件的权限允许服务器上的其他账户读取"
+
+[view_env_in_use]
+other = "服务加载了 {n} 个环境文件：请不要在其中存放机密"
+
+[view_credentials_readable]
+other = "服务的 {n} 个凭据文件的权限允许服务器上的其他账户读取"
+
+[view_files_more]
+other = "还有 {n} 个服务的文件没有列出"
+
+[view_env_modes_unknown]
+other = "谁可以读取服务的 {n} 个环境文件：检查无法判断"
+
+[view_credentials_unknown]
+other = "谁可以读取服务的 {n} 个凭据来源：检查无法判断（是名称而不是文件、是链接，或是此 SSH 登录看不到的文件）"
+
+[view_updates]
+other = "{n} 个软件包有待安装的安全更新"
+
+[view_env_open]
+other = "服务的 {n} 个环境文件的权限让服务器上的其他账户也能访问"
+
+[view_credentials_open]
+other = "服务的 {n} 个凭据文件的权限让服务器上的其他账户也能访问"

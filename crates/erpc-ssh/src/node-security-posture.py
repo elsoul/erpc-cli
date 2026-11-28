@@ -66,6 +66,9 @@ PORT_LIMIT = 128
 PID_LIMIT = 64
 UNIT_LIMIT = 16
 PATH_LIMIT = 64
+FILES_SHOWN = 8
+FILE_PATH_LIMIT = 1024
+FILES_BUDGET = 1536
 CGROUP_BYTE_LIMIT = 4096
 SCOPES = ("wildcard", "interface", "loopback")
 PROTOCOLS = ("tcp", "udp")
@@ -455,9 +458,63 @@ def file_modes(paths):
     return counts
 
 
+def file_kind(path):
+    """The type and permission bits file_modes judges a path by: a regular
+    file or a directory with its mode, "other" for anything else it lstats,
+    and (None, None) for what it counts unknown without one."""
+    if not path.startswith("/") or any(char in path for char in ("*", "?", "\\", "[", "\0")):
+        return None, None
+    try:
+        mode = os.lstat(path).st_mode
+    except OSError:
+        return None, None
+    if stat.S_ISREG(mode):
+        return "file", stat.S_IMODE(mode)
+    if stat.S_ISDIR(mode):
+        return "directory", stat.S_IMODE(mode)
+    return "other", None
+
+
+SHOWN_PATH_BYTES = frozenset(range(0x20, 0x7f)) - {0x22, 0x25, 0x5c}
+
+
+def shown_path(path):
+    """A path as printable ASCII that JSON leaves as it is: every other byte,
+    and %, " and backslash, as %HH (the key search's encoding)."""
+    return "".join(chr(byte) if byte in SHOWN_PATH_BYTES else "%%%02X" % byte
+                   for byte in path.encode("utf-8", "surrogateescape"))
+
+
+def service_files(references):
+    """Which service refers to which absolute path, with what file_kind finds,
+    for the operator's screen: the CLI never sends it on. The files others
+    can read come first, then those whose mode is unknown; at most
+    FILES_SHOWN of them, and FILES_BUDGET characters of paths, each counted
+    with 3 more for its quotes and comma. Also how many are not listed."""
+    entries = []
+    for source, unit, path in references:
+        if not path.startswith("/") or "\0" in path:
+            continue
+        kind, mode = file_kind(path)
+        broad = mode is not None and bool(mode & 0o077)
+        rank = 0 if broad else 2 if mode is not None else 1
+        entries.append((rank, source, unit, shown_path(path), kind, mode))
+    entries.sort(key=lambda entry: entry[:4])
+    shown = []
+    spent = 0
+    for _, source, unit, path, kind, mode in entries:
+        cost = len(path) + 3
+        if len(shown) == FILES_SHOWN or len(path) > FILE_PATH_LIMIT or spent + cost > FILES_BUDGET:
+            continue
+        spent += cost
+        shown.append({"source": source, "unit": unit, "path": path, "type": kind, "mode": mode})
+    return shown, len(entries) - len(shown)
+
+
 def metadata_policy(pids, socket_attribution_incomplete):
     units, sampled, truncated, incomplete = unit_names(pids)
     properties = property_references()
+    references = set()
     service = "org.freedesktop.systemd1"
     base = ["/usr/bin/busctl", "--system", "--auto-start=no", "--allow-interactive-authorization=no"]
     units_with_evidence = 0
@@ -495,6 +552,9 @@ def metadata_policy(pids, socket_attribution_incomplete):
         units_with_evidence += 1
         for group in properties:
             properties[group].update(discovered[group])
+        references.update(("environment_file", unit, path) for path in discovered["environment_files"])
+        references.update(("credential", unit, path) for path in
+                          discovered["as_is_credentials"] | discovered["encrypted_credentials"])
     coverage = "unknown"
     if units_with_evidence:
         coverage = "partial" if incomplete or truncated else "observed"
@@ -515,6 +575,7 @@ def metadata_policy(pids, socket_attribution_incomplete):
             report["truncated"] = True
             report["coverage"] = "partial"
         report[group] = file_modes(sorted(paths)[:PATH_LIMIT])
+    report["files"], report["files_more"] = service_files(references)
     return report
 
 

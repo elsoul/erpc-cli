@@ -66,7 +66,7 @@ pub(super) enum Access {
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum Coverage {
+pub(super) enum Coverage {
     Complete,
     Partial,
     Unreadable,
@@ -75,8 +75,8 @@ enum Coverage {
 /// A local finding the key groups raise, in the order the report lists
 /// them. Each kind raises its own; a keypair that is the validator's
 /// identity raises one only when others than its owner can read it.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Finding {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Finding {
     PlaintextWalletKey,
     ValidatorIdentityPermissions,
     MnemonicOnDisk,
@@ -87,7 +87,7 @@ enum Finding {
 }
 
 impl Finding {
-    const ALL: [Self; 7] = [
+    pub(super) const ALL: [Self; 7] = [
         Self::PlaintextWalletKey,
         Self::ValidatorIdentityPermissions,
         Self::MnemonicOnDisk,
@@ -109,8 +109,9 @@ impl Finding {
         }
     }
 
-    fn text(self) -> String {
-        let (finding, fix) = match self {
+    /// What was found and what to do about it.
+    pub(super) fn words(self) -> (String, String) {
+        match self {
             Self::PlaintextWalletKey => (
                 t!("node_check.finding_plaintext_wallet_key"),
                 t!("node_check.fix_plaintext_wallet_key"),
@@ -139,7 +140,11 @@ impl Finding {
                 t!("node_check.finding_secret_in_shell_history"),
                 t!("node_check.fix_secret_in_shell_history"),
             ),
-        };
+        }
+    }
+
+    fn text(self) -> String {
+        let (finding, fix) = self.words();
         t!("node_check.key_finding", finding = finding, fix = fix)
     }
 }
@@ -150,18 +155,18 @@ const WORLD_READABLE: &str = "key_world_readable";
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Group {
+pub(super) struct Group {
     kind: Kind,
     role: Role,
     location: Location,
-    access: Access,
+    pub(super) access: Access,
     count: u32,
     /// Where, as the collector encoded the paths: never serialized again.
     #[serde(skip_serializing)]
-    places: Vec<String>,
+    pub(super) places: Vec<String>,
     /// How many more places there are than `places` lists.
     #[serde(skip_serializing)]
-    more: u32,
+    pub(super) more: u32,
 }
 
 impl Group {
@@ -197,7 +202,7 @@ impl Group {
             && self.places.iter().all(|place| decode(place).is_some())
     }
 
-    fn finding(&self) -> Option<Finding> {
+    pub(super) fn finding(&self) -> Option<Finding> {
         Some(match (self.kind, self.role) {
             (Kind::SolanaKeypair, Role::ValidatorIdentity) => {
                 if self.access == Access::OwnerOnly {
@@ -255,8 +260,8 @@ fn wire(value: impl Serialize) -> String {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Keys {
-    coverage: Coverage,
-    groups: Vec<Group>,
+    pub(super) coverage: Coverage,
+    pub(super) groups: Vec<Group>,
 }
 
 impl Keys {
@@ -361,7 +366,7 @@ const fn plain(byte: u8) -> bool {
 /// most [`PLACE_LIMIT`] characters, each byte either itself (see [`plain`])
 /// or `%` and two upper-case hexadecimal digits, and only a byte that is not
 /// written as itself, never NUL. `None` for anything else.
-fn decode(place: &str) -> Option<Vec<u8>> {
+pub(super) fn decode(place: &str) -> Option<Vec<u8>> {
     let encoded = place.as_bytes();
     if encoded.len() > PLACE_LIMIT || encoded.first() != Some(&b'/') {
         return None;
@@ -399,7 +404,7 @@ fn decode(place: &str) -> Option<Vec<u8>> {
 /// `\xHH`. So a file's name cannot drive the terminal. Other characters are
 /// shown as they are, including look-alike letters and invisible ones not
 /// listed here (tag characters, variation selectors).
-fn shown(place: &str) -> String {
+pub(super) fn shown(place: &str) -> String {
     let hidden = |c: char| {
         matches!(
             c,

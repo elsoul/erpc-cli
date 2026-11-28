@@ -11,7 +11,7 @@ const MAX_ROWS: usize = 128;
 
 #[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum Coverage {
+pub(super) enum Coverage {
     Complete,
     Partial,
     Unknown,
@@ -19,7 +19,7 @@ enum Coverage {
 
 #[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
-enum Service {
+pub(super) enum Service {
     Container,
     Dns,
     ErpcWorker,
@@ -36,7 +36,7 @@ enum Service {
 }
 
 impl Service {
-    fn label(self) -> String {
+    pub(super) fn label(self) -> String {
         match self {
             Self::Container => t!("node_check.category_container"),
             Self::Dns => "DNS".into(),
@@ -57,18 +57,18 @@ impl Service {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Port {
-    port: u16,
-    services: Vec<Service>,
+pub(super) struct Port {
+    pub(super) port: u16,
+    pub(super) services: Vec<Service>,
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct PortGroups {
-    coverage: Coverage,
-    wildcard: Vec<Port>,
-    interface: Vec<Port>,
-    loopback: Vec<Port>,
+pub(super) struct PortGroups {
+    pub(super) coverage: Coverage,
+    pub(super) wildcard: Vec<Port>,
+    pub(super) interface: Vec<Port>,
+    pub(super) loopback: Vec<Port>,
 }
 
 impl PortGroups {
@@ -139,9 +139,9 @@ impl PortGroups {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Ports {
-    tcp: PortGroups,
-    udp: PortGroups,
-    truncated: bool,
+    pub(super) tcp: PortGroups,
+    pub(super) udp: PortGroups,
+    pub(super) truncated: bool,
 }
 
 impl Ports {
@@ -267,7 +267,7 @@ impl Ssh {
     }
 }
 
-#[derive(Clone, Copy, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum FirewallEvidence {
     NoInputFilterHook,
@@ -294,7 +294,7 @@ impl FirewallEvidence {
 pub(super) struct Firewall {
     pub(super) ipv4: FirewallEvidence,
     pub(super) ipv6: FirewallEvidence,
-    truncated: bool,
+    pub(super) truncated: bool,
 }
 
 impl Firewall {
@@ -328,7 +328,7 @@ impl Jail {
 
 #[derive(Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum MetadataCoverage {
+pub(super) enum MetadataCoverage {
     Observed,
     Partial,
     Unknown,
@@ -336,14 +336,14 @@ enum MetadataCoverage {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ModeCounts {
-    owner_only: u16,
-    group_or_other_access: u16,
-    unknown: u16,
+pub(super) struct ModeCounts {
+    pub(super) owner_only: u16,
+    pub(super) group_or_other_access: u16,
+    pub(super) unknown: u16,
 }
 
 impl ModeCounts {
-    fn total(&self) -> u32 {
+    pub(super) fn total(&self) -> u32 {
         u32::from(self.owner_only) + u32::from(self.group_or_other_access) + u32::from(self.unknown)
     }
 
@@ -408,23 +408,134 @@ impl DistinctCredentialSources {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Metadata {
-    coverage: MetadataCoverage,
+    pub(super) coverage: MetadataCoverage,
     units_with_evidence: u16,
-    truncated: bool,
+    pub(super) truncated: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     environment_files: Option<ModeCounts>,
     service_env: ModeCounts,
-    credential_sources: ModeCounts,
+    pub(super) credential_sources: ModeCounts,
     #[serde(
         default,
         alias = "credential_declarations",
         skip_serializing_if = "Option::is_none"
     )]
     distinct_credential_sources: Option<DistinctCredentialSources>,
+    /// Which service refers to which of the files counted above: for the
+    /// operator's screen only, never serialized again, so neither `--json`
+    /// nor the report request carries it.
+    #[serde(default, skip_serializing)]
+    pub(super) files: Vec<ServiceFile>,
+    /// How many such references `files` leaves out.
+    #[serde(default, skip_serializing)]
+    pub(super) files_more: u16,
+}
+
+/// How many service files the collector lists.
+pub(super) const FILES_SHOWN: usize = 8;
+/// The longest path of one, in characters of its encoding.
+pub(super) const FILE_PATH_LIMIT: usize = 1024;
+/// All their paths together, each counted with 3 more for its quotes and
+/// comma.
+pub(super) const FILES_BUDGET: usize = 1536;
+
+/// What refers to a file: a service's `EnvironmentFile`, or its
+/// `LoadCredential` or `LoadCredentialEncrypted` source.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum FileSource {
+    EnvironmentFile,
+    Credential,
+}
+
+/// What the collector found at the path without following it.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum FileType {
+    File,
+    Directory,
+    /// A symbolic link, socket or the like: no mode is judged.
+    Other,
+}
+
+/// One service's reference to a file, as the collector found it.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ServiceFile {
+    pub(super) source: FileSource,
+    /// The systemd unit, one the collector reads: of its fixed list or an
+    /// ERPC unit.
+    pub(super) unit: String,
+    /// Encoded as the key search encodes its places.
+    pub(super) path: String,
+    /// `None` when the collector judged no mode: a path it does not look
+    /// at (a pattern) or one it could not read.
+    #[serde(rename = "type")]
+    pub(super) kind: Option<FileType>,
+    /// The permission bits of a file or directory.
+    pub(super) mode: Option<u16>,
+}
+
+/// The collector's fixed list of units (`FIXED_UNITS`).
+pub(super) const COLLECTOR_UNITS: [&str; 11] = [
+    "ssh.service",
+    "sshd.service",
+    "redis-server.service",
+    "valkey-server.service",
+    "postgresql.service",
+    "mariadb.service",
+    "nginx.service",
+    "apache2.service",
+    "caddy.service",
+    "docker.service",
+    "fail2ban.service",
+];
+
+/// The units the collector reads: its fixed list, or
+/// `erpc-(worker|waf|backup)-<1 to 64 of a-z, 0-9 and ->.service`.
+fn collector_unit(unit: &str) -> bool {
+    if COLLECTOR_UNITS.contains(&unit) {
+        return true;
+    }
+    ["erpc-worker-", "erpc-waf-", "erpc-backup-"]
+        .into_iter()
+        .filter_map(|prefix| unit.strip_prefix(prefix))
+        .filter_map(|rest| rest.strip_suffix(".service"))
+        .any(|name| {
+            (1..=64).contains(&name.len())
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        })
+}
+
+impl ServiceFile {
+    /// Who can read it, as the collector's counts judge a path: `None` when
+    /// they count it unknown.
+    pub(super) fn broad(&self) -> Option<bool> {
+        match (self.kind, self.mode) {
+            (Some(FileType::File | FileType::Directory), Some(mode)) => Some(mode & 0o077 != 0),
+            _ => None,
+        }
+    }
+
+    fn valid(&self) -> bool {
+        let typed = match (self.kind, self.mode) {
+            (Some(FileType::File | FileType::Directory), Some(mode)) => mode <= 0o7777,
+            (Some(FileType::Other) | None, None) => true,
+            _ => false,
+        };
+        typed
+            && collector_unit(&self.unit)
+            && self.path.len() <= FILE_PATH_LIMIT
+            && super::posture_keys::decode(&self.path).is_some()
+    }
 }
 
 impl Metadata {
-    fn environment_files(&self) -> &ModeCounts {
+    /// The counts of the services' `EnvironmentFile` references (the named
+    /// `.env` files alone, from a collector that counted no more).
+    pub(super) fn environment_files(&self) -> &ModeCounts {
         self.environment_files.as_ref().unwrap_or(&self.service_env)
     }
 
@@ -432,8 +543,42 @@ impl Metadata {
         self.environment_files().total() > 0 || self.service_env.total() > 0
     }
 
+    /// Whether the listed files keep to their bounds and agree with the
+    /// counts: no more paths of a kind, judged a way, than were counted so.
+    /// A collector that ran out of room (`truncated`) counted only some.
+    fn files_valid(&self) -> bool {
+        let spent: usize = self.files.iter().map(|file| file.path.len() + 3).sum();
+        let bounded = self.files.len() <= FILES_SHOWN
+            && spent <= FILES_BUDGET
+            && self.files.iter().all(ServiceFile::valid)
+            && (self.coverage != MetadataCoverage::Unknown
+                || (self.files.is_empty() && self.files_more == 0));
+        bounded
+            && (self.truncated
+                || [
+                    (FileSource::EnvironmentFile, self.environment_files()),
+                    (FileSource::Credential, &self.credential_sources),
+                ]
+                .into_iter()
+                .all(|(source, counts)| {
+                    let mut paths: Vec<(&str, Option<bool>)> = self
+                        .files
+                        .iter()
+                        .filter(|file| file.source == source)
+                        .map(|file| (file.path.as_str(), file.broad()))
+                        .collect();
+                    paths.sort_unstable();
+                    paths.dedup();
+                    let judged = |broad| paths.iter().filter(|(_, b)| *b == broad).count();
+                    judged(Some(false)) <= usize::from(counts.owner_only)
+                        && judged(Some(true)) <= usize::from(counts.group_or_other_access)
+                        && judged(None) <= usize::from(counts.unknown)
+                }))
+    }
+
     pub(super) fn valid(&self) -> bool {
-        self.units_with_evidence <= 16
+        self.files_valid()
+            && self.units_with_evidence <= 16
             && self
                 .distinct_credential_sources
                 .as_ref()
@@ -516,7 +661,7 @@ pub(super) enum UpdateStatus {
 #[serde(deny_unknown_fields)]
 pub(super) struct Updates {
     pub(super) status: UpdateStatus,
-    packages: Option<u16>,
+    pub(super) packages: Option<u16>,
 }
 
 impl Updates {

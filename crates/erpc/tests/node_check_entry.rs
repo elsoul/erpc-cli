@@ -197,6 +197,7 @@ fn ai_remote_check_refuses_arguments_and_chat_flags() {
         &["--kind", "bare-metal", "--id", "not-a-number"],
         &["--list", "--node-check"],
         &["--list", "--kind", "vps", "--id", "5"],
+        &["--list", "--details"],
         &["--list-unverified"],
         &["--security-check-remote"],
         &["--list-unverified", "--kind", "vps", "--id", "5"],
@@ -224,6 +225,25 @@ fn ai_remote_check_refuses_arguments_and_chat_flags() {
         command.extend(args);
         let output = erpc(&command);
         assert_eq!(output.status.code(), Some(2));
+    }
+}
+
+/// `--details` is the Security Check's: refused without it in every build,
+/// listed in the pilot's help, and a check with it still needs a terminal.
+#[test]
+fn ai_details_belongs_to_the_security_check() {
+    let output = erpc(&["--json", "ai", "--details"]);
+    assert_eq!(output.status.code(), Some(2));
+    let help = erpc(&["ai", "--help"]);
+    let help = String::from_utf8_lossy(&help.stdout);
+    assert_eq!(
+        help.contains("--details"),
+        cfg!(feature = "security-check-pilot"),
+        "{help}"
+    );
+    if cfg!(feature = "security-check-pilot") {
+        let output = erpc(&["--json", "ai", "--security-check", "--details"]);
+        assert_eq!(output.status.code(), Some(3));
     }
 }
 

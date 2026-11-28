@@ -123,7 +123,14 @@ network namespace and available system configuration.
   or systemd reads leave missing evidence unknown. An observed
   `EnvironmentFile` declaration produces a local SSH policy finding
   regardless of its file mode. JSON reports include that finding in
-  `localFindings`, alongside any metered findings.
+  `localFindings`, alongside any metered findings. For the report on your
+  screen only, the collector also lists up to 8 of the references it
+  counted, the files whose mode lets other accounts in first: the unit,
+  the path, and whether it is a file or a directory with its permission
+  bits, read without following a link as the count reads them (all the
+  paths together at most 1,536 characters). The CLI shows them and sends
+  them nowhere: the billed request and `--json` are the same with them as
+  without.
 - Security update counts from the local Debian or Ubuntu package cache.
 - Private keys and secrets kept in plain text. This part reads file
   contents: files under `/root`, `/home`, `/etc`, `/opt`, `/srv`,
@@ -195,11 +202,14 @@ group may read it and pass every directory, and otherwise its owner. That
 is an approximation: an account that owns a directory above the file, and
 access control lists, are not taken into account.
 
-The key search's results stay on your screen. The report lists each group
-of keys by kind, role, kind of place, who can read it and how many, with
-up to ten of their paths, then "and N more". Paths are escaped so that a
-file's name cannot drive the terminal, and the collector keeps all the
-paths it sends to 6 KiB. Each group raises one local finding:
+The key search's results stay on your screen. The report lists, under
+each finding, the paths of its keys with who can read each: up to ten
+for each group of keys of one kind, role, kind of place and access, then
+"and N more". `--details` lists those groups by kind, role, kind of
+place, who can read them and how many, with the same paths. Paths are
+escaped so that a file's name cannot drive the terminal, and the
+collector keeps all the paths it sends to 6 KiB. Each group raises one
+local finding:
 `plaintext_wallet_key` (other keypairs and hexadecimal keys),
 `validator_identity_permissions` (the identity keypair, when others than
 its owner can read it), `mnemonic_on_disk`, `unencrypted_keystore`,
@@ -211,6 +221,63 @@ the billed request. The collector reads contents into bounded buffers and
 only classifications, counts and paths leave its child process; Python
 cannot wipe memory, so what it read stays in that process until it exits,
 right after reporting.
+
+### The report
+
+The report starts with the rental and a line of counts: how many results
+need a look, how many are fine and how many could not be checked. The
+three groups follow in that order, each left out when it is empty.
+
+- **Needs a look**: each result in a plain sentence, then where (the
+  ports, the service and its file with the file's mode, the paths of
+  keys found) and what to do, as a command when one fits. `sudo chmod
+  600` and the paths are given only when every file it is about is
+  listed, is a regular file and has a path of letters, digits and
+  `/._-+,:@=` alone; otherwise the report says it in words. Private
+  keys, seed phrases and secrets the key search found in plain text come
+  first, since they can lose funds at once (they are never sent to ERPC,
+  so ERPC cannot rank them). When a report completed, the other results
+  follow the order of the findings ERPC ranked, and a ranked finding
+  that no result here speaks to is listed in its own words. What it did
+  not rank follows in a fixed order: service environment files,
+  credential files, Redis or Valkey, listening ports, SSH passwords, the
+  firewall, fail2ban, security updates and programs erpc does not
+  recognize. Without a completed report that fixed order follows the
+  keys.
+- **Fine**: a few short lines, such as the firewall dropping incoming
+  connections by default, fail2ban watching SSH logins, ports that
+  listen only inside the server, no security updates waiting, and no
+  plain-text keys where the search could read.
+- **Could not check**: what is unknown and why (such as: this SSH login
+  could not read it, the settings did not say, or the check reached a
+  limit), each with what would let it be checked, as a command to run
+  on the server when one fits. SSH's settings turning password login
+  off for this login are listed here, not as fine: the running server
+  and other logins are not checked. A ranked finding about something
+  listed here adds nothing to the first group.
+
+The report says only what the evidence shows: a port is named by a
+service only when the collector saw that service on it, a port that
+listens beyond the server is said to listen, never to be reachable, and
+the line under such ports says the firewall drops what it does not allow
+only when both the IPv4 and the IPv6 input filters were read and drop by
+default. The last line is the charge and the most a report may reserve
+(28,160 ERPC AI tokens), or, when nothing was charged or the charge
+could not be confirmed, the same lines as before (the latter with the
+request ID).
+
+The marks before the groups' headings (⚠, ✓, ?) and the colours are
+drawn only when standard output is a terminal that is not `TERM=dumb`;
+`NO_COLOR` turns the colours off and keeps the marks. Off a terminal the
+report is plain text. Words are wrapped to the terminal's width, from 40
+to 100 columns, or to 80 in plain text, each line under its result's
+indent; a command or a path is never wrapped, so that it pastes whole.
+
+`--details` prints, after the report, every result the check read as a
+detailed list, the way the report printed them before it was grouped:
+the ports by where they listen, each setting, the file mode counts and
+the groups of keys found with their paths. `--json` is the same with or
+without it, and the same as before.
 
 The inventory accepts up to 256 rentals and a 128 KiB reply. Quote and
 rental verification replies are capped at 4 KiB each. An oversized reply

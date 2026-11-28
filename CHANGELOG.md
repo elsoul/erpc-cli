@@ -12,6 +12,33 @@ whose version has no entry below.
 
 ## [Unreleased]
 
+### Added
+
+- `erpc ai --security-check --details` prints, after the report, every
+  result the check read as a detailed list, the way the report printed
+  them before it was grouped. `--json` is the same with or without it.
+
+### Changed
+
+- The Server Security Check's report is laid out for a person to read: a
+  line of counts, then what needs a look (each in a plain sentence, with
+  where and what to do, as a command when one fits), what is fine, and
+  what could not be checked with why and what would let it be checked,
+  then the charge and its limit in one line. Private keys, seed phrases
+  and secrets found in plain text head what needs a look, since they can
+  lose funds at once; the rest follows the order of the findings ERPC
+  ranked, and what it did not rank comes after in a fixed order. It says
+  only what the evidence shows: a port is named by a service only when
+  one was seen on it, and the firewall is said to drop what it does not
+  allow only when both input filters were read and drop by default.
+  Findings about a service's environment or credential files name the
+  service, the file and its mode, on the screen only: the collector now
+  lists up to 8 of the references it counts, and the billed request is
+  byte for byte what it was, with `--json` unchanged. The marks and colours are drawn only at a terminal
+  that is not `TERM=dumb`, the colours not under `NO_COLOR`; off a
+  terminal the report is plain text. Words wrap to the terminal's width
+  (80 columns in plain text); commands and paths never wrap.
+
 ## [0.1.0-rc.8] - 2026-11-28
 
 ### Added

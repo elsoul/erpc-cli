@@ -1717,7 +1717,9 @@ mod tests {
             app.entries.last(),
             Some(super::Entry::Note(super::Tone::Warn, message)) if message.contains(expected)
         ));
-        assert!(!crate::command_reference().contains("--security-check"));
+        for flag in ["--security-check", "--details", "--host-key", "--ssh-user"] {
+            assert!(!crate::command_reference().contains(flag), "{flag}");
+        }
     }
 
     #[test]
