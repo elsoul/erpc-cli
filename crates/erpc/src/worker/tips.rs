@@ -138,6 +138,9 @@ struct Session {
     tips: Vec<String>,
     stop: Arc<AtomicBool>,
     ticker: Option<JoinHandle<()>>,
+    /// In a test: how many times a spinner was put up for it.
+    #[cfg(test)]
+    raised: u32,
 }
 
 impl Session {
@@ -172,6 +175,31 @@ fn board() -> MutexGuard<'static, Board> {
     BOARD.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// In a test: how many spinners are up, and how many times a line was
+/// printed with none on the board while one was still up, which the lock
+/// is there to make never happen.
+#[cfg(test)]
+static LIVE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+static STRAY: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// A spinner put up, showing `drawn`. Only while the board is locked.
+fn put_up(drawn: &str) -> Spinner {
+    let spinner = Spinner::start(drawn.lines().next().unwrap_or_default());
+    spinner.set_message(drawn);
+    #[cfg(test)]
+    LIVE.fetch_add(1, Ordering::SeqCst);
+    spinner
+}
+
+/// `spinner` taken off the screen. Only while the board is locked, so that
+/// no line is printed while it is still drawn and the board shows none.
+fn take_down(spinner: Spinner) {
+    spinner.done();
+    #[cfg(test)]
+    LIVE.fetch_sub(1, Ordering::SeqCst);
+}
+
 /// The spinner put up, or drawn again with the steps under way now.
 fn raise(board: &mut Board) {
     let Board { steps, session, .. } = board;
@@ -182,9 +210,11 @@ fn raise(board: &mut Board) {
     if let Some(spinner) = &session.spinner {
         spinner.set_message(&drawn);
     } else {
-        let spinner = Spinner::start(drawn.lines().next().unwrap_or_default());
-        spinner.set_message(&drawn);
-        session.spinner = Some(spinner);
+        session.spinner = Some(put_up(&drawn));
+        #[cfg(test)]
+        {
+            session.raised += 1;
+        }
     }
 }
 
@@ -232,6 +262,8 @@ pub(crate) fn busy(say: &Say, line: String) -> Busy {
             tips,
             stop: Arc::clone(&stop),
             ticker: Some(ticker(stop)),
+            #[cfg(test)]
+            raised: 0,
         });
     }
     raise(&mut board);
@@ -269,25 +301,28 @@ impl Drop for Busy {
                 .iter()
                 .position(|(at, _)| *at == id)
                 .map(|at| board.steps.remove(at).1);
-            let ended = if board.steps.is_empty() {
+            let mut ended = if board.steps.is_empty() {
                 board.session.take()
             } else {
                 raise(&mut board);
                 None
             };
-            if let Some(ended) = &ended {
+            // The last step: the spinner is off the screen before the lock
+            // is let go, so a line said from another thread meanwhile is
+            // never printed into it.
+            if let Some(ended) = &mut ended {
                 ended.stop.store(true, Ordering::Release);
+                if let Some(spinner) = ended.spinner.take() {
+                    take_down(spinner);
+                }
             }
             (line, ended)
         };
-        if let Some(mut ended) = ended {
-            if let Some(ticker) = ended.ticker.take() {
-                ticker.thread().unpark();
-                let _ = ticker.join();
-            }
-            if let Some(spinner) = ended.spinner.take() {
-                spinner.done();
-            }
+        // Joined once the lock is let go, which the ticker takes to see
+        // that it is to stop.
+        if let Some(ticker) = ended.and_then(|mut ended| ended.ticker.take()) {
+            ticker.thread().unpark();
+            let _ = ticker.join();
         }
         if let Some(line) = line {
             Say { quiet: false }.line(&line);
@@ -300,11 +335,15 @@ impl Drop for Busy {
 pub(crate) fn above(print: impl FnOnce()) {
     let mut board = board();
     let Some(spinner) = board.session.as_mut().and_then(|s| s.spinner.take()) else {
+        #[cfg(test)]
+        if LIVE.load(Ordering::SeqCst) > 0 {
+            STRAY.fetch_add(1, Ordering::SeqCst);
+        }
         drop(board);
         print();
         return;
     };
-    spinner.done();
+    take_down(spinner);
     print();
     raise(&mut board);
 }
@@ -315,8 +354,12 @@ mod tests {
 
     use erpc_core::i18n::Lang;
 
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
     use super::{
-        Busy, TIP_EVERY, TIPS, above, board, busy, clock, first_tip, lines, spins, tip_at, tips,
+        Busy, STRAY, TIP_EVERY, TIPS, above, board, busy, clock, first_tip, lines, spins, tip_at,
+        tips,
     };
     use crate::cli::i18n::{CATALOG, speaking};
     use crate::node::common::{Say, heard};
@@ -373,26 +416,29 @@ mod tests {
         crate::cli::ui::force_drawn(true);
         let _ = heard::take_printed();
         let say = Say { quiet: false };
+        // Which session is up, and how many times it put a spinner up.
+        let session = || {
+            board()
+                .session
+                .as_ref()
+                .filter(|s| s.spinner.is_some())
+                .map(|s| (Arc::as_ptr(&s.stop), s.raised))
+        };
         let build = busy(&say, "building".to_owned());
+        let first = session().expect("a spinner up").0;
         let wait = busy(&say, "waiting for server 1".to_owned());
         assert!(heard::take_printed().is_empty(), "said only once it ends");
         assert!(on_board(&build) && on_board(&wait));
-        assert!(
-            board()
-                .session
-                .as_ref()
-                .is_some_and(|s| s.spinner.is_some())
-        );
+        assert_eq!(session(), Some((first, 1)), "the second step joined it");
         wait.again(&say, "waiting for server 1, again".to_owned());
         assert!(heard::take_printed().is_empty(), "a round is not a line");
-        // A line said meanwhile is printed, and the spinner goes on.
+        // A line said meanwhile is printed with the spinner taken down,
+        // and the spinner is put up again.
         above(|| {});
-        assert!(
-            board()
-                .session
-                .as_ref()
-                .is_some_and(|s| s.spinner.is_some())
-        );
+        assert_eq!(session(), Some((first, 2)));
+        Say { quiet: false }.line("said meanwhile");
+        assert_eq!(heard::take_printed(), ["said meanwhile"]);
+        assert_eq!(session(), Some((first, 3)), "Say goes above it too");
         drop(build);
         assert_eq!(heard::take_printed(), ["building"]);
         assert!(board().session.is_some(), "one step still under way");
@@ -402,18 +448,48 @@ mod tests {
         crate::cli::ui::force_drawn(false);
     }
 
-    /// One tip at a time, the next every few seconds, round to the first.
+    /// Lines said from another thread while steps begin and end are never
+    /// printed while a spinner is still drawn that the board no longer
+    /// shows, where they would be drawn into it and wiped with it.
+    #[test]
+    fn a_line_said_meanwhile_never_lands_in_a_spinner_going_down() {
+        let _one = ONE_AT_A_TIME
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let strays = STRAY.load(Ordering::SeqCst);
+        let done = Arc::new(AtomicBool::new(false));
+        let saying = {
+            let done = Arc::clone(&done);
+            std::thread::spawn(move || {
+                while !done.load(Ordering::SeqCst) {
+                    above(|| {});
+                }
+            })
+        };
+        crate::cli::ui::force_drawn(true);
+        let say = Say { quiet: false };
+        for _ in 0..300 {
+            drop(busy(&say, "building".to_owned()));
+        }
+        done.store(true, Ordering::SeqCst);
+        saying.join().expect("the other thread");
+        crate::cli::ui::force_drawn(false);
+        let _ = heard::take_printed();
+        assert_eq!(STRAY.load(Ordering::SeqCst), strays);
+    }
+
+    /// One tip at a time, the next every eight seconds, round to the first.
     #[test]
     fn the_tips_turn_in_order_from_the_first() {
+        assert_eq!(TIP_EVERY, Duration::from_secs(8), "as the docs say");
         let at = |secs: u64| tip_at(28, Duration::from_secs(secs), 30);
-        let every = TIP_EVERY.as_secs();
         assert_eq!(at(0), 28);
-        assert_eq!(at(every - 1), 28);
-        assert_eq!(at(every), 29);
-        assert_eq!(at(2 * every), 0);
-        assert_eq!(at(3 * every), 1);
-        assert_eq!(at(30 * every), 28, "round to the first");
-        assert_eq!(tip_at(0, Duration::from_secs(every), 1), 0);
+        assert_eq!(at(7), 28);
+        assert_eq!(at(8), 29);
+        assert_eq!(at(16), 0);
+        assert_eq!(at(24), 1);
+        assert_eq!(at(30 * 8), 28, "round to the first");
+        assert_eq!(tip_at(0, Duration::from_secs(8), 1), 0);
         // The first is one of them, and not always the same one.
         let firsts: std::collections::BTreeSet<usize> = (0..200).map(|_| first_tip(TIPS)).collect();
         assert!(
@@ -431,6 +507,51 @@ mod tests {
             ),
             ["building · 1:05", "waiting", "Tip: one"]
         );
+    }
+
+    /// Whether `text` holds a link: a scheme, `www.`, or a host with a path
+    /// (`erpc.global/en`).
+    fn has_link(text: &str) -> bool {
+        let lower = text.to_lowercase();
+        if ["://", "www."].iter().any(|m| lower.contains(m)) {
+            return true;
+        }
+        lower.match_indices('/').any(|(at, _)| {
+            let host: Vec<char> = lower[..at]
+                .chars()
+                .rev()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '-')
+                .collect();
+            let host: String = host.into_iter().rev().collect();
+            host.rsplit_once('.').is_some_and(|(name, top)| {
+                !name.is_empty() && top.len() > 1 && top.chars().all(|c| c.is_ascii_alphabetic())
+            })
+        })
+    }
+
+    #[test]
+    fn a_link_is_found_with_a_scheme_or_without() {
+        for link in [
+            "See erpc.global/en/news. Then",
+            "https://erpc.global",
+            "HTTPS://ERPC.GLOBAL",
+            "ftp://host",
+            "at www.example then",
+            "docs at example.com/path",
+        ] {
+            assert!(has_link(link), "{link}");
+        }
+        for plain in [
+            "add history=true to your edge.erpc.global URL",
+            "HTTP (no TLS work) or HTTPS",
+            "ping/pong",
+            "RPC/WebSocket",
+            "TPU/QUIC",
+            "about 0.1ms/hop",
+            "Geyser gRPCではping/pongに応答し",
+        ] {
+            assert!(!has_link(plain), "{plain}");
+        }
     }
 
     /// Every tip, in every language: there, said, distinct, and with no
@@ -451,7 +572,7 @@ mod tests {
                     !tip.is_empty() && !tip.starts_with("worker_tips."),
                     "{lang:?}: {tip}"
                 );
-                assert!(!tip.contains("http"), "{lang:?}: {tip}");
+                assert!(!has_link(tip), "{lang:?}: {tip}");
             }
         }
         let tip = speaking(Lang::Ja, || t!("worker_tips.tip", tip = "x"));
