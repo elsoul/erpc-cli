@@ -1444,7 +1444,7 @@ pub(crate) struct Server {
     pub(crate) resource: Resource,
 }
 
-/// The account's VPSs that are running, as (id, address, region, plan).
+/// The account's VPSs that are running, as (id, address, region, spec).
 pub(crate) async fn running(api: &Api) -> Result<Vec<(i64, String, String, Spec)>, CliError> {
     let reply = api
         .read(erpc_ai::ready::vps_status_url().map_err(failed)?)
@@ -5874,8 +5874,6 @@ mod tests {
             "ERPC Worker (2 vCPU, 8 GB memory)"
         );
         assert_eq!(worker(&Spec::sized(Some(2), None)), "ERPC Worker (2 vCPU)");
-        // A row of the account's running servers: its product's name read
-        // for the spec, else its version's; never shown as it is.
         // A row in the shape the account's VPS status rows have: its
         // product's name read for the spec, in the known form or not at all.
         let row = |product: &str| {
@@ -5889,6 +5887,11 @@ mod tests {
             "ERPC Worker 100001 (1 vCPU, 4 GB memory)"
         );
         assert_eq!(running_spec(&row("EPYC VPS+")), Spec::default());
+        // Parts in the known form after a product's name that is not: none.
+        assert_eq!(
+            running_spec(&row("EPYC - 1 vCPU x 4 GB DDR5")),
+            Spec::default()
+        );
         assert_eq!(
             worker_id(100_001, &running_spec(&row("EPYC VPS+"))),
             "ERPC Worker 100001"
