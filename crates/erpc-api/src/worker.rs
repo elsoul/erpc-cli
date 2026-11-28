@@ -499,6 +499,21 @@ open_enum! {
         RepointIncomplete = "repoint_incomplete",
         /// Nothing was repointed ([`Refusal::reason`]).
         RepointNotReady = "repoint_not_ready",
+        /// A start or a take-in was sent at a price of one hour other than
+        /// the account's now ([`Refusal::hourly_cents`]: the price now, when
+        /// it says): nothing was written or bought.
+        PriceChanged = "price_changed",
+    }
+}
+
+open_enum! {
+    /// How a server is paid for, as the account says it of one to take into
+    /// an environment ([`money::AdoptPrice::billing`]).
+    Billing {
+        /// By the hour, from ERPC Credit.
+        Hourly = "hourly",
+        /// By a contract: monthly, annual, or by the month from ERPC Credit.
+        Contract = "contract",
     }
 }
 
@@ -596,6 +611,19 @@ pub enum ServerKind {
     PremiumVps,
     /// A bare-metal server.
     BareMetal,
+}
+
+impl ServerKind {
+    /// The word the account takes for it, in a body or a query.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Vps => "vps",
+            Self::SuperVps => "super-vps",
+            Self::PremiumVps => "premium-vps",
+            Self::BareMetal => "bare-metal",
+        }
+    }
 }
 
 /// The slot a server is taken into.
@@ -872,6 +900,10 @@ pub struct Server {
     /// the person's).
     #[serde(default)]
     pub hourly: bool,
+    /// What it costs by the hour now, in cents, as the account applies it;
+    /// `None` for one paid by contract, or when the account does not say.
+    #[serde(default)]
+    pub hourly_cents: Option<u64>,
     /// Whether the app runs on it, as erpc last wrote.
     #[serde(default)]
     pub app_running: bool,
@@ -1390,6 +1422,17 @@ pub struct AdoptServer {
     /// Whether the app runs on it now.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app_running: Option<bool>,
+    /// The price of one hour the person was shown for it once taken in, in
+    /// cents, or `Some(None)` (sent as `null`) for one that keeps the price
+    /// of its contract: the account refuses a take-in at any other price
+    /// ([`Code::PriceChanged`]). Left out (`None`) when the account said
+    /// nothing of the price ([`money::ServerPrices::adopt`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[allow(
+        clippy::option_option,
+        reason = "left out, null and a number are three answers the account tells apart"
+    )]
+    pub expected_hourly_cents: Option<Option<u64>>,
 }
 
 impl AdoptServer {
@@ -1406,7 +1449,17 @@ impl AdoptServer {
             id,
             slot,
             app_running,
+            expected_hourly_cents: None,
         }
+    }
+
+    /// The same take-in, made only at `cents` by the hour once taken in, or
+    /// for one that keeps its contract's price (`None`): what the account
+    /// said and the person was shown ([`money::AdoptPrice::hourly_cents`]).
+    #[must_use]
+    pub const fn expecting(mut self, cents: Option<u64>) -> Self {
+        self.expected_hourly_cents = Some(cents);
+        self
     }
 }
 

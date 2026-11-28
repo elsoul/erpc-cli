@@ -132,7 +132,7 @@ impl Buying for kept::Signed {
     }
 
     async fn prices(&self, name: &str, env: &str) -> Result<ServerPrices, WorkerError> {
-        self.server_prices(name, env).await
+        self.server_prices(name, env, None).await
     }
 
     async fn starts(&self, name: &str, env: &str) -> Result<Vec<Open>, WorkerError> {
@@ -176,6 +176,11 @@ struct Kept {
     /// the same key.
     #[serde(default)]
     resend: bool,
+    /// The price of one hour it was asked and sent at, in cents; none for
+    /// one kept by an erpc that did not send it (sent again, it is sent
+    /// and kept at the price shown then).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hourly_cents: Option<u64>,
 }
 
 /// The starts kept here, by the key of the account, app and environment
@@ -368,6 +373,12 @@ fn priced(prices: &ServerPrices, env: &str, cores: Option<u16>) -> Result<Server
             .min_by_key(|o| (o.hourly_cents, o.cores)),
     };
     match (found, cores) {
+        // A size priced at nought is no price shown: nothing is sent.
+        (Some(found), _) if found.hourly_cents == 0 => Err(failed(t!(
+            "worker_server.price_unsaid",
+            env,
+            worker = worker_of(found)
+        ))),
         (Some(found), _) => Ok(found.clone()),
         (None, Some(cores)) => {
             let offered: Vec<String> = prices.options.iter().map(size_said).collect();
@@ -589,7 +600,7 @@ fn done(
     (store, file_key, key): (&Path, &str, &str),
     env: &str,
     record: &EnvDetail,
-    again: Option<bool>,
+    (again, shown): (Option<bool>, Option<u64>),
 ) -> (Value, String) {
     let mut text = vec![match again {
         Some(_) => t!("worker_server.started", env),
@@ -602,6 +613,11 @@ fn done(
         text.push(format!("warning: {unkept}"));
     }
     text.extend(kept::account_said(record));
+    // `shown` is given only for a start sent again under its key in this
+    // run, which alone can be answered as an earlier send at another
+    // price; a new one, or one found done (whose server may have come
+    // another way), is said at the price applied alone.
+    text.extend(applied(record, shown));
     let answer = json!({
         "started": true,
         "already": again.is_none(),
@@ -611,6 +627,28 @@ fn done(
         "account": kept::account_json(record),
     });
     (answer, text.join("\n"))
+}
+
+/// The price by the hour the account applies to the server `record`
+/// names in use, said when it gives one (above nought): plainly, and as a
+/// start taken earlier when it is not the price `shown` for a start sent
+/// again (an earlier send had arrived, and its answer came back whatever
+/// this one said).
+fn applied(record: &EnvDetail, shown: Option<u64>) -> Option<String> {
+    let cents = record
+        .servers
+        .iter()
+        .find(|s| s.slot == account::Slot::Active)
+        .and_then(|s| s.hourly_cents)
+        .filter(|cents| *cents > 0)?;
+    Some(match shown {
+        Some(shown) if shown != cents => t!(
+            "worker_server.price_earlier",
+            price = euros(cents),
+            shown = euros(shown)
+        ),
+        _ => t!("worker_server.price_applied", price = euros(cents)),
+    })
 }
 
 /// The start kept here that is to be sent again, while the environment
@@ -681,7 +719,7 @@ fn asking(
     (app, name): (&App, &str),
     asked: &Asked<'_>,
     (price, region): (&ServerPrice, &str),
-    again: bool,
+    (again, was): (bool, Option<u64>),
 ) -> (String, String) {
     let (env, scope) = (app.env.as_str(), app.scope());
     let worker = worker_of(price);
@@ -713,12 +751,62 @@ fn asking(
             ),
         ),
     };
-    if again {
+    let (question, note) = if again {
         let same = t!("worker_server.same_start");
         (format!("{same}\n{question}"), format!("{same}\n{note}"))
     } else {
         (question, note)
+    };
+    // The price said before, when the account said it changed.
+    match was {
+        Some(was) => {
+            let changed = t!("worker_server.price_now", price, was = euros(was));
+            (
+                format!("{changed}\n{question}"),
+                format!("{changed}\n{note}"),
+            )
+        }
+        None => (question, note),
     }
+}
+
+/// How many times a start is asked about again when the account says its
+/// price changed meanwhile.
+const PRICE_TRIES: u32 = 3;
+
+/// The price of one hour the account says it starts at now, when it
+/// refused `e` for the price asked about ([`AccountCode::PriceChanged`]):
+/// `Some(None)` when it does not say what the price is.
+#[allow(
+    clippy::option_option,
+    reason = "not refused for its price, and refused without the price now, are two answers"
+)]
+fn price_changed(e: &WorkerError) -> Option<Option<u64>> {
+    match e {
+        WorkerError::Refused(r) if r.code == Some(AccountCode::PriceChanged) => {
+            Some(r.hourly_cents())
+        }
+        _ => None,
+    }
+}
+
+/// The refusal of a start the account would make only at another price
+/// (`now`, in cents, when it says), than `price`'s: nothing was bought, and
+/// nobody is asked again here (under `--yes`, with nobody at a terminal,
+/// or the price unsaid); `fate` says what became of the start kept here.
+fn price_refused(app: &App, price: &ServerPrice, now: Option<u64>, fate: &KeyFate) -> CliError {
+    let env = app.env.as_str();
+    let message = match now {
+        Some(now) => t!(
+            "worker_server.price_changed",
+            env,
+            worker = worker_of(price),
+            price = euros(now),
+            was = euros(price.hourly_cents)
+        ),
+        None => t!("worker_server.price_changed_unsaid", env),
+    };
+    failed(format!("{message}\n{}", fate.said())).hint(t!("worker_server.price_changed_hint"))
 }
 
 /// What erpc.toml says of the app, which its record is made from when the
@@ -934,7 +1022,12 @@ fn nobody() -> CliError {
 
 /// The start, through `api`: what the account holds read, the price said
 /// and agreed to (`confirm`), `agreed` done, the key kept in `store`, then
-/// the start sent.
+/// the start sent, and asked again at the price now when the account says
+/// it changed.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the start is one sequence, read top to bottom: what is there, the price, the yes, the send"
+)]
 pub(crate) async fn run_with(
     api: &impl Buying,
     app: &App,
@@ -942,10 +1035,10 @@ pub(crate) async fn run_with(
     store: &Path,
     (making, asked): (&Making<'_>, &Asked<'_>),
     (confirm, agreed): (
-        impl FnOnce(&str) -> Result<bool, String>,
+        impl FnMut(&str) -> Result<bool, String>,
         impl FnOnce() -> Result<(), CliError>,
     ),
-    make_key: impl FnOnce() -> Result<StartKey, CliError>,
+    make_key: impl FnMut() -> Result<StartKey, CliError>,
 ) -> Result<(Value, String), CliError> {
     let env = app.env.as_str();
     let uid = api.uid().await?;
@@ -962,7 +1055,12 @@ pub(crate) async fn run_with(
     if plan == Plan::Done
         && let (Some(record), Some(saved)) = (&record, &saved)
     {
-        return Ok(done((store, &file_key, &saved.key), env, record, None));
+        return Ok(done(
+            (store, &file_key, &saved.key),
+            env,
+            record,
+            (None, None),
+        ));
     }
     let again = match &plan {
         Plan::Again(again) => Some(again.clone()),
@@ -987,76 +1085,137 @@ pub(crate) async fn run_with(
         .map_err(|e| read_failed(name, app, &e, &t!("worker_server.what_prices", env)))?;
     // A start sent again is sent as it was kept; a new one as asked, the
     // cheapest size when none was.
-    let price = priced(
+    let mut price = priced(
         &prices,
         env,
         again.as_ref().map(|a| a.cores).or(asked.cores),
     )?;
     let region = match (&again, asked.region) {
-        (Some(again), _) => again.region.as_str(),
-        (None, Region::Asked(region) | Region::Else(region)) => region,
+        (Some(again), _) => again.region.clone(),
+        (None, Region::Asked(region) | Region::Else(region)) => region.to_owned(),
     };
-    let (question, note) = asking((app, name), asked, (&price, region), again.is_some());
-    ask(asked, (&question, &note), confirm)?;
-    // Read again after the yes, the starts first: a start or a server that
-    // came meanwhile, from another run or another machine, sends nothing.
-    let (open, record) = read_state(api, app, name).await?;
-    let was = saved.as_ref().map(|s| s.key.clone());
-    if decide(record.as_ref(), &open, saved, asked, app)? != plan {
-        return Err(failed(t!("worker_server.changed", env)).hint(t!("worker_server.changed_hint")));
+    let region = region.as_str();
+    // The price of one hour a start is sent at is the one its question
+    // says. A start sent again under its key goes at the price it was kept
+    // with; one an erpc kept that did not keep one goes at the price shown
+    // now, and is kept with it (the price is not part of what the account
+    // matches a key's request by, so one that reached it is answered as
+    // before).
+    if let Some(cents) = again.as_ref().and_then(|a| a.hourly_cents) {
+        price.hourly_cents = cents;
     }
-    // What the yes was for, before anything is sent: a stop between the two
-    // leaves it done and nothing bought.
-    agreed()?;
-    let key = match &again {
-        Some(again) => StartKey::new(again.key.as_str()).map_err(|e| failed(e.to_string()))?,
-        None => make_key()?,
-    };
-    // Kept before it is sent, as not to be sent again: an answer lost on
-    // the way leaves the next run to read the account first.
-    let before = again.as_ref().is_some_and(|a| a.resend);
-    let mut start = Kept {
-        key: key.as_str().to_owned(),
-        cores: price.cores,
-        region: region.to_owned(),
-        resend: false,
-    };
-    keep_over(store, &file_key, &start, was.as_deref())
-        .map_err(|error| failed(t!("worker_server.not_kept", error)))?;
-    let body = StartServer::new(price.cores, region).at_revision(revision);
-    match api.start(name, env, &key, &body).await {
-        Ok(written) => Ok(done(
-            (store, &file_key, key.as_str()),
-            env,
-            &written.record,
-            Some(again.is_some()),
-        )),
-        Err(e) => {
-            let then = after(&e);
-            let fate = match then {
-                After::Gone => let_go(store, &file_key, key.as_str()).map(|()| KeyFate::LetGo),
-                After::Again => {
-                    start.resend = true;
-                    keep_over(store, &file_key, &start, Some(key.as_str()))
-                        .map(|()| KeyFate::KeptAgain)
-                }
-                After::AsItWas => {
-                    start.resend = before;
-                    keep_over(store, &file_key, &start, Some(key.as_str())).map(|()| {
-                        if before {
-                            KeyFate::KeptAgain
-                        } else {
-                            KeyFate::KeptHeld
-                        }
-                    })
-                }
-                // Kept already, as not to be sent again.
-                After::Held => Ok(KeyFate::KeptHeld),
-            }
-            .unwrap_or_else(KeyFate::Unkept);
-            Err(refused(&e, then, name, app, &fate))
+    let mut expected = Some(price.hourly_cents);
+    let (mut again, mut saved, mut plan) = (again, saved, plan);
+    let (mut confirm, mut agreed, mut make_key) = (confirm, Some(agreed), make_key);
+    // The price said before the account said it changed.
+    let mut was_said = None;
+    for _ in 0..PRICE_TRIES {
+        let (question, note) = asking(
+            (app, name),
+            asked,
+            (&price, region),
+            (again.is_some(), was_said),
+        );
+        ask(asked, (&question, &note), &mut confirm)?;
+        // Read again after the yes, the starts first: a start or a server
+        // that came meanwhile, from another run or another machine, sends
+        // nothing.
+        let (open, record) = read_state(api, app, name).await?;
+        let was = saved.as_ref().map(|s| s.key.clone());
+        if decide(record.as_ref(), &open, saved.clone(), asked, app)? != plan {
+            return Err(
+                failed(t!("worker_server.changed", env)).hint(t!("worker_server.changed_hint"))
+            );
         }
+        // What the yes was for, before anything is sent: a stop between the
+        // two leaves it done and nothing bought.
+        if let Some(agreed) = agreed.take() {
+            agreed()?;
+        }
+        let key = match &again {
+            Some(again) => StartKey::new(again.key.as_str()).map_err(|e| failed(e.to_string()))?,
+            None => make_key()?,
+        };
+        // Kept before it is sent, as not to be sent again: an answer lost on
+        // the way leaves the next run to read the account first.
+        let before = again.as_ref().is_some_and(|a| a.resend);
+        let mut start = Kept {
+            key: key.as_str().to_owned(),
+            cores: price.cores,
+            region: region.to_owned(),
+            resend: false,
+            hourly_cents: expected,
+        };
+        keep_over(store, &file_key, &start, was.as_deref())
+            .map_err(|error| failed(t!("worker_server.not_kept", error)))?;
+        let body = StartServer::new(price.cores, region)
+            .at_revision(revision)
+            .at_price(expected);
+        let e = match api.start(name, env, &key, &body).await {
+            Ok(written) => {
+                return Ok(done(
+                    (store, &file_key, key.as_str()),
+                    env,
+                    &written.record,
+                    (
+                        Some(again.is_some()),
+                        again.as_ref().map(|_| price.hourly_cents),
+                    ),
+                ));
+            }
+            Err(e) => e,
+        };
+        // Refused for its price: nothing was bought, and the account holds
+        // nothing under the key now, a start sent again under its key
+        // included, so the key goes; a new start is sent only after a yes
+        // to the price now.
+        if let Some(now) = price_changed(&e) {
+            let fate = let_go(store, &file_key, key.as_str())
+                .map_or_else(KeyFate::Unkept, |()| KeyFate::LetGo);
+            // Asked at a terminal before: `ask` refuses under `--json` or
+            // with nobody there unless `--yes` answered.
+            let ask_again = !asked.yes;
+            match now {
+                Some(now) if ask_again && fate == KeyFate::LetGo => {
+                    was_said = Some(price.hourly_cents);
+                    price.hourly_cents = now;
+                    expected = Some(now);
+                    (again, saved, plan) = (None, None, Plan::New);
+                    continue;
+                }
+                _ => return Err(price_refused(app, &price, now, &fate)),
+            }
+        }
+        let then = after(&e);
+        let fate = match then {
+            After::Gone => let_go(store, &file_key, key.as_str()).map(|()| KeyFate::LetGo),
+            After::Again => {
+                start.resend = true;
+                keep_over(store, &file_key, &start, Some(key.as_str())).map(|()| KeyFate::KeptAgain)
+            }
+            After::AsItWas => {
+                start.resend = before;
+                keep_over(store, &file_key, &start, Some(key.as_str())).map(|()| {
+                    if before {
+                        KeyFate::KeptAgain
+                    } else {
+                        KeyFate::KeptHeld
+                    }
+                })
+            }
+            // Kept already, as not to be sent again.
+            After::Held => Ok(KeyFate::KeptHeld),
+        }
+        .unwrap_or_else(KeyFate::Unkept);
+        return Err(refused(&e, then, name, app, &fate));
     }
+    // Each refusal let the key go before the next question.
+    Err(failed(format!(
+        "{}\n{}",
+        t!("worker_server.price_kept_changing", env),
+        KeyFate::LetGo.said()
+    ))
+    .hint(t!("worker_server.price_changed_hint")))
 }
 
 /// The refusal of an environment `erpc.toml` keeps.
@@ -1250,6 +1409,11 @@ mod tests {
         /// The record of starts breaks while the start is sent: `garbage`
         /// (it cannot be read) or `shut` (its directory cannot be written).
         breaks_store: Option<&'static str>,
+        /// The price by the hour the started server's row says is applied.
+        applied: Option<u64>,
+        /// What comes meanwhile with a price refusal: a start of another
+        /// (`open`) or a server on the record (`server`).
+        after_price_refusal: Option<&'static str>,
         /// The environment's revision moves (no server, no start) while the
         /// person is asked.
         revision_moves_while_asked: bool,
@@ -1262,6 +1426,11 @@ mod tests {
         sent: RefCell<Vec<Sent>>,
         /// Each app record made, as sent.
         made: RefCell<Vec<Value>>,
+        /// The price of one hour each start was sent at (`expectedHourlyCents`).
+        prices_sent: RefCell<Vec<Option<u64>>>,
+        /// The next starts are refused for their price, in turn, each with
+        /// this `data` (`hourlyCents`, the price now); then `answer`.
+        price_changes: RefCell<Vec<Value>>,
     }
 
     impl Fake {
@@ -1284,12 +1453,16 @@ mod tests {
                 refuse: None,
                 other_run_keeps: None,
                 breaks_store: None,
+                applied: None,
+                after_price_refusal: None,
                 revision_moves_while_asked: false,
                 revisions: RefCell::new(Vec::new()),
                 reads: Cell::new(0),
                 calls: RefCell::new(Vec::new()),
                 sent: RefCell::new(Vec::new()),
                 made: RefCell::new(Vec::new()),
+                prices_sent: RefCell::new(Vec::new()),
+                price_changes: RefCell::new(Vec::new()),
             }
         }
 
@@ -1298,13 +1471,24 @@ mod tests {
         }
 
         fn keep(&self, key: &str, resend: bool) {
+            // As an erpc kept it that did not keep the price.
             let start = Kept {
                 key: key.to_owned(),
                 cores: 1,
                 region: "amsterdam".to_owned(),
                 resend,
+                hourly_cents: None,
             };
             keep(&self.store, &file_key(), Some(&start)).expect("kept");
+        }
+
+        /// [`holding`], its server at the price applied, if one is.
+        fn holding(&self) -> EnvDetail {
+            let mut record = holding();
+            if let Some(server) = record.servers.first_mut() {
+                server.hourly_cents = self.applied;
+            }
+            record
         }
 
         fn starts(&self) -> usize {
@@ -1351,6 +1535,7 @@ mod tests {
                     cores: 2,
                     region: "tokyo".to_owned(),
                     resend: false,
+                    hourly_cents: Some(13),
                 };
                 keep(&self.store, &file_key(), Some(&theirs)).expect("kept");
             }
@@ -1481,14 +1666,33 @@ mod tests {
                 body.region.clone(),
                 self.kept(),
             ));
+            self.prices_sent
+                .borrow_mut()
+                .push(body.expected_hourly_cents);
             match self.breaks_store {
                 Some("garbage") => std::fs::write(&self.store, "not json").expect("written"),
                 #[cfg(unix)]
                 Some("shut") => set_mode(self.store.parent().expect("a directory"), 0o500),
                 _ => {}
             }
+            let mut changes = self.price_changes.borrow_mut();
+            if !changes.is_empty() {
+                let data = changes.remove(0);
+                // The account holds nothing under the key after it: no
+                // start open, unless the case plays one that came meanwhile.
+                match self.after_price_refusal {
+                    Some("open") => *self.open.borrow_mut() = vec![server_start(1, "frankfurt")],
+                    Some("server") => {
+                        self.open.borrow_mut().clear();
+                        *self.env.borrow_mut() = Some(holding());
+                    }
+                    _ => self.open.borrow_mut().clear(),
+                }
+                return Err(self.refusal(409, "price_changed", data));
+            }
+            drop(changes);
             match &self.answer {
-                Answer::Started => Ok(Written::new(true, holding())),
+                Answer::Started => Ok(Written::new(true, self.holding())),
                 Answer::Refused(status, code, data) => {
                     Err(self.refusal(*status, code, data.clone()))
                 }
@@ -1651,11 +1855,13 @@ mod tests {
         // a first deploy asks for), which the account asked to send again;
         // this machine is near tokyo now.
         *fake.open.borrow_mut() = vec![server_start(2, "amsterdam")];
+        // At the price it was asked at then, which is not the price now.
         let kept = Kept {
             key: OLD_KEY.to_owned(),
             cores: 2,
             region: "amsterdam".to_owned(),
             resend: true,
+            hourly_cents: Some(12),
         };
         keep(&fake.store, &file_key(), Some(&kept)).expect("kept");
         let (out, _) = go_deploy(
@@ -1673,21 +1879,491 @@ mod tests {
             "{hint}"
         );
         assert_eq!(fake.starts(), 0);
-        // At the price of its own size, asked at the terminal.
+        // Its own size, at the price it was kept with, asked at the
+        // terminal and sent at that price.
         let (out, question) =
             go_deploy(&fake, &by_deploy(Region::Else("tokyo"), false), true, false).await;
         out.expect("sent again");
         let question = question.expect("asked");
         assert!(
-            question.contains("ERPC Worker (2 vCPU, 4 GB memory)") && question.contains("€0.13"),
+            question.contains("ERPC Worker (2 vCPU, 4 GB memory)") && question.contains("€0.12"),
             "{question}"
         );
-        assert!(!question.contains("€0.07"), "{question}");
+        assert!(
+            !question.contains("€0.07") && !question.contains("€0.13"),
+            "{question}"
+        );
         let sent = fake.sent.borrow();
         assert_eq!(
             (sent[0].0.as_str(), sent[0].1, sent[0].2.as_str()),
             (OLD_KEY, 2, "amsterdam")
         );
+        assert_eq!(*fake.prices_sent.borrow(), [Some(12)]);
+    }
+
+    /// The start through `fake` as `asked`, by the first deploy or not, the
+    /// person answering `answers` in turn, each new start under a key of its
+    /// own; with every question asked.
+    async fn go_answering(
+        fake: &Fake,
+        asked: &Asked<'_>,
+        answers: &[bool],
+    ) -> (Result<(Value, String), CliError>, Vec<String>) {
+        let questions = RefCell::new(Vec::new());
+        let keys = Cell::new(0_u32);
+        let app = App::at(fake.store.parent().expect("a directory"), "prod");
+        let out = run_with(
+            fake,
+            &app,
+            "bot",
+            &fake.store,
+            (&MAKING, asked),
+            (
+                |q: &str| {
+                    let mut questions = questions.borrow_mut();
+                    questions.push(q.to_owned());
+                    Ok(answers.get(questions.len() - 1).copied().unwrap_or(false))
+                },
+                || {
+                    fake.calls.borrow_mut().push("agreed");
+                    Ok(())
+                },
+            ),
+            || {
+                keys.set(keys.get() + 1);
+                Ok(StartKey::new(format!("{:032x}", 0xabc0 + keys.get())).expect("a key"))
+            },
+        )
+        .await;
+        (out, questions.into_inner())
+    }
+
+    #[tokio::test]
+    async fn a_start_is_sent_at_the_price_its_question_or_note_says() {
+        for (cores, cents) in [(1, 7), (2, 13), (4, 120)] {
+            for yes in [false, true] {
+                let dir = tempfile::tempdir().expect("a directory");
+                let fake = Fake::new(&dir);
+                let (out, questions) =
+                    go_answering(&fake, &asked(cores, yes, false, !yes), &[true]).await;
+                out.expect("started");
+                assert_eq!(*fake.prices_sent.borrow(), [Some(cents)], "{cores} {yes}");
+                if !yes {
+                    assert!(questions[0].contains(&euros(cents)), "{}", questions[0]);
+                }
+                // Kept with it, so that a start sent again goes at it.
+                assert_eq!(
+                    fake.sent.borrow()[0]
+                        .3
+                        .as_ref()
+                        .and_then(|k| k.hourly_cents),
+                    Some(cents)
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_size_priced_at_nought_is_never_sent() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let mut fake = Fake::new(&dir);
+        fake.prices = json!({ "currency": "eur", "options": [
+            { "cores": 1, "memoryGb": 2, "hourlyCents": 0 }
+        ] });
+        let (out, questions) = go_answering(&fake, &asked(1, false, false, true), &[true]).await;
+        let e = out.expect_err("stopped");
+        assert!(e.message.contains("gives no price"), "{}", e.message);
+        assert!(questions.is_empty());
+        assert_eq!(fake.starts(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_start_kept_by_an_erpc_that_kept_no_price_is_sent_again_at_the_price_shown() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let fake = Fake::new(&dir);
+        *fake.open.borrow_mut() = vec![server_start(1, "amsterdam")];
+        fake.keep(OLD_KEY, true);
+        let (out, questions) = go_answering(&fake, &asked(1, false, false, true), &[true]).await;
+        out.expect("sent again");
+        // Asked at the price now, and sent at it, under its key.
+        assert!(questions[0].contains("€0.07"), "{}", questions[0]);
+        assert_eq!(fake.sent.borrow()[0].0, OLD_KEY);
+        assert_eq!(*fake.prices_sent.borrow(), [Some(7)]);
+        // Answered to send it again: kept with the price shown, so it is
+        // sent again at it.
+        let dir = tempfile::tempdir().expect("a directory");
+        let mut fake = Fake::new(&dir);
+        *fake.open.borrow_mut() = vec![server_start(1, "amsterdam")];
+        fake.keep(OLD_KEY, true);
+        fake.answer = Answer::Refused(409, "purchase_unavailable", Value::Null);
+        let (out, _) = go_answering(&fake, &asked(1, false, false, true), &[true]).await;
+        assert!(out.is_err());
+        let kept = fake.kept().expect("kept");
+        assert_eq!(
+            (kept.key.as_str(), kept.resend, kept.hourly_cents),
+            (OLD_KEY, true, Some(7))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_price_changed_is_asked_again_at_the_price_now_and_bought_only_after_a_new_yes() {
+        for by in [By::ServerStart, By::Deploy] {
+            let dir = tempfile::tempdir().expect("a directory");
+            let fake = Fake::new(&dir);
+            fake.price_changes
+                .borrow_mut()
+                .push(json!({ "hourlyCents": 11 }));
+            let asking = Asked {
+                by,
+                ..asked(1, false, false, true)
+            };
+            let (out, questions) = go_answering(&fake, &asking, &[true, true]).await;
+            out.expect("started at the price now");
+            assert_eq!(questions.len(), 2);
+            assert!(
+                questions[1].contains("€0.11") && questions[1].contains("€0.07"),
+                "{}",
+                questions[1]
+            );
+            // The second start goes under a key of its own, at the price
+            // now; the refused one bought nothing and its key went.
+            assert_eq!(*fake.prices_sent.borrow(), [Some(7), Some(11)]);
+            let sent = fake.sent.borrow();
+            assert_ne!(sent[0].0, sent[1].0);
+            assert_eq!(sent[1].3.as_ref().and_then(|k| k.hourly_cents), Some(11));
+            assert_eq!(fake.kept(), None);
+            // What the first yes was for is done once.
+            assert_eq!(
+                fake.calls
+                    .borrow()
+                    .iter()
+                    .filter(|c| **c == "agreed")
+                    .count(),
+                1
+            );
+        }
+        // A no to the price now buys nothing more.
+        let dir = tempfile::tempdir().expect("a directory");
+        let fake = Fake::new(&dir);
+        fake.price_changes
+            .borrow_mut()
+            .push(json!({ "hourlyCents": 11 }));
+        let (out, _) = go_answering(&fake, &asked(1, false, false, true), &[true, false]).await;
+        assert_eq!(out.expect_err("declined").code, Code::Declined);
+        assert_eq!(fake.starts(), 1);
+        assert_eq!(fake.kept(), None);
+    }
+
+    #[tokio::test]
+    async fn the_price_a_start_is_charged_at_is_said_and_an_earlier_one_said_as_such() {
+        for (applied, said, not) in [
+            // The price shown, applied.
+            (
+                Some(7),
+                Some("It is charged €0.07 an hour in the ERPC account."),
+                "earlier",
+            ),
+            // A new start applied at another price: that price, said as
+            // it is, no earlier start to speak of.
+            (
+                Some(9),
+                Some("It is charged €0.09 an hour in the ERPC account."),
+                "earlier",
+            ),
+            // Nought: not a price.
+            (Some(0), None, "an hour in the ERPC account"),
+            // The account says none: nothing said of it.
+            (None, None, "an hour in the ERPC account"),
+        ] {
+            let dir = tempfile::tempdir().expect("a directory");
+            let mut fake = Fake::new(&dir);
+            fake.applied = applied;
+            let (out, _) = go_answering(&fake, &asked(1, false, false, true), &[true]).await;
+            let (answer, text) = out.expect("started");
+            if let Some(said) = said {
+                assert!(text.contains(said), "{text}");
+            }
+            assert!(!text.contains(not), "{text}");
+            assert_eq!(
+                answer["account"]["servers"][0]["hourlyCents"],
+                json!(applied)
+            );
+        }
+        // A start sent again under its kept key, answered at another price
+        // than the one shown: said as the earlier start it is.
+        let dir = tempfile::tempdir().expect("a directory");
+        let mut fake = Fake::new(&dir);
+        fake.applied = Some(9);
+        *fake.open.borrow_mut() = vec![server_start(1, "amsterdam")];
+        fake.keep(OLD_KEY, true);
+        let (out, _) = go_answering(&fake, &asked(1, false, false, true), &[true]).await;
+        let (_, text) = out.expect("sent again");
+        assert!(
+            text.contains("This start reached the ERPC account earlier: it was started at €0.09 an hour, not at the €0.07 shown here"),
+            "{text}"
+        );
+        // A start this machine kept at a price, found done at another: its
+        // server may have come another way, so the price applied alone.
+        let dir = tempfile::tempdir().expect("a directory");
+        let mut fake = Fake::new(&dir);
+        fake.applied = Some(9);
+        *fake.env.borrow_mut() = Some(fake.holding());
+        keep(
+            &fake.store,
+            &file_key(),
+            Some(&Kept {
+                key: OLD_KEY.to_owned(),
+                cores: 1,
+                region: "amsterdam".to_owned(),
+                resend: false,
+                hourly_cents: Some(7),
+            }),
+        )
+        .expect("kept");
+        let (out, questions) = go_answering(&fake, &asked(1, false, false, true), &[]).await;
+        let (_, text) = out.expect("done before");
+        assert!(questions.is_empty());
+        // Found done, nothing sent: its server may have come another way,
+        // so the price applied alone is said, never as this start's.
+        assert!(
+            text.contains("It is charged €0.09 an hour in the ERPC account."),
+            "{text}"
+        );
+        assert!(
+            !text.contains("earlier") && !text.contains("€0.07"),
+            "{text}"
+        );
+        assert_eq!(fake.starts(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_new_start_in_place_of_a_settled_one_refused_for_its_price_is_asked_again() {
+        // A start kept here the account no longer lists: a new one, and
+        // after the price changed, another new one, the first kept no more.
+        let dir = tempfile::tempdir().expect("a directory");
+        let fake = Fake::new(&dir);
+        fake.keep(OLD_KEY, false);
+        fake.price_changes
+            .borrow_mut()
+            .push(json!({ "hourlyCents": 11 }));
+        let (out, questions) =
+            go_answering(&fake, &asked(1, false, false, true), &[true, true]).await;
+        out.expect("started at the price now");
+        assert_eq!(questions.len(), 2);
+        let sent = fake.sent.borrow();
+        assert_eq!(sent.len(), 2);
+        assert!(sent.iter().all(|s| s.0 != OLD_KEY));
+        assert_ne!(sent[0].0, sent[1].0);
+        assert_eq!(*fake.prices_sent.borrow(), [Some(7), Some(11)]);
+    }
+
+    #[tokio::test]
+    async fn a_start_sent_again_refused_for_its_price_lets_its_key_go() {
+        // At a terminal: the account holds nothing under the key after the
+        // refusal, so it is asked again at the price now and a new start
+        // sent, under a new key.
+        let dir = tempfile::tempdir().expect("a directory");
+        let fake = Fake::new(&dir);
+        *fake.open.borrow_mut() = vec![server_start(1, "amsterdam")];
+        fake.keep(OLD_KEY, true);
+        fake.price_changes
+            .borrow_mut()
+            .push(json!({ "hourlyCents": 11 }));
+        let (out, questions) =
+            go_answering(&fake, &asked(1, false, false, true), &[true, true]).await;
+        out.expect("started at the price now");
+        assert_eq!(questions.len(), 2);
+        assert!(questions[1].contains("€0.11"), "{}", questions[1]);
+        let sent = fake.sent.borrow().clone();
+        assert_eq!(sent[0].0, OLD_KEY);
+        assert_ne!(sent[1].0, OLD_KEY, "a new start, under a new key");
+        assert_eq!(sent[1].3.as_ref().and_then(|k| k.hourly_cents), Some(11));
+        assert_eq!(*fake.prices_sent.borrow(), [Some(7), Some(11)]);
+        assert_eq!(fake.kept(), None);
+        // Under --yes: stopped, the key let go; run again, it reads the
+        // price now and says it, as the hint says, and starts at it.
+        let dir = tempfile::tempdir().expect("a directory");
+        let mut fake = Fake::new(&dir);
+        *fake.open.borrow_mut() = vec![server_start(1, "amsterdam")];
+        fake.keep(OLD_KEY, true);
+        fake.price_changes
+            .borrow_mut()
+            .push(json!({ "hourlyCents": 11 }));
+        let (out, _) = go_answering(&fake, &asked(1, true, false, true), &[]).await;
+        let e = out.expect_err("stopped");
+        assert!(e.message.contains("€0.11"), "{}", e.message);
+        assert!(
+            e.message.contains("let the start's key go"),
+            "{}",
+            e.message
+        );
+        assert!(
+            e.hint
+                .as_deref()
+                .is_some_and(|h| h.contains("it reads the price now")),
+            "{e:?}"
+        );
+        assert_eq!(fake.kept(), None);
+        fake.prices = json!({ "currency": "eur", "options": [
+            { "cores": 1, "memoryGb": 2, "hourlyCents": 11 }
+        ] });
+        let (out, _) = go_answering(&fake, &asked(1, true, false, true), &[]).await;
+        out.expect("started at the price now");
+        assert_eq!(*fake.prices_sent.borrow(), [Some(7), Some(11)]);
+        assert_ne!(fake.sent.borrow()[1].0, OLD_KEY);
+        // A price that keeps changing for a start sent again: stopped after
+        // three sends, its key let go and said so.
+        let dir = tempfile::tempdir().expect("a directory");
+        let fake = Fake::new(&dir);
+        *fake.open.borrow_mut() = vec![server_start(1, "amsterdam")];
+        fake.keep(OLD_KEY, true);
+        for cents in [11, 12, 13] {
+            fake.price_changes
+                .borrow_mut()
+                .push(json!({ "hourlyCents": cents }));
+        }
+        let (out, _) = go_answering(
+            &fake,
+            &asked(1, false, false, true),
+            &[true, true, true, true],
+        )
+        .await;
+        let e = out.expect_err("stopped");
+        assert!(e.message.contains("kept changing"), "{}", e.message);
+        assert!(
+            e.message.contains("let the start's key go"),
+            "{}",
+            e.message
+        );
+        assert!(
+            e.hint
+                .as_deref()
+                .is_some_and(|h| h.contains("it reads the price now")),
+            "{e:?}"
+        );
+        assert_eq!(*fake.prices_sent.borrow(), [Some(7), Some(11), Some(12)]);
+        assert_eq!(fake.kept(), None);
+    }
+
+    #[tokio::test]
+    async fn after_a_price_change_the_new_yes_reads_the_account_again_and_buys_once() {
+        // Something came meanwhile with the refusal: a start open, or a
+        // server on the record. The new yes reads the account again, and
+        // sends nothing more.
+        for came in ["open", "server"] {
+            let dir = tempfile::tempdir().expect("a directory");
+            let mut fake = Fake::new(&dir);
+            fake.after_price_refusal = Some(came);
+            fake.price_changes
+                .borrow_mut()
+                .push(json!({ "hourlyCents": 11 }));
+            let (out, questions) =
+                go_answering(&fake, &asked(1, false, false, true), &[true, true]).await;
+            let e = out.expect_err("stopped");
+            assert_eq!(questions.len(), 2, "{came}");
+            assert_eq!(fake.starts(), 1, "{came}: one start sent");
+            let said = if came == "open" {
+                "is still open"
+            } else {
+                "names a server already"
+            };
+            assert!(e.message.contains(said), "{came}: {}", e.message);
+        }
+    }
+
+    #[tokio::test]
+    async fn the_first_deploys_note_under_yes_says_the_price() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let fake = Fake::new(&dir);
+        let asking = Asked {
+            by: By::Deploy,
+            ..asked(1, true, false, true)
+        };
+        let _ = crate::node::common::heard::take_printed();
+        let (out, questions) = go_answering(&fake, &asking, &[]).await;
+        out.expect("started");
+        assert!(questions.is_empty());
+        let printed = crate::node::common::heard::take_printed().join("\n");
+        assert!(printed.contains("€0.07"), "{printed}");
+        assert_eq!(*fake.prices_sent.borrow(), [Some(7)]);
+    }
+
+    #[tokio::test]
+    async fn a_price_changed_under_yes_or_unsaid_stops_and_buys_nothing() {
+        // Under --yes: stopped, with the price now, never sent at it.
+        let dir = tempfile::tempdir().expect("a directory");
+        let fake = Fake::new(&dir);
+        fake.price_changes
+            .borrow_mut()
+            .push(json!({ "hourlyCents": 11 }));
+        let (out, questions) = go_answering(&fake, &asked(1, true, false, true), &[true]).await;
+        let e = out.expect_err("stopped");
+        assert!(
+            e.hint
+                .as_deref()
+                .is_some_and(|h| h.contains("it reads the price now")),
+            "{e:?}"
+        );
+        assert!(
+            e.message.contains("€0.11")
+                && e.message.contains("not at the €0.07 said")
+                && e.message.contains("nothing was started"),
+            "{}",
+            e.message
+        );
+        assert!(questions.is_empty());
+        assert_eq!(fake.starts(), 1);
+        assert_eq!(fake.kept(), None);
+        // The price now not said (or not as a number): said so, nobody asked.
+        for data in [
+            json!({}),
+            json!({ "hourlyCents": null }),
+            json!({ "hourlyCents": "11" }),
+            json!({ "hourlyCents": 0 }),
+        ] {
+            let dir = tempfile::tempdir().expect("a directory");
+            let fake = Fake::new(&dir);
+            fake.price_changes.borrow_mut().push(data);
+            let (out, questions) =
+                go_answering(&fake, &asked(1, false, false, true), &[true, true]).await;
+            let e = out.expect_err("stopped");
+            assert!(e.message.contains("not say to what"), "{}", e.message);
+            assert_eq!(questions.len(), 1);
+            assert_eq!(fake.starts(), 1);
+        }
+        // A key this machine could not let go: stopped, not asked again.
+        let dir = tempfile::tempdir().expect("a directory");
+        let mut fake = Fake::new(&dir);
+        fake.breaks_store = Some("garbage");
+        fake.price_changes
+            .borrow_mut()
+            .push(json!({ "hourlyCents": 11 }));
+        let (out, questions) =
+            go_answering(&fake, &asked(1, false, false, true), &[true, true]).await;
+        let e = out.expect_err("stopped");
+        assert!(e.message.contains("€0.11"), "{}", e.message);
+        assert_eq!(questions.len(), 1);
+        assert_eq!(fake.starts(), 1);
+        // A price that keeps changing: stopped after a few asks.
+        let dir = tempfile::tempdir().expect("a directory");
+        let fake = Fake::new(&dir);
+        for cents in [11, 12, 13] {
+            fake.price_changes
+                .borrow_mut()
+                .push(json!({ "hourlyCents": cents }));
+        }
+        let (out, questions) = go_answering(
+            &fake,
+            &asked(1, false, false, true),
+            &[true, true, true, true],
+        )
+        .await;
+        let e = out.expect_err("stopped");
+        assert!(e.message.contains("kept changing"), "{}", e.message);
+        assert_eq!(PRICE_TRIES, 3, "three, as the docs say");
+        assert_eq!(questions.len(), 3);
+        assert_eq!(fake.starts(), 3);
+        assert_eq!(fake.kept(), None);
     }
 
     #[tokio::test]
@@ -1750,6 +2426,7 @@ mod tests {
             cores: 1,
             region: "amsterdam".to_owned(),
             resend: false,
+            hourly_cents: Some(7),
         };
         assert_eq!(
             *fake.sent.borrow(),
@@ -2652,6 +3329,7 @@ mod tests {
             cores: 1,
             region: "amsterdam".to_owned(),
             resend: false,
+            hourly_cents: None,
         };
         keep(&store, &file_key(), Some(&start)).expect("kept");
         // Another run's start kept since: it stays.

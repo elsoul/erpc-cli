@@ -984,7 +984,7 @@ configuration: it is on no command line and in no journal. An app with no
 
 | Command | What it does |
 |---|---|
-| `erpc worker status` | Locked or running, which release, since when. For an environment kept in `erpc.toml`, when signed in and user-api answers: what the environment costs by the hour, each item on record with the price the account is charged for it, and the account's credit with how long it lasts; an item that is not among the account's charges is said to be not among them, no more (the list can be a minute behind a start, and a line ended elsewhere stays on record until `--forget-line`). `--json` has the same under `hourly.charged`. Otherwise it says what is on record. For an environment kept in the ERPC account, it says what the account's record holds instead, with no prices (see "What changes once moved") |
+| `erpc worker status` | Locked or running, which release, since when. For an environment kept in `erpc.toml`, when signed in and user-api answers: what the environment costs by the hour, each item on record with the price the account is charged for it, and the account's credit with how long it lasts; an item that is not among the account's charges is said to be not among them, no more (the list can be a minute behind a start, and a line ended elsewhere stays on record until `--forget-line`). `--json` has the same under `hourly.charged`. Otherwise it says what is on record. For an environment kept in the ERPC account, it says what the account's record holds instead, with each server's price by the hour when the account gives one, and no other prices (see "What changes once moved") |
 | `erpc worker status` (with `[waf]`) | Also the WAF: its port, where it forwards, since when, and what it counted; and, when the rules it runs are not the ones `erpc.toml` now makes, or it was started by an earlier agent than the one installed or before its config or its unit on the server last changed, that, with the deploy that puts them in place |
 | `erpc worker logs -n 200`, `logs -f` | The app's and the agent's log. A control character in a line (an escape sequence, a carriage return) is printed as `?` |
 | `erpc worker logs --waf` | The WAF's log: each request it refused, and when it started, stopped and banned an address |
@@ -1500,8 +1500,10 @@ encrypted by restic. A storage plan is needed (`erpc storage buy 5`).
   number. This is new, and
   being built a command at a time:
   - **So far:** `erpc worker status` reads such an environment from the
-    account. `logs`, `start`, `stop`, `restart`, `releases` and `deploy`
-    reach its server with what the account says of it, trusted as below, and
+    account, each server with the price by the hour the account says it
+    charges for it, when it says one (`hourlyCents` under `--json`).
+    `logs`, `start`, `stop`, `restart`, `releases` and `deploy` reach its
+    server with what the account says of it, trusted as below, and
     write nothing to `erpc.toml`; the server must have an address and a host
     key in the account first (for a server `server start` or the first
     deploy started, `deploy` logs in to it once and writes them: **The
@@ -1589,6 +1591,31 @@ encrypted by restic. A storage plan is needed (`erpc storage buy 5`).
       how to go on.
     - The lists of who may reach SSH and the app go into the account as
       the firewall commands write them (an IPv4-mapped address in hex).
+    - Before the server is taken in, erpc asks the account what taking it in
+      does to its price, and sends the take-in at the price of one hour the
+      account says (`expectedHourlyCents`), or `null` for a server on a
+      contract the account gives no price by the hour for, which is said to
+      keep its contract's price. A price by the hour is shown and asked at a
+      terminal, `--yes` saying it on stderr instead: now, once taken in and
+      the difference, or once taken in alone (when the account does not say
+      the price now, or says the same now and once taken in for a server not
+      billed by the hour); one by the hour that stays as it is is said, not
+      asked. A no stops the move part way, with the server not taken in. A
+      server not on a contract that the account gives no price for once taken
+      in, a price of nought, or prices not in euros stop the move part way,
+      nothing sent. When the account answers that the price changed meanwhile,
+      the server was not taken in, and the move stops part way, at a terminal
+      and under `--yes` alike: nothing is asked or sent again in that run. It
+      says what the refusal says: the price now by the hour, its contract's
+      price (a `null`; or, when the price shown was its contract's, that the
+      account refused the price it had said and gave no other), or that the
+      account does not say to what; run again, the move reads the price now
+      and says or asks it, as any move does, before the server is taken in.
+      When the account says nothing of the
+      price, the server is taken in as before; so is the server already in the
+      slot in use of a move run again, sent again as the account keeps it,
+      with no price. Once it is in, or found in already, the price by the hour
+      the account applies is said, when its answer gives one (above nought).
     - A line bought as part of a Bundle stays with its Bundle: the account
       refuses to take one into an environment (`not_adoptable`, reason
       `bundle_part`), writing nothing, and the move stops there, said by
@@ -1681,6 +1708,35 @@ encrypted by restic. A storage plan is needed (`erpc storage buy 5`).
       refuses it, buying nothing (`revision_conflict`), and erpc says to run
       it again. A start sent again under its key while it is still open is
       answered as before, whatever the revision.
+    - A start is sent at the price of one hour its question says (or its
+      note under `--yes`), as `expectedHourlyCents`, and kept on this
+      machine with it; a start kept here is sent again at the price it was
+      kept with, and one an earlier erpc kept, which kept none, at the
+      price shown in that run, and kept with it (the account matches a
+      key's request without the price, so one that reached it before is
+      answered as before).
+      When the account answers that the price changed (`price_changed`),
+      nothing was bought, and the account holds nothing under the start's
+      key, a start sent again included: the key is let go. At a terminal
+      the question is asked again with the price now and the price said
+      before, and only a new yes sends a new start, under a new key, at the
+      price now (at most three starts sent in all, then it stops). Under
+      `--yes` or `--json`, with nobody at a terminal, when this machine's
+      record of the key could not be updated, or when the account does not
+      say the price now (or says nought), it stops, saying so, the price now
+      when it is given, and what became of the key; run again, it reads the
+      price now and asks it (or says it, under `--yes`). Once started, the
+      price by the hour the account says it applies to the server is said
+      when it gives one (above nought). For a start sent again under its key
+      in that run, an applied price other than the one shown means the
+      account answered with a send that had reached it before, and erpc
+      says so: started earlier at that price, not the one shown. A start
+      found done, with nothing sent (its server may have come another way),
+      is said at the price applied alone. A size the account prices at
+      nought is no price shown: nothing is sent, and the start stops. The
+      first deploy's start does the same; a no or a stop there after the first
+      yes leaves `erpc.toml` keeping the environment in the account, and
+      `erpc worker deploy` goes on from there.
       What the account answers to the start, and its refusal to read or
       write the app's or the environment's record, to list the starts or to
       give the price, is said in erpc's words, with its status and, when it
@@ -1802,9 +1858,10 @@ encrypted by restic. A storage plan is needed (`erpc storage buy 5`).
         on open positions still names `api`; neither works there yet.
       - `status` says what the account's record holds (each server by
         slot, size, region and state, each line by kind), then the
-        worker's own state; it no longer says what the environment costs
-        by the hour, the price of each item, or the account's credit and
-        how long it lasts. `--json` has `account` in place of `hourly`.
+        worker's own state; it gives each server's price by the hour when
+        the account says one, but no longer the environment's total by the
+        hour, the price of each line, or the account's credit and how long
+        it lasts. `--json` has `account` in place of `hourly`.
       - `start` and `restart` have the account record that the app runs
         (on an ERPC server) before the trading key is handed over; a record
         the account refuses starts nothing, and one that fails after it

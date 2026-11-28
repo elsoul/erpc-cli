@@ -27,9 +27,10 @@
 //! account that does not yet let this sign-in end the servers and lines of
 //! an environment kept there (a moved environment could then not be ended).
 
+use erpc_api::worker::money::AdoptPrice;
 use erpc_api::worker::{
-    self as account, AdoptLine, AdoptServer, AdoptSlot, Code as AccountCode, EnvDetail, Facts,
-    PutApp, PutEnv, PutWallet, ServerKind, WalletSource, WorkerError,
+    self as account, AdoptLine, AdoptServer, AdoptSlot, Billing, Code as AccountCode, EnvDetail,
+    Facts, PutApp, PutEnv, PutWallet, ServerKind, WalletSource, WorkerError, Written,
 };
 use erpc_ssh::worker::Verb;
 use erpc_worker::manifest::{Env, LineKind, Manifest, ResourceKind, SecretRef};
@@ -337,6 +338,7 @@ pub(crate) async fn take_in(
     api: &impl Account,
     plan: &Plan,
     app_running: bool,
+    asking: &mut PriceAsk<'_>,
 ) -> Result<(String, EnvDetail), CliError> {
     let (app, found) = what_is_there(api, plan).await?;
     // A server already in the slot in use is sent again first, as the
@@ -346,22 +348,251 @@ pub(crate) async fn take_in(
     if let (Some(env), Some((kind, id))) = (&found, plan.server)
         && env.servers.iter().any(|s| s.slot == account::Slot::Active)
     {
-        confirmed = Some(
-            api.adopt_server(
+        // Sent as before, at no price: a server already taken in keeps
+        // the price it was taken in at, and another is refused. The price
+        // it is charged at is said, as after a take-in.
+        let record = api
+            .adopt_server(
                 &plan.name,
                 &plan.env,
                 &send_server(env, kind, id, app_running),
             )
             .await
             .map_err(|e| not_moved(&plan.env, taken_elsewhere(&e, &plan.env)))?
-            .record,
-        );
+            .record;
+        say_applied(&server_named(kind, id), &record);
+        confirmed = Some(record);
     }
     // From the first write on, whatever stops the move is said, here and
     // only here, as a move that stopped part way.
-    written(api, plan, app_running, (app, found, confirmed))
+    written(api, plan, app_running, (app, found, confirmed), asking)
         .await
         .map_err(|e| part_way(&plan.env, e, true))
+}
+
+/// What asks the person at the terminal a question, and says their answer.
+pub(crate) type Confirming<'a> = Box<dyn FnMut(&str) -> Result<bool, String> + 'a>;
+
+/// Who answers a change in the price of the server a move takes in: the
+/// person at the terminal, or `--yes`, which says it on stderr instead.
+pub(crate) struct PriceAsk<'a> {
+    /// `--yes`.
+    pub(crate) yes: bool,
+    /// Asks the person at the terminal.
+    pub(crate) confirm: Confirming<'a>,
+}
+
+impl PriceAsk<'_> {
+    /// `--yes`: what is asked is said, and taken as a yes.
+    #[cfg(test)]
+    pub(crate) fn yes() -> Self {
+        Self {
+            yes: true,
+            confirm: Box::new(|question| panic!("asked under --yes: {question}")),
+        }
+    }
+
+    /// Asks `question` (or says `note`, under `--yes`): refused on a no.
+    fn ask(&mut self, (question, note): (&str, &str)) -> Result<(), CliError> {
+        if self.yes {
+            crate::node::common::Say { quiet: false }.line(note);
+            return Ok(());
+        }
+        if (self.confirm)(question).map_err(failed)? {
+            Ok(())
+        } else {
+            Err(CliError::new(
+                Code::Declined,
+                t!("worker_move.price_declined"),
+            ))
+        }
+    }
+}
+
+/// Server `id` of `kind` as a person reads it: an ERPC Worker, or a
+/// bare-metal server, by its id.
+fn server_named(kind: ServerKind, id: u64) -> String {
+    match kind {
+        ServerKind::BareMetal => format!(
+            "{} {id}",
+            erpc_worker::manifest::ResourceKind::BareMetal.as_str()
+        ),
+        _ => crate::worker::vps::worker_id(id, &crate::worker::vps::Spec::default()),
+    }
+}
+
+/// `cents` of a euro, as a price is said: `0.07`.
+fn euros(cents: u64) -> String {
+    format!("{}.{:02}", cents / 100, cents % 100)
+}
+
+/// What taking server `named` in does to its price, `price` as the account
+/// says it, `after` the price it is to be taken in at (none: a contract's,
+/// kept): said and not asked for a contract's kept, and for a price by the
+/// hour that stays; shown and asked otherwise: now and once taken in with
+/// the difference, or once taken in alone (when the account does not say
+/// the price now, or says the same now and once taken in for a server not
+/// billed by the hour).
+fn price_said(
+    named: &str,
+    price: &AdoptPrice,
+    after: Option<u64>,
+) -> (Option<(String, String)>, String) {
+    let now = price.current_hourly_cents.filter(|cents| *cents > 0);
+    let hourly = price.billing == Some(Billing::Hourly);
+    let Some(after) = after else {
+        return (None, t!("worker_move.price_contract", server = named));
+    };
+    let change = match now {
+        Some(now) if now < after => t!(
+            "worker_move.price_more",
+            server = named,
+            now = euros(now),
+            after = euros(after),
+            diff = euros(after - now)
+        ),
+        Some(now) if now > after => t!(
+            "worker_move.price_less",
+            server = named,
+            now = euros(now),
+            after = euros(after),
+            diff = euros(now - after)
+        ),
+        // The same: it stays, said so, never as a difference of nought.
+        Some(now) if hourly => {
+            return (
+                None,
+                t!("worker_move.price_same", server = named, price = euros(now)),
+            );
+        }
+        _ => t!(
+            "worker_move.price_after",
+            server = named,
+            after = euros(after)
+        ),
+    };
+    let question = format!("{change} {}", t!("worker_move.price_go_on"));
+    (Some((question, change.clone())), change)
+}
+
+/// Says the price by the hour the account applies to the server in use
+/// that `record` names, `named`, when it gives one above nought.
+fn say_applied(named: &str, record: &EnvDetail) {
+    if let Some(cents) = record
+        .servers
+        .iter()
+        .find(|s| s.slot == account::Slot::Active)
+        .and_then(|s| s.hourly_cents)
+        .filter(|cents| *cents > 0)
+    {
+        crate::node::common::Say { quiet: false }.line(&t!(
+            "worker_move.price_applied",
+            server = named,
+            price = euros(cents)
+        ));
+    }
+}
+
+/// The price once taken in that `price` says, as a take-in is sent at it:
+/// a number, or none for a server on a contract its price kept; not one
+/// erpc shows (none for a server not on a contract, or nought): none.
+#[allow(
+    clippy::option_option,
+    reason = "a price erpc shows or none, and the price a contract's is shown at, none"
+)]
+fn price_once_of(price: &AdoptPrice) -> Option<Option<u64>> {
+    match price.hourly_cents {
+        Some(0) => None,
+        Some(cents) => Some(Some(cents)),
+        None if price.billing == Some(Billing::Contract) => Some(None),
+        None => None,
+    }
+}
+
+/// Takes server `id` of `kind` into the environment (`body`), at the
+/// price the account says it takes it in at, shown first and asked when it
+/// changes the price ([`price_said`]); on `price_changed` it stops, nothing
+/// sent again, saying the price the refusal gives. Sent as before, at no
+/// price, when the account says nothing of it.
+async fn adopt_priced(
+    api: &impl Account,
+    plan: &Plan,
+    (kind, id): (ServerKind, u64),
+    body: AdoptServer,
+    asking: &mut PriceAsk<'_>,
+) -> Result<Written<EnvDetail>, CliError> {
+    let env = plan.env.as_str();
+    let named = server_named(kind, id);
+    let say = crate::node::common::Say { quiet: false };
+    let Some((currency, price)) = api
+        .adopt_price(&plan.name, env, kind, id)
+        .await
+        .map_err(|e| account_failed(&e))?
+    else {
+        let written = api
+            .adopt_server(&plan.name, env, &body)
+            .await
+            .map_err(|e| taken_elsewhere(&e, env))?;
+        say_applied(&named, &written.record);
+        return Ok(written);
+    };
+    // Prices erpc does not show in euros: nothing said, nothing sent.
+    if currency != "eur" {
+        return Err(failed(t!(
+            "worker_move.currency",
+            server = named.as_str(),
+            currency = crate::storage::clean(&currency)
+        )));
+    }
+    // No price once taken in but on a contract (its own price kept), or a
+    // price of nought: nothing to show, so nothing is sent.
+    let Some(first) = price_once_of(&price) else {
+        return Err(failed(t!(
+            "worker_move.price_unsaid",
+            server = named.as_str()
+        )));
+    };
+    let (ask, said) = price_said(&named, &price, first);
+    match ask {
+        Some(ask) => asking.ask((&ask.0, &ask.1))?,
+        None => say.line(&said),
+    }
+    let e = match api
+        .adopt_server(&plan.name, env, &body.expecting(first))
+        .await
+    {
+        Ok(written) => {
+            // The price it is now charged at, as the account applied it.
+            say_applied(&named, &written.record);
+            return Ok(written);
+        }
+        Err(e) => e,
+    };
+    let WorkerError::Refused(r) = &e else {
+        return Err(taken_elsewhere(&e, env));
+    };
+    if r.code != Some(AccountCode::PriceChanged) {
+        return Err(taken_elsewhere(&e, env));
+    }
+    // Nothing was taken in, and nothing is sent again in this run: said as
+    // the refusal says the price now (a number, null for a contract's kept,
+    // anything else no price said); a run again reads it and says or asks
+    // it, as any move does.
+    let server = named.as_str();
+    let message = match r.data.get("hourlyCents") {
+        // The contract's price, which the account itself said: refused,
+        // and no other given.
+        Some(Value::Null) if first.is_none() => {
+            t!("worker_move.price_refused_contract", server)
+        }
+        Some(Value::Null) => t!("worker_move.price_changed_contract", server),
+        Some(_) => r.hourly_cents().map_or_else(
+            || t!("worker_move.price_changed_unsaid", server),
+            |now| t!("worker_move.price_changed", server, price = euros(now)),
+        ),
+        None => t!("worker_move.price_changed_unsaid", server),
+    };
+    Err(failed(message).hint(t!("worker_move.price_changed_hint")))
 }
 
 /// The server in the slot in use as a take-in sends it: with whether the
@@ -382,6 +613,7 @@ async fn written(
     plan: &Plan,
     app_running: bool,
     (app, found, confirmed): (Option<account::App>, Option<EnvDetail>, Option<EnvDetail>),
+    asking: &mut PriceAsk<'_>,
 ) -> Result<(String, EnvDetail), CliError> {
     let failed_ = |e: WorkerError| account_failed(&e);
     // The app's record: made, or brought to what erpc.toml says.
@@ -415,14 +647,9 @@ async fn written(
     if let Some((kind, id)) = plan.server
         && !env.servers.iter().any(|s| s.slot == account::Slot::Active)
     {
-        env = api
-            .adopt_server(
-                &plan.name,
-                &plan.env,
-                &send_server(&env, kind, id, app_running),
-            )
-            .await
-            .map_err(|e| taken_elsewhere(&e, &plan.env))?
+        let body = send_server(&env, kind, id, app_running);
+        env = adopt_priced(api, plan, (kind, id), body, asking)
+            .await?
             .record;
     }
     // The facts: brought to this machine's record, once what the
@@ -585,7 +812,11 @@ pub(crate) async fn run(json: bool, app: &App, yes: bool) -> Result<(Value, Stri
         path: &path,
         read: &file,
     };
-    run_with(app, &plan, file, (&signed, &pins), running).await
+    let mut asking = PriceAsk {
+        yes,
+        confirm: Box::new(crate::node::common::confirm),
+    };
+    run_with(app, &plan, file, (&signed, &pins), (running, &mut asking)).await
 }
 
 /// erpc.toml as the move read it, and where it is.
@@ -607,13 +838,13 @@ async fn run_with(
     plan: &Plan,
     file: Read<'_>,
     (api, pins): (&impl Account, &std::path::Path),
-    running: impl FnOnce() -> Result<bool, CliError>,
+    (running, asking): (impl FnOnce() -> Result<bool, CliError>, &mut PriceAsk<'_>),
 ) -> Result<(Value, String), CliError> {
     // Nothing is reached before the account is known to let this sign-in
     // end what the environment will run on there.
     probe(api, plan).await?;
     let app_running = running().map_err(|e| not_moved(&plan.env, e))?;
-    let (app_id, detail) = take_in(api, plan, app_running).await?;
+    let (app_id, detail) = take_in(api, plan, app_running, asking).await?;
     let after = |e: CliError| part_way(&plan.env, e, true);
     // The record is read as the commands that work on a moved environment
     // read it: what they would refuse is not moved into. Their hints are
@@ -912,6 +1143,27 @@ mod tests {
         /// taken in.
         meddles: bool,
         calls: RefCell<Vec<&'static str>>,
+        /// What the account says of the price of the server taken in
+        /// (`data.adopt`); none: it says nothing yet.
+        adopt_price: Option<Value>,
+        /// The currency of those prices, `eur` unless set.
+        adopt_currency: Option<&'static str>,
+        /// The next take-ins of the server are refused for their price, in
+        /// turn, with this `data`.
+        price_changes: RefCell<Vec<Value>>,
+        /// The price each take-in of the server was sent at, as sent: no
+        /// field, `null` or the cents.
+        prices_sent: RefCell<Vec<Option<Value>>>,
+        /// The price the account applies to the server taken in.
+        applied: Option<u64>,
+        /// The next take-in of the server is refused with this code and
+        /// `data`, before anything else.
+        adopt_refusal: RefCell<Option<(&'static str, Value)>>,
+        /// The next take-in of the server goes through, and its answer is
+        /// lost on the way.
+        lose_adopt_once: RefCell<bool>,
+        /// The servers the price was asked of, by kind and number.
+        priced_for: RefCell<Vec<(ServerKind, u64)>>,
     }
 
     /// How a call cut off fails: with no answer, its sign-in's session
@@ -960,7 +1212,8 @@ mod tests {
                 .map(|(_, _, running)| {
                     json!({ "id": "0b8e7c52-91d4-4f6a-8e23-7d1a5c9b3e60", "slot": "active",
                             "cores": 2, "memoryGb": 8, "region": "amsterdam", "hourly": true,
-                            "appRunning": running, "state": "active" })
+                            "appRunning": running, "state": "active",
+                            "hourlyCents": self.applied })
                 })
                 .chain(self.held.iter().cloned())
                 .collect();
@@ -1105,6 +1358,26 @@ mod tests {
             Ok(written(self.detail()))
         }
 
+        async fn adopt_price(
+            &self,
+            _: &str,
+            _: &str,
+            kind: ServerKind,
+            id: u64,
+        ) -> Result<Option<(String, AdoptPrice)>, WorkerError> {
+            self.calls.borrow_mut().push("adopt_price");
+            self.priced_for.borrow_mut().push((kind, id));
+            if self.cut_off == Some("adopt_price") {
+                return Err(self.cut());
+            }
+            Ok(self.adopt_price.clone().map(|v| {
+                (
+                    self.adopt_currency.unwrap_or("eur").to_owned(),
+                    serde_json::from_value(v).expect("a price"),
+                )
+            }))
+        }
+
         async fn adopt_server(
             &self,
             _: &str,
@@ -1116,6 +1389,28 @@ mod tests {
                 return Err(self.cut());
             }
             let sent = serde_json::to_value(body).expect("encodes");
+            self.prices_sent
+                .borrow_mut()
+                .push(sent.get("expectedHourlyCents").cloned());
+            let mut changes = self.price_changes.borrow_mut();
+            if !changes.is_empty() {
+                let data = changes.remove(0);
+                return Err(WorkerError::Refused(Refusal {
+                    status: 409,
+                    code: Some(AccountCode::PriceChanged),
+                    message: None,
+                    data,
+                }));
+            }
+            drop(changes);
+            if let Some((code, data)) = self.adopt_refusal.borrow_mut().take() {
+                return Err(WorkerError::Refused(Refusal {
+                    status: 409,
+                    code: Some(AccountCode::from(code)),
+                    message: None,
+                    data,
+                }));
+            }
             let kind = sent["kind"].as_str().unwrap_or_default().to_owned();
             let id = sent["id"].as_u64().unwrap_or_default();
             let running = sent["appRunning"].as_bool().unwrap_or(false);
@@ -1131,6 +1426,11 @@ mod tests {
                 None => self.servers.borrow_mut().push((kind, id, running)),
             }
             self.bump();
+            if self.lose_adopt_once.replace(false) {
+                return Err(WorkerError::Api(erpc_api::ApiError::Malformed(
+                    "lost on the way".to_owned(),
+                )));
+            }
             Ok(written(self.detail()))
         }
 
@@ -1303,15 +1603,524 @@ mod tests {
         }
     }
 
+    /// The person at the terminal, answering `answers` in turn; each
+    /// question kept in `questions`.
+    fn person<'a>(questions: &'a RefCell<Vec<String>>, answers: &'a [bool]) -> PriceAsk<'a> {
+        PriceAsk {
+            yes: false,
+            confirm: Box::new(move |q: &str| {
+                let mut asked = questions.borrow_mut();
+                asked.push(q.to_owned());
+                Ok(answers.get(asked.len() - 1).copied().unwrap_or(false))
+            }),
+        }
+    }
+
+    fn priced(billing: &str, now: Option<u64>, after: Option<u64>) -> Value {
+        json!({ "billing": billing, "currentHourlyCents": now, "hourlyCents": after })
+    }
+
+    #[tokio::test]
+    async fn a_take_in_the_account_says_nothing_of_the_price_of_is_sent_as_before() {
+        let fake = Fake::default();
+        let questions = RefCell::new(Vec::new());
+        take_in(
+            &fake,
+            &plan_of(&deployed()),
+            true,
+            &mut person(&questions, &[]),
+        )
+        .await
+        .expect("moved");
+        assert!(questions.borrow().is_empty());
+        assert_eq!(*fake.prices_sent.borrow(), [None], "no field");
+    }
+
+    #[tokio::test]
+    async fn a_take_in_that_changes_the_price_is_asked_and_sent_at_the_price_shown() {
+        let fake = Fake {
+            adopt_price: Some(priced("hourly", Some(7), Some(11))),
+            applied: Some(11),
+            ..Fake::default()
+        };
+        let questions = RefCell::new(Vec::new());
+        let _ = crate::node::common::heard::take_printed();
+        take_in(
+            &fake,
+            &plan_of(&deployed()),
+            true,
+            &mut person(&questions, &[true]),
+        )
+        .await
+        .expect("moved");
+        let asked = questions.borrow().clone();
+        assert_eq!(asked.len(), 1);
+        assert!(
+            asked[0].contains("ERPC Worker 200002")
+                && asked[0].contains("€0.07 an hour today")
+                && asked[0].contains("€0.11 an hour once taken in")
+                && asked[0].contains("€0.04 more"),
+            "{}",
+            asked[0]
+        );
+        assert!(!asked[0].contains("VPS"), "{}", asked[0]);
+        assert_eq!(*fake.prices_sent.borrow(), [Some(json!(11))]);
+        // The price applied, as the account answered it.
+        let printed = crate::node::common::heard::take_printed().join("\n");
+        assert!(printed.contains("is charged €0.11 an hour"), "{printed}");
+        // Cheaper is said so too; a no takes nothing in.
+        let fake = Fake {
+            adopt_price: Some(priced("hourly", Some(13), Some(11))),
+            ..Fake::default()
+        };
+        let questions = RefCell::new(Vec::new());
+        let e = take_in(
+            &fake,
+            &plan_of(&deployed()),
+            true,
+            &mut person(&questions, &[false]),
+        )
+        .await
+        .expect_err("declined");
+        assert_eq!(e.code, Code::Declined);
+        assert!(
+            questions.borrow()[0].contains("€0.02 less"),
+            "{}",
+            questions.borrow()[0]
+        );
+        assert!(!fake.calls.borrow().contains(&"adopt_server"));
+        assert!(fake.servers.borrow().is_empty());
+        // Under --yes: said, not asked, and sent at it.
+        let fake = Fake {
+            adopt_price: Some(priced("hourly", Some(7), Some(11))),
+            ..Fake::default()
+        };
+        let _ = crate::node::common::heard::take_printed();
+        take_in(&fake, &plan_of(&deployed()), true, &mut PriceAsk::yes())
+            .await
+            .expect("moved");
+        assert_eq!(*fake.prices_sent.borrow(), [Some(json!(11))]);
+        let printed = crate::node::common::heard::take_printed().join("\n");
+        assert!(
+            printed.contains(
+                "Taking ERPC Worker 200002 into the ERPC account changes its price by the hour: €0.07 an hour today, €0.11 an hour once taken in (€0.04 more)."
+            ),
+            "{printed}"
+        );
+        // With no price now given, or one of nought: the price once taken
+        // in alone, asked; a price applied of nought is not said.
+        for now in [None, Some(0)] {
+            let fake = Fake {
+                adopt_price: Some(priced("hourly", now, Some(11))),
+                applied: Some(0),
+                ..Fake::default()
+            };
+            let questions = RefCell::new(Vec::new());
+            let _ = crate::node::common::heard::take_printed();
+            take_in(
+                &fake,
+                &plan_of(&deployed()),
+                true,
+                &mut person(&questions, &[true]),
+            )
+            .await
+            .expect("moved");
+            let asked = questions.borrow().clone();
+            assert!(
+                asked[0].starts_with(
+                    "Taking ERPC Worker 200002 into the ERPC account: €0.11 an hour once taken in."
+                ) && !asked[0].contains("today"),
+                "{}",
+                asked[0]
+            );
+            let printed = crate::node::common::heard::take_printed().join("\n");
+            assert!(!printed.contains("is charged"), "{printed}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_price_that_stays_is_said_not_asked_and_a_contract_is_sent_as_null() {
+        for (price, sent, said) in [
+            (
+                Some(priced("contract", None, None)),
+                json!(null),
+                "ERPC Worker 200002 keeps the price of its contract",
+            ),
+            (
+                Some(priced("hourly", Some(50), Some(50))),
+                json!(50),
+                "ERPC Worker 200002 keeps its price by the hour once taken into the ERPC account: €0.50 an hour",
+            ),
+        ] {
+            let fake = Fake {
+                adopt_price: price,
+                ..Fake::default()
+            };
+            let questions = RefCell::new(Vec::new());
+            let _ = crate::node::common::heard::take_printed();
+            take_in(
+                &fake,
+                &plan_of(&deployed()),
+                true,
+                &mut person(&questions, &[]),
+            )
+            .await
+            .expect("moved");
+            assert!(questions.borrow().is_empty());
+            // Sent as the account said it, a contract's null included.
+            assert_eq!(*fake.prices_sent.borrow(), [Some(sent.clone())]);
+            let printed = crate::node::common::heard::take_printed().join("\n");
+            assert!(printed.contains(said), "{printed}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_contract_the_account_gives_a_price_by_the_hour_for_is_asked_at_it() {
+        // Never "keeps the price of its contract" with a number: the price
+        // shown and asked, said under --yes, and sent as that number.
+        for (now, said) in [
+            (
+                None,
+                "Taking ERPC Worker 200002 into the ERPC account: €0.11 an hour once taken in.",
+            ),
+            (
+                Some(7),
+                "€0.07 an hour today, €0.11 an hour once taken in (€0.04 more)",
+            ),
+            (
+                Some(11),
+                "Taking ERPC Worker 200002 into the ERPC account: €0.11 an hour once taken in.",
+            ),
+        ] {
+            let fake = Fake {
+                adopt_price: Some(priced("contract", now, Some(11))),
+                ..Fake::default()
+            };
+            let questions = RefCell::new(Vec::new());
+            take_in(
+                &fake,
+                &plan_of(&deployed()),
+                true,
+                &mut person(&questions, &[true]),
+            )
+            .await
+            .expect("moved");
+            let asked = questions.borrow().clone();
+            assert_eq!(asked.len(), 1, "asked: {now:?}");
+            assert!(asked[0].contains(said), "{}", asked[0]);
+            assert!(!asked[0].contains("contract"), "{}", asked[0]);
+            assert_eq!(*fake.prices_sent.borrow(), [Some(json!(11))]);
+            // A no takes nothing in.
+            let fake = Fake {
+                adopt_price: Some(priced("contract", now, Some(11))),
+                ..Fake::default()
+            };
+            let questions = RefCell::new(Vec::new());
+            let e = take_in(
+                &fake,
+                &plan_of(&deployed()),
+                true,
+                &mut person(&questions, &[false]),
+            )
+            .await
+            .expect_err("declined");
+            assert_eq!(e.code, Code::Declined);
+            assert!(fake.prices_sent.borrow().is_empty());
+            // Under --yes: said, and sent at it.
+            let fake = Fake {
+                adopt_price: Some(priced("contract", now, Some(11))),
+                ..Fake::default()
+            };
+            let _ = crate::node::common::heard::take_printed();
+            take_in(&fake, &plan_of(&deployed()), true, &mut PriceAsk::yes())
+                .await
+                .expect("moved");
+            let printed = crate::node::common::heard::take_printed().join("\n");
+            assert!(printed.contains(said), "{printed}");
+            assert_eq!(*fake.prices_sent.borrow(), [Some(json!(11))]);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_price_changed_meanwhile_stops_the_move_with_nothing_sent_again() {
+        // Each as the refusal says the price now: a number, null for its
+        // contract's kept, or nothing; at a terminal asked once and under
+        // --yes asked nothing, sent once either way, never asked or sent
+        // again.
+        let hint = "run the same command again: it reads the price now and says or asks it, as any move does, before the server is taken in";
+        for (data, said) in [
+            (
+                json!({ "hourlyCents": 12 }),
+                "the price of taking ERPC Worker 200002 in changed after erpc read it, to €0.12 an hour; the server was not taken in",
+            ),
+            (
+                json!({ "hourlyCents": null }),
+                "the price of taking ERPC Worker 200002 in changed after erpc read it, to its contract's price; the server was not taken in",
+            ),
+            (
+                json!({}),
+                "the price of taking ERPC Worker 200002 in changed after erpc read it, and the ERPC account does not say to what; the server was not taken in",
+            ),
+            (
+                json!({ "hourlyCents": "12" }),
+                "and the ERPC account does not say to what",
+            ),
+        ] {
+            for yes in [false, true] {
+                let fake = Fake {
+                    adopt_price: Some(priced("hourly", Some(7), Some(11))),
+                    price_changes: RefCell::new(vec![data.clone(), json!({ "hourlyCents": 13 })]),
+                    ..Fake::default()
+                };
+                let questions = RefCell::new(Vec::new());
+                let mut asking = if yes {
+                    PriceAsk::yes()
+                } else {
+                    person(&questions, &[true, true, true])
+                };
+                let e = take_in(&fake, &plan_of(&deployed()), true, &mut asking)
+                    .await
+                    .expect_err("stopped");
+                assert!(e.message.contains(said), "{data} {yes}: {}", e.message);
+                assert!(
+                    e.hint.as_deref().is_some_and(|h| h.starts_with(hint)),
+                    "{data} {yes}: {e:?}"
+                );
+                assert_eq!(questions.borrow().len(), usize::from(!yes), "{data} {yes}");
+                assert_eq!(
+                    *fake.prices_sent.borrow(),
+                    [Some(json!(11))],
+                    "{data} {yes}"
+                );
+                assert_eq!(fake.priced_for.borrow().len(), 1, "never read again");
+                assert!(fake.servers.borrow().is_empty());
+            }
+        }
+        // A contract's price, said, refused with null: refused at the price
+        // the account itself said, and no other given.
+        let fake = Fake {
+            adopt_price: Some(priced("contract", None, None)),
+            price_changes: RefCell::new(vec![json!({ "hourlyCents": null })]),
+            ..Fake::default()
+        };
+        let e = take_in(&fake, &plan_of(&deployed()), true, &mut PriceAsk::yes())
+            .await
+            .expect_err("stopped");
+        assert!(
+            e.message.contains(
+                "the ERPC account refused taking ERPC Worker 200002 in at its contract's price, which it had said, and gave no other"
+            ),
+            "{}",
+            e.message
+        );
+        assert_eq!(*fake.prices_sent.borrow(), [Some(Value::Null)]);
+    }
+
+    #[tokio::test]
+    async fn a_price_in_another_currency_or_of_nought_takes_nothing_in() {
+        let fake = Fake {
+            adopt_price: Some(priced("hourly", Some(7), Some(11))),
+            adopt_currency: Some("usd"),
+            ..Fake::default()
+        };
+        let questions = RefCell::new(Vec::new());
+        let e = take_in(
+            &fake,
+            &plan_of(&deployed()),
+            true,
+            &mut person(&questions, &[true]),
+        )
+        .await
+        .expect_err("stopped");
+        assert!(e.message.contains("in usd"), "{}", e.message);
+        assert!(questions.borrow().is_empty());
+        assert!(fake.prices_sent.borrow().is_empty(), "nothing sent");
+        for billing in ["hourly", "contract"] {
+            let fake = Fake {
+                adopt_price: Some(priced(billing, Some(7), Some(0))),
+                ..Fake::default()
+            };
+            let e = take_in(&fake, &plan_of(&deployed()), true, &mut PriceAsk::yes())
+                .await
+                .expect_err("stopped");
+            assert!(
+                e.message.contains("gives no price by the hour"),
+                "{}",
+                e.message
+            );
+            assert!(fake.prices_sent.borrow().is_empty(), "nothing sent");
+        }
+        // A price now of nought, refused meanwhile: said as not given.
+        let fake = Fake {
+            adopt_price: Some(priced("hourly", Some(7), Some(11))),
+            price_changes: RefCell::new(vec![json!({ "hourlyCents": 0 })]),
+            ..Fake::default()
+        };
+        let questions = RefCell::new(Vec::new());
+        let e = take_in(
+            &fake,
+            &plan_of(&deployed()),
+            true,
+            &mut person(&questions, &[true, true]),
+        )
+        .await
+        .expect_err("stopped");
+        assert!(e.message.contains("does not say to what"), "{}", e.message);
+        assert_eq!(*fake.prices_sent.borrow(), [Some(json!(11))]);
+    }
+
+    #[tokio::test]
+    async fn a_price_by_the_hour_the_account_does_not_give_takes_nothing_in() {
+        for billing in ["hourly", "monthly"] {
+            let fake = Fake {
+                adopt_price: Some(priced(billing, Some(7), None)),
+                ..Fake::default()
+            };
+            let questions = RefCell::new(Vec::new());
+            let e = take_in(
+                &fake,
+                &plan_of(&deployed()),
+                true,
+                &mut person(&questions, &[true]),
+            )
+            .await
+            .expect_err("stopped");
+            assert!(
+                e.message.contains("gives no price by the hour"),
+                "{}",
+                e.message
+            );
+            assert!(questions.borrow().is_empty());
+            assert!(fake.prices_sent.borrow().is_empty(), "nothing sent");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_price_applied_is_said_after_a_lost_answer_and_with_no_price_asked() {
+        // Taken in at the price shown, its answer lost on the way: run
+        // again, the server already in the slot is sent again, with no
+        // price, and the price applied is said.
+        let fake = Fake {
+            adopt_price: Some(priced("hourly", Some(7), Some(11))),
+            applied: Some(11),
+            lose_adopt_once: RefCell::new(true),
+            ..Fake::default()
+        };
+        let plan = plan_of(&deployed());
+        let _ = crate::node::common::heard::take_printed();
+        assert!(
+            take_in(&fake, &plan, true, &mut PriceAsk::yes())
+                .await
+                .is_err()
+        );
+        let printed = crate::node::common::heard::take_printed().join("\n");
+        assert!(!printed.contains("is charged"), "{printed}");
+        take_in(&fake, &plan, true, &mut PriceAsk::yes())
+            .await
+            .expect("moved");
+        let printed = crate::node::common::heard::take_printed().join("\n");
+        assert!(
+            printed
+                .contains("ERPC Worker 200002 is charged €0.11 an hour in the ERPC account now."),
+            "{printed}"
+        );
+        assert_eq!(*fake.prices_sent.borrow(), [Some(json!(11)), None]);
+        // The account says nothing of the price before, and gives the
+        // price applied: said.
+        let fake = Fake {
+            applied: Some(11),
+            ..Fake::default()
+        };
+        take_in(&fake, &plan_of(&deployed()), true, &mut PriceAsk::yes())
+            .await
+            .expect("moved");
+        let printed = crate::node::common::heard::take_printed().join("\n");
+        assert!(printed.contains("is charged €0.11 an hour"), "{printed}");
+        assert_eq!(*fake.prices_sent.borrow(), [None]);
+    }
+
+    #[tokio::test]
+    async fn another_refusal_of_a_priced_take_in_is_said_as_it_is_and_never_sent_again() {
+        for (code, data, said) in [
+            ("already_attached", Value::Null, "another"),
+            (
+                "something_new",
+                json!({ "hourlyCents": 12 }),
+                "something_new",
+            ),
+        ] {
+            let fake = Fake {
+                adopt_price: Some(priced("hourly", Some(7), Some(11))),
+                adopt_refusal: RefCell::new(Some((code, data))),
+                ..Fake::default()
+            };
+            let questions = RefCell::new(Vec::new());
+            let e = take_in(
+                &fake,
+                &plan_of(&deployed()),
+                true,
+                &mut person(&questions, &[true, true]),
+            )
+            .await
+            .expect_err("refused");
+            assert!(e.message.contains(said), "{code}: {}", e.message);
+            assert!(!e.message.contains("price"), "{code}: {}", e.message);
+            assert_eq!(questions.borrow().len(), 1, "{code}: asked once");
+            assert_eq!(*fake.prices_sent.borrow(), [Some(json!(11))], "{code}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_price_asked_is_that_of_the_server_taken_in() {
+        let fake = Fake {
+            adopt_price: Some(priced("hourly", Some(7), Some(11))),
+            ..Fake::default()
+        };
+        take_in(&fake, &plan_of(&deployed()), true, &mut PriceAsk::yes())
+            .await
+            .expect("moved");
+        assert_eq!(*fake.priced_for.borrow(), [(ServerKind::Vps, 200_002)]);
+        // A bare metal server: its own price read, and named so.
+        let fake = Fake {
+            adopt_price: Some(priced("hourly", Some(7), Some(11))),
+            ..Fake::default()
+        };
+        let plan = Plan {
+            server: Some((ServerKind::BareMetal, 300_003)),
+            ..plan_of(&deployed())
+        };
+        let questions = RefCell::new(Vec::new());
+        take_in(&fake, &plan, true, &mut person(&questions, &[true]))
+            .await
+            .expect("moved");
+        assert_eq!(
+            *fake.priced_for.borrow(),
+            [(ServerKind::BareMetal, 300_003)]
+        );
+        let asked = questions.borrow().join("\n");
+        assert!(
+            asked.contains("Taking bare metal server 300003 into the ERPC account"),
+            "{asked}"
+        );
+    }
+
     #[tokio::test]
     async fn a_move_writes_the_app_and_the_environment_then_takes_in_what_it_runs_on() {
         let fake = Fake::default();
         let plan = plan_of(&deployed());
-        let (app_id, env) = take_in(&fake, &plan, true).await.expect("moved");
+        let (app_id, env) = take_in(&fake, &plan, true, &mut PriceAsk::yes())
+            .await
+            .expect("moved");
         assert_eq!(app_id, APP_ID);
         assert_eq!(
             *fake.calls.borrow(),
-            ["put_app", "put_env", "adopt_server", "adopt_line"]
+            [
+                "put_app",
+                "put_env",
+                "adopt_price",
+                "adopt_server",
+                "adopt_line"
+            ]
         );
         assert_eq!(*fake.servers.borrow(), [("vps".to_owned(), 200_002, true)]);
         assert_eq!(*fake.lines.borrow(), [("grpc".to_owned(), 300_003)]);
@@ -1336,13 +2145,19 @@ mod tests {
             ..Fake::default()
         };
         let plan = plan_of(&deployed());
-        assert!(take_in(&fake, &plan, true).await.is_err());
+        assert!(
+            take_in(&fake, &plan, true, &mut PriceAsk::yes())
+                .await
+                .is_err()
+        );
         // Run again, the app now stopped: the server already in the slot is
         // sent again as the account keeps it, which the account answers the
         // same way for this one server, and only the line is new; then the
         // record is brought to whether the app runs now.
         fake.calls.borrow_mut().clear();
-        take_in(&fake, &plan, false).await.expect("moved");
+        take_in(&fake, &plan, false, &mut PriceAsk::yes())
+            .await
+            .expect("moved");
         assert_eq!(
             *fake.calls.borrow(),
             ["adopt_server", "adopt_line", "set_app_running"]
@@ -1352,9 +2167,37 @@ mod tests {
         // And again, once all is there: nothing is taken in twice, and the
         // state, as it is, is not written again.
         fake.calls.borrow_mut().clear();
-        take_in(&fake, &plan, false).await.expect("moved");
+        take_in(&fake, &plan, false, &mut PriceAsk::yes())
+            .await
+            .expect("moved");
         assert_eq!(fake.lines.borrow().len(), 1);
         assert!(!fake.calls.borrow().contains(&"set_app_running"));
+    }
+
+    #[tokio::test]
+    async fn a_move_run_again_sends_the_server_already_in_the_slot_with_no_price() {
+        // The account says what taking it in does to its price, but the
+        // server is in the slot already: sent again as before, its price
+        // not read, no price sent.
+        let fake = Fake {
+            fail_line_once: RefCell::new(true),
+            adopt_price: Some(priced("hourly", Some(7), Some(11))),
+            ..Fake::default()
+        };
+        let plan = plan_of(&deployed());
+        assert!(
+            take_in(&fake, &plan, true, &mut PriceAsk::yes())
+                .await
+                .is_err()
+        );
+        assert_eq!(*fake.prices_sent.borrow(), [Some(json!(11))]);
+        fake.calls.borrow_mut().clear();
+        fake.prices_sent.borrow_mut().clear();
+        take_in(&fake, &plan, false, &mut PriceAsk::yes())
+            .await
+            .expect("moved");
+        assert_eq!(*fake.prices_sent.borrow(), [None]);
+        assert!(!fake.calls.borrow().contains(&"adopt_price"));
     }
 
     #[tokio::test]
@@ -1366,7 +2209,7 @@ mod tests {
         fake.servers
             .borrow_mut()
             .push(("vps".to_owned(), 200_099, true));
-        let e = take_in(&fake, &plan_of(&deployed()), true)
+        let e = take_in(&fake, &plan_of(&deployed()), true, &mut PriceAsk::yes())
             .await
             .expect_err("refused");
         assert!(e.message.contains("another server"), "{}", e.message);
@@ -1381,7 +2224,11 @@ mod tests {
         fake.servers
             .borrow_mut()
             .push(("vps".to_owned(), 200_099, true));
-        assert!(take_in(&fake, &plan_of(&deployed()), true).await.is_err());
+        assert!(
+            take_in(&fake, &plan_of(&deployed()), true, &mut PriceAsk::yes())
+                .await
+                .is_err()
+        );
         assert_eq!(*fake.calls.borrow(), ["adopt_server"]);
         assert_eq!(
             fake.env.borrow().as_ref().expect("env")["facts"],
@@ -1395,11 +2242,13 @@ mod tests {
         // rule added here: the record holds nothing, and is written over.
         let fake = Fake::with_env(&other_facts());
         let plan = plan_of(&deployed());
-        let (_, env) = take_in(&fake, &plan, true).await.expect("moved");
+        let (_, env) = take_in(&fake, &plan, true, &mut PriceAsk::yes())
+            .await
+            .expect("moved");
         assert_eq!(env.facts, plan.facts);
         assert_eq!(
             *fake.calls.borrow(),
-            ["adopt_server", "put_env", "adopt_line"]
+            ["adopt_price", "adopt_server", "put_env", "adopt_line"]
         );
         // That write cut off: said as a move that stopped part way, with
         // the exit status of how it failed.
@@ -1409,11 +2258,16 @@ mod tests {
                 cut_as,
                 ..Fake::with_env(&other_facts())
             };
-            let e = take_in(&fake, &plan, true).await.expect_err("stopped");
+            let e = take_in(&fake, &plan, true, &mut PriceAsk::yes())
+                .await
+                .expect_err("stopped");
             assert!(e.message.contains("stopped part way"), "{}", e.message);
             assert_eq!(e.code, code, "{cut_as:?}");
             assert_eq!(signed_out_hint(&e), code == Code::NotSignedIn, "{cut_as:?}");
-            assert_eq!(*fake.calls.borrow(), ["adopt_server", "put_env"]);
+            assert_eq!(
+                *fake.calls.borrow(),
+                ["adopt_price", "adopt_server", "put_env"]
+            );
         }
     }
 
@@ -1437,7 +2291,7 @@ mod tests {
         let fake = Fake::default();
         *fake.app.borrow_mut() = Some(json!({ "id": APP_ID, "name": "bot", "chain": "ethereum",
             "template": null, "wallet": null, "revision": 4 }));
-        let e = take_in(&fake, &plan_of(&deployed()), false)
+        let e = take_in(&fake, &plan_of(&deployed()), false, &mut PriceAsk::yes())
             .await
             .expect_err("refused");
         assert!(e.message.contains("another chain"), "{}", e.message);
@@ -1447,7 +2301,7 @@ mod tests {
         fake.lines
             .borrow_mut()
             .extend([("grpc".to_owned(), 300_004), ("shreds".to_owned(), 300_005)]);
-        let e = take_in(&fake, &plan_of(&deployed()), false)
+        let e = take_in(&fake, &plan_of(&deployed()), false, &mut PriceAsk::yes())
             .await
             .expect_err("refused");
         assert!(e.message.contains("other lines"), "{}", e.message);
@@ -1457,7 +2311,7 @@ mod tests {
             elsewhere: vec![300_003],
             ..Fake::default()
         };
-        let e = take_in(&fake, &plan_of(&deployed()), false)
+        let e = take_in(&fake, &plan_of(&deployed()), false, &mut PriceAsk::yes())
             .await
             .expect_err("refused");
         assert!(e.message.contains("another environment"), "{}", e.message);
@@ -1467,7 +2321,7 @@ mod tests {
             bundle_parts: vec![300_003],
             ..Fake::default()
         };
-        let e = take_in(&fake, &plan_of(&deployed()), false)
+        let e = take_in(&fake, &plan_of(&deployed()), false, &mut PriceAsk::yes())
             .await
             .expect_err("refused");
         assert!(e.message.contains("line 300003"), "{}", e.message);
@@ -1495,7 +2349,9 @@ mod tests {
             ..Fake::default()
         };
         let plan = plan_of(&deployed());
-        let (app_id, env) = take_in(&fake, &plan, true).await.expect("taken in");
+        let (app_id, env) = take_in(&fake, &plan, true, &mut PriceAsk::yes())
+            .await
+            .expect("taken in");
         assert_eq!(env.facts.host.as_deref(), Some("198.51.100.20"));
         let e = trusted(&app_id, &plan, &env).expect_err("not trusted");
         assert!(
@@ -1588,6 +2444,10 @@ mod tests {
         assert!(!can_be_ours(&env, &plan));
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one case for each call the move makes, in the order it makes them"
+    )]
     #[tokio::test]
     async fn a_session_lost_or_a_sign_in_refused_at_each_call_is_said_as_not_signed_in() {
         let (dir, path, m) = own_server_checkout();
@@ -1623,9 +2483,15 @@ mod tests {
                     path: &path,
                     read: &m,
                 };
-                let e = run_with(&app, &plan, read, (&fake, &pins), || Ok(false))
-                    .await
-                    .expect_err("stopped");
+                let e = run_with(
+                    &app,
+                    &plan,
+                    read,
+                    (&fake, &pins),
+                    (|| Ok(false), &mut PriceAsk::yes()),
+                )
+                .await
+                .expect_err("stopped");
                 signed_out(&e, said, call);
                 assert!(!pins.exists(), "{call}");
                 let now = std::fs::read_to_string(&path).expect("erpc.toml");
@@ -1637,16 +2503,18 @@ mod tests {
                 cut_as,
                 ..Fake::with_env(&other_facts())
             };
-            let e = take_in(&fake, &plan, false).await.expect_err("stopped");
+            let e = take_in(&fake, &plan, false, &mut PriceAsk::yes())
+                .await
+                .expect_err("stopped");
             signed_out(&e, "was not moved", "env");
             // The server and a line of a deployed environment, taken in.
-            for call in ["adopt_server", "adopt_line"] {
+            for call in ["adopt_price", "adopt_server", "adopt_line"] {
                 let fake = Fake {
                     cut_off: Some(call),
                     cut_as,
                     ..Fake::default()
                 };
-                let e = take_in(&fake, &deployed_plan, true)
+                let e = take_in(&fake, &deployed_plan, true, &mut PriceAsk::yes())
                     .await
                     .expect_err("stopped");
                 signed_out(&e, "stopped part way", call);
@@ -1658,14 +2526,18 @@ mod tests {
                 fail_line_once: RefCell::new(true),
                 ..Fake::default()
             };
-            assert!(take_in(&first, &deployed_plan, true).await.is_err());
+            assert!(
+                take_in(&first, &deployed_plan, true, &mut PriceAsk::yes())
+                    .await
+                    .is_err()
+            );
             let fake = Fake {
                 cut_off: Some("adopt_server"),
                 cut_as,
                 ..first
             };
             fake.calls.borrow_mut().clear();
-            let e = take_in(&fake, &deployed_plan, false)
+            let e = take_in(&fake, &deployed_plan, false, &mut PriceAsk::yes())
                 .await
                 .expect_err("stopped");
             signed_out(&e, "was not moved", "adopt_server sent again");
@@ -1677,8 +2549,12 @@ mod tests {
                 cut_as,
                 ..Fake::default()
             };
-            assert!(take_in(&fake, &deployed_plan, true).await.is_err());
-            let e = take_in(&fake, &deployed_plan, false)
+            assert!(
+                take_in(&fake, &deployed_plan, true, &mut PriceAsk::yes())
+                    .await
+                    .is_err()
+            );
+            let e = take_in(&fake, &deployed_plan, false, &mut PriceAsk::yes())
                 .await
                 .expect_err("stopped");
             signed_out(&e, "stopped part way", "set_app_running");
@@ -1885,7 +2761,7 @@ mod tests {
                             "rollback, backup, api, trades and bench do not work on it yet",
                             "firewall does, on the account's lists",
                             "at most 16 addresses each, erpc's own counted in the SSH list",
-                            "status no longer says what it costs by the hour or how long the credit lasts",
+                            "status gives each server's price by the hour when the account says one, but no longer the environment's total by the hour or how long the credit lasts",
                         ],
                     ),
                     (
@@ -1957,7 +2833,7 @@ mod tests {
                             "rollback・backup・api・trades・bench はまだ使えません",
                             "firewall は、アカウントの一覧に対して使えます",
                             "一覧はそれぞれ 16 件までで、SSH の一覧には erpc 自身のアドレスも数えます",
-                            "status は、時間あたりの料金やクレジットがいつまでもつかを示さなくなります",
+                            "status は、アカウントが示すときはサーバーごとの 1 時間あたりの値段を示しますが、環境全体の時間あたりの料金やクレジットがいつまでもつかは示さなくなります",
                         ],
                     ),
                     (
@@ -2030,7 +2906,7 @@ mod tests {
                             "rollback、backup、api、trades 和 bench 暂时还不能用于它",
                             "firewall 可以，作用于账户中的列表",
                             "每个列表最多 16 个地址，SSH 列表中 erpc 自身的地址也计入",
-                            "status 不再显示每小时的费用以及积分还能用多久",
+                            "status 会在账户给出时显示每台服务器的每小时价格，但不再显示环境每小时的总费用以及积分还能用多久",
                         ],
                     ),
                     (
@@ -2101,7 +2977,7 @@ mod tests {
                             "rollback, backup, api, trades и bench с ним пока не работают",
                             "firewall работает — со списками аккаунта",
                             "в каждом не больше 16 адресов, в списке SSH считается и адрес самого erpc",
-                            "status больше не показывает почасовую стоимость и на сколько хватит кредитов",
+                            "status показывает почасовую цену каждого сервера, когда аккаунт её называет, но больше не показывает общую почасовую стоимость окружения и на сколько хватит кредитов",
                         ],
                     ),
                     (
@@ -2259,7 +3135,7 @@ mod tests {
             older: true,
             ..fake
         };
-        let e = take_in(&fake, &plan_of(&deployed()), false)
+        let e = take_in(&fake, &plan_of(&deployed()), false, &mut PriceAsk::yes())
             .await
             .expect_err("refused");
         assert!(e.message.contains("older form"), "{}", e.message);
@@ -2269,7 +3145,7 @@ mod tests {
         *fake.app.borrow_mut() = Some(json!({ "id": APP_ID, "name": "bot", "chain": "solana",
             "template": "solana/hello@1",
             "wallet": { "pubkey": "11111111111111111111111111111111" }, "revision": 4 }));
-        let e = take_in(&fake, &plan_of(&deployed()), false)
+        let e = take_in(&fake, &plan_of(&deployed()), false, &mut PriceAsk::yes())
             .await
             .expect_err("refused");
         assert!(e.message.contains("another wallet"), "{}", e.message);
@@ -2282,7 +3158,7 @@ mod tests {
         let fake = Fake::default();
         *fake.app.borrow_mut() = Some(json!({ "id": APP_ID, "name": "bot", "chain": "solana",
             "template": "solana/pumpfun@1", "wallet": null, "revision": 4 }));
-        take_in(&fake, &plan_of(&deployed()), false)
+        take_in(&fake, &plan_of(&deployed()), false, &mut PriceAsk::yes())
             .await
             .expect("moved");
         assert_eq!(fake.calls.borrow().first(), Some(&"put_app"));
@@ -2301,7 +3177,9 @@ mod tests {
         *fake.app.borrow_mut() = Some(json!({ "id": APP_ID, "name": "bot", "chain": "solana",
             "template": "solana/hello@1",
             "wallet": { "pubkey": pubkey, "sourceKind": "1password" }, "revision": 4 }));
-        take_in(&fake, &plan_of(&m), false).await.expect("moved");
+        take_in(&fake, &plan_of(&m), false, &mut PriceAsk::yes())
+            .await
+            .expect("moved");
         assert_eq!(fake.calls.borrow().first(), Some(&"put_app"));
         let app = fake.app.borrow().clone().expect("an app");
         assert_eq!(app["wallet"]["pubkey"], pubkey);
@@ -2317,7 +3195,7 @@ mod tests {
             *fake.app.borrow_mut() = Some(json!({ "id": APP_ID, "name": "bot",
                 "chain": "solana", "template": "solana/pumpfun@1", "wallet": null,
                 "revision": 4 }));
-            let e = take_in(&fake, &plan_of(&deployed()), false)
+            let e = take_in(&fake, &plan_of(&deployed()), false, &mut PriceAsk::yes())
                 .await
                 .expect_err("stopped");
             assert!(e.message.contains("stopped part way"), "{}", e.message);
@@ -2335,7 +3213,7 @@ mod tests {
             extra_line: true,
             ..Fake::default()
         };
-        let e = take_in(&fake, &plan_of(&deployed()), false)
+        let e = take_in(&fake, &plan_of(&deployed()), false, &mut PriceAsk::yes())
             .await
             .expect_err("refused");
         assert!(e.message.contains("stopped part way"), "{}", e.message);
@@ -2350,7 +3228,7 @@ mod tests {
                 elsewhere: vec![elsewhere],
                 ..Fake::default()
             };
-            let e = take_in(&fake, &plan_of(&deployed()), false)
+            let e = take_in(&fake, &plan_of(&deployed()), false, &mut PriceAsk::yes())
                 .await
                 .expect_err("refused");
             assert!(
@@ -2383,9 +3261,14 @@ mod tests {
             held: vec![gone("active")],
             ..Fake::with_env(&other_facts())
         };
-        let e = take_in(&fake, &plan_of(&on_own_server()), false)
-            .await
-            .expect_err("refused");
+        let e = take_in(
+            &fake,
+            &plan_of(&on_own_server()),
+            false,
+            &mut PriceAsk::yes(),
+        )
+        .await
+        .expect_err("refused");
         assert!(e.message.contains("was not moved"), "{}", e.message);
         assert!(fake.calls.borrow().is_empty());
         // A gone server in another slot, with the move's own server: a
@@ -2394,7 +3277,7 @@ mod tests {
             held: vec![gone("incoming")],
             ..Fake::with_env(&other_facts())
         };
-        let e = take_in(&fake, &plan_of(&deployed()), false)
+        let e = take_in(&fake, &plan_of(&deployed()), false, &mut PriceAsk::yes())
             .await
             .expect_err("refused");
         assert!(e.message.contains("was not moved"), "{}", e.message);
@@ -2405,7 +3288,7 @@ mod tests {
             held: vec![gone("active")],
             ..Fake::with_env(&other_facts())
         };
-        let e = take_in(&fake, &plan_of(&deployed()), false)
+        let e = take_in(&fake, &plan_of(&deployed()), false, &mut PriceAsk::yes())
             .await
             .expect_err("refused");
         assert!(e.message.contains("was not moved"), "{}", e.message);
@@ -2418,9 +3301,14 @@ mod tests {
             held: vec![live],
             ..Fake::with_env(&other_facts())
         };
-        let e = take_in(&fake, &plan_of(&on_own_server()), false)
-            .await
-            .expect_err("refused");
+        let e = take_in(
+            &fake,
+            &plan_of(&on_own_server()),
+            false,
+            &mut PriceAsk::yes(),
+        )
+        .await
+        .expect_err("refused");
         assert!(e.message.contains("was not moved"), "{}", e.message);
         assert!(fake.calls.borrow().is_empty());
     }
@@ -2433,7 +3321,7 @@ mod tests {
             line_state: Some("provisioning"),
             ..Fake::default()
         };
-        let (_, detail) = take_in(&fake, &plan_of(&deployed()), false)
+        let (_, detail) = take_in(&fake, &plan_of(&deployed()), false, &mut PriceAsk::yes())
             .await
             .expect("taken in");
         let app = App::at("apps/bot", "prod");
@@ -2444,7 +3332,7 @@ mod tests {
         assert_eq!(e.hint, Some(t!("worker_move.part_way_hint")));
         // As taken in: active, it is.
         let fake = Fake::default();
-        let (_, detail) = take_in(&fake, &plan_of(&deployed()), false)
+        let (_, detail) = take_in(&fake, &plan_of(&deployed()), false, &mut PriceAsk::yes())
             .await
             .expect("taken in");
         works_once_moved(&app, &detail).expect("works");
@@ -2457,7 +3345,7 @@ mod tests {
             refuse_env: true,
             ..Fake::default()
         };
-        let e = take_in(&fake, &plan_of(&deployed()), false)
+        let e = take_in(&fake, &plan_of(&deployed()), false, &mut PriceAsk::yes())
             .await
             .expect_err("refused");
         assert!(e.message.contains("stopped part way"), "{}", e.message);
@@ -2470,7 +3358,9 @@ mod tests {
         };
         let mut plan = plan_of(&deployed());
         plan.scope = " --env prod".to_owned();
-        let e = take_in(&fake, &plan, false).await.expect_err("refused");
+        let e = take_in(&fake, &plan, false, &mut PriceAsk::yes())
+            .await
+            .expect_err("refused");
         assert!(e.message.contains("line 300003"), "{}", e.message);
         assert!(e.message.contains("stopped part way"), "{}", e.message);
         assert!(
@@ -2487,7 +3377,7 @@ mod tests {
                 not_adoptable: Some(data),
                 ..Fake::default()
             };
-            let e = take_in(&fake, &plan_of(&deployed()), false)
+            let e = take_in(&fake, &plan_of(&deployed()), false, &mut PriceAsk::yes())
                 .await
                 .expect_err("refused");
             assert!(e.message.contains(said), "{}", e.message);
@@ -2528,9 +3418,15 @@ mod tests {
             path: &path,
             read: &m,
         };
-        let (answer, _) = run_with(&app, &plan, read, (&fake, &pins), || Ok(false))
-            .await
-            .expect("moved");
+        let (answer, _) = run_with(
+            &app,
+            &plan,
+            read,
+            (&fake, &pins),
+            (|| Ok(false), &mut PriceAsk::yes()),
+        )
+        .await
+        .expect("moved");
         assert_eq!(answer["moved"], json!(true));
         // The sign-in check before any write; nothing more than the plan.
         assert_eq!(*fake.calls.borrow(), ["probe", "put_app", "put_env"]);
@@ -2562,9 +3458,15 @@ mod tests {
             path: &path,
             read: &m,
         };
-        run_with(&app, &plan, read, (&fake, &pins), || Ok(false))
-            .await
-            .expect("moved");
+        run_with(
+            &app,
+            &plan,
+            read,
+            (&fake, &pins),
+            (|| Ok(false), &mut PriceAsk::yes()),
+        )
+        .await
+        .expect("moved");
         assert_eq!(
             kept::app_seen(&pins, &key).expect("read"),
             Some(plan.facts.firewall.app_allow.clone())
@@ -2588,14 +3490,24 @@ mod tests {
             path: &path,
             read: &m,
         };
-        let e = run_with(&app, &moving, read, (&fake, &pins), || Ok(false))
-            .await
-            .expect_err("not trusted");
+        let e = run_with(
+            &app,
+            &moving,
+            read,
+            (&fake, &pins),
+            (|| Ok(false), &mut PriceAsk::yes()),
+        )
+        .await
+        .expect_err("not trusted");
         assert!(e.message.contains("stopped part way"), "{}", e.message);
         assert!(!pins.exists());
         assert_eq!(std::fs::read_to_string(&path).expect("erpc.toml"), before);
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each way a move stops, one after another"
+    )]
     #[tokio::test]
     async fn a_move_that_stops_leaves_erpc_toml_and_the_pins_as_they_were() {
         let (dir, path, m) = own_server_checkout();
@@ -2613,9 +3525,13 @@ mod tests {
             path: &path,
             read: &m,
         };
-        let e = run_with(&app, &plan, read, (&fake, &pins), || {
-            panic!("the agent is not asked")
-        })
+        let e = run_with(
+            &app,
+            &plan,
+            read,
+            (&fake, &pins),
+            (|| panic!("the agent is not asked"), &mut PriceAsk::yes()),
+        )
         .await
         .expect_err("refused");
         assert!(!e.message.contains("part way"), "{}", e.message);
@@ -2631,9 +3547,15 @@ mod tests {
                 path: &path,
                 read: &m,
             };
-            let e = run_with(&app, &plan, read, (&fake, &pins), || Ok(false))
-                .await
-                .expect_err("stopped");
+            let e = run_with(
+                &app,
+                &plan,
+                read,
+                (&fake, &pins),
+                (|| Ok(false), &mut PriceAsk::yes()),
+            )
+            .await
+            .expect_err("stopped");
             assert!(
                 e.message.contains("stopped part way"),
                 "{call}: {}",
@@ -2649,7 +3571,7 @@ mod tests {
                 cut_off: Some(call),
                 ..Fake::default()
             };
-            let e = take_in(&fake, &plan_of(&deployed()), true)
+            let e = take_in(&fake, &plan_of(&deployed()), true, &mut PriceAsk::yes())
                 .await
                 .expect_err("stopped");
             assert!(
@@ -2668,8 +3590,12 @@ mod tests {
             ..Fake::default()
         };
         let deployed_plan = plan_of(&deployed());
-        assert!(take_in(&fake, &deployed_plan, true).await.is_err());
-        let e = take_in(&fake, &deployed_plan, false)
+        assert!(
+            take_in(&fake, &deployed_plan, true, &mut PriceAsk::yes())
+                .await
+                .is_err()
+        );
+        let e = take_in(&fake, &deployed_plan, false, &mut PriceAsk::yes())
             .await
             .expect_err("stopped");
         assert!(e.message.contains("stopped part way"), "{}", e.message);
@@ -2689,9 +3615,15 @@ mod tests {
             path: &path,
             read: &m,
         };
-        let e = run_with(&app, &plan2, read, (&fake, &pins), || Ok(false))
-            .await
-            .expect_err("stopped");
+        let e = run_with(
+            &app,
+            &plan2,
+            read,
+            (&fake, &pins),
+            (|| Ok(false), &mut PriceAsk::yes()),
+        )
+        .await
+        .expect_err("stopped");
         assert!(e.message.contains("stopped part way"), "{}", e.message);
         assert_eq!(e.hint, Some(t!("worker_move.part_way_hint")));
         assert_eq!(std::fs::read_to_string(&path).expect("erpc.toml"), before);
@@ -2712,7 +3644,9 @@ mod tests {
             ],
             ..Fake::with_env(&facts)
         };
-        let e = take_in(&fake, &plan, false).await.expect_err("refused");
+        let e = take_in(&fake, &plan, false, &mut PriceAsk::yes())
+            .await
+            .expect_err("refused");
         assert!(e.message.contains("not moved"), "{}", e.message);
         assert!(fake.calls.borrow().is_empty());
     }
@@ -2754,7 +3688,9 @@ mod tests {
             ],
             ..Fake::with_env(&facts)
         };
-        let (_, detail) = take_in(&fake, &plan, false).await.expect("taken in");
+        let (_, detail) = take_in(&fake, &plan, false, &mut PriceAsk::yes())
+            .await
+            .expect("taken in");
         works_once_moved(&App::at(path.parent().expect("a dir"), "prod"), &detail).expect("works");
     }
 
@@ -2773,9 +3709,15 @@ mod tests {
             path: &path,
             read: &m,
         };
-        let e = run_with(&app, &plan, read, (&fake, &pins), || Ok(false))
-            .await
-            .expect_err("stopped");
+        let e = run_with(
+            &app,
+            &plan,
+            read,
+            (&fake, &pins),
+            (|| Ok(false), &mut PriceAsk::yes()),
+        )
+        .await
+        .expect_err("stopped");
         assert!(e.message.contains("stopped part way"), "{}", e.message);
         assert!(!pins.exists());
         assert_eq!(std::fs::read_to_string(&path).expect("erpc.toml"), changed);
@@ -2810,9 +3752,16 @@ mod tests {
             path: &path,
             read: &m,
         };
-        let e = run_with(&app, &plan, read, (&fake, &pins), || {
-            Err(failed("ssh: connection refused".to_owned()))
-        })
+        let e = run_with(
+            &app,
+            &plan,
+            read,
+            (&fake, &pins),
+            (
+                || Err(failed("ssh: connection refused".to_owned())),
+                &mut PriceAsk::yes(),
+            ),
+        )
         .await
         .expect_err("stopped");
         assert!(e.message.contains("was not moved"), "{}", e.message);
@@ -2824,7 +3773,9 @@ mod tests {
                 cut_off: Some(call),
                 ..Fake::with_env(&other_facts())
             };
-            let e = take_in(&fake, &plan, false).await.expect_err("stopped");
+            let e = take_in(&fake, &plan, false, &mut PriceAsk::yes())
+                .await
+                .expect_err("stopped");
             assert!(e.message.contains("was not moved"), "{call}: {}", e.message);
             assert_eq!(e.code, Code::Network, "{call}");
         }
@@ -2835,13 +3786,19 @@ mod tests {
             ..Fake::default()
         };
         let again = plan_of(&deployed());
-        assert!(take_in(&first, &again, true).await.is_err());
+        assert!(
+            take_in(&first, &again, true, &mut PriceAsk::yes())
+                .await
+                .is_err()
+        );
         let fake = Fake {
             cut_off: Some("adopt_server"),
             ..first
         };
         fake.calls.borrow_mut().clear();
-        let e = take_in(&fake, &again, false).await.expect_err("stopped");
+        let e = take_in(&fake, &again, false, &mut PriceAsk::yes())
+            .await
+            .expect_err("stopped");
         assert!(e.message.contains("was not moved"), "{}", e.message);
         assert_eq!(e.code, Code::Network);
         assert_eq!(*fake.calls.borrow(), ["adopt_server"]);
@@ -2853,9 +3810,15 @@ mod tests {
             path: &path,
             read: &m,
         };
-        let e = run_with(&app, &plan, read, (&fake, &pins), || Ok(false))
-            .await
-            .expect_err("stopped");
+        let e = run_with(
+            &app,
+            &plan,
+            read,
+            (&fake, &pins),
+            (|| Ok(false), &mut PriceAsk::yes()),
+        )
+        .await
+        .expect_err("stopped");
         assert!(e.message.contains("was not moved"), "{}", e.message);
         assert_eq!(e.code, Code::Network);
     }
@@ -2876,7 +3839,9 @@ mod tests {
         fake.lines
             .borrow_mut()
             .extend([("grpc".to_owned(), 300_004), ("shreds".to_owned(), 300_005)]);
-        let e = take_in(&fake, &plan, false).await.expect_err("refused");
+        let e = take_in(&fake, &plan, false, &mut PriceAsk::yes())
+            .await
+            .expect_err("refused");
         assert!(e.message.contains("not moved"), "{}", e.message);
         assert!(fake.calls.borrow().is_empty());
     }
@@ -2934,9 +3899,15 @@ mod tests {
         // Printed, not only handed to be said: the move prints it whether
         // or not `--json` is given.
         let _ = crate::node::common::heard::take_printed();
-        run_with(&app, &plan, read, (&fake, &pins), || Ok(false))
-            .await
-            .expect("moved");
+        run_with(
+            &app,
+            &plan,
+            read,
+            (&fake, &pins),
+            (|| Ok(false), &mut PriceAsk::yes()),
+        )
+        .await
+        .expect("moved");
         let printed = crate::node::common::heard::take_printed().join("\n");
         assert!(
             printed.contains("what it trusts of it could not be written"),

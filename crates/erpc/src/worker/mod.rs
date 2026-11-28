@@ -638,7 +638,9 @@ pub(crate) enum Action {
         /// Where to: the ERPC account.
         #[arg(long, value_name = "PLACE")]
         to: MovePlace,
-        /// Go ahead without asking.
+        /// Go ahead without asking: a change in the server's price by the hour once
+        /// taken in is said on stderr instead; one the ERPC account makes meanwhile
+        /// stops the move.
         #[arg(long, short = 'y')]
         yes: bool,
     },
@@ -898,7 +900,8 @@ pub(crate) enum ServerAction {
         /// Its region, as the ERPC account names it: amsterdam, frankfurt, ny, tokyo, london, singapore or sydney.
         #[arg(long, value_name = "REGION")]
         region: String,
-        /// Start it without asking: the price is said on stderr instead.
+        /// Start it without asking: the price is said on stderr instead; a price
+        /// the ERPC account changes meanwhile stops it.
         #[arg(long, short = 'y')]
         yes: bool,
     },
