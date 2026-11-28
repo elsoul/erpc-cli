@@ -250,10 +250,9 @@ whose version has no entry below.
   `--from-account`, `secret rm`, `api` with a method other than GET, `backup
   now`), under `--json`, with no terminal or with `TERM=dumb`. It asks for a
   command that only reads, or that asks before it buys, ends, deletes, sends
-  or changes anything, but for a data line `deploy` may start as an earlier
-  run agreed (below). The app is picked first; then four of those may do
-  something before a question of their own, or with none in that run, all
-  of it free but for a data line a deploy starts as an earlier run agreed:
+  or changes anything. The app is picked first; then four of those may do
+  something that costs nothing before a question of their own, or with none
+  in that run:
   `server start` makes the app's and the environment's records in the ERPC
   account when they are missing (they cost nothing), before its price
   question; `deploy`, unless the app ships a `build.prebuilt` binary
@@ -271,10 +270,8 @@ whose version has no entry below.
   `erpc.toml` as the yes to that start agreed, and keeps the lines asked,
   to be asked when they are started), and a deploy of an environment kept
   in the account whose record names a server and no deploy keeps the lines
-  asked on this machine before any question and starts a line an earlier
-  run agreed to, never sent, with no question in that run while its price
-  is the one agreed to (charged by the hour from then, its price said on
-  stderr); `server end`, run again after a stop, may first finish clearing
+  asked on this machine before any question, and starts none without a yes
+  in that run; `server end`, run again after a stop, may first finish clearing
   the address of a server whose end was already said yes to, and then asks
   nothing more in that run; and `delete --release-server` of an environment
   kept in the account that the account no longer has, when this machine
@@ -334,10 +331,13 @@ whose version has no entry below.
   and its price, the catalogue's, asked right after the server's (`--yes`
   says it), a no buying nothing; the lines asked are kept on this machine
   (`worker_line_starts.json`) and started in the account for the
-  environment once its server is logged in to, one agreed to and never
-  sent without asking again while its price is the one agreed to and the
-  run does not name its flag again, any other start asked (a no lets the
-  line kept here go). Each line start is sent
+  environment once its server is logged in to, each only after a yes in
+  that run (said under `--yes`): one that run's own question agreed to is
+  not asked again while its price is the one agreed to; a later run asks
+  it once more at the catalogue's price now, and asks every other start,
+  each line before any is sent (a no lets the line kept here go,
+  and the deploy goes on without it unless the app needs it, when it
+  stops, nothing bought). Each line start is sent
   under a key kept here before it is sent, as not to be sent again; the
   account's answer decides what becomes of it, as its contract says (an
   answer that bought nothing lets the key go and keeps the line asked; one

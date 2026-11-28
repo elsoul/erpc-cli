@@ -55,7 +55,7 @@ use crate::node::common::Say;
 use crate::worker::App;
 use crate::worker::account::{self as kept, Account};
 use crate::worker::deploy::{Picked, Where};
-use crate::worker::line_start::Owing;
+use crate::worker::line_start::{Agreed, Owing};
 use crate::worker::server::{Region, Size};
 
 fn failed(message: String) -> CliError {
@@ -335,25 +335,42 @@ impl Reach for Live {
     }
 }
 
-/// The deploy's first step: [`First`] says what follows. Refused before
-/// anything is written or bought when a first deploy cannot go through.
-pub(crate) async fn first(json: bool, app: &App, at: &Where, yes: bool) -> Result<First, CliError> {
+/// The deploy's first step: [`First`] says what follows, with the lines
+/// this run's own yes agreed to, which its deploy starts without asking
+/// again. Refused before anything is written or bought when a first deploy
+/// cannot go through.
+pub(crate) async fn first(
+    json: bool,
+    app: &App,
+    at: &Where,
+    yes: bool,
+) -> Result<(First, Agreed), CliError> {
     let Ok((_, m)) = crate::worker::load(&app.dir) else {
         // Said by the deploy, as before.
-        return Ok(First::AsBefore);
+        return Ok((First::AsBefore, Agreed::default()));
     };
     let asking = (json, crate::account::session::has_terminal());
-    Box::pin(first_with(&Live::default(), app, (at, yes), &m, asking)).await
+    let agreed = core::cell::Cell::new(Agreed::default());
+    let first = Box::pin(first_with(
+        &Live::default(),
+        app,
+        (at, yes),
+        &m,
+        (asking, &agreed),
+    ))
+    .await?;
+    Ok((first, agreed.get()))
 }
 
 /// [`first`] through `reach`, for `m` as `erpc.toml` has it, under
-/// `--json` or not, at a terminal or not (`asking`).
+/// `--json` or not, at a terminal or not (`asking`); the lines this run's
+/// yes agreed to go in `agreed`.
 async fn first_with(
     reach: &impl Reach,
     app: &App,
     (at, yes): (&Where, bool),
     m: &Manifest,
-    (json, terminal): (bool, bool),
+    ((json, terminal), agreed): ((bool, bool), &core::cell::Cell<Agreed>),
 ) -> Result<First, CliError> {
     let env = app.env.as_str();
     match way(m.env.get(env), at, (json, terminal)) {
@@ -373,8 +390,8 @@ async fn first_with(
             "worker_first_deploy.needs_terminal_hint",
             scope = app.scope()
         ))),
-        Way::New { asked } => new_server(reach, app, (at, yes), asked).await,
-        Way::Resume => resume(reach, app, (at, yes), m, (json, terminal)).await,
+        Way::New { asked } => new_server(reach, app, (at, yes, agreed), asked).await,
+        Way::Resume => resume(reach, app, (at, yes, agreed), m, (json, terminal)).await,
     }
 }
 
@@ -385,7 +402,7 @@ async fn first_with(
 async fn new_server(
     reach: &impl Reach,
     app: &App,
-    (at, yes): (&Where, bool),
+    (at, yes, agreed_now): (&Where, bool, &core::cell::Cell<Agreed>),
     asked: bool,
 ) -> Result<First, CliError> {
     let region = region(at)?;
@@ -413,7 +430,7 @@ async fn new_server(
     // owed, then erpc.toml written.
     let agreed = || {
         if !written.get() {
-            owing.agree(&|q| reach.confirm(q), yes)?;
+            agreed_now.set(owing.agree(&|q| reach.confirm(q), yes)?);
             keep_in_account(&path, app, &m.name)?;
             written.set(true);
         }
@@ -469,7 +486,7 @@ fn kept_now(app: &App, at: &Where) -> String {
 async fn resume(
     reach: &impl Reach,
     app: &App,
-    (at, yes): (&Where, bool),
+    (at, yes, agreed_now): (&Where, bool, &core::cell::Cell<Agreed>),
     m: &Manifest,
     (json, terminal): (bool, bool),
 ) -> Result<First, CliError> {
@@ -558,7 +575,7 @@ async fn resume(
     let agreed_once = core::cell::Cell::new(false);
     let agreed = || {
         if !agreed_once.get() {
-            owing.agree(&|q| reach.confirm(q), yes_price)?;
+            agreed_now.set(owing.agree(&|q| reach.confirm(q), yes_price)?);
             agreed_once.set(true);
         }
         Ok(())
@@ -1078,8 +1095,23 @@ mod tests {
         yes: bool,
         (json, terminal): (bool, bool),
     ) -> Result<First, CliError> {
+        go_agreed(fake, at, yes, (json, terminal))
+            .await
+            .map(|(first, _)| first)
+    }
+
+    /// [`go`], with the lines the run's own yes agreed to.
+    async fn go_agreed(
+        fake: &Fake,
+        at: &Where,
+        yes: bool,
+        (json, terminal): (bool, bool),
+    ) -> Result<(First, Agreed), CliError> {
         let m = fake.manifest();
-        first_with(fake, &app(fake), (at, yes), &m, (json, terminal)).await
+        let agreed = core::cell::Cell::new(Agreed::default());
+        let first =
+            first_with(fake, &app(fake), (at, yes), &m, ((json, terminal), &agreed)).await?;
+        Ok((first, agreed.get()))
     }
 
     fn new_server_at(region: Option<&str>) -> Where {
@@ -1355,10 +1387,13 @@ mod tests {
         // agreed to, then erpc.toml written, then the start sent.
         let dir = tempfile::tempdir().expect("a directory");
         let fake = Fake::new(&dir, TOML);
-        let first = go(&fake, &grpc, false, (false, true))
+        let (first, agreed) = go_agreed(&fake, &grpc, false, (false, true))
             .await
             .expect("started");
         assert_eq!(first, First::Started);
+        // The deploy that follows starts it without asking again: this
+        // run's yes agreed to it.
+        assert!(agreed.has(LineKind::Grpc) && !agreed.has(LineKind::Shreds));
         let asked = fake.line_asked.borrow().clone();
         assert_eq!(asked.len(), 1);
         assert!(
@@ -1452,7 +1487,10 @@ mod tests {
             lines: vec![(LineKind::Grpc, None)],
             ..Where::default()
         };
-        go(&fake, &at, true, (false, true)).await.expect("started");
+        let (_, agreed) = go_agreed(&fake, &at, true, (false, true))
+            .await
+            .expect("started");
+        assert!(agreed.has(LineKind::Grpc));
         assert_eq!(
             fake.line_asked.borrow().len(),
             1,
@@ -1468,7 +1506,8 @@ mod tests {
         go(&fake, &at, false, (false, true)).await.expect("started");
         assert!(fake.line_asked.borrow().is_empty());
         assert_eq!(fake.lines_kept(), [("grpc".to_owned(), false)]);
-        // And one an earlier run agreed to is said there, not asked.
+        // And one an earlier run agreed to is said there, to be asked when
+        // it is started.
         let dir = tempfile::tempdir().expect("a directory");
         let mut fake = Fake::new(&dir, &kept_toml());
         fake.record = Some(empty_record());
@@ -1850,10 +1889,12 @@ mod tests {
         let mut fake = Fake::new(&dir, &kept_toml());
         fake.record = Some(record_with_server());
         fake.owe(LineKind::Grpc);
-        let first = go(&fake, &Where::default(), false, (false, true))
+        let (first, agreed) = go_agreed(&fake, &Where::default(), false, (false, true))
             .await
             .expect("owed");
         assert_eq!(first, First::Owed);
+        // Agreed to on an earlier run, not this one: asked when started.
+        assert_eq!(agreed, Agreed::default());
         assert_eq!(fake.lines_kept(), [("grpc".to_owned(), true)]);
         // The deploy's checks see the line kept here as one asked: a
         // setting it gives does not refuse the deploy.

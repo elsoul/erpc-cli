@@ -14,11 +14,14 @@
 //! ([`Owing`]; `--yes` says it on stderr): a no buys nothing. The lines
 //! asked are kept on this machine (`worker_line_starts.json`, beside
 //! erpc's config, 0600) until each is on the environment's record, so a
-//! deploy that goes on from a stop starts them; one agreed to and never
-//! sent is started without asking again while the catalogue's price is the
-//! one agreed to and the run does not name its flag again, and any other
-//! start of a line is asked (said under `--yes`). A no to a line's price,
-//! here or on the first deploy, lets the line kept here for it go.
+//! deploy that goes on from a stop starts them. A line is started only
+//! after a yes in that run, or said under `--yes`: one this run's own first
+//! question agreed to at its price is not asked again ([`Agreed`]); one an
+//! earlier run agreed to is asked once more, at the catalogue's price now,
+//! and so is every other start of a line. Every line is asked before any
+//! is sent. A no lets the line kept here for it go; the deploy goes on
+//! without it, unless the app needs the setting it gives, when the run
+//! stops with nothing bought.
 //!
 //! Each start is sent under a key kept here before it is sent, as not to be
 //! sent again, and the account's answer decides what becomes of it, as
@@ -424,6 +427,34 @@ impl Reach for Live<'_> {
 
 // ----------------------------------------------- what a first deploy owes
 
+/// The kinds of line a run's own yes agreed to: the first deploy's line
+/// questions, right after the server's price ([`Owing::agree`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Agreed(u8);
+
+impl Agreed {
+    const fn bit(kind: LineKind) -> u8 {
+        match kind {
+            LineKind::Grpc => 1,
+            LineKind::Shreds => 2,
+            LineKind::Udp => 4,
+            LineKind::Unlimited => 8,
+        }
+    }
+
+    /// The same, and `kind` too.
+    #[must_use]
+    pub(crate) const fn with(self, kind: LineKind) -> Self {
+        Self(self.0 | Self::bit(kind))
+    }
+
+    /// Whether this run's yes agreed to a line of `kind`.
+    #[must_use]
+    pub(crate) const fn has(self, kind: LineKind) -> bool {
+        self.0 & Self::bit(kind) != 0
+    }
+}
+
 /// The lines a first deploy asks for, read before anything is made or
 /// bought: each one's plan of the hourly catalogue (one it does not offer
 /// is refused then), and what this machine keeps of the environment's
@@ -434,7 +465,8 @@ pub(crate) struct Owing {
     env: String,
     /// The lines this run asks for, each at its plan.
     asked: Vec<(LineKind, Plan)>,
-    /// The lines an earlier run agreed to, owed still, that this run does
+    /// The lines an earlier run agreed to, owed still (said, to be asked
+    /// once the server is logged in to), that this run does
     /// not ask for.
     before: Vec<(LineKind, Kept)>,
     /// The kinds of every line kept here for the environment.
@@ -491,16 +523,17 @@ impl Owing {
     }
 
     /// Asks each line's price at the terminal (`confirm`), or says it under
-    /// `yes`, then keeps the lines asked here, owed, agreed to: a deploy
-    /// after the server's start goes on to start them, without asking
-    /// again. What an earlier run agreed to is said. Run after the server's
-    /// yes, before its start is sent: a no, or a line not kept, stops
-    /// before anything is bought.
+    /// `yes`, then keeps the lines asked here, owed, agreed to: this run's
+    /// deploy, once the server is logged in to, starts them without asking
+    /// again (the kinds come back); a later run asks again. What an earlier
+    /// run agreed to is said, to be asked when it is started. Run after the
+    /// server's yes, before its start is sent: a no, or a line not kept,
+    /// stops before anything is bought.
     pub(crate) fn agree(
         &self,
         confirm: &dyn Fn(&str) -> Result<bool, String>,
         yes: bool,
-    ) -> Result<(), CliError> {
+    ) -> Result<Agreed, CliError> {
         let say = Say { quiet: false };
         let env = self.env.as_str();
         for (kind, plan) in &self.asked {
@@ -568,7 +601,11 @@ impl Owing {
                 price = line.price.as_str()
             ));
         }
-        self.keep(true)
+        self.keep(true)?;
+        Ok(self
+            .asked
+            .iter()
+            .fold(Agreed::default(), |agreed, (kind, _)| agreed.with(*kind)))
     }
 
     /// Keeps the lines asked here, owed, agreed to or not (`agreed`: a
@@ -846,36 +883,97 @@ fn after(e: &WorkerError) -> After {
     }
 }
 
+/// How a run starts its lines: where what is kept here is (`store`),
+/// whether `--yes` says the prices (`yes`), what its own yes agreed to
+/// (`agreed`), and whether the app needs a line of a kind beside those of
+/// the kinds given (`needs`).
+pub(crate) struct Run<'a> {
+    pub(crate) store: &'a Path,
+    pub(crate) yes: bool,
+    pub(crate) agreed: Agreed,
+    pub(crate) needs: &'a dyn Fn(LineKind, &[LineKind]) -> bool,
+}
+
 /// Starts each line `lines` asks for (kind and plan, `None`: the one kept
 /// here, or the cheapest), and each line kept here for the environment,
 /// that environment `app.env` of the app named `name` does not have yet,
-/// for `target`, and waits for each to be active. `yes` says a price in
-/// place of asking it; the store of what is kept here is `store`. What is
-/// said goes to stderr, line by line, and comes back too.
+/// for `target`, and waits for each to be active. Every line is asked (said
+/// under `--yes`) before any is sent, but one this run's own yes agreed to
+/// at its price; a no lets the line kept here go, and the run goes on
+/// without it unless the app needs it, when it stops, nothing bought. What
+/// is said goes to stderr, line by line, and comes back too.
 pub(crate) async fn start_lines(
     reach: &impl Reach,
     (app, name): (&App, &str),
     lines: &[(LineKind, Option<String>)],
     target: Target<'_>,
-    (store, yes): (&Path, bool),
+    run: &Run<'_>,
 ) -> Result<Vec<String>, CliError> {
+    let env = app.env.as_str();
     let say = Say { quiet: false };
-    let mut said = Vec::new();
     let uid = reach.uid().await?;
-    let pin = kept::pin_key(&uid, name, app.env.as_str());
-    let kept_here = kinds_kept(&load(store).map_err(failed)?, &pin);
+    let pin = kept::pin_key(&uid, name, env);
+    let kept_here = kinds_kept(&load(run.store).map_err(failed)?, &pin);
+    let record = reach
+        .env(name, env)
+        .await
+        .map_err(|e| kept::worker_error(name, app, &e))?;
+    let mut present: Vec<LineKind> = LineKind::ALL
+        .into_iter()
+        .filter(|kind| on_record(&record, *kind).is_some())
+        .collect();
+    let (mut declined, mut ready) = (Vec::new(), Vec::new());
+    // Every line asked first: a no buys nothing.
     for (kind, asked) in to_start(lines, &kept_here) {
-        if let Some(line) = Box::pin(start_one(
+        match Box::pin(prepare(
             reach,
             (app, name, &pin),
             (kind, &asked),
             target,
-            (store, yes),
+            run,
         ))
         .await?
         {
-            said.push(line);
+            Prepared::OnRecord => {}
+            Prepared::Declined => declined.push(kind),
+            Prepared::Send(line) => {
+                present.push(kind);
+                ready.push((kind, line));
+            }
         }
+    }
+    if let Some(kind) = declined.iter().find(|k| (run.needs)(**k, &present)) {
+        return Err(CliError::new(
+            Code::Declined,
+            t!(
+                "worker_first_deploy.line_declined_needed",
+                kind = kind.label(),
+                env,
+                setting = kind.setting()
+            ),
+        )
+        .hint(t!(
+            "worker_first_deploy.line_declined_needed_hint",
+            flag = kind.flag(),
+            scope = app.scope()
+        )));
+    }
+    for kind in &declined {
+        say.line(&format!(
+            "note: {}",
+            t!(
+                "worker_first_deploy.line_declined_goes_on",
+                kind = kind.label(),
+                env,
+                flag = kind.flag()
+            )
+        ));
+    }
+    let mut said = Vec::new();
+    for (kind, line) in ready {
+        said.push(send(reach, (app, name, &pin), kind, run.store, *line).await?);
+    }
+    for kind in present {
         wait(reach, (app, name), kind, &say).await?;
     }
     Ok(said)
@@ -899,16 +997,27 @@ fn here_of(
     Ok((ip, region))
 }
 
-/// Starts the line of `kind` (`asked` as the run asks its plan) unless the
-/// record has it: what was said of its start, if one was sent.
-async fn start_one(
+/// What a run does of a line, once asked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Prepared {
+    /// On the environment's record already: used as it is.
+    OnRecord,
+    /// Declined, and the line kept here for it let go.
+    Declined,
+    /// To be sent: what is kept here for it now, and the start to send.
+    Send(Box<(Option<Kept>, Kept)>),
+}
+
+/// The line of `kind` (`asked` as the run asks its plan), read and asked,
+/// unless the record has it: nothing sent.
+async fn prepare(
     reach: &impl Reach,
     (app, name, pin): (&App, &str, &str),
     (kind, asked): (LineKind, &Asked),
     target: Target<'_>,
-    (store, yes): (&Path, bool),
-) -> Result<Option<String>, CliError> {
-    let env = app.env.as_str();
+    run: &Run<'_>,
+) -> Result<Prepared, CliError> {
+    let (env, store, yes) = (app.env.as_str(), run.store, run.yes);
     let read = |e: &WorkerError| kept::worker_error(name, app, e);
     let file_key = file_key(pin, kind);
     let mut kept_now = load(store).map_err(failed)?.starts.remove(&file_key);
@@ -919,7 +1028,7 @@ async fn start_one(
         if let Some(line) = &kept_now {
             forget(store, &file_key, line).map_err(failed)?;
         }
-        return Ok(None);
+        return Ok(Prepared::OnRecord);
     }
     let (ip, region) = here_of(kind, target)?;
     let here = (ip.as_deref(), region.as_deref());
@@ -960,15 +1069,22 @@ async fn start_one(
             .map(str::to_owned)
             .or_else(|| kept_now.as_ref().map(|k| k.product_id.clone()));
         let plan = reach.plan(kind, id.as_deref()).await?;
-        let named = *asked != Asked::Kept;
-        agreed_or_asked(
+        match agreed_or_asked(
             reach,
             (kind, &plan, env),
             here,
-            (kept_now.as_ref(), named),
-            yes,
-        )
-        .map_err(|no| declined_new(no, kind, store, (&file_key, kept_now.as_ref())))?;
+            kept_now.as_ref(),
+            (run.agreed, yes),
+        ) {
+            Ok(()) => {}
+            // A no: the line kept here for it goes.
+            Err(no) if no.code == Code::Declined => {
+                put(store, &file_key, None, kept_now.as_ref())
+                    .map_err(|error| failed(t!("worker_server.unkept", error)))?;
+                return Ok(Prepared::Declined);
+            }
+            Err(e) => return Err(e),
+        }
         Kept {
             key: Some(reach.new_key()?.as_str().to_owned()),
             ip,
@@ -976,6 +1092,20 @@ async fn start_one(
             ..Kept::owed(&plan, true)
         }
     };
+    Ok(Prepared::Send(Box::new((kept_now, to_send))))
+}
+
+/// Sends `to_send`, the start of a line of `kind`, kept first under its
+/// key in `store` in place of `kept_now`: what was said of it.
+async fn send(
+    reach: &impl Reach,
+    (app, name, pin): (&App, &str, &str),
+    kind: LineKind,
+    store: &Path,
+    (kept_now, to_send): (Option<Kept>, Kept),
+) -> Result<String, CliError> {
+    let env = app.env.as_str();
+    let file_key = file_key(pin, kind);
     let key = StartKey::new(to_send.key.clone().unwrap_or_default())
         .map_err(|e| failed(e.to_string()))?;
     // Kept before it is sent, as not to be sent again: an answer lost on
@@ -990,7 +1120,7 @@ async fn start_one(
             if let Err(error) = forget(store, &file_key, &to_send) {
                 say.line(&format!("warning: {}", t!("worker_server.unkept", error)));
             }
-            Ok(Some(line))
+            Ok(line)
         }
         Err(e) => Err(not_started(
             &e,
@@ -1001,22 +1131,22 @@ async fn start_one(
 }
 
 /// A new start of a line of `kind` at `plan` for environment `env`, for
-/// `here`: said, not asked, when `kept` is that line agreed to at this
-/// price and never sent, and the run does not name it (`named`); else
-/// asked (said under `yes`), with the price agreed to before when it was
-/// another.
+/// `here`: said, not asked, when this run's own yes (`agreed`) agreed to
+/// it at this price, kept here as `kept`; else asked (said under `yes`),
+/// once more for one agreed to on an earlier run, with the price agreed to
+/// then when it was another.
 fn agreed_or_asked(
     reach: &impl Reach,
     (kind, plan, env): (LineKind, &Plan, &str),
     here: (Option<&str>, Option<&str>),
-    (kept, named): (Option<&Kept>, bool),
-    yes: bool,
+    kept: Option<&Kept>,
+    (agreed, yes): (Agreed, bool),
 ) -> Result<(), CliError> {
     let price = euros(plan);
     let place = place(kind, here);
     let owed = kept.filter(|k| k.key.is_none() && k.agreed && k.product_id == plan.id);
-    // A line this run names again is asked again.
-    if !named && owed.is_some_and(|k| k.price == price) {
+    let same = owed.is_some_and(|k| k.price == price);
+    if agreed.has(kind) && same {
         Say { quiet: false }.line(&t!(
             "worker_first_deploy.line_agreed",
             kind = kind.label(),
@@ -1028,32 +1158,14 @@ fn agreed_or_asked(
         ));
         return Ok(());
     }
-    let since = owed.map(|k| k.price.as_str());
-    ask(reach, (kind, plan, env, &place), Asking::New { since }, yes)
-}
-
-/// A no to a new start's price, `no`: the line kept here for it, owed,
-/// `kept` under `file_key` in `store`, is let go with it.
-fn declined_new(
-    no: CliError,
-    kind: LineKind,
-    store: &Path,
-    (file_key, kept): (&str, Option<&Kept>),
-) -> CliError {
-    if no.code != Code::Declined {
-        return no;
-    }
-    let said = match put(store, file_key, None, kept) {
-        Ok(()) if kept.is_some() => t!(
-            "worker_first_deploy.line_forgotten",
-            kind = kind.label(),
-            flag = kind.flag()
-        ),
-        Ok(()) => return no,
-        Err(error) => t!("worker_server.unkept", error),
+    let asking = match owed {
+        Some(_) if same => Asking::Earlier,
+        Some(k) => Asking::New {
+            since: Some(k.price.as_str()),
+        },
+        None => Asking::New { since: None },
     };
-    let message = format!("{}\n{said}", no.message);
-    CliError { message, ..no }
+    ask(reach, (kind, plan, env, &place), asking, yes)
 }
 
 /// Asks whether to let `line`, a start of a `kind` line kept here that is
@@ -1274,7 +1386,7 @@ fn answer_hint(
 pub(crate) async fn for_deploy(
     app: &App,
     lines: &[(LineKind, Option<String>)],
-    yes: bool,
+    (agreed, yes): (Agreed, bool),
 ) -> Result<(), CliError> {
     let (_, m) = crate::worker::load(&app.dir)?;
     let signed = kept::Signed::open().await?;
@@ -1291,6 +1403,14 @@ pub(crate) async fn for_deploy(
         .await
         .map_err(|e| kept::worker_error(&m.name, app, &e))?;
     let (ip, region) = target_of(&record, app)?;
+    // Whether the app needs a line of `kind`, the lines of `present`
+    // giving their settings.
+    let needs = |kind: LineKind, present: &[LineKind]| {
+        let provided: Vec<&str> = present.iter().map(|k| k.setting()).collect();
+        m.missing_besides(&provided)
+            .iter()
+            .any(|r| r.met(|n| n == kind.setting()))
+    };
     start_lines(
         &Live {
             signed: &signed,
@@ -1302,7 +1422,12 @@ pub(crate) async fn for_deploy(
             ip,
             region: region.as_deref(),
         },
-        (&store, yes),
+        &Run {
+            store: &store,
+            yes,
+            agreed,
+            needs: &needs,
+        },
     )
     .await
     .map(|_| ())
@@ -1343,6 +1468,9 @@ enum Asking<'a> {
     New { since: Option<&'a str> },
     /// The start kept here, sent again under its key.
     Again,
+    /// A line agreed to on an earlier run at this price, never sent: asked
+    /// once more in this run.
+    Earlier,
 }
 
 /// Asks the price of `plan` for a line of `kind` of environment `env`,
@@ -1364,36 +1492,60 @@ fn ask(
             was,
             price = price.as_str()
         )),
-        Asking::New { since: None } => None,
+        Asking::New { since: None } | Asking::Earlier => None,
     };
     let with = |text: String| match &before {
         Some(before) => format!("{before}\n{text}"),
         None => text,
     };
+    let kind_said = kind.label();
     if yes {
-        Say { quiet: false }.line(&with(t!(
-            "worker_first_deploy.line_note",
-            kind = kind.label(),
-            name,
-            product,
-            env,
-            place,
-            price = price_said
-        )));
+        let note = if asking == Asking::Earlier {
+            t!(
+                "worker_first_deploy.line_note_agreed",
+                kind = kind_said,
+                name,
+                product,
+                env,
+                place,
+                price = price_said
+            )
+        } else {
+            t!(
+                "worker_first_deploy.line_note",
+                kind = kind_said,
+                name,
+                product,
+                env,
+                place,
+                price = price_said
+            )
+        };
+        Say { quiet: false }.line(&with(note));
         return Ok(());
     }
-    if reach
-        .confirm(&with(t!(
-            "worker_first_deploy.line_question",
-            kind = kind.label(),
+    let question = if asking == Asking::Earlier {
+        t!(
+            "worker_first_deploy.line_question_agreed",
+            kind = kind_said,
             name,
             product,
             env,
             place,
             price = price_said
-        )))
-        .map_err(failed)?
-    {
+        )
+    } else {
+        t!(
+            "worker_first_deploy.line_question",
+            kind = kind_said,
+            name,
+            product,
+            env,
+            place,
+            price = price_said
+        )
+    };
+    if reach.confirm(&with(question)).map_err(failed)? {
         Ok(())
     } else {
         Err(CliError::new(
@@ -1689,7 +1841,31 @@ mod tests {
         lines: &[(LineKind, Option<String>)],
         yes: bool,
     ) -> Result<Vec<String>, CliError> {
-        start_lines(fake, (&app(), "bot"), lines, target(), (&fake.store, yes)).await
+        run_agreed(fake, lines, yes, Agreed::default()).await
+    }
+
+    /// [`run`], the lines of `agreed` agreed to by this run's own yes, and
+    /// an app that needs none.
+    async fn run_agreed(
+        fake: &Fake,
+        lines: &[(LineKind, Option<String>)],
+        yes: bool,
+        agreed: Agreed,
+    ) -> Result<Vec<String>, CliError> {
+        let needs = |_: LineKind, _: &[LineKind]| false;
+        start_lines(
+            fake,
+            (&app(), "bot"),
+            lines,
+            target(),
+            &Run {
+                store: &fake.store,
+                yes,
+                agreed,
+                needs: &needs,
+            },
+        )
+        .await
     }
 
     async fn go(fake: &Fake, kind: LineKind, yes: bool) -> Result<Vec<String>, CliError> {
@@ -1750,7 +1926,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn under_yes_the_price_is_said_and_a_no_starts_nothing_and_lets_the_line_asked_go() {
+    async fn under_yes_the_price_is_said_and_a_no_starts_nothing_and_lets_the_line_kept_go() {
         let dir = tempfile::tempdir().expect("a directory");
         let fake = Fake::new(&dir);
         let _ = crate::node::common::heard::take_printed();
@@ -1764,14 +1940,11 @@ mod tests {
             "{printed}"
         );
         assert_eq!(fake.sent.borrow().len(), 1);
-        // A no: declined, nothing sent or kept.
+        // A no: nothing sent or kept, and the run goes on without it.
         let dir = tempfile::tempdir().expect("a directory");
         let fake = Fake::new(&dir);
         fake.says_yes.borrow_mut().push(false);
-        let e = go(&fake, LineKind::Grpc, false)
-            .await
-            .expect_err("declined");
-        assert_eq!(e.code, Code::Declined);
+        go(&fake, LineKind::Grpc, false).await.expect("goes on");
         assert!(fake.sent.borrow().is_empty());
         assert_eq!(fake.kept(), None);
         // A no to a line kept here, owed: it is let go, and said.
@@ -1779,25 +1952,28 @@ mod tests {
         let fake = Fake::new(&dir);
         fake.keep(LineKind::Grpc, &owed(false));
         fake.says_yes.borrow_mut().push(false);
-        let e = run(&fake, &[], false).await.expect_err("declined");
-        assert_eq!(e.code, Code::Declined);
+        let _ = crate::node::common::heard::take_printed();
+        run(&fake, &[], false).await.expect("goes on");
+        let printed = crate::node::common::heard::take_printed().join("\n");
         assert!(
-            e.message.contains("no longer keeps the gRPC line") && e.message.contains("--grpc"),
-            "{}",
-            e.message
+            printed.contains("no longer keeps it") && printed.contains("--grpc"),
+            "{printed}"
         );
         assert_eq!(fake.kept(), None);
         assert!(fake.sent.borrow().is_empty());
     }
 
     #[tokio::test]
-    async fn a_line_agreed_to_and_never_sent_starts_unasked_while_its_price_is_the_one_agreed() {
-        // Kept here, agreed, not on the command line: started, said.
+    async fn a_line_is_started_only_after_a_yes_of_its_own_run() {
+        // Agreed to by this run's own yes, at this price: said, not asked
+        // again.
         let dir = tempfile::tempdir().expect("a directory");
         let fake = Fake::new(&dir);
         fake.keep(LineKind::Grpc, &owed(true));
         let _ = crate::node::common::heard::take_printed();
-        run(&fake, &[], false).await.expect("started");
+        run_agreed(&fake, &[], false, Agreed::default().with(LineKind::Grpc))
+            .await
+            .expect("started");
         assert!(fake.asked.borrow().is_empty(), "not asked again");
         let printed = crate::node::common::heard::take_printed().join("\n");
         assert!(
@@ -1805,9 +1981,9 @@ mod tests {
             "{printed}"
         );
         assert_eq!(fake.sent.borrow().len(), 1);
-        assert_eq!(fake.sent.borrow()[0].1["productId"], "prod_grpc_1");
         assert_eq!(fake.kept(), None);
-        // At the plan kept, not the cheapest.
+        // Agreed to on an earlier run: asked once in this one, at the
+        // catalogue's price now, at the plan kept, not the cheapest.
         let dir = tempfile::tempdir().expect("a directory");
         let fake = Fake::new(&dir);
         fake.keep(
@@ -1818,30 +1994,33 @@ mod tests {
             },
         );
         run(&fake, &[], false).await.expect("started");
-        assert!(fake.asked.borrow().is_empty());
+        let asked = fake.asked.borrow().clone();
+        assert_eq!(asked.len(), 1);
+        assert!(
+            asked[0].contains("agreed to on an earlier run")
+                && asked[0].contains("for 203.0.113.10")
+                && asked[0].contains("€0.1250"),
+            "{}",
+            asked[0]
+        );
         assert_eq!(fake.sent.borrow()[0].1["productId"], "prod_grpc_2");
-        // Named again on the command line: asked again, at the same price.
+        // Under --yes: said, not asked.
         let dir = tempfile::tempdir().expect("a directory");
         let fake = Fake::new(&dir);
         fake.keep(LineKind::Grpc, &owed(true));
-        fake.says_yes.borrow_mut().push(false);
-        let e = run(&fake, &[(LineKind::Grpc, None)], false)
-            .await
-            .expect_err("declined");
-        assert_eq!(fake.asked.borrow().len(), 1);
-        assert!(
-            e.message.contains("no longer keeps the gRPC line"),
-            "{}",
-            e.message
-        );
-        assert_eq!(fake.kept(), None);
-        assert!(fake.sent.borrow().is_empty());
-        // The catalogue's price changed since: asked, the price agreed said.
+        let _ = crate::node::common::heard::take_printed();
+        run(&fake, &[], true).await.expect("started");
+        assert!(fake.asked.borrow().is_empty());
+        let printed = crate::node::common::heard::take_printed().join("\n");
+        assert!(printed.contains("agreed to on an earlier run"), "{printed}");
+        assert_eq!(fake.sent.borrow().len(), 1);
+        // This run's yes, and the catalogue's price changed since: asked,
+        // the price agreed said.
         let dir = tempfile::tempdir().expect("a directory");
         let fake = Fake::new(&dir);
         fake.keep(LineKind::Grpc, &owed(true));
         fake.cents.set(20.0);
-        run(&fake, &[(LineKind::Grpc, None)], false)
+        run_agreed(&fake, &[], false, Agreed::default().with(LineKind::Grpc))
             .await
             .expect("started");
         let asked = fake.asked.borrow().clone();
@@ -1851,30 +2030,107 @@ mod tests {
             "{}",
             asked[0]
         );
-        // Agreed to no longer (a start of it answered without the line), or
-        // asked for another plan: asked.
-        for (line, lines) in [
-            (owed(false), vec![]),
+        // This run's yes was for another kind, or the line agreed to no
+        // longer, or asked for another plan: asked.
+        for (line, lines, agreed) in [
+            (owed(true), vec![], Agreed::default().with(LineKind::Shreds)),
+            (owed(false), vec![], Agreed::default().with(LineKind::Grpc)),
             (
                 owed(true),
                 vec![(LineKind::Grpc, Some("prod_grpc_2".to_owned()))],
+                Agreed::default().with(LineKind::Grpc),
             ),
         ] {
             let dir = tempfile::tempdir().expect("a directory");
             let fake = Fake::new(&dir);
             fake.keep(LineKind::Grpc, &line);
-            run(&fake, &lines, false).await.expect("started");
+            run_agreed(&fake, &lines, false, agreed)
+                .await
+                .expect("started");
             assert_eq!(fake.asked.borrow().len(), 1);
             assert_eq!(fake.sent.borrow().len(), 1);
         }
-        // Under --yes, a price changed since is said.
+    }
+
+    #[tokio::test]
+    async fn a_no_lets_the_line_go_and_the_deploy_goes_on_without_it_unless_the_app_needs_it() {
+        // Two lines asked; a no to the first, a yes to the second.
+        let both = [(LineKind::Grpc, None), (LineKind::Shreds, None)];
         let dir = tempfile::tempdir().expect("a directory");
         let fake = Fake::new(&dir);
         fake.keep(LineKind::Grpc, &owed(true));
-        fake.cents.set(20.0);
-        run(&fake, &[], true).await.expect("started");
-        assert!(fake.asked.borrow().is_empty());
-        assert_eq!(fake.sent.borrow().len(), 1);
+        *fake.says_yes.borrow_mut() = vec![false, true];
+        let _ = crate::node::common::heard::take_printed();
+        run(&fake, &both, false).await.expect("goes on");
+        let printed = crate::node::common::heard::take_printed().join("\n");
+        assert!(
+            printed.contains("no longer keeps it") && printed.contains("goes on without it"),
+            "{printed}"
+        );
+        assert_eq!(fake.kept(), None, "the gRPC line kept here let go");
+        let sent = fake.sent.borrow().clone();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].1["kind"], "shreds");
+        // The app needs the gRPC line: stopped, nothing sent at all.
+        let dir = tempfile::tempdir().expect("a directory");
+        let fake = Fake::new(&dir);
+        *fake.says_yes.borrow_mut() = vec![false, true];
+        let needs = |kind: LineKind, present: &[LineKind]| {
+            kind == LineKind::Grpc && !present.contains(&LineKind::Grpc)
+        };
+        let e = start_lines(
+            &fake,
+            (&app(), "bot"),
+            &both,
+            target(),
+            &Run {
+                store: &fake.store,
+                yes: false,
+                agreed: Agreed::default(),
+                needs: &needs,
+            },
+        )
+        .await
+        .expect_err("stopped");
+        assert_eq!(e.code, Code::Declined);
+        assert!(
+            e.message.contains("GRPC_ENDPOINT") && e.message.contains("nothing was bought"),
+            "{}",
+            e.message
+        );
+        assert!(
+            e.hint.as_deref().is_some_and(|h| h.contains("--grpc")),
+            "{e:?}"
+        );
+        assert_eq!(fake.asked.borrow().len(), 2, "every line asked first");
+        assert!(fake.sent.borrow().is_empty());
+        assert_eq!(fake.kept_of(LineKind::Shreds), None);
+        // What a line on the record gives counts: the app needs gRPC or
+        // Shreds, and a Shreds line is there already.
+        let dir = tempfile::tempdir().expect("a directory");
+        let fake = Fake::new(&dir);
+        fake.lines
+            .borrow_mut()
+            .push(line("shreds", "active", Some("shreds.example.net:443")));
+        fake.says_yes.borrow_mut().push(false);
+        let either = |kind: LineKind, present: &[LineKind]| {
+            kind == LineKind::Grpc && !present.contains(&LineKind::Shreds)
+        };
+        start_lines(
+            &fake,
+            (&app(), "bot"),
+            &[(LineKind::Grpc, None)],
+            target(),
+            &Run {
+                store: &fake.store,
+                yes: false,
+                agreed: Agreed::default(),
+                needs: &either,
+            },
+        )
+        .await
+        .expect("goes on");
+        assert!(fake.sent.borrow().is_empty());
     }
 
     /// What one answer to a line start leaves kept here: its key, and
@@ -2295,7 +2551,12 @@ mod tests {
                 ip: IP,
                 region: None,
             },
-            (&fake.store, false),
+            &Run {
+                store: &fake.store,
+                yes: false,
+                agreed: Agreed::default(),
+                needs: &|_, _| false,
+            },
         )
         .await
         .expect_err("refused");

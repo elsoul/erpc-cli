@@ -1400,25 +1400,29 @@ pub(crate) async fn run(json: bool, mut action: Action, asking: Asking) -> Outco
             // The data lines a first deploy starts in the account, once its
             // server is logged in to.
             let mut owed = Vec::new();
-            let started =
+            let (first, agreed) =
                 match Box::pin(crate::worker::first_deploy::first(json, &app, &at, yes)).await {
-                    Ok(crate::worker::first_deploy::First::AsBefore) => false,
-                    Ok(crate::worker::first_deploy::First::Picked(id)) => {
-                        at.vps = Some(id);
-                        false
-                    }
-                    // The lines it asked are kept on this machine, owed.
-                    Ok(crate::worker::first_deploy::First::Started) => {
-                        let _ = crate::worker::first_deploy::after_started(&mut at);
-                        true
-                    }
-                    // The lines this run names are asked again.
-                    Ok(crate::worker::first_deploy::First::Owed) => {
-                        owed = crate::worker::first_deploy::after_started(&mut at);
-                        true
-                    }
+                    Ok(first) => first,
                     Err(e) => return e.into(),
                 };
+            let started = match first {
+                crate::worker::first_deploy::First::AsBefore => false,
+                crate::worker::first_deploy::First::Picked(id) => {
+                    at.vps = Some(id);
+                    false
+                }
+                // The lines it asked are kept on this machine, owed, those
+                // this run's yes agreed to among them.
+                crate::worker::first_deploy::First::Started => {
+                    let _ = crate::worker::first_deploy::after_started(&mut at);
+                    true
+                }
+                // The lines this run names are asked, with those kept here.
+                crate::worker::first_deploy::First::Owed => {
+                    owed = crate::worker::first_deploy::after_started(&mut at);
+                    true
+                }
+            };
             let then = |e: CliError| {
                 if started {
                     crate::worker::first_deploy::after_start(e, &app)
@@ -1448,8 +1452,12 @@ pub(crate) async fn run(json: bool, mut action: Action, asking: Asking) -> Outco
             // The lines asked, and those kept on this machine for it, once
             // its server is logged in to.
             if started
-                && let Err(e) =
-                    Box::pin(crate::worker::line_start::for_deploy(&app, &owed, yes)).await
+                && let Err(e) = Box::pin(crate::worker::line_start::for_deploy(
+                    &app,
+                    &owed,
+                    (agreed, yes),
+                ))
+                .await
             {
                 return then(e).into();
             }

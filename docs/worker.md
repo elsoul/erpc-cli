@@ -1027,9 +1027,7 @@ asked for before the command checks its own options, so a value it refuses
 
 The picker asks for a command that only reads, or that asks before it
 buys, ends, deletes, sends or changes anything: a key typed ahead must not
-choose what a command that goes ahead without asking acts on. One step is
-the exception: `deploy` may start a data line an earlier run agreed to,
-with no question in that run (below).
+choose what a command that goes ahead without asking acts on.
 
 The picker asks nothing, and the command fails with `there is no erpc.toml
 in … or above it` as before, for:
@@ -1050,9 +1048,8 @@ The commands that do ask are `check`, `key show`, `key balance`, `key send`
 `releases`, `delete`, `move`, `firewall list`, `firewall allow`, `firewall
 deny`, `firewall sync`, `backup on`, `backup off` and `backup status`, each
 without `--yes`. The app is picked first. Then four of them may do
-something before a question of their own, or with none in that run, all of
-it free but for a data line a deploy starts as an earlier run agreed
-(below):
+something that costs nothing before a question of their own, or with none
+in that run:
 
 - `server start` makes the app's and the environment's records in the ERPC
   account when they are missing (they cost nothing), before its price
@@ -1078,10 +1075,7 @@ it free but for a data line a deploy starts as an earlier run agreed
   asked when they are started. A deploy of an environment kept in the
   account whose record names a server and no deploy, with a data line asked
   or kept on this machine for it, keeps the lines asked on this machine
-  before any question, and starts a line an earlier run agreed to, and
-  never sent, with no question in that run while the hourly catalogue's
-  price is the one agreed to: that line is charged by the hour from then,
-  its price said on stderr;
+  before any question, and starts none without a yes in that run;
 - `server end`, run again after a stop, may first finish clearing the
   address of a server whose end was already said yes to, and then asks
   nothing more in that run;
@@ -1660,7 +1654,8 @@ encrypted by restic. A storage plan is needed (`erpc storage buy 5`).
       (the server's, then the lines') are asked at the terminal even with
       `--yes`, unless `--new-server` is on the command line too; `--yes`
       still takes only the size `--plan` names, and offers no other. A
-      line an earlier run agreed to is said, not asked again. A first deploy makes the records before it
+      line an earlier run agreed to is said there, and asked once the
+      server is logged in to. A first deploy makes the records before it
       writes `account = true`, so an environment the account you are signed
       in to has no record of at all is another account's, or deleted: it
       is refused as before, saying so (`erpc login` with the account it was
@@ -1687,13 +1682,18 @@ encrypted by restic. A storage plan is needed (`erpc storage buy 5`).
       Its price is the hourly catalogue's for the plan; the account's line
       start takes no price, and the line is charged its own. The lines
       asked are kept on this machine (`worker_line_starts.json`, beside
-      erpc's config) until each is on the record. One agreed to and never
-      sent is started without asking again while the catalogue's price is
-      the one agreed to and the run does not name its flag again (said on
-      stderr); a price changed since is asked (said under `--yes`), and so
-      is a line whose flag the run names, and every other start of a line.
-      A no to a line's price, there or on a first deploy, lets the line
-      kept here for it go: a run again starts it only with its flag.
+      erpc's config) until each is on the record. A line is started only
+      after a yes in that run (said under `--yes`, which the run's command
+      line carries): one the first deploy's own question agreed to, at its
+      price, is not asked again in that run; one an earlier run agreed to
+      is asked once more, at the hourly catalogue's price now, with the
+      price agreed to then when it changed; every other start of a line is
+      asked too. Every line is asked before any is sent. A no lets the line
+      kept here go, and the deploy goes on without it, unless the app needs
+      the setting it gives: then it stops, nothing bought. A no to a line's
+      price on a first deploy, before the server is bought, lets the line
+      kept here for it go too. A run again starts a line let go only with
+      its flag.
     - Each line start is sent under a key kept on this machine before it is
       sent, as not to be sent again, and what the account answers decides
       what becomes of it, as its contract says: started, the key goes; an
