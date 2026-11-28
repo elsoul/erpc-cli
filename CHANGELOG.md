@@ -249,17 +249,28 @@ whose version has no entry below.
   `--from-account`, `secret rm`, `api` with a method other than GET, `backup
   now`), under `--json`, with no terminal or with `TERM=dumb`. It asks for a
   command that only reads, or that asks before it buys, ends, deletes, sends
-  or changes anything. The app is picked first; then three of those do
-  something free before their own question: `server start` makes the app's
-  and the environment's records in the ERPC account when they are missing
-  (they cost nothing); `deploy`, unless the app ships a `build.prebuilt`
-  binary or cargo is not installed, runs `rustc` (and `rustup`, to
-  cross-build) in the app's directory, the `rustc` that `RUSTC` or
-  `CARGO_BUILD_RUSTC` names, else the one `RUSTUP_TOOLCHAIN` or the app's
-  `rust-toolchain.toml` (a `path` toolchain included) picks, and rustup can
-  install the toolchain the file names; and `server end`, run again after a
-  stop, may first finish clearing the address of a server whose end was
-  already said yes to, and then asks nothing more in that run.
+  or changes anything. The app is picked first; then four of those may do
+  something that costs nothing before a question of their own, or with none
+  in that run: `server start` makes the app's and the environment's records
+  in the ERPC account when they are missing (they cost nothing), before its
+  price question; `deploy`, unless the app ships a `build.prebuilt` binary
+  or cargo is not installed, runs `rustc` (and `rustup`, to cross-build) in
+  the app's directory, the `rustc` that `RUSTC` or `CARGO_BUILD_RUSTC`
+  names, else the one `RUSTUP_TOOLCHAIN` or the app's `rust-toolchain.toml`
+  (a `path` toolchain included) picks, and rustup can install the toolchain
+  the file names, and a first deploy that starts a new server in the account
+  (`--new-server`, or the new server picked at the terminal, or one run
+  again after it stopped) makes the same records as `server start`, before
+  its price question (or, when a start kept on this machine went through
+  before, writes `account = true` to `erpc.toml` as the yes to that start
+  agreed); `server end`, run again after a stop, may first finish clearing
+  the address of a server whose end was already said yes to, and then asks
+  nothing more in that run; and `delete --release-server` of an environment
+  kept in the account that the account no longer has, when this machine
+  trusted it under this sign-in, may first finish deleting the app's record
+  that an earlier yes agreed to delete with it (with the settings and
+  secrets the account keeps for the app), then puts the environment away
+  here, and asks nothing in that run.
 - At a terminal, the steps of `erpc worker build` and `erpc worker deploy`
   that can take minutes (the build, the wait for a new server to be ready,
   the wait for a server kept in the ERPC account to be ready for its first

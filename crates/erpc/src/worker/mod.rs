@@ -1074,13 +1074,19 @@ impl Action {
     /// `key import`, `secret put --generate` or `--from-account`, `secret
     /// rm`, `api` with a method other than GET, and `backup now`. The
     /// others only read, or ask before they buy, end, delete, send or
-    /// change anything. After the pick, three do something free before
-    /// their own question: `server start` (the account's records of the
-    /// app and environment, made when missing), `deploy` (`rustc`, and
-    /// `rustup` to cross-build, in the app's directory, for an app it
-    /// builds) and `server end` run again after a stop (it may finish
-    /// clearing the address of an end already said yes to, and then asks
-    /// nothing more).
+    /// change anything. After the pick, four may do something that costs
+    /// nothing before a question of their own, or with none in that run:
+    /// `server start` (the account's records of the app and environment,
+    /// made when missing), `deploy` (`rustc`, and `rustup` to cross-build,
+    /// in the app's directory, for an app it builds; and, starting a new
+    /// server in the account, the same records as `server start`, or, for
+    /// a start kept here that went through before, `account = true` in
+    /// erpc.toml), `server
+    /// end` run again after a stop (it may finish clearing the address of
+    /// an end already said yes to) and `delete --release-server` of an
+    /// environment the account no longer has (it may finish deleting the
+    /// app's record an earlier yes agreed to, and puts the environment
+    /// away here).
     fn app_slot(&mut self) -> Option<AppSlot<'_>> {
         let (dir, goes_ahead) = match self {
             Self::Init { .. }
@@ -3087,9 +3093,11 @@ mod tests {
     }
 
     /// The verbs that ask for the app: they read, or ask before they buy,
-    /// end, delete, send or change anything; three of them (server start,
-    /// deploy, server end run again) do something free after the pick and
-    /// before their own question ([`super::Action::app_slot`]).
+    /// end, delete, send or change anything; four of them (server start,
+    /// deploy, server end run again, delete of an environment the account
+    /// no longer has) may do something that costs nothing after the pick
+    /// and before, or without, a question of their own
+    /// ([`super::Action::app_slot`]).
     const ASKING: [&str; 30] = [
         "check",
         "key show",
@@ -3170,8 +3178,8 @@ mod tests {
     ];
 
     /// Every verb that takes an app and only reads, or asks before it buys,
-    /// ends, deletes, sends or changes anything (three of them after a free
-    /// step: [`super::Action::app_slot`]), asks for the app when it was not
+    /// ends, deletes, sends or changes anything (four of them after a step
+    /// that costs nothing: [`super::Action::app_slot`]), asks for the app when it was not
     /// named, and goes on with the directory picked in its `--dir`. A verb
     /// given the app, one about no app, one given `--yes`, one that changes
     /// something or runs the app's code without asking, and any run under

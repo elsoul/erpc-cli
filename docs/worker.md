@@ -1045,21 +1045,37 @@ The commands that do ask are `check`, `key show`, `key balance`, `key send`
 `logs`, `api` with GET, `trades`, `start`, `stop`, `restart`, `rollback`,
 `releases`, `delete`, `move`, `firewall list`, `firewall allow`, `firewall
 deny`, `firewall sync`, `backup on`, `backup off` and `backup status`, each
-without `--yes`. The app is picked first. Then three of them do something
-free before their own question:
+without `--yes`. The app is picked first. Then four of them may do
+something that costs nothing before a question of their own, or with none
+in that run:
 
 - `server start` makes the app's and the environment's records in the ERPC
-  account when they are missing (they cost nothing);
+  account when they are missing (they cost nothing), before its price
+  question;
 - `deploy` looks at the Rust toolchain in the app's directory, unless the
   app ships a `build.prebuilt` binary (which is not built) or cargo is not
   installed: it runs `rustc` there (and `rustup`, to cross-build). Which
   `rustc` that is comes from `RUSTC` or `CARGO_BUILD_RUSTC` when one is
   set, else from `RUSTUP_TOOLCHAIN` or the app's `rust-toolchain.toml` (a
   `path` toolchain included), and rustup can install the toolchain the file
-  names;
+  names. A first deploy that starts a new server in the account
+  (`--new-server`, or the new server picked at the terminal, for an
+  environment `erpc.toml` has nothing for; or one run again after it
+  stopped) also makes the app's and the environment's records in the ERPC
+  account when they are missing, as `server start` does, before its price
+  question; when a start this machine kept for it went through before, it
+  says so instead of asking the price, and writes `account = true` for the
+  environment to `erpc.toml`, as the yes to that start agreed;
 - `server end`, run again after a stop, may first finish clearing the
   address of a server whose end was already said yes to, and then asks
-  nothing more in that run.
+  nothing more in that run;
+- `delete --release-server` of an environment kept in the ERPC account that
+  the account no longer has, when this machine trusted it under this
+  sign-in (a run that stopped after deleting it, say): it may first finish
+  deleting the app's record that an earlier yes agreed to delete with it,
+  with the settings and secrets the account keeps for the app, then puts
+  the environment away here (its table in `erpc.toml` and this machine's
+  records of it), and asks nothing in that run.
 
 At a terminal, results and failures are drawn with a mark on each line (✅
 done, ⚠️ to heed, 💡 a hint, 👉 the commands to run next) and progress with
