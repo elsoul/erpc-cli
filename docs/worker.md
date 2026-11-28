@@ -1641,39 +1641,46 @@ encrypted by restic. A storage plan is needed (`erpc storage buy 5`).
       was; once a yes wrote `account = true`, it stays, whatever follows
       (another size or region declined, a line not started), and `erpc
       worker deploy` goes on from there (with `--plan` when it was asked,
-      as the stop says), the lines kept here with it.
+      while the account names no server for it, as the stop says), the
+      lines kept here with it, each asked again before it is started. A
+      line start kept on this machine under a key for the app's and the
+      environment's names (from an earlier environment or server of those
+      names, its outcome not known) refuses the first deploy before
+      anything is made or bought, naming the start and ERPC support.
     - Then the deploy goes on as one to an environment kept there: it waits
       for the server, logs in to it once after a yes at the terminal (**The
       first login** below), asks whether to trust what the account then
       has, and deploys.
-    - A run that stopped is run again: `erpc worker deploy` of an
-      environment `erpc.toml` keeps in the account whose record names no
-      server, no address, no line and no deploy starts one the same way, a
-      start kept on this machine or open in the account first, and never a
-      second server while one is open or on the record. There the prices
-      (the server's, then the lines') are asked at the terminal even with
-      `--yes`, unless `--new-server` is on the command line too; `--yes`
-      still takes only the size `--plan` names, and offers no other. A
-      line an earlier run agreed to is said there, and asked once the
-      server is logged in to. A first deploy makes the records before it
-      writes `account = true`, so an environment the account you are signed
-      in to has no record of at all is another account's, or deleted: it
-      is refused as before, saying so (`erpc login` with the account it was
-      made in), and only `--new-server` starts a server for it in the
-      account you are signed in to, its price asked as for a first deploy
-      (said under `--yes`). An
-      environment whose record names a server, an address, a line or a
-      deploy (as one deployed to before keeps it once `server end` ended its
-      server) is deployed to, or refused, as before; but one whose record
-      names a server and no deploy yet (a first deploy that stopped after
-      its server's start, or one `erpc worker move --to account` moved in),
-      deployed with a data line's flag, or with a line kept on this machine
-      for it, and nothing else for a server, starts those lines before the
-      deploy, at a terminal (refused first under `--json` or with nobody
-      there), once what refuses the deploy is checked (what it needs on this
-      machine, the names the account keeps, a server coming in or going
-      out). So the plain `erpc worker deploy` a stop names goes on with the
-      lines asked.
+    - A run that stopped is run again: `erpc worker deploy` of an environment
+      `erpc.toml` keeps in the account whose record names no server, no
+      address, no line and no deploy starts one the same way, a start kept on
+      this machine or open in the account first, and never a second server
+      while one is open or on the record. There the prices (the server's, then
+      the lines') are asked at the terminal even with `--yes`, unless
+      `--new-server` is on the command line too; `--yes` still takes only the
+      size `--plan` names, and offers no other. Every line to be started
+      there, one an earlier run agreed to and kept here too, is asked before
+      the server is bought, as on a first deploy; a line start kept here under
+      a key refuses the run first, as above. A server start kept here to send
+      again is sent again as it was kept, whatever the stock read lists now. A
+      first deploy makes the records before it writes `account = true`, so an
+      environment the account you are signed in to has no record of at all is
+      another account's, or deleted: it is refused as before, saying so (`erpc
+      login` with the account it was made in), and only `--new-server` starts
+      a server for it in the account you are signed in to, its price asked as
+      for a first deploy (said under `--yes`). An environment whose record
+      names a server, an address, a line or a deploy (as one deployed to
+      before keeps it once `server end` ended its server) is deployed to, or
+      refused, as before; but one whose record names a server and no deploy
+      yet (a first deploy that stopped after its server's start, or one `erpc
+      worker move --to account` moved in), deployed with a data line's flag,
+      or with a line kept on this machine for it, and nothing else for a
+      server, starts those lines before the deploy, each asked at a terminal
+      (`--yes` does not answer them, as `--new-server` is not taken there;
+      refused first under `--json` or with nobody there), once what refuses
+      the deploy is checked (what it needs on this machine, the names the
+      account keeps, a server coming in or going out). So the plain `erpc
+      worker deploy` a stop names goes on with the lines asked.
     - A data line asked on the first deploy (`--grpc`, `--shreds`,
       `--unlimited`, each at its plan or the cheapest) is started in the
       ERPC account for the environment, once its server is logged in to:
@@ -1683,42 +1690,45 @@ encrypted by restic. A storage plan is needed (`erpc storage buy 5`).
       start takes no price, and the line is charged its own. The lines
       asked are kept on this machine (`worker_line_starts.json`, beside
       erpc's config) until each is on the record. A line is started only
-      after a yes in that run (said under `--yes`, which the run's command
-      line carries): one the first deploy's own question agreed to, at its
+      after a yes in that run, or said under `--yes` (on a run again, only
+      with `--new-server`): one that run's own question agreed to, at its
       price, is not asked again in that run; one an earlier run agreed to
       is asked once more, at the hourly catalogue's price now, with the
       price agreed to then when it changed; every other start of a line is
       asked too. Every line is asked before any is sent. A no lets the line
       kept here go, and the deploy goes on without it, unless the app needs
-      the setting it gives: then it stops, nothing bought. A no to a line's
-      price on a first deploy, before the server is bought, lets the line
-      kept here for it go too. A run again starts a line let go only with
-      its flag.
+      the setting it gives: then it stops, starting no line. A no to a
+      line's price before the server is bought, on a first deploy or a run
+      again, stops it with nothing bought, and lets the line kept here for
+      it go too. Once the environment is deployed to, erpc does not add a
+      line to it yet.
     - Each line start is sent under a key kept on this machine before it is
-      sent, as not to be sent again, and what the account answers decides
-      what becomes of it, as its contract says: started, the key goes; an
-      answer that bought nothing (credit, a limit, a line not sold, another
-      start of it open, the line ended while it was being started), the key
-      goes, and the line stays asked, its price asked again on a run again;
-      an answer that says to send it again (a start pending with a retry,
-      an unavailable purchase, the account busy), or none at all, keeps the
-      key, and a run again sends it again under it, with the same body, its
-      price asked again, which buys no second line; any other answer (the
-      start unsettled, whatever its reason, a key the account had with
-      another request, a code erpc does not know) keeps the key and never
-      sends it again, the stop naming the start and ERPC support. Each run
-      reads the account first: a line of the kind on the record is used as
-      it is; every open start is looked at, and one of a kind erpc cannot
-      tell, two of the kind, one this machine did not keep to send again,
-      or the one it kept for another plan or address, refuses the run,
-      nothing sent. A start kept here that is not sent again (or that was
-      kept for another plan or address), once the account lists no start
-      of the kind open and names no such line, is let go only after a yes
-      at a terminal, never under `--yes`; a line started after it is a new
-      purchase, its price asked. Then the deploy waits up to three minutes
-      for the line to be active with its endpoint; when it is not, it
-      stops, and `erpc worker deploy` goes on from there, buying nothing
-      more.
+      sent, as not to be sent again, and what the account answers decides what
+      becomes of it, as its contract says: started, the key goes; an answer
+      that bought nothing (credit, a limit, a line not sold, another start of
+      it open, the line ended while it was being started), the key goes, and
+      the line stays asked, its price asked again on a run again; an answer
+      that says to send it again (a start pending with a retry, an unavailable
+      purchase, the account busy), or none at all, keeps the key, and a run
+      again sends it again under it, with the same body, its price asked
+      again, which buys no second line; any other answer (the start unsettled,
+      whatever its reason, a key the account had with another request, a code
+      erpc does not know) keeps the key and never sends it again, the stop
+      naming the start, ERPC support and `erpc worker status`. Each run reads
+      the account first: a line of the kind on the record is used as it is;
+      every open start is looked at, and one of a kind erpc cannot tell, two
+      of the kind, one this machine did not keep to send again, or the one it
+      kept for another plan or address, refuses the run, nothing sent. A start
+      kept here that is not sent again (or that was kept for another plan or
+      address), once the account lists no start of the kind open and names no
+      such line, is let go only after a yes at a terminal, never under
+      `--yes`; a line started after it is a new purchase, its price asked. One
+      the account answered had bought a line it did not put on the record
+      (`start_mismatch`) is never let go here, and no other start is made for
+      it: each run stops, naming the start, ERPC support and `erpc worker
+      status`. Then the deploy waits up to three minutes for the line to be
+      active with its endpoint; when it is not, it stops, and `erpc worker
+      deploy` goes on from there, buying nothing more.
     - It goes as before, keeping the environment in `erpc.toml` (or its
       1Password item), for an environment that has anything in `erpc.toml`,
       for `--host`, `--server`, a server of the account picked at the

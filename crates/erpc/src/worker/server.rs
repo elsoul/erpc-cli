@@ -1212,6 +1212,21 @@ pub(crate) async fn for_deploy(
     .map(|(_, text)| text)
 }
 
+/// Whether a start this machine kept for environment `app.env` of the app
+/// named `name`, through the signed-in `signed`, is one the account said
+/// to send again under its key.
+pub(crate) async fn kept_to_send_again(
+    signed: &kept::Signed,
+    app: &App,
+    name: &str,
+) -> Result<bool, CliError> {
+    let uid = Buying::uid(signed).await?;
+    let store = crate::account::session::beside_config(FILE).map_err(failed)?;
+    let saved = kept_start(&store, &kept::pin_key(&uid, name, &app.env))
+        .map_err(|error| failed(t!("worker_server.not_read", error)))?;
+    Ok(saved.is_some_and(|s| s.resend))
+}
+
 /// `erpc worker server start`.
 pub(crate) async fn start(json: bool, app: &App, cores: u16, region: &str, yes: bool) -> Outcome {
     match run(json, app, (cores, region, yes)).await {

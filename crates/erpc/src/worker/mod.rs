@@ -408,10 +408,11 @@ pub(crate) enum Action {
         vps: Option<i64>,
         /// Start a new hourly ERPC Worker for it (its price is shown first).
         /// For an environment erpc.toml has nothing for yet, it is started in
-        /// the ERPC account, which keeps the environment from then on, and
-        /// needs a terminal, an app with a wallet, --plan or a data line too,
-        /// which is started there; --inline or --vault keep the environment
-        /// out of the account, and so do --udp and --forget-line, for now.
+        /// the ERPC account, which keeps the environment from then on, and it
+        /// needs a terminal. An app with a wallet goes there too, and so do
+        /// --plan and a data line, started there; --inline or --vault keep
+        /// the environment out of the account, and so do --udp and
+        /// --forget-line, for now.
         #[arg(long = "new-server", alias = "new-vps", conflicts_with_all = ["host", "server"])]
         new_vps: bool,
         /// The region of a new ERPC Worker (default: nearest by this machine's time zone).
@@ -1398,31 +1399,19 @@ pub(crate) async fn run(json: bool, mut action: Action, asking: Asking) -> Outco
             // ERPC Worker in the account, and its server is started there:
             // the deploy then goes on as one to an environment kept there.
             // The data lines a first deploy starts in the account, once its
-            // server is logged in to.
-            let mut owed = Vec::new();
-            let (first, agreed) =
+            // server is logged in to: what the first step says of them.
+            let next =
                 match Box::pin(crate::worker::first_deploy::first(json, &app, &at, yes)).await {
-                    Ok(first) => first,
+                    Ok(next) => next,
                     Err(e) => return e.into(),
                 };
-            let started = match first {
-                crate::worker::first_deploy::First::AsBefore => false,
-                crate::worker::first_deploy::First::Picked(id) => {
-                    at.vps = Some(id);
-                    false
-                }
-                // The lines it asked are kept on this machine, owed, those
-                // this run's yes agreed to among them.
-                crate::worker::first_deploy::First::Started => {
-                    let _ = crate::worker::first_deploy::after_started(&mut at);
-                    true
-                }
-                // The lines this run names are asked, with those kept here.
-                crate::worker::first_deploy::First::Owed => {
-                    owed = crate::worker::first_deploy::after_started(&mut at);
-                    true
-                }
-            };
+            if let crate::worker::first_deploy::First::Picked(id) = next.first {
+                at.vps = Some(id);
+            }
+            let started = next.lines.is_some();
+            if started {
+                let _ = crate::worker::first_deploy::after_started(&mut at);
+            }
             let then = |e: CliError| {
                 if started {
                     crate::worker::first_deploy::after_start(e, &app)
@@ -1451,13 +1440,8 @@ pub(crate) async fn run(json: bool, mut action: Action, asking: Asking) -> Outco
             }
             // The lines asked, and those kept on this machine for it, once
             // its server is logged in to.
-            if started
-                && let Err(e) = Box::pin(crate::worker::line_start::for_deploy(
-                    &app,
-                    &owed,
-                    (agreed, yes),
-                ))
-                .await
+            if let Some(lines) = &next.lines
+                && let Err(e) = Box::pin(crate::worker::line_start::for_deploy(&app, lines)).await
             {
                 return then(e).into();
             }

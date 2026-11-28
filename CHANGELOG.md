@@ -335,9 +335,19 @@ whose version has no entry below.
   that run (said under `--yes`): one that run's own question agreed to is
   not asked again while its price is the one agreed to; a later run asks
   it once more at the catalogue's price now, and asks every other start,
-  each line before any is sent (a no lets the line kept here go,
-  and the deploy goes on without it unless the app needs it, when it
-  stops, nothing bought). Each line start is sent
+  each line before any is sent (a no lets the line kept here go, and the
+  deploy goes on without it unless the app needs it, when it stops,
+  starting no line; once deployed to, erpc does not add a line there yet).
+  On a run again that buys the server, every line to be started, one kept
+  here from an earlier run too, is asked before the server is bought, and
+  `--yes` says the line prices only with `--new-server`; a run again whose
+  record names a server asks each line at the terminal. A line start kept
+  on this machine under a key for the same app and environment names
+  refuses a deploy that would buy a server, before anything is bought; one
+  the account answered bought a line it did not put on the record
+  (`start_mismatch`) is never let go or replaced. A server start kept to
+  send again is sent again with `--plan` whatever the stock read lists.
+  Each line start is sent
   under a key kept here before it is sent, as not to be sent again; the
   account's answer decides what becomes of it, as its contract says (an
   answer that bought nothing lets the key go and keeps the line asked; one

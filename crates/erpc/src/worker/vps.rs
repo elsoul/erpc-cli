@@ -5873,6 +5873,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_plans_cores_come_from_its_product_name_in_the_hourly_catalogue() {
+        use super::stub::{Request, Stub};
+        let stub = Stub::serve(|request: &Request| {
+            let path = request.path.as_str();
+            let body = if path.starts_with("/v3/billing/hourly-catalog") {
+                json!({ "families": [
+                    { "family": "vps", "plans": [
+                        { "productId": "prod_vps_1", "hourlyCents": 7.0 },
+                        { "productId": "prod_vps_x", "hourlyCents": 9.0 }
+                    ] },
+                    { "family": "grpc", "plans": [
+                        { "productId": "prod_grpc_1", "hourlyCents": 12.5 }
+                    ] }
+                ] })
+            } else if path.ends_with("productId=prod_vps_1") {
+                json!({ "message": {
+                    "name": "🛰️ SLV VPS - 1 vCPU AMD EPYC4G x 4 GB DDR5 - 10 GB SSD NVMe4" } })
+            } else {
+                json!({ "message": { "name": "Something else" } })
+            };
+            (200, body)
+        })
+        .await;
+        let api = stub.api();
+        let (name, cores) = super::plan_cores(&api, "prod_vps_1").await.expect("read");
+        assert!(name.contains("1 vCPU"), "{name}");
+        assert_eq!(cores, Some(1));
+        // A name that gives no size: none.
+        assert_eq!(
+            super::plan_cores(&api, "prod_vps_x").await.expect("read").1,
+            None
+        );
+        // A plan of another family: refused.
+        assert!(super::plan_cores(&api, "prod_grpc_1").await.is_err());
+    }
+
+    #[tokio::test]
     async fn the_stock_read_reads_every_page_and_stops_at_its_bound() {
         use super::stub::{Request, Stub};
         let stub = Stub::serve(|request: &Request| {
