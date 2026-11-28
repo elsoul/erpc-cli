@@ -1585,6 +1585,22 @@ struct Plan {
     name: String,
 }
 
+/// The plan of the hourly catalogue a data line of `kind` starts at:
+/// `asked`, or the cheapest; its product id, price by the hour in cents of
+/// a euro and name.
+pub(crate) async fn line_plan(
+    api: &Api,
+    kind: LineKind,
+    asked: Option<&str>,
+) -> Result<crate::worker::line_start::Plan, CliError> {
+    let chosen = plan(api, line_product(kind).family, asked).await?;
+    Ok(crate::worker::line_start::Plan {
+        id: chosen.id,
+        cents: chosen.cents,
+        name: chosen.name,
+    })
+}
+
 /// The name of product `id`, as user-api gives it.
 async fn product_name(api: &Api, id: &str) -> Option<String> {
     let url = account::product_url(id).ok()?;

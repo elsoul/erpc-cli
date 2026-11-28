@@ -1567,14 +1567,36 @@ encrypted by restic. A storage plan is needed (`erpc storage buy 5`).
       (said under `--yes`). An
       environment whose record names a server, an address, a line or a
       deploy (as one deployed to before keeps it once `server end` ended its
-      server) is deployed to, or refused, as before.
+      server) is deployed to, or refused, as before; but one whose record
+      names a server and no deploy yet (a first deploy that stopped after
+      its server's start, or one `erpc worker move --to account` moved in),
+      deployed with a data line's flag and nothing else for a server,
+      starts the lines asked before the deploy, at a terminal.
+    - A data line asked on the first deploy (`--grpc`, `--shreds`,
+      `--unlimited`, each at its plan or the cheapest) is started in the
+      ERPC account for the environment, once its server is logged in to:
+      a gRPC or Shreds line lets the server's address in, an Unlimited RPC
+      is started in the server's region. Its price is the hourly catalogue's
+      for the plan, asked at the terminal (`--yes` says it on stderr
+      instead); the account's line start takes no price, and the line is
+      charged its own. The start's key is kept on this machine
+      (`worker_line_starts.json`, beside erpc's config) before it is sent.
+      A run again buys no second line: a line of the kind on the record is
+      used as it is; a start kept here is sent again under its key, with the
+      same body, its price asked again (the account answers one that went
+      through with what it put on record, and sends one still open on); one
+      kept for another plan or address than the run asks stops it, nothing
+      sent; a start of a line open in the account that this machine did not
+      make, or of a kind erpc cannot tell, refuses the run. Then the deploy waits up to three minutes for
+      the line to be active with its endpoint; when it is not, it stops,
+      and `erpc worker deploy` goes on from there, buying nothing more.
     - It goes as before, keeping the environment in `erpc.toml` (or its
       1Password item), for an environment that has anything in `erpc.toml`,
       for `--host`, `--server`, a server of the account picked at the
       terminal, `--inline` and `--vault`. It goes as before too, with a
-      note on stderr saying why, for a deploy that asks for a data line
-      (`--grpc`, `--shreds`, `--udp` and its options, `--unlimited`) or
-      `--forget-line`, or `--plan`, which a deploy there does not take yet.
+      note on stderr saying why, for a deploy that asks for a UDP Forwarding
+      line (`--udp` and its options) or `--forget-line`, or `--plan`, which
+      a deploy there does not take yet.
     - An app whose `erpc.toml` names a wallet goes the account way too: its
       record is made with the wallet's public side (`pubkey`, and where its
       key is kept, as `erpc worker move` makes it; without a `pubkey`, with
@@ -1773,14 +1795,17 @@ encrypted by restic. A storage plan is needed (`erpc storage buy 5`).
         not check its ports and lists, which are in the account.
     - **Deploy.**
       - It no longer takes `--host`, `--user`, `--port`, `--fingerprint`,
-        `--server`, `--plan`, `--grpc`, `--shreds`, `--unlimited`, `--udp`,
-        `--udp-port`, `--udp-region`, `--udp-any-source`, `--forget-line`,
-        `--vault` or `--inline`, and takes `--new-server` and `--region`
-        only while the account's record names no server, address, line or
-        deploy for it (as after `server end` of a server moved in, with no
-        deploy since), when it starts a server as the first deploy does: its
-        server cannot be chosen, no line added or taken off the record, and a
-        deploy cannot bring it back into `erpc.toml` or 1Password. A setting that comes from a line erpc does not start
+        `--server`, `--plan`, `--udp`, `--udp-port`, `--udp-region`,
+        `--udp-any-source`, `--forget-line`, `--vault` or `--inline`. It
+        takes `--grpc`, `--shreds` or `--unlimited` only before its first
+        deploy there (the record names no deploy yet), when the line is
+        started in the account, its price asked, as on a first deploy; and
+        `--new-server` and `--region` only while the account's record names
+        no server, address, line or deploy for it (as after `server end` of
+        a server moved in, with no deploy since), when it starts a server as
+        the first deploy does. Its server cannot be chosen, no line taken off
+        the record, nor one added once it is deployed to, and a deploy
+        cannot bring it back into `erpc.toml` or 1Password. A setting that comes from a line erpc does not start
         there says so.
       - It is refused while the account's record holds a server coming in
         or going out, a UDP line, a line not active or with no endpoint
@@ -1939,7 +1964,9 @@ encrypted by restic. A storage plan is needed (`erpc storage buy 5`).
       (`--vault`, `--inline`) are refused before the account or the server
       is reached;
       `--new-server` and `--region` once the record is read (signed in
-      first) and names something. A record with a server coming in or
+      first) and names something; a data line's flag once it names a deploy
+      (before, the first deploy's lines are started, as above). A record
+      with a server coming in or
       going out is refused too, and so is a UDP Forwarding line, a line
       with no endpoint yet, a line that is not active, two lines of one
       kind, or an endpoint not in its form: the record's refusals before the

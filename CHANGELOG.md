@@ -265,8 +265,18 @@ whose version has no entry below.
   `--new-server` asks for a new server in that account. `--host`,
   `--server`, a server of the account picked at the terminal, `--inline`,
   `--vault` and an environment with anything in `erpc.toml` go as before;
-  so does a deploy that asks for a data line or `--plan`, with a note on
-  stderr saying why. An app whose `erpc.toml` names a wallet goes the
+  so does a deploy that asks for a UDP Forwarding line, `--forget-line` or
+  `--plan`, with a note on stderr saying why. A gRPC, Shreds or Unlimited
+  RPC line asked on the first deploy is started in the account for the
+  environment once its server is logged in to, at the hourly catalogue's
+  price for its plan, asked at the terminal (`--yes` says it), under a key
+  kept on this machine (`worker_line_starts.json`) before it is sent, and
+  sent again under it on a run again, which buys no second line; the
+  deploy then waits for it to be active. A first deploy that stopped
+  after its server was started, run again with the line's flag, starts
+  the line before the deploy, and so does a deploy of an environment
+  `erpc worker move` took into the account, before its first deploy
+  there; `move` says so. An app whose `erpc.toml` names a wallet goes the
   account way too: its record is made with the wallet's public side, and
   its key is handed over at the terminal as on every deploy. Before,
   that first deploy bought a VPS through user-api and wrote its facts into

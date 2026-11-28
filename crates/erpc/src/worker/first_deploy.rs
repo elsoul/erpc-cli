@@ -41,7 +41,7 @@
 use std::path::{Path, PathBuf};
 
 use erpc_api::worker::{Code as AccountCode, EnvDetail, WorkerError};
-use erpc_worker::manifest::{Env, Manifest};
+use erpc_worker::manifest::{Env, LineKind, Manifest};
 
 use crate::cli::error::{CliError, Code};
 use crate::node::common::Say;
@@ -63,14 +63,18 @@ pub(crate) enum First {
     /// `--server` would.
     Picked(i64),
     /// `erpc.toml` keeps the environment in the account, and its server is
-    /// on the account's record: the deploy to it follows.
+    /// on the account's record: the deploy to it follows, the data lines
+    /// asked started first ([`crate::worker::line_start`]).
     Started,
+    /// A first deploy that stopped after its server was started: the data
+    /// lines asked are started, then the deploy to it follows.
+    Owed,
 }
 
 /// Why a first deploy keeps the environment in `erpc.toml`, as before.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Why {
-    /// A data line asked for.
+    /// A UDP Forwarding line (or its options) asked for, or `--forget-line`.
     Lines,
     /// `--plan`.
     Plan,
@@ -109,12 +113,9 @@ fn way(env: Option<&Env>, at: &Where, (json, terminal): (bool, bool)) -> Way {
     if !at.new_vps && !terminal {
         return Way::AsBefore;
     }
-    let lines = !at.lines.is_empty()
-        || at.udp_port.is_some()
-        || at.udp_region.is_some()
-        || at.udp_any_source
-        || !at.forget_lines.is_empty();
-    if lines {
+    // The account's deploy takes no UDP Forwarding line yet; the other
+    // data lines are started in the account.
+    if udp_or_forget(at) {
         return Way::Said(Why::Lines);
     }
     if at.plan.is_some() {
@@ -124,6 +125,16 @@ fn way(env: Option<&Env>, at: &Where, (json, terminal): (bool, bool)) -> Way {
         return Way::NeedsTerminal;
     }
     Way::New { asked: at.new_vps }
+}
+
+/// Whether `at` asks for a UDP Forwarding line, or one of its options, or
+/// forgets a line: what a deploy the account way does not take yet.
+fn udp_or_forget(at: &Where) -> bool {
+    at.lines.iter().any(|(kind, _)| *kind == LineKind::Udp)
+        || at.udp_port.is_some()
+        || at.udp_region.is_some()
+        || at.udp_any_source
+        || !at.forget_lines.is_empty()
 }
 
 /// Why, as the note says it.
@@ -394,14 +405,37 @@ async fn resume(
 ) -> Result<First, CliError> {
     let mut start = at.clone();
     after_started(&mut start);
-    // What a deploy there does not take is refused as before, unread.
-    if crate::worker::deploy_account::refuse_options(&start, app).is_err() {
+    // What a deploy there does not take is refused as before, unread; a
+    // UDP Forwarding line among them.
+    if udp_or_forget(at) || crate::worker::deploy_account::refuse_options(&start, app).is_err() {
         return Ok(First::AsBefore);
     }
     let region = region(at)?;
     reach.sign_in().await?;
     let env = app.env.as_str();
     match reach.record(app, &m.name).await? {
+        // Its server there, never deployed to (a first deploy that stopped
+        // after its start, or one moved in): the lines asked, and nothing
+        // else for a server, are started before the deploy, at a terminal.
+        Some(record)
+            if !at.lines.is_empty()
+                && !at.new_vps
+                && at.region.is_none()
+                && !record.servers.is_empty()
+                && record.deployed.is_none() =>
+        {
+            if json || !terminal {
+                return Err(CliError::new(
+                    Code::NeedsTerminal,
+                    t!("worker_first_deploy.resume_needs_terminal", env),
+                )
+                .hint(t!(
+                    "worker_first_deploy.resume_needs_terminal_hint",
+                    scope = app.scope()
+                )));
+            }
+            return Ok(First::Owed);
+        }
         Some(record) if names_something(&record) => return Ok(First::AsBefore),
         // A first deploy that stopped made the records before it wrote
         // `account = true`: none at all is another account's, or deleted,
@@ -443,13 +477,17 @@ async fn resume(
     Ok(First::Started)
 }
 
-/// The deploy's options once its server was started here ([`First::Started`]):
-/// `--new-server` and `--region` were for the start, and the deploy to an
-/// environment kept in the account that follows refuses both
-/// ([`crate::worker::deploy_account::refuse_options`]).
-pub(crate) fn after_started(at: &mut Where) {
+/// The deploy's options once its server was started here ([`First::Started`],
+/// [`First::Owed`]): `--new-server` and `--region` were for the start, and
+/// the data lines asked are started before the deploy
+/// ([`crate::worker::line_start`]); the deploy to an environment kept in
+/// the account that follows refuses all of them
+/// ([`crate::worker::deploy_account::refuse_options`]). The lines it took
+/// off come back.
+pub(crate) fn after_started(at: &mut Where) -> Vec<(LineKind, Option<String>)> {
     at.new_vps = false;
     at.region = None;
+    std::mem::take(&mut at.lines)
 }
 
 /// What the deploy reads of an environment kept in the account (`held`),
@@ -785,7 +823,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("a directory");
         let fake = Fake::new(&dir, TOML);
         let lines = Where {
-            lines: vec![(LineKind::Grpc, None)],
+            lines: vec![(LineKind::Udp, None)],
             ..new_server_at(None)
         };
         let first = go(&fake, &lines, true, (true, false))
@@ -827,6 +865,10 @@ mod tests {
         format!("{TOML}\n[env.prod]\naccount = true\n")
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each way a run that stopped is run again, one after another"
+    )]
     #[tokio::test]
     async fn a_run_that_stopped_is_resumed_only_while_the_account_names_nothing() {
         let dir = tempfile::tempdir().expect("a directory");
@@ -913,7 +955,7 @@ mod tests {
         // What a deploy there does not take: as before, unread.
         let fake = Fake::new(&dir, &kept_toml());
         let lines = Where {
-            lines: vec![(LineKind::Grpc, None)],
+            lines: vec![(LineKind::Udp, None)],
             ..Where::default()
         };
         let first = go(&fake, &lines, true, (false, true))
@@ -921,6 +963,46 @@ mod tests {
             .expect("as before");
         assert_eq!(first, First::AsBefore);
         assert!(fake.calls.borrow().is_empty());
+        // A data line asked of one whose server was started and never
+        // deployed to: owed, started before the deploy; refused first with
+        // nobody at a terminal; as before once it was deployed to.
+        let grpc = Where {
+            lines: vec![(LineKind::Grpc, None)],
+            ..Where::default()
+        };
+        let mut fake = Fake::new(&dir, &kept_toml());
+        fake.record = Some(record_with_server());
+        let first = go(&fake, &grpc, true, (false, true)).await.expect("owed");
+        assert_eq!(first, First::Owed);
+        assert_eq!(*fake.calls.borrow(), ["sign_in", "record"]);
+        let e = go(&fake, &grpc, true, (true, true))
+            .await
+            .expect_err("refused");
+        assert_eq!(e.code, Code::NeedsTerminal);
+        let mut deployed = record_with_server();
+        deployed.deployed = Some(erpc_api::worker::Deployed::new(
+            "r1",
+            "2026-11-27T00:00:00Z",
+        ));
+        fake.record = Some(deployed);
+        let first = go(&fake, &grpc, true, (false, true))
+            .await
+            .expect("as before");
+        assert_eq!(first, First::AsBefore); // One moved in, never deployed to: owed the same; with
+        // --new-server too, as before.
+        let mut moved = record_with_server();
+        moved.servers[0].hourly = false;
+        fake.record = Some(moved);
+        let first = go(&fake, &grpc, true, (false, true)).await.expect("owed");
+        assert_eq!(first, First::Owed);
+        let grpc_new = Where {
+            new_vps: true,
+            ..grpc.clone()
+        };
+        let first = go(&fake, &grpc_new, true, (false, true))
+            .await
+            .expect("as before");
+        assert_eq!(first, First::AsBefore);
     }
 
     fn empty_record() -> EnvDetail {
@@ -1038,13 +1120,40 @@ mod tests {
             ..fresh()
         };
         let at_terminal = (false, true);
+        // A gRPC, Shreds or Unlimited RPC line goes the account way, at a
+        // terminal only.
+        for kind in [LineKind::Grpc, LineKind::Shreds, LineKind::Unlimited] {
+            let line = Where {
+                lines: vec![(kind, None)],
+                ..new()
+            };
+            assert_eq!(way(None, &line, at_terminal), Way::New { asked: true });
+            assert_eq!(way(None, &line, (true, false)), Way::NeedsTerminal);
+        }
+        // A UDP Forwarding line, or one of its options, goes as before.
         let lines = Where {
-            lines: vec![(LineKind::Grpc, None)],
+            lines: vec![(LineKind::Grpc, None), (LineKind::Udp, None)],
             ..new()
         };
         assert_eq!(way(None, &lines, at_terminal), Way::Said(Why::Lines));
         // Without a terminal too: as before, where --yes answers all.
         assert_eq!(way(None, &lines, (true, false)), Way::Said(Why::Lines));
+        for udp in [
+            Where {
+                udp_port: Some(10_001),
+                ..new()
+            },
+            Where {
+                udp_region: Some("tokyo".to_owned()),
+                ..new()
+            },
+            Where {
+                udp_any_source: true,
+                ..new()
+            },
+        ] {
+            assert_eq!(way(None, &udp, at_terminal), Way::Said(Why::Lines));
+        }
         // A line taken off the record is a line asked about too.
         let forget = Where {
             forget_lines: vec!["200002".to_owned()],
@@ -1058,7 +1167,7 @@ mod tests {
         assert_eq!(way(None, &plan, at_terminal), Way::Said(Why::Plan));
         // Each is said in words of its own.
         let said: Vec<String> = [Why::Lines, Why::Plan].into_iter().map(why_said).collect();
-        assert!(said[0].contains("data line"), "{}", said[0]);
+        assert!(said[0].contains("UDP Forwarding line"), "{}", said[0]);
         assert!(said[1].contains("--plan"), "{}", said[1]);
     }
 

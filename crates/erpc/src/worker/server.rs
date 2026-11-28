@@ -261,7 +261,7 @@ fn let_go(path: &Path, file_key: &str, key: &str) -> Result<(), String> {
 }
 
 /// A new start's key: 16 random bytes, in lowercase hex.
-fn new_key() -> Result<StartKey, CliError> {
+pub(crate) fn new_key() -> Result<StartKey, CliError> {
     let mut bytes = [0_u8; 16];
     getrandom::fill(&mut bytes)
         .map_err(|e| failed(t!("worker_server.no_key", error = e.to_string())))?;

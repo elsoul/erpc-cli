@@ -27,6 +27,7 @@ pub(crate) mod import;
 pub(crate) mod inventory;
 pub(crate) mod keys;
 pub(crate) mod keystore;
+pub(crate) mod line_start;
 pub(crate) mod move_account;
 pub(crate) mod remote;
 pub(crate) mod run;
@@ -397,9 +398,9 @@ pub(crate) enum Action {
         /// Start a new hourly ERPC Worker for it (its price is shown first).
         /// For an environment erpc.toml has nothing for yet, it is started in
         /// the ERPC account, which keeps the environment from then on, and
-        /// needs a terminal, an app with a wallet too; --inline or --vault
-        /// keep the environment out of the account, and so do --plan and a
-        /// data line, for now.
+        /// needs a terminal, an app with a wallet or a data line too, which
+        /// is started there; --inline or --vault keep the environment out of
+        /// the account, and so do --plan and --udp, for now.
         #[arg(long = "new-server", alias = "new-vps", conflicts_with_all = ["host", "server"])]
         new_vps: bool,
         /// The region of a new ERPC Worker (default: nearest by this machine's time zone).
@@ -1244,6 +1245,9 @@ pub(crate) async fn run(json: bool, action: Action) -> Outcome {
             // The first deploy that starts a new server makes the app an
             // ERPC Worker in the account, and its server is started there:
             // the deploy then goes on as one to an environment kept there.
+            // The data lines a first deploy starts in the account, once its
+            // server is logged in to.
+            let mut owed = Vec::new();
             let started =
                 match Box::pin(crate::worker::first_deploy::first(json, &app, &at, yes)).await {
                     Ok(crate::worker::first_deploy::First::AsBefore) => false,
@@ -1251,8 +1255,11 @@ pub(crate) async fn run(json: bool, action: Action) -> Outcome {
                         at.vps = Some(id);
                         false
                     }
-                    Ok(crate::worker::first_deploy::First::Started) => {
-                        crate::worker::first_deploy::after_started(&mut at);
+                    Ok(
+                        crate::worker::first_deploy::First::Started
+                        | crate::worker::first_deploy::First::Owed,
+                    ) => {
+                        owed = crate::worker::first_deploy::after_started(&mut at);
                         true
                     }
                     Err(e) => return e.into(),
@@ -1280,6 +1287,12 @@ pub(crate) async fn run(json: bool, action: Action) -> Outcome {
                     json, &app, &m.name,
                 ))
                 .await
+            {
+                return then(e).into();
+            }
+            if !owed.is_empty()
+                && let Err(e) =
+                    Box::pin(crate::worker::line_start::for_deploy(&app, &owed, yes)).await
             {
                 return then(e).into();
             }
@@ -2829,6 +2842,7 @@ mod tests {
             ("worker/inventory.rs", include_str!("inventory.rs")),
             ("worker/keys.rs", include_str!("keys.rs")),
             ("worker/keystore.rs", include_str!("keystore.rs")),
+            ("worker/line_start.rs", include_str!("line_start.rs")),
             ("worker/move_account.rs", include_str!("move_account.rs")),
             ("worker/remote.rs", include_str!("remote.rs")),
             ("worker/run.rs", include_str!("run.rs")),

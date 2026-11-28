@@ -140,7 +140,7 @@ fn record_carried(app: &App, record: &EnvDetail) -> Result<(), CliError> {
 }
 
 /// Whether a line the account names is ended: gone from it, or cancelled.
-fn ended(state: &account::State) -> bool {
+pub(crate) fn ended(state: &account::State) -> bool {
     *state == account::State::Gone || state.as_str() == "cancelled"
 }
 

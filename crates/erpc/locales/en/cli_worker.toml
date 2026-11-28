@@ -111,7 +111,7 @@
 "worker deploy --port" = "The SSH port on --host"
 "worker deploy --fingerprint" = "The SSH host key fingerprint --host should offer, instead of being asked"
 "worker deploy --server" = "An ERPC Worker of the account, by its id (a bare-metal server goes in with --host)"
-"worker deploy --new-server" = "Start a new hourly ERPC Worker for it (its price is shown first). For an environment erpc.toml has nothing for yet, it is started in the ERPC account, which keeps the environment from then on, and needs a terminal, an app with a wallet too; --inline or --vault keep the environment out of the account, and so do --plan and a data line, for now"
+"worker deploy --new-server" = "Start a new hourly ERPC Worker for it (its price is shown first). For an environment erpc.toml has nothing for yet, it is started in the ERPC account, which keeps the environment from then on, and needs a terminal, an app with a wallet or a data line too, which is started there; --inline or --vault keep the environment out of the account, and so do --plan and --udp, for now"
 "worker deploy --region" = "The region of a new ERPC Worker (default: nearest by this machine's time zone)"
 "worker deploy --plan" = "The hourly plan of a new ERPC Worker, by product id (default: the cheapest)"
 "worker deploy --grpc" = "Start an hourly gRPC line that lets in the server, and set `GRPC_ENDPOINT` to it (its price is shown first)"
