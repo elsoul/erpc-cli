@@ -266,26 +266,43 @@ whose version has no entry below.
   `--server`, a server of the account picked at the terminal, `--inline`,
   `--vault` and an environment with anything in `erpc.toml` go as before;
   so does a deploy that asks for a UDP Forwarding line or `--forget-line`,
-  with a note on stderr saying why. `--plan` is started in the account at
-  the size its product's name says (a name that gives none is refused with
-  the sizes the account starts, before anything is bought); when that size
-  has no room now (by user-api's stock read, or an `OUT_OF_STOCK` answer),
-  a bigger size there, then the same size in another region, nearest
-  first, are offered in turn at a terminal, each asked; under `--yes` only
-  the size named is started, and otherwise it stops saying what is free.
+  with a note on stderr saying why. `--plan` is started in the account by
+  the vCPUs its product's name says alone, at the account's price for that
+  size (a name that gives none is refused with the sizes the account
+  starts, before anything is bought); when that size has no room now (by
+  user-api's stock read, every page, or an `OUT_OF_STOCK` answer), a bigger
+  size there, then the same size in another region, nearest first, are
+  offered in turn at a terminal, each asked; under `--yes` (on a run again
+  too) only the size named is started, and otherwise it stops saying what
+  is free; a stop once `erpc.toml` keeps the environment names `--plan` in
+  the command that goes on.
   A start the account answers `OUT_OF_STOCK` now carries
   `{"accountCode": "OUT_OF_STOCK"}` in its error's details under `--json`
   (`erpc worker server start` too). A gRPC, Shreds or Unlimited
-  RPC line asked on the first deploy is started in the account for the
-  environment once its server is logged in to, at the hourly catalogue's
-  price for its plan, asked at the terminal (`--yes` says it), under a key
-  kept on this machine (`worker_line_starts.json`) before it is sent, and
-  sent again under it on a run again, which buys no second line; the
-  deploy then waits for it to be active. A first deploy that stopped
-  after its server was started, run again with the line's flag, starts
-  the line before the deploy, and so does a deploy of an environment
-  `erpc worker move` took into the account, before its first deploy
-  there; `move` says so. An app whose `erpc.toml` names a wallet goes the
+  RPC line asked on the first deploy has its plan read from the hourly
+  catalogue before anything is bought (one not offered is refused then)
+  and its price, the catalogue's, asked right after the server's (`--yes`
+  says it), a no buying nothing; the lines asked are kept on this machine
+  (`worker_line_starts.json`) and started in the account for the
+  environment once its server is logged in to, one agreed to and never
+  sent without asking again while its price is the one agreed to and the
+  run does not name its flag again, any other start asked (a no lets the
+  line kept here go). Each line start is sent
+  under a key kept here before it is sent, as not to be sent again; the
+  account's answer decides what becomes of it, as its contract says (an
+  answer that bought nothing lets the key go and keeps the line asked; one
+  that says to send it again, or none, sends it again under the same key
+  on a run again, which buys no second line; any other keeps it, never
+  sent again, the stop naming the start and ERPC support, and a start
+  after it, once nothing of the kind is open or on record, comes only after
+  a yes at a terminal to let it go, as a new purchase). Every open start is
+  read: one erpc cannot tell, two of the kind, or one it did not keep to
+  send again, refuses the run. The deploy then waits for the line to be
+  active. A first deploy that stopped after its server was started, run
+  again (with the line's flag, or plainly, a line kept here for it), starts
+  the lines before the deploy, once what refuses the deploy is checked, and
+  so does a deploy of an environment `erpc worker move` took into the
+  account, before its first deploy there; `move` says so. An app whose `erpc.toml` names a wallet goes the
   account way too: its record is made with the wallet's public side, and
   its key is handed over at the terminal as on every deploy. Before,
   that first deploy bought a VPS through user-api and wrote its facts into

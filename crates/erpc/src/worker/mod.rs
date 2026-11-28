@@ -400,16 +400,17 @@ pub(crate) enum Action {
         /// the ERPC account, which keeps the environment from then on, and
         /// needs a terminal, an app with a wallet, --plan or a data line too,
         /// which is started there; --inline or --vault keep the environment
-        /// out of the account, and so does --udp, for now.
+        /// out of the account, and so do --udp and --forget-line, for now.
         #[arg(long = "new-server", alias = "new-vps", conflicts_with_all = ["host", "server"])]
         new_vps: bool,
         /// The region of a new ERPC Worker (default: nearest by this machine's time zone).
         #[arg(long, value_name = "REGION")]
         region: Option<String>,
         /// The hourly plan of a new ERPC Worker, by product id (default: the
-        /// cheapest). Started in the ERPC account at the size its name says;
-        /// when that is not free now, another size or region is offered,
-        /// each asked, never under --yes.
+        /// cheapest). Started in the ERPC account by the vCPUs its name says
+        /// alone, at the account's price for that size; when that is not free
+        /// now, another size or region is offered, each asked, never under
+        /// --yes.
         #[arg(long, value_name = "PRODUCT_ID")]
         plan: Option<String>,
         /// Start an hourly gRPC line that lets in the server, and set
@@ -1258,10 +1259,13 @@ pub(crate) async fn run(json: bool, action: Action) -> Outcome {
                         at.vps = Some(id);
                         false
                     }
-                    Ok(
-                        crate::worker::first_deploy::First::Started
-                        | crate::worker::first_deploy::First::Owed,
-                    ) => {
+                    // The lines it asked are kept on this machine, owed.
+                    Ok(crate::worker::first_deploy::First::Started) => {
+                        let _ = crate::worker::first_deploy::after_started(&mut at);
+                        true
+                    }
+                    // The lines this run names are asked again.
+                    Ok(crate::worker::first_deploy::First::Owed) => {
                         owed = crate::worker::first_deploy::after_started(&mut at);
                         true
                     }
@@ -1293,7 +1297,9 @@ pub(crate) async fn run(json: bool, action: Action) -> Outcome {
             {
                 return then(e).into();
             }
-            if !owed.is_empty()
+            // The lines asked, and those kept on this machine for it, once
+            // its server is logged in to.
+            if started
                 && let Err(e) =
                     Box::pin(crate::worker::line_start::for_deploy(&app, &owed, yes)).await
             {

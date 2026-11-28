@@ -1615,8 +1615,9 @@ pub(crate) async fn plan_cores(api: &Api, id: &str) -> Result<(String, Option<u1
 
 /// What is free to be rented now of the standard ERPC Worker, as
 /// user-api's stock read lists it, every page: each box's cores and region.
-/// A box of another type is left out; a row whose type, cores (digits) or
-/// region erpc does not read, or a list that does not end within
+/// The read is of the standard tier, so a box that names no type is one, and
+/// a box of another type is left out; a row whose type (not text), cores
+/// (digits) or region erpc does not read, or a list that does not end within
 /// [`STOCK_PAGES`] pages, makes the whole read unread: an error, never a
 /// shorter list. It is free now, not held: a start may still find it gone.
 pub(crate) async fn stock(api: &Api) -> Result<Vec<(u16, &'static str)>, CliError> {
@@ -1660,7 +1661,13 @@ pub(crate) fn stock_rows(reply: &Value) -> Option<Vec<(u16, &'static str)>> {
         .and_then(Value::as_array)?;
     let mut free = Vec::new();
     for row in rows {
-        let kind = row["vpsType"].as_str()?;
+        // The route lists the standard tier: a row that names no type is
+        // one; a row of another type is left out.
+        let kind = match &row["vpsType"] {
+            Value::Null => None,
+            Value::String(kind) => Some(kind.as_str()),
+            _ => return None,
+        };
         let cores = match &row["cpu"] {
             Value::String(s)
                 if (1..=3).contains(&s.len()) && s.chars().all(|c| c.is_ascii_digit()) =>
@@ -1673,7 +1680,7 @@ pub(crate) fn stock_rows(reply: &Value) -> Option<Vec<(u16, &'static str)>> {
         .filter(|cores| *cores > 0)?;
         let region = row["region"].as_str()?;
         let region = REGIONS.into_iter().find(|r| *r == region)?;
-        if kind == "standard" {
+        if kind.is_none_or(|kind| kind == "standard") {
             free.push((cores, region));
         }
     }
@@ -5824,7 +5831,7 @@ mod tests {
             { "cpu": "2", "ram": "4096", "disk": "10G", "region": "amsterdam", "vpsType": "standard" },
             { "cpu": 4, "region": "tokyo", "vpsType": "standard" },
             { "cpu": "2", "region": "amsterdam", "vpsType": "super" },
-            { "cpu": "2", "region": "amsterdam" },
+            { "cpu": "2", "region": "amsterdam", "vpsType": 2 },
             { "cpu": "two", "region": "amsterdam", "vpsType": "standard" },
             { "cpu": "0", "region": "amsterdam", "vpsType": "standard" },
             { "cpu": "1000", "region": "amsterdam", "vpsType": "standard" },
@@ -5836,14 +5843,22 @@ mod tests {
         let reply = json!({ "message": [
             { "cpu": "2", "ram": "4096", "disk": "10G", "region": "amsterdam", "vpsType": "standard" },
             { "cpu": 4, "region": "tokyo", "vpsType": "standard" },
-            { "cpu": "2", "region": "amsterdam", "vpsType": "super" }
+            { "cpu": "2", "region": "amsterdam", "vpsType": "super" },
+            { "cpu": "8", "region": "london" },
+            { "cpu": "1", "region": "ny", "vpsType": null }
         ]});
+        // No type: the tier the route lists; another type: left out.
         assert_eq!(
             stock_rows(&reply),
-            Some(vec![(2, "amsterdam"), (4, "tokyo")])
+            Some(vec![
+                (2, "amsterdam"),
+                (4, "tokyo"),
+                (8, "london"),
+                (1, "ny")
+            ])
         );
         for odd in [
-            json!({ "cpu": "2", "region": "amsterdam" }),
+            json!({ "cpu": "2", "region": "amsterdam", "vpsType": 2 }),
             json!({ "cpu": "two", "region": "amsterdam", "vpsType": "standard" }),
             json!({ "cpu": "0", "region": "amsterdam", "vpsType": "standard" }),
             json!({ "cpu": "1000", "region": "amsterdam", "vpsType": "standard" }),
@@ -5854,6 +5869,40 @@ mod tests {
         }
         assert_eq!(stock_rows(&json!({ "message": [] })), Some(Vec::new()));
         assert_eq!(stock_rows(&json!({})), None);
+    }
+
+    #[tokio::test]
+    async fn the_stock_read_reads_every_page_and_stops_at_its_bound() {
+        use super::stub::{Request, Stub};
+        let stub = Stub::serve(|request: &Request| {
+            let body = if request.path.ends_with("?cursor=p2") {
+                json!({ "message": [{ "cpu": "4", "region": "tokyo" }], "hasMore": false })
+            } else {
+                json!({ "message": [{ "cpu": "2", "region": "amsterdam" }],
+                    "hasMore": true, "nextCursor": "p2" })
+            };
+            (200, body)
+        })
+        .await;
+        let free = super::stock(&stub.api()).await.expect("read");
+        assert_eq!(free, [(2, "amsterdam"), (4, "tokyo")]);
+        assert_eq!(
+            stub.asked(),
+            [
+                "GET /v3/vps/search-available-vps",
+                "GET /v3/vps/search-available-vps?cursor=p2"
+            ]
+        );
+        // A list that does not end: unread, never a shorter list.
+        let stub = Stub::serve(|_: &Request| {
+            (
+                200,
+                json!({ "message": [], "hasMore": true, "nextCursor": "again" }),
+            )
+        })
+        .await;
+        assert!(super::stock(&stub.api()).await.is_err());
+        assert_eq!(stub.seen().len(), 10);
     }
 
     #[test]

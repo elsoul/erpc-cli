@@ -2447,6 +2447,15 @@ mod tests {
         );
         assert!(question.is_none());
         assert_eq!(fake.starts(), 0);
+        // A start kept here to send again is sent as it was kept: the plan
+        // asked does not refuse it.
+        let dir = tempfile::tempdir().expect("a directory");
+        let fake = Fake::new(&dir);
+        *fake.open.borrow_mut() = vec![server_start(1, "amsterdam")];
+        fake.keep(OLD_KEY, true);
+        let (out, _) = go(&fake, &unread, &MAKING, true).await;
+        out.expect("sent again");
+        assert_eq!(fake.sent.borrow()[0].0, OLD_KEY);
     }
 
     #[tokio::test]
