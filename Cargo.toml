@@ -103,7 +103,7 @@ flate2 = { version = "1.1.10", default-features = false, features = ["rust_backe
 ed25519-dalek = { version = "3.0.0", default-features = false, features = ["zeroize"] }
 getrandom = { version = "0.4.3", default-features = false }
 # The Arc consensus key's file form: its seed in standard base64.
-base64 = { version = "0.22.1", default-features = false, features = ["alloc"] }
+base64 = { version = "0.23.1", default-features = false, features = ["alloc"] }
 futures-util = { version = "0.3.31", default-features = false }
 # EURC credit top-ups: an EIP-712 TransferWithAuthorization signed with the
 # operator's Base wallet key, in memory (secp256k1 and keccak-256, RustCrypto).
