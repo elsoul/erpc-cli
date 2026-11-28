@@ -1027,7 +1027,9 @@ asked for before the command checks its own options, so a value it refuses
 
 The picker asks for a command that only reads, or that asks before it
 buys, ends, deletes, sends or changes anything: a key typed ahead must not
-choose what a command that goes ahead without asking acts on.
+choose what a command that goes ahead without asking acts on. One step is
+the exception: `deploy` may start a data line an earlier run agreed to,
+with no question in that run (below).
 
 The picker asks nothing, and the command fails with `there is no erpc.toml
 in … or above it` as before, for:
@@ -1048,8 +1050,9 @@ The commands that do ask are `check`, `key show`, `key balance`, `key send`
 `releases`, `delete`, `move`, `firewall list`, `firewall allow`, `firewall
 deny`, `firewall sync`, `backup on`, `backup off` and `backup status`, each
 without `--yes`. The app is picked first. Then four of them may do
-something that costs nothing before a question of their own, or with none
-in that run:
+something before a question of their own, or with none in that run, all of
+it free but for a data line a deploy starts as an earlier run agreed
+(below):
 
 - `server start` makes the app's and the environment's records in the ERPC
   account when they are missing (they cost nothing), before its price
@@ -1065,9 +1068,20 @@ in that run:
   environment `erpc.toml` has nothing for; or one run again after it
   stopped) also makes the app's and the environment's records in the ERPC
   account when they are missing, as `server start` does, before its price
-  question; when a start this machine kept for it went through before, it
-  says so instead of asking the price, and writes `account = true` for the
-  environment to `erpc.toml`, as the yes to that start agreed;
+  question; with a `--plan` whose product's name gives no size erpc reads,
+  it stops there, nothing bought and nothing asked. Each data line's price
+  is asked after the server's, and the lines asked are kept on this machine
+  (`worker_line_starts.json`) only after those yeses. When a start this
+  machine kept for it went through before, it says so instead of asking the
+  price, writes `account = true` for the environment to `erpc.toml`, as the
+  yes to that start agreed, and keeps the lines asked on this machine, to be
+  asked when they are started. A deploy of an environment kept in the
+  account whose record names a server and no deploy, with a data line asked
+  or kept on this machine for it, keeps the lines asked on this machine
+  before any question, and starts a line an earlier run agreed to, and
+  never sent, with no question in that run while the hourly catalogue's
+  price is the one agreed to: that line is charged by the hour from then,
+  its price said on stderr;
 - `server end`, run again after a stop, may first finish clearing the
   address of a server whose end was already said yes to, and then asks
   nothing more in that run;

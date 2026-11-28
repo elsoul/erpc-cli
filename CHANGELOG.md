@@ -250,11 +250,13 @@ whose version has no entry below.
   `--from-account`, `secret rm`, `api` with a method other than GET, `backup
   now`), under `--json`, with no terminal or with `TERM=dumb`. It asks for a
   command that only reads, or that asks before it buys, ends, deletes, sends
-  or changes anything. The app is picked first; then four of those may do
-  something that costs nothing before a question of their own, or with none
-  in that run: `server start` makes the app's and the environment's records
-  in the ERPC account when they are missing (they cost nothing), before its
-  price question; `deploy`, unless the app ships a `build.prebuilt` binary
+  or changes anything, but for a data line `deploy` may start as an earlier
+  run agreed (below). The app is picked first; then four of those may do
+  something before a question of their own, or with none in that run, all
+  of it free but for a data line a deploy starts as an earlier run agreed:
+  `server start` makes the app's and the environment's records in the ERPC
+  account when they are missing (they cost nothing), before its price
+  question; `deploy`, unless the app ships a `build.prebuilt` binary
   or cargo is not installed, runs `rustc` (and `rustup`, to cross-build) in
   the app's directory, the `rustc` that `RUSTC` or `CARGO_BUILD_RUSTC`
   names, else the one `RUSTUP_TOOLCHAIN` or the app's `rust-toolchain.toml`
@@ -262,9 +264,17 @@ whose version has no entry below.
   the file names, and a first deploy that starts a new server in the account
   (`--new-server`, or the new server picked at the terminal, or one run
   again after it stopped) makes the same records as `server start`, before
-  its price question (or, when a start kept on this machine went through
-  before, writes `account = true` to `erpc.toml` as the yes to that start
-  agreed); `server end`, run again after a stop, may first finish clearing
+  its price question (and with a `--plan` whose name gives no size, stops
+  there, nothing asked), keeps the data lines asked on this machine only
+  after their price questions, which follow the server's (or, when a start
+  kept on this machine went through before, writes `account = true` to
+  `erpc.toml` as the yes to that start agreed, and keeps the lines asked,
+  to be asked when they are started), and a deploy of an environment kept
+  in the account whose record names a server and no deploy keeps the lines
+  asked on this machine before any question and starts a line an earlier
+  run agreed to, never sent, with no question in that run while its price
+  is the one agreed to (charged by the hour from then, its price said on
+  stderr); `server end`, run again after a stop, may first finish clearing
   the address of a server whose end was already said yes to, and then asks
   nothing more in that run; and `delete --release-server` of an environment
   kept in the account that the account no longer has, when this machine
