@@ -111,7 +111,7 @@
 "worker deploy --port" = "--host の SSH ポート"
 "worker deploy --fingerprint" = "--host が提示するはずの SSH ホスト鍵のフィンガープリント（指定すると確認を省く）"
 "worker deploy --server" = "アカウントの ERPC Worker。その ID で指定（ベアメタルサーバーは --host で指定）"
-"worker deploy --new-server" = "時間課金の ERPC Worker を新しく開始して使う（先に料金を表示）。erpc.toml にまだ何もない環境では ERPC のアカウントで開始し、以後その環境はアカウントに保管される。端末が必要。--inline、--vault、--plan、データ回線、ウォレットがあると、これまでどおり環境をアカウントの外に置く"
+"worker deploy --new-server" = "時間課金の ERPC Worker を新しく開始して使う（先に料金を表示）。erpc.toml にまだ何もない環境では ERPC のアカウントで開始し、以後その環境はアカウントに保管される。端末が必要（ウォレットのあるアプリも同じ）。--inline か --vault があると環境をアカウントの外に置き、--plan とデータ回線も今のところ同じ"
 "worker deploy --region" = "新しい ERPC Worker のリージョン（既定：このマシンのタイムゾーンから見て最も近いもの）"
 "worker deploy --plan" = "新しい ERPC Worker の時間課金プラン。商品 ID で指定（既定：最安のもの）"
 "worker deploy --grpc" = "サーバーからの接続を許可した時間課金の gRPC 回線を開始し、`GRPC_ENDPOINT` に設定する（先に料金を表示）"

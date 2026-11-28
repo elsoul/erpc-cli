@@ -397,8 +397,9 @@ pub(crate) enum Action {
         /// Start a new hourly ERPC Worker for it (its price is shown first).
         /// For an environment erpc.toml has nothing for yet, it is started in
         /// the ERPC account, which keeps the environment from then on, and
-        /// needs a terminal; --inline, --vault, --plan, a data line or a
-        /// wallet keep the environment out of the account, as before.
+        /// needs a terminal, an app with a wallet too; --inline or --vault
+        /// keep the environment out of the account, and so do --plan and a
+        /// data line, for now.
         #[arg(long = "new-server", alias = "new-vps", conflicts_with_all = ["host", "server"])]
         new_vps: bool,
         /// The region of a new ERPC Worker (default: nearest by this machine's time zone).

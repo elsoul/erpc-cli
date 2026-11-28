@@ -9,7 +9,6 @@ new_option = "Start a new hourly ERPC Worker in your ERPC account (the cheapest 
 as_before = "environment {env} is kept in erpc.toml, as before, and not in the ERPC account: {why}"
 why_lines = "an environment kept in the ERPC account takes no data line from a deploy yet"
 why_plan = "--plan names a product, and a server in the ERPC account is started by its size"
-why_wallet = "erpc.toml names a wallet, and this erpc does not make the ERPC account's record of an app with a wallet yet"
 needs_terminal = "a new ERPC Worker for environment {env} is started in the ERPC account, and erpc logs in to it once only after a yes at a terminal (--yes is not enough, and --json asks nobody); nothing was started or written"
 needs_terminal_hint = "run `erpc worker deploy --new-server{scope}` at a terminal, without --json; without one, --server <id> or --host <address> names a server you have, and --new-server --inline keeps the environment in erpc.toml as before, where --yes answers the first login too"
 resume_needs_terminal = "environment {env} is kept in the ERPC account, which names no ERPC Worker for it yet: this deploy starts one there, and erpc logs in to it once only after a yes at a terminal (--yes is not enough, and --json asks nobody); nothing was started"

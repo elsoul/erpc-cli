@@ -7,7 +7,6 @@ new_option = "在你的 ERPC 账户中新开通一台按小时计费的 ERPC Wor
 as_before = "环境 {env} 仍像以前一样保存在 erpc.toml 中，而不保存在 ERPC 账户中：{why}"
 why_lines = "保存在 ERPC 账户中的环境还不接受由部署开通的数据线路"
 why_plan = "--plan 指定的是产品，而 ERPC 账户中的服务器按规格开通"
-why_wallet = "erpc.toml 指定了钱包，而此 erpc 还不会在 ERPC 账户中创建带钱包的应用的记录"
 needs_terminal = "环境 {env} 的新 ERPC Worker 会在 ERPC 账户中开通，而 erpc 只有在终端得到确认后才会登录它一次（--yes 不够，--json 下不询问任何人）；未开通任何服务，也未写入任何内容"
 needs_terminal_hint = "在终端运行 `erpc worker deploy --new-server{scope}`，不要加 --json；没有终端时，用 --server <id> 或 --host <address> 指定你已有的服务器，或用 --new-server --inline 像以前一样将环境保存在 erpc.toml 中，在那里 --yes 也会回答首次登录"
 resume_needs_terminal = "环境 {env} 保存在 ERPC 账户中，但账户中还没有它的 ERPC Worker：本次部署会在那里开通一台，而 erpc 只有在终端得到确认后才会登录它一次（--yes 不够，--json 下不询问任何人）；未开通任何服务"

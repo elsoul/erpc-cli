@@ -7,7 +7,6 @@ new_option = "ERPC のアカウントで時間課金の ERPC Worker を新しく
 as_before = "環境 {env} は、これまでどおり erpc.toml に保管し、ERPC のアカウントには保管しません: {why}"
 why_lines = "ERPC のアカウントに保管された環境は、デプロイからのデータ回線をまだ受け付けません"
 why_plan = "--plan は商品を指定しますが、ERPC のアカウントのサーバーはサイズで開始します"
-why_wallet = "erpc.toml がウォレットを指定しており、この erpc は、ウォレットを持つアプリの記録を ERPC のアカウントにまだ作りません"
 needs_terminal = "環境 {env} の新しい ERPC Worker は ERPC のアカウントで開始され、erpc は端末で yes を受けてからでないとそれに一度ログインしません（--yes では足りず、--json では誰にも尋ねません）。何も開始せず、何も書き込んでいません"
 needs_terminal_hint = "端末で、--json を付けずに `erpc worker deploy --new-server{scope}` を実行してください。端末が無い場合は、--server <id> か --host <address> で手持ちのサーバーを指定するか、--new-server --inline でこれまでどおり環境を erpc.toml に保管します。そこでは --yes が最初のログインにも答えます"
 resume_needs_terminal = "環境 {env} は ERPC のアカウントに保管されていますが、そこにはまだ ERPC Worker がありません。このデプロイはそこに ERPC Worker を開始し、erpc は端末で yes を受けてからでないとそれに一度ログインしません（--yes では足りず、--json では誰にも尋ねません）。何も開始していません"

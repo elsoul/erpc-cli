@@ -100,8 +100,8 @@ directory.
   first login to a server erpc has not made key-only yet (a new one, or `--server <ID>`): its
   key goes in and password logins go off. A new server for an environment erpc.toml has
   nothing for yet is started in the ERPC account instead, which makes the app an ERPC Worker
-  there, unless the deploy has `--inline` or `--vault`, `--plan`, a line's flag, or the app a
-  `[wallet]`; its first login is asked at a terminal only, so from `run_command` that deploy
+  there (an app with a `[wallet]` too), unless the deploy has `--inline` or `--vault`, or, for
+  now, `--plan` or a line's flag; its first login is asked at a terminal only, so from `run_command` that deploy
   is refused before anything is bought. Hand the user `erpc worker deploy <app>` to run at a
   terminal for that, or add `--inline` to keep the environment in erpc.toml as before.
 - **A start with no outcome:** when a deploy says a start "may or may not have gone

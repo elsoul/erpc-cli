@@ -65,7 +65,7 @@ pub(crate) struct Plan {
 
 /// The wallet's public side as the account takes it, when the app has a
 /// wallet with its public key on record.
-fn wallet_of(m: &Manifest) -> Result<Option<PutWallet>, CliError> {
+pub(crate) fn wallet_of(m: &Manifest) -> Result<Option<PutWallet>, CliError> {
     let Some(wallet) = &m.wallet else {
         return Ok(None);
     };

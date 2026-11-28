@@ -1574,9 +1574,14 @@ encrypted by restic. A storage plan is needed (`erpc storage buy 5`).
       terminal, `--inline` and `--vault`. It goes as before too, with a
       note on stderr saying why, for a deploy that asks for a data line
       (`--grpc`, `--shreds`, `--udp` and its options, `--unlimited`) or
-      `--forget-line`, or `--plan`, which a
-      deploy there does not take yet, and for an app whose `erpc.toml` names
-      a wallet, whose record in the account this erpc does not make yet.
+      `--forget-line`, or `--plan`, which a deploy there does not take yet.
+    - An app whose `erpc.toml` names a wallet goes the account way too: its
+      record is made with the wallet's public side (`pubkey`, and where its
+      key is kept, as `erpc worker move` makes it; without a `pubkey`, with
+      none), and its key is handed over at the terminal, as on every deploy.
+      An app of that name the account has with another wallet, or with one
+      where `erpc.toml` names none, is refused before anything is made or
+      bought.
   - **A server for one that has none:** `erpc worker server start [--env
     <name>] --cores <N> --region <REGION> [--yes]` buys a server, paid for
     by the hour, for an environment kept in the account whose record names
@@ -1590,8 +1595,9 @@ encrypted by restic. A storage plan is needed (`erpc storage buy 5`).
       they are made first, from `erpc.toml`'s name, chain and template and
       `--env`, the environment with no server and nothing else; each is
       said as it is made, and costs nothing. An app whose `erpc.toml` names
-      a wallet has no record made for it yet, and an app of that name in
-      the account on another chain is refused.
+      a wallet has its record made with the wallet's public side, as the
+      first deploy makes it; an app of that name in the account on another
+      chain, or with another wallet, is refused.
     - The start's key is kept on this machine (`worker_starts.json`, beside
       erpc's config) before it is sent. Each run reads the account first
       (when it has the app: the environment's open starts, then its record)

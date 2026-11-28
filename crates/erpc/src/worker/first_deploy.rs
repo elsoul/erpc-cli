@@ -16,9 +16,10 @@
 //! `--server`, a server of the account picked at the terminal, and
 //! `--inline` or `--vault`, which name where a new environment is kept.
 //! So does a deploy that asks for what an environment kept in the account
-//! does not take yet (a data line, `--plan`) or whose app names a wallet
-//! (whose record in the account this erpc does not make yet), and it says
-//! why.
+//! does not take yet (a data line, `--plan`), and it says why. An app whose
+//! `erpc.toml` names a wallet goes the account way too: its record is made
+//! with the wallet's public side, and its key is handed over at the
+//! terminal as on any deploy.
 //!
 //! Everything that would refuse the deploy is asked before anything is
 //! written or bought: a terminal and no `--json` (the first login is asked
@@ -73,8 +74,6 @@ enum Why {
     Lines,
     /// `--plan`.
     Plan,
-    /// A wallet in `erpc.toml`.
-    Wallet,
 }
 
 /// Which way a deploy goes, from `erpc.toml` and the command line alone.
@@ -94,9 +93,9 @@ enum Way {
 }
 
 /// Which way the deploy of environment `env` (`None`: `erpc.toml` has no
-/// table for it) goes, asked as `at` asks, for an app with a wallet or
-/// not, under `--json` or not, at a terminal or not.
-fn way(env: Option<&Env>, wallet: bool, at: &Where, (json, terminal): (bool, bool)) -> Way {
+/// table for it) goes, asked as `at` asks, under `--json` or not, at a
+/// terminal or not.
+fn way(env: Option<&Env>, at: &Where, (json, terminal): (bool, bool)) -> Way {
     match env {
         Some(env) if *env == crate::worker::EnvRecord::kept_in_account() => return Way::Resume,
         Some(env) if *env != Env::default() => return Way::AsBefore,
@@ -121,9 +120,6 @@ fn way(env: Option<&Env>, wallet: bool, at: &Where, (json, terminal): (bool, boo
     if at.plan.is_some() {
         return Way::Said(Why::Plan);
     }
-    if wallet {
-        return Way::Said(Why::Wallet);
-    }
     if json || !terminal {
         return Way::NeedsTerminal;
     }
@@ -135,7 +131,6 @@ fn why_said(why: Why) -> String {
     match why {
         Why::Lines => t!("worker_first_deploy.why_lines"),
         Why::Plan => t!("worker_first_deploy.why_plan"),
-        Why::Wallet => t!("worker_first_deploy.why_wallet"),
     }
 }
 
@@ -304,7 +299,7 @@ async fn first_with(
     (json, terminal): (bool, bool),
 ) -> Result<First, CliError> {
     let env = app.env.as_str();
-    match way(m.env.get(env), m.wallet.is_some(), at, (json, terminal)) {
+    match way(m.env.get(env), at, (json, terminal)) {
         Way::AsBefore => Ok(First::AsBefore),
         Way::Said(why) => {
             Say { quiet: false }.line(&format!(
@@ -642,6 +637,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_wallet_apps_first_deploy_goes_the_account_way_too() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let toml = format!(
+            "{TOML}\n[wallet]\nsource = \"keychain:erpc-worker/bot.wallet\"\n\
+             pubkey = \"7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU\"\n"
+        );
+        let fake = Fake::new(&dir, &toml);
+        let _ = crate::node::common::heard::take_printed();
+        let first = go(&fake, &new_server_at(None), true, (false, true))
+            .await
+            .expect("started");
+        assert_eq!(first, First::Started);
+        assert_eq!(*fake.calls.borrow(), ["ready", "sign_in", "start"]);
+        assert!(fake.kept_there());
+        let printed = crate::node::common::heard::take_printed().join("\n");
+        assert!(!printed.contains("as before"), "{printed}");
+        // Under --json, or with nobody at a terminal, it is refused first,
+        // as any first deploy the account way is.
+        let fake = Fake::new(&dir, &toml);
+        let e = go(&fake, &new_server_at(None), true, (true, true))
+            .await
+            .expect_err("refused");
+        assert_eq!(e.code, Code::NeedsTerminal);
+        assert!(fake.calls.borrow().is_empty());
+    }
+
+    #[tokio::test]
     async fn a_server_picked_at_the_terminal_is_deployed_to_as_before_and_nothing_is_written() {
         let dir = tempfile::tempdir().expect("a directory");
         let mut fake = Fake::new(&dir, TOML);
@@ -938,11 +960,11 @@ mod tests {
         // No table, or an empty one: --new-server, or the picker.
         for env in [None, Some(Env::default())] {
             assert_eq!(
-                way(env.as_ref(), false, &new, at_terminal),
+                way(env.as_ref(), &new, at_terminal),
                 Way::New { asked: true }
             );
             assert_eq!(
-                way(env.as_ref(), false, &fresh(), at_terminal),
+                way(env.as_ref(), &fresh(), at_terminal),
                 Way::New { asked: false }
             );
         }
@@ -951,10 +973,7 @@ mod tests {
             region: Some("tokyo".to_owned()),
             ..new.clone()
         };
-        assert_eq!(
-            way(None, false, &tokyo, at_terminal),
-            Way::New { asked: true }
-        );
+        assert_eq!(way(None, &tokyo, at_terminal), Way::New { asked: true });
     }
 
     #[test]
@@ -981,7 +1000,7 @@ mod tests {
             },
         ];
         for at in &named {
-            assert_eq!(way(None, false, at, at_terminal), Way::AsBefore, "{at:?}");
+            assert_eq!(way(None, at, at_terminal), Way::AsBefore, "{at:?}");
         }
         // Anything in the table: a server, an address, a start on record,
         // a 1Password item, a firewall list.
@@ -1006,10 +1025,10 @@ mod tests {
             ..fresh()
         };
         for env in &tables {
-            assert_eq!(way(Some(env), false, &new, at_terminal), Way::AsBefore);
+            assert_eq!(way(Some(env), &new, at_terminal), Way::AsBefore);
         }
         // Nobody to pick and nothing asked for: refused as before.
-        assert_eq!(way(None, false, &fresh(), (false, false)), Way::AsBefore);
+        assert_eq!(way(None, &fresh(), (false, false)), Way::AsBefore);
     }
 
     #[test]
@@ -1023,35 +1042,24 @@ mod tests {
             lines: vec![(LineKind::Grpc, None)],
             ..new()
         };
-        assert_eq!(way(None, false, &lines, at_terminal), Way::Said(Why::Lines));
+        assert_eq!(way(None, &lines, at_terminal), Way::Said(Why::Lines));
         // Without a terminal too: as before, where --yes answers all.
-        assert_eq!(
-            way(None, false, &lines, (true, false)),
-            Way::Said(Why::Lines)
-        );
+        assert_eq!(way(None, &lines, (true, false)), Way::Said(Why::Lines));
         // A line taken off the record is a line asked about too.
         let forget = Where {
             forget_lines: vec!["200002".to_owned()],
             ..new()
         };
-        assert_eq!(
-            way(None, false, &forget, at_terminal),
-            Way::Said(Why::Lines)
-        );
+        assert_eq!(way(None, &forget, at_terminal), Way::Said(Why::Lines));
         let plan = Where {
             plan: Some("vps-1".to_owned()),
             ..new()
         };
-        assert_eq!(way(None, false, &plan, at_terminal), Way::Said(Why::Plan));
-        assert_eq!(way(None, true, &new(), at_terminal), Way::Said(Why::Wallet));
+        assert_eq!(way(None, &plan, at_terminal), Way::Said(Why::Plan));
         // Each is said in words of its own.
-        let said: Vec<String> = [Why::Lines, Why::Plan, Why::Wallet]
-            .into_iter()
-            .map(why_said)
-            .collect();
+        let said: Vec<String> = [Why::Lines, Why::Plan].into_iter().map(why_said).collect();
         assert!(said[0].contains("data line"), "{}", said[0]);
         assert!(said[1].contains("--plan"), "{}", said[1]);
-        assert!(said[2].contains("wallet"), "{}", said[2]);
     }
 
     #[test]
@@ -1062,13 +1070,13 @@ mod tests {
         };
         for (json, terminal) in [(true, true), (false, false), (true, false)] {
             assert_eq!(
-                way(None, false, &new, (json, terminal)),
+                way(None, &new, (json, terminal)),
                 Way::NeedsTerminal,
                 "{json} {terminal}"
             );
         }
         // The picker under --json too.
-        assert_eq!(way(None, false, &fresh(), (true, true)), Way::NeedsTerminal);
+        assert_eq!(way(None, &fresh(), (true, true)), Way::NeedsTerminal);
     }
 
     #[test]
@@ -1082,7 +1090,7 @@ mod tests {
             },
         ] {
             for (json, terminal) in [(false, true), (true, false)] {
-                assert_eq!(way(Some(&kept), false, &at, (json, terminal)), Way::Resume);
+                assert_eq!(way(Some(&kept), &at, (json, terminal)), Way::Resume);
             }
         }
     }
@@ -1112,8 +1120,8 @@ mod tests {
         ];
         for at in asked {
             let routed = [
-                way(None, false, &at, (false, true)),
-                way(Some(&kept), false, &at, (false, true)),
+                way(None, &at, (false, true)),
+                way(Some(&kept), &at, (false, true)),
             ];
             assert!(
                 matches!(routed, [Way::New { .. }, Way::Resume]),

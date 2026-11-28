@@ -88,8 +88,9 @@ whose version has no entry below.
     revision read before the price, which the account refuses, buying nothing,
     when the environment changed meanwhile (a start sent again under its key
     while still open is answered as before). It makes the app's and the
-    environment's records when the account has none (the app's not yet when
-    its `erpc.toml` names a wallet). The question says that `erpc worker
+    environment's records when the account has none (an app's with its
+    wallet's public side when its `erpc.toml` names one; an app the account
+    has with another wallet is refused). The question says that `erpc worker
     deploy` then waits for the server, logs in to it once after a yes at a
     terminal and deploys to it, and that erpc ends it with `erpc worker delete
     --release-server` at a terminal, which deletes the environment's record
@@ -264,8 +265,10 @@ whose version has no entry below.
   `--new-server` asks for a new server in that account. `--host`,
   `--server`, a server of the account picked at the terminal, `--inline`,
   `--vault` and an environment with anything in `erpc.toml` go as before;
-  so do a deploy that asks for a data line or `--plan`, and an app whose
-  `erpc.toml` names a wallet, each with a note on stderr saying why. Before,
+  so does a deploy that asks for a data line or `--plan`, with a note on
+  stderr saying why. An app whose `erpc.toml` names a wallet goes the
+  account way too: its record is made with the wallet's public side, and
+  its key is handed over at the terminal as on every deploy. Before,
   that first deploy bought a VPS through user-api and wrote its facts into
   `erpc.toml`, and the account had no record of the app.
 - `erpc worker delete --release-server` of an environment kept in the ERPC

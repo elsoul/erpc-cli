@@ -33,7 +33,8 @@ use std::path::Path;
 
 use erpc_api::worker::money::{ServerPrice, ServerPrices, StartKey, StartOf, StartServer};
 use erpc_api::worker::{
-    self as account, Code as AccountCode, EnvDetail, Facts, PutApp, PutEnv, WorkerError, Written,
+    self as account, Code as AccountCode, EnvDetail, Facts, PutApp, PutEnv, PutWallet, WorkerError,
+    Written,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -728,8 +729,10 @@ pub(crate) struct Making<'a> {
     pub(crate) chain: &'a str,
     /// The template it was made from.
     pub(crate) template: Option<&'a str>,
-    /// Whether it names a wallet.
-    pub(crate) wallet: bool,
+    /// Its wallet's public side, as the app's record takes it: `None` for
+    /// an app without a wallet, or one whose `erpc.toml` gives no public key
+    /// (as the move makes it).
+    pub(crate) wallet: Option<PutWallet>,
 }
 
 /// The failure `e` of a read or write the start makes before it is sent,
@@ -764,8 +767,9 @@ fn not_found(e: &WorkerError, code: &AccountCode) -> bool {
 }
 
 /// Whether the account has the record of the app named `name`. An app of
-/// that name for another chain is refused, and so is one whose record this
-/// version does not make yet (one with a wallet).
+/// that name for another chain is refused, and so is one with another
+/// wallet: one whose public key is not `erpc.toml`'s, or one where
+/// `erpc.toml` gives none.
 async fn app_record(
     api: &impl Buying,
     app: &App,
@@ -774,12 +778,7 @@ async fn app_record(
 ) -> Result<bool, CliError> {
     let found = match api.app(name).await {
         Ok(found) => found,
-        Err(e) if not_found(&e, &AccountCode::WorkerNotFound) => {
-            if making.wallet {
-                return Err(failed(t!("worker_server.wallet", app = name)));
-            }
-            return Ok(false);
-        }
+        Err(e) if not_found(&e, &AccountCode::WorkerNotFound) => return Ok(false),
         Err(e) => {
             return Err(read_failed(
                 name,
@@ -795,6 +794,14 @@ async fn app_record(
             app = name,
             chain = crate::storage::clean(&found.chain)
         )));
+    }
+    let ours = making.wallet.as_ref().map(PutWallet::pubkey);
+    if found
+        .wallet
+        .as_ref()
+        .is_some_and(|w| Some(w.pubkey.as_str()) != ours)
+    {
+        return Err(failed(t!("worker_server.other_wallet", app = name)));
     }
     Ok(true)
 }
@@ -912,7 +919,12 @@ async fn make(
     let say = Say { quiet: false };
     let env = app.env.as_str();
     if !has_app {
-        let body = PutApp::new(0, making.chain, making.template.map(str::to_owned), None);
+        let body = PutApp::new(
+            0,
+            making.chain,
+            making.template.map(str::to_owned),
+            making.wallet.clone(),
+        );
         api.put_app(name, &body)
             .await
             .map_err(|e| read_failed(name, app, &e, &t!("worker_server.what_app", app = name)))?;
@@ -1092,7 +1104,7 @@ async fn run(
     let making = Making {
         chain: m.chain.as_str(),
         template: m.template.as_deref(),
-        wallet: m.wallet.is_some(),
+        wallet: crate::worker::move_account::wallet_of(&m)?,
     };
     run_with(
         &signed,
@@ -1131,7 +1143,7 @@ pub(crate) async fn for_deploy(
     let making = Making {
         chain: m.chain.as_str(),
         template: m.template.as_deref(),
-        wallet: m.wallet.is_some(),
+        wallet: crate::worker::move_account::wallet_of(m)?,
     };
     run_with(
         signed,
@@ -1173,7 +1185,7 @@ mod tests {
     const MAKING: Making<'static> = Making {
         chain: "solana",
         template: Some("solana/hello@1"),
-        wallet: false,
+        wallet: None,
     };
 
     fn env_record(servers: &Value) -> EnvDetail {
@@ -2729,22 +2741,56 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_app_of_another_chain_is_refused_and_one_with_a_wallet_has_no_record_made() {
+    async fn an_app_of_another_chain_or_wallet_is_refused_and_a_wallet_apps_record_is_made() {
         let dir = tempfile::tempdir().expect("a directory");
         let fake = Fake::new(&dir);
         *fake.app.borrow_mut() = Some(app_record("ethereum"));
         let (out, _) = go(&fake, &asked(1, true, false, false), &MAKING, true).await;
         assert!(out.expect_err("other chain").message.contains("ethereum"));
         // erpc.toml names a wallet and the account has no record of the
-        // app: none is made, nor anything else.
-        *fake.app.borrow_mut() = None;
+        // app: it is made with the wallet's public side.
+        let pubkey = "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU";
         let wallet = Making {
-            wallet: true,
+            wallet: Some(
+                PutWallet::new(pubkey, account::WalletSource::Keychain).expect("a public key"),
+            ),
             ..MAKING
         };
+        let dir2 = tempfile::tempdir().expect("a directory");
+        let made = Fake::new(&dir2);
+        *made.app.borrow_mut() = None;
+        *made.env.borrow_mut() = None;
+        let (out, _) = go(&made, &asked(1, true, false, false), &wallet, true).await;
+        out.expect("started");
+        let body = made.made.borrow()[0].clone();
+        assert_eq!(body["wallet"]["pubkey"], pubkey);
+        assert_eq!(body["wallet"]["sourceKind"], "keychain");
+        // An app the account has with another wallet, or with one where
+        // erpc.toml has none: refused, nothing made or started.
+        let mut other = app_record("solana");
+        other.wallet = serde_json::from_value(
+            json!({ "pubkey": "11111111111111111111111111111111", "sourceKind": "keychain" }),
+        )
+        .expect("a wallet");
+        for making in [&wallet, &MAKING] {
+            *fake.app.borrow_mut() = Some(other.clone());
+            fake.calls.borrow_mut().clear();
+            let (out, _) = go(&fake, &asked(1, true, false, false), making, true).await;
+            assert!(
+                out.expect_err("another wallet")
+                    .message
+                    .contains("another wallet"),
+            );
+            assert_eq!(*fake.calls.borrow(), ["app"]);
+        }
+        // The same wallet: used as it is.
+        let mut same = app_record("solana");
+        same.wallet = serde_json::from_value(json!({ "pubkey": pubkey })).expect("a wallet");
+        *fake.app.borrow_mut() = Some(same);
+        *fake.env.borrow_mut() = None;
+        fake.calls.borrow_mut().clear();
         let (out, _) = go(&fake, &asked(1, true, false, false), &wallet, true).await;
-        assert!(out.expect_err("wallet").message.contains("wallet"));
-        assert_eq!(*fake.calls.borrow(), ["app", "app"]);
+        out.expect("started");
         // A wallet app the account has on another chain: refused.
         *fake.app.borrow_mut() = Some(app_record("ethereum"));
         let (out, _) = go(&fake, &asked(1, true, false, false), &wallet, true).await;
