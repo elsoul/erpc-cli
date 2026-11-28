@@ -1062,9 +1062,12 @@ impl Action {
     /// `key import`, `secret put --generate` or `--from-account`, `secret
     /// rm`, `api` with a method other than GET, and `backup now`. The
     /// others only read, or ask before they buy, end, delete, send or
-    /// change anything; `server start` (the account's records of the app
-    /// and environment, made when missing, free) and `deploy` (`rustc` and
-    /// `rustup` in the app's directory) each do one free thing first.
+    /// change anything. After the pick, three do something free before
+    /// their own question: `server start` (the account's records of the
+    /// app and environment, made when missing), `deploy` (`rustc`, and
+    /// `rustup` to cross-build, in the app's directory) and `server end`
+    /// run again after a stop (it finishes clearing the address of an end
+    /// already said yes to).
     fn app_slot(&mut self) -> Option<AppSlot<'_>> {
         let (dir, goes_ahead) = match self {
             Self::Init { .. }
@@ -3119,9 +3122,9 @@ mod tests {
         "secret unlock",
     ];
 
-    /// Every verb that takes an app and only reads, or asks before it
-    /// changes anything, asks for the app when it was not named, and goes
-    /// on with the directory picked in its `--dir`. A verb given the app,
+    /// Every verb that takes an app and only reads, or asks before it buys,
+    /// ends, deletes, sends or changes anything, asks for the app when it
+    /// was not named, and goes on with the directory picked in its `--dir`. A verb given the app,
     /// one about no app, one given `--yes`, one that changes something or
     /// runs the app's code without asking, and any run under `--json` or
     /// with no terminal ask nothing.

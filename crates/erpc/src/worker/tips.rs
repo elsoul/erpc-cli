@@ -168,8 +168,34 @@ static BOARD: Mutex<Board> = Mutex::new(Board {
     session: None,
 });
 
-fn board() -> MutexGuard<'static, Board> {
-    BOARD.lock().unwrap_or_else(PoisonError::into_inner)
+/// The board, locked until this is dropped.
+struct Held(MutexGuard<'static, Board>);
+
+impl std::ops::Deref for Held {
+    type Target = Board;
+    fn deref(&self) -> &Board {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Held {
+    fn deref_mut(&mut self) -> &mut Board {
+        &mut self.0
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        #[cfg(test)]
+        HOLDING.with(|h| h.set(false));
+    }
+}
+
+fn board() -> Held {
+    let held = Held(BOARD.lock().unwrap_or_else(PoisonError::into_inner));
+    #[cfg(test)]
+    HOLDING.with(|h| h.set(true));
+    held
 }
 
 /// In a test: how many spinners are up, and how many times a line was
@@ -185,6 +211,9 @@ thread_local! {
     /// In a test: how many spinners this thread put up. Other tests print
     /// through the shared board too, each on a thread of its own.
     static PUT_UP_HERE: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// In a test: whether this thread holds the board now, as [`board`]
+    /// took it and until it is let go; another thread's hold is not this.
+    static HOLDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// A spinner put up, showing `drawn`. Only while the board is locked.
@@ -360,7 +389,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use super::{
-        BOARD, Busy, PUT_UP_HERE, STRAY, TIP_EVERY, TIPS, above, board, busy, clock, first_tip,
+        Busy, HOLDING, PUT_UP_HERE, STRAY, TIP_EVERY, TIPS, above, board, busy, clock, first_tip,
         lines, spins, tip_at, tips,
     };
     use crate::cli::i18n::{CATALOG, speaking};
@@ -454,13 +483,15 @@ mod tests {
         crate::cli::ui::force_drawn(false);
     }
 
-    /// With no spinner up, a line is printed with the board held, so that
-    /// none can be put up while it is half out.
+    /// A line is printed with the board held by the call that prints it,
+    /// spinner up or not, so that none can be put up while it is half out.
     #[test]
     fn a_line_with_no_spinner_up_is_printed_with_the_board_held() {
+        assert!(!HOLDING.with(std::cell::Cell::get));
         let mut held = false;
-        above(|| held = BOARD.try_lock().is_err());
-        assert!(held);
+        above(|| held = HOLDING.with(std::cell::Cell::get));
+        assert!(held, "this call held the board while the line printed");
+        assert!(!HOLDING.with(std::cell::Cell::get), "and let it go after");
     }
 
     /// Lines said from another thread while steps begin and end are never

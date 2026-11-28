@@ -974,13 +974,10 @@ asked for before the command checks its own options, so a value it refuses
 
 The picker asks for a command that only reads, or that asks before it
 buys, ends, deletes, sends or changes anything: a key typed ahead must not
-choose what a command that goes ahead without asking acts on. Two of those
-do something free first, before their question: `server start` makes the
-app's and the environment's records in the ERPC account when they are
-missing (they cost nothing), and `deploy` looks at the Rust toolchain in the
-app's directory (it runs `rustc` and `rustup` there, and rustup can install
-the toolchain the app names). These ask nothing, and fail with `there is no
-erpc.toml in … or above it` as before:
+choose what a command that goes ahead without asking acts on.
+
+The picker asks nothing, and the command fails with `there is no erpc.toml
+in … or above it` as before, for:
 
 - any command given `--yes`;
 - the commands that change something, or run the app's code, with no
@@ -993,12 +990,23 @@ erpc.toml in … or above it` as before:
 
 The commands that do ask are `check`, `key show`, `key balance`, `key send`
 (which always asks before it sends), `secret put` with a value typed,
-`secret list`, `server start` and `deploy` (each after the free step above),
-`server end`, `bench`, `status`,
+`secret list`, `server start`, `server end`, `deploy`, `bench`, `status`,
 `logs`, `api` with GET, `trades`, `start`, `stop`, `restart`, `rollback`,
 `releases`, `delete`, `move`, `firewall list`, `firewall allow`, `firewall
 deny`, `firewall sync`, `backup on`, `backup off` and `backup status`, each
-without `--yes`.
+without `--yes`. The app is picked first. Then three of them do something
+free before their own question:
+
+- `server start` makes the app's and the environment's records in the ERPC
+  account when they are missing (they cost nothing);
+- `deploy` looks at the Rust toolchain in the app's directory: it runs
+  `rustc` there (and `rustup`, to cross-build). Which `rustc` that is comes
+  from `RUSTC` or `CARGO_BUILD_RUSTC` when one is set, else from
+  `RUSTUP_TOOLCHAIN` or the app's `rust-toolchain.toml` (a `path` toolchain
+  included), and rustup can install the toolchain the file names;
+- `server end`, run again after a stop, may first finish clearing the
+  address of a server whose end was already said yes to, before it asks
+  anything new.
 
 At a terminal, results and failures are drawn with a mark on each line (✅
 done, ⚠️ to heed, 💡 a hint, 👉 the commands to run next) and progress with
