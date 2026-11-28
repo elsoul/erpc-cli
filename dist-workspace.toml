@@ -54,6 +54,8 @@ pr-run-mode = "plan"
 github-build-setup = "../build-setup.yml"
 # Official archives include the operator command. Ordinary Cargo builds still opt in.
 features = ["erpc/security-check-pilot"]
+# Archives carry NOTICE, with the MIT notice of the BIP-39 list erpc-ssh embeds.
+include = ["NOTICE"]
 # Keep the `dist` cargo profile defined in Cargo.toml.
 precise-builds = false
 
