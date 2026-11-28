@@ -112,11 +112,23 @@ fi
 #    install are the only lines where the word may appear.
 agent_free=$(printf '%s\n' "$job" \
   | grep -vxE '[[:space:]]*run: scripts/build-worker-agents\.sh' \
-  | grep -vxE '[[:space:]]*tool: cargo-dist@0\.32\.0,cargo-auditable,cargo-zigbuild@0\.24\.0')
+  | grep -vxE '[[:space:]]*tool: cargo-dist@0\.32\.0,cargo-zigbuild@0\.24\.0')
 if printf '%s\n' "$agent_free" | grep -q zigbuild; then
   bad "the rebuild does not use cargo-zigbuild for erpc" "zig links differently from the native musl-gcc build"
 else
   ok "the rebuild does not use cargo-zigbuild for erpc"
+fi
+
+# 4b. cargo-auditable embeds its own data in the binary: the rebuild must
+#     install it with the plan's own command, as release.yml does, never
+#     from install-action's list, whose version lags the latest release.
+if printf '%s\n' "$job" | grep -q 'install_cargo_auditable.run' \
+   && ! printf '%s\n' "$job" | grep -qE 'tool:.*cargo-auditable' \
+   && grep -q 'matrix.install_cargo_auditable.run' "$repo_root/.github/workflows/release.yml"; then
+  ok "the rebuild installs cargo-auditable with the plan's command, as release.yml does"
+else
+  bad "the rebuild installs cargo-auditable with the plan's command, as release.yml does" \
+      "rebuild-compare must run the plan's install_cargo_auditable.run and not install cargo-auditable from install-action"
 fi
 
 # 5. The rebuild embeds the worker agents as the release build does, or the
