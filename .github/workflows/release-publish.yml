@@ -103,11 +103,12 @@ jobs:
       - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
         with:
           tool: cargo-dist@0.32.0,cargo-zigbuild@0.24.0
-      # cargo-auditable embeds its own dependency data in the binary, so the
-      # rebuild must use the version the release build used. That build runs
-      # the install command the plan gives for its target (release.yml,
-      # "Install cargo-auditable"); this runs the same command from the same
-      # plan. Its version is logged in the rebuild step below.
+      # cargo-auditable embeds the binary's audit data, whose format its
+      # version decides, so the rebuild must use the version the release
+      # build used. That build runs the install command the plan gives for
+      # its target (release.yml, "Install cargo-auditable", under bash -e);
+      # this runs the same command from the same plan, the same way. The
+      # installer's output names the version it installs.
       - name: install cargo-auditable as the release build does
         env:
           PLAN: ${{ inputs.plan }}
@@ -119,7 +120,7 @@ jobs:
              | select(.targets | index($t))
              | .install_cargo_auditable.run][0] // empty' <<<"$PLAN")
           [ -n "$cmd" ] || { echo "the plan gives no cargo-auditable install for $TARGET"; exit 1; }
-          sh -c "$cmd"
+          bash -e -c "$cmd"
       # The worker agents erpc embeds, built as the release build does
       # (.github/build-setup.yml, run by release.yml before each build), so
       # the rebuilt binary can match.
@@ -132,8 +133,8 @@ jobs:
       - name: independent rebuild
         run: |
           set -euo pipefail
-          # Installed by the plan's own command above, as the release build
-          # installs it. Logged so a mismatch is diagnosable.
+          # Stops here when cargo-auditable is missing (the step above names
+          # the version it installed; this prints cargo's own version).
           cargo auditable --version
           dist build --artifacts=local --target ${{ matrix.target }} --output-format=json > rebuild.json
           rebuilt=$(jq -r '.artifacts | to_entries[] | select(.value.kind=="executable-zip") | .value.path' rebuild.json | head -1)
