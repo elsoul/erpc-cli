@@ -12,8 +12,55 @@ whose version has no entry below.
 
 ## [Unreleased]
 
+## [0.1.0-rc.8] - 2026-11-28
+
 ### Added
 
+- `erpc ai --security-check`, after `erpc login`: a metered, read-only
+  check of one of the account's eligible ERPC VPS or bare-metal rentals,
+  run from the operator's terminal. The rental is picked from a list that
+  starts on Cancel, or given with `--kind` and `--id`; `--list --json`
+  lists them. It logs in with the `.pub` the `ssh_key` setting names, or
+  `~/.ssh/id_ed25519.pub` when it is unset, as `erpc worker` does. Once
+  the rental is selected, before its first question, it checks on this
+  machine that it has that `.pub` and the rental's host key; when either
+  is missing, or `--host-key` is not an Ed25519 host public key, it stops
+  there, before anything is quoted or reserved, and says which: how to
+  set the key with `erpc config set ssh_key`, or the command to run again
+  with `--host-key` and `--ssh-user`. Before the server is reached, the
+  operator confirms owning it or being authorized to assess it and agrees
+  not to resell the check, then approves the quote: the rate of a
+  completed report and the most ERPC AI tokens it may reserve (28,160),
+  and, for customer access, what ERPC sends its AI model provider. No
+  model is named to the person, on screen or in `--json`: the price
+  question asks to run the report with ERPC AI, the fallback question
+  asks to authorize a fallback model at its rate and maximum, the charge
+  shows the tokens without a model, and `modelReport` carries no
+  `model`. The CLI checks every rate and limit in the quote against its
+  own copy and each model name against a fixed form, and a completed
+  report must name a model the quote offered. When there is no verified
+  quote, the message says why: the HTTP status of a refusal, with the
+  service's code only when it is one the CLI knows for that status; a
+  timeout, a failed request, or a reply too large or unreadable; terms
+  that do not match the CLI's; or a request ID that could not be made.
+  Nothing else from the reply is shown, and a 401 asks the operator to
+  sign in again. ERPC confirms the rental and its IPv4 address again
+  before the CLI logs in over SSH with the VPS's saved host key pin, or,
+  for any rental, with `--host-key` and `--ssh-user` (a bare-metal rental
+  has no pin). Over that login it reads TCP listeners and UDP ports by
+  bind scope, OpenSSH's password and keyboard-interactive settings on
+  disk, nftables input filters and fail2ban's sshd jail (a denied read of
+  those two may be retried with non-interactive sudo), the file modes of
+  systemd environment and credential sources, and the security updates in
+  the Debian or Ubuntu package cache. The billed request carries fixed
+  classifications, the rental and request IDs and billing parameters; the
+  details stay in the operator's report, which is shown also when the
+  charge could not be confirmed. The command is in builds with the
+  `security-check-pilot` feature, which the official archives are (below);
+  a source build or `cargo install erpc` adds
+  `--features security-check-pilot`. Input whose first word is
+  `/security-check` stays on this machine in every build. `docs/ai.md` has
+  the details.
 - Official Linux, macOS and Windows archives include the opt-in Server
   Security Check command, `erpc ai --security-check`, for eligible ERPC
   rentals.
@@ -278,18 +325,23 @@ whose version has no entry below.
   in the language erpc speaks, the next one every eight seconds. When the
   step ends, the spinner gives way to the line the step printed before.
   Under `--json` or off a terminal nothing changes.
+- `install.erpc.global`, the Cloudflare Worker that serves the installers,
+  reports its own failures in answering a `GET` to Sentry: an exception, a
+  fetch from GitHub Releases that failed (with the release tag and the
+  installer's flavour), or a deployment that selected no release. A report
+  holds the error and the request's method and URL without its query. The
+  request's headers (with them the user agent, `Accept-Language` and the
+  client's IP address and location), cookies, body, any user, the
+  client's timezone and any trace the request names are removed, and
+  tracing is off. The Worker reports only when its `SENTRY_DSN` secret
+  names a Sentry ingest host over https and no `SENTRY_TUNNEL` is set; a
+  DSN it refuses is never given to the Sentry SDK, and the Worker logs why,
+  once per instance, without the value. `erpc` and the installers that run
+  on a person's machine send nothing to Sentry. `docs/install-counts.md`
+  has the details.
 
 ### Changed
 
-- The Server Security Check names no model to the person. The price
-  question asks to run the report with ERPC AI, the fallback question
-  asks to authorize a fallback model at its rate and maximum, and the
-  charge shows the tokens without a model. `modelReport` in `--json` no
-  longer carries the receipt's `model`, and no other part of the check's
-  JSON carries a model id. This release is the first whose archives
-  include the check, so no script built on a released archive reads that
-  field. The quote's model names are checked against the CLI's rules and
-  the receipt as before.
 - The first `erpc worker deploy` that starts a new server makes the app an
   ERPC Worker in the ERPC account, in that one command. For an environment
   `erpc.toml` has nothing for yet (no `[env.<name>]`, or an empty one),
@@ -361,22 +413,45 @@ whose version has no entry below.
   VPS: `--server <ID>` and `--new-server`, in every language's help and
   message. `--vps` and `--new-vps`, the names before, still work, so a
   script that uses them is not broken.
+- In `erpc ai`, input whose first word is `/node-check` (in the console,
+  with `--message` or on standard input) stays on this machine, in every
+  build, and says that the old node check has been retired, pointing to
+  `erpc ai --security-check`. That menu, a local check of the TCP 8899
+  listeners added after 0.1.0-rc.7 to builds with the `node-check-pilot`
+  feature, is gone before any release, and `erpc ai --node-check` with
+  it. The `node-check-pilot` feature now builds what
+  `security-check-pilot` builds.
+- Given no `--ssh-key`, the node commands that log in to a node stored on
+  this machine through the chains' shared SSH login, on every chain, say
+  so in one wording,
+  `pass --ssh-key <path to the .pub of the key that logs in>`, before the
+  stored host key is read or the SSH agent looked for. Before, the
+  wording differed between chains, and the arbitrum validator, avax,
+  hyperliquid ops and aqa, monad, robinhood validator, rollup, solana
+  native, sui and tron commands reported a missing agent or a stored host
+  key that did not parse first. `erpc validator --chain arc init` says
+  the same, and asks for the key before it looks for the SSH agent.
+- `erpc-ssh` is licensed `Apache-2.0 AND MIT`: the Security Check's
+  collector embeds the BIP-39 English word list, which is MIT. Every other
+  crate stays `Apache-2.0`. `NOTICE` carries the list's copyright line and
+  the MIT text, and the release archives now carry `NOTICE` beside
+  `LICENSE`, `README.md` and `CHANGELOG.md`.
+- The installer Worker is deployed only by a release, when the `v*` tag's
+  run calls its workflow, or by a run started by hand on a `v*` tag. A
+  push to `main` or a pull request that touches it typechecks it, bundles
+  it and checks it against the generated installers, with nothing waiting
+  for an approval. The bundle is built in a job with no environment and
+  no secrets; the deploy job installs its packages with
+  `npm ci --ignore-scripts`, uploads that bundle as it is, and has
+  wrangler read `installer/wrangler.toml` and no `.env` file.
+  `GOVERNANCE.md`: only an admin may push a `v*` tag, and pushing it is
+  the release's approval.
+- The README opens with the ERPC CLI's key visual and a quick start
+  (install, explore the CLI, sign in and make a first Solana RPC read),
+  then links by workflow; the complete usage guide follows.
 
 ### Fixed
 
-- The Server Security Check logs in with `~/.ssh/id_ed25519.pub` when
-  `ssh_key` is unset, as `erpc worker` does and as the setting's
-  description says. Before, it found no key unless `ssh_key` was set.
-- The Server Security Check checks that it has the `.pub` of the key it
-  logs in with and the rental's host key (erpc's pin of that VPS, or
-  `--host-key` with `--ssh-user`) once the rental is selected, before its
-  first question, and stops there, before anything is quoted or reserved,
-  saying which is missing: how to set the key with
-  `erpc config set ssh_key`, or the command to run again with
-  `--host-key` and `--ssh-user`. A `--host-key` that is not an Ed25519
-  host public key is named as such. Before, a run that could not log in
-  stopped only after the price was approved, with one message for every
-  case.
 - A gRPC or Shreds line start that user-api answers "This purchase was
   ended while it was starting" (what was bought under its key has been
   ended, and the key is refused from then on) leaves
@@ -417,6 +492,16 @@ whose version has no entry below.
   `--json`, `waf_rules` and `held_because` say `note_kept` where they
   said `before_config`, and the WAF under `waf` and a deploy's `waf` carry
   `note_error`: the note's path and why it cannot be removed.
+
+### Security
+
+- RUSTSEC-2026-0592, a stack overflow in `Url::origin()` of `url` 2.5.8,
+  is ignored by cargo-deny and cargo-audit, for the workspace and for the
+  `solana/pumpfun` template's checks, until `url` 2.5.9 is 14 days old:
+  it may enter the locks from 2026-12-05, when `url` is to be bumped and
+  the entries removed. `url` stays at 2.5.8 in this release. The
+  `deny.toml` entries give the reason: nothing in either lock calls
+  `Url::origin()` or `url::quirks::origin()`.
 
 ## [0.1.0-rc.7] - 2026-11-18
 
@@ -1292,7 +1377,8 @@ version.
 - `docs/verify-release.md`: verify signatures against a key saved once from
   `main`, not against `pubkey.txt` at the tag being checked.
 
-[Unreleased]: https://github.com/elsoul/erpc-cli/compare/v0.1.0-rc.7...HEAD
+[Unreleased]: https://github.com/elsoul/erpc-cli/compare/v0.1.0-rc.8...HEAD
+[0.1.0-rc.8]: https://github.com/elsoul/erpc-cli/releases/tag/v0.1.0-rc.8
 [0.1.0-rc.7]: https://github.com/elsoul/erpc-cli/releases/tag/v0.1.0-rc.7
 [0.1.0-rc.6]: https://github.com/elsoul/erpc-cli/releases/tag/v0.1.0-rc.6
 [0.1.0-rc.5]: https://github.com/elsoul/erpc-cli/releases/tag/v0.1.0-rc.5
