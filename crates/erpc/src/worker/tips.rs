@@ -138,9 +138,6 @@ struct Session {
     tips: Vec<String>,
     stop: Arc<AtomicBool>,
     ticker: Option<JoinHandle<()>>,
-    /// In a test: how many times a spinner was put up for it.
-    #[cfg(test)]
-    raised: u32,
 }
 
 impl Session {
@@ -183,12 +180,22 @@ static LIVE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::ne
 #[cfg(test)]
 static STRAY: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+#[cfg(test)]
+thread_local! {
+    /// In a test: how many spinners this thread put up. Other tests print
+    /// through the shared board too, each on a thread of its own.
+    static PUT_UP_HERE: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
 /// A spinner put up, showing `drawn`. Only while the board is locked.
 fn put_up(drawn: &str) -> Spinner {
     let spinner = Spinner::start(drawn.lines().next().unwrap_or_default());
     spinner.set_message(drawn);
     #[cfg(test)]
-    LIVE.fetch_add(1, Ordering::SeqCst);
+    {
+        LIVE.fetch_add(1, Ordering::SeqCst);
+        PUT_UP_HERE.with(|n| n.set(n.get() + 1));
+    }
     spinner
 }
 
@@ -211,10 +218,6 @@ fn raise(board: &mut Board) {
         spinner.set_message(&drawn);
     } else {
         session.spinner = Some(put_up(&drawn));
-        #[cfg(test)]
-        {
-            session.raised += 1;
-        }
     }
 }
 
@@ -262,8 +265,6 @@ pub(crate) fn busy(say: &Say, line: String) -> Busy {
             tips,
             stop: Arc::clone(&stop),
             ticker: Some(ticker(stop)),
-            #[cfg(test)]
-            raised: 0,
         });
     }
     raise(&mut board);
@@ -359,8 +360,8 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use super::{
-        Busy, STRAY, TIP_EVERY, TIPS, above, board, busy, clock, first_tip, lines, spins, tip_at,
-        tips,
+        BOARD, Busy, PUT_UP_HERE, STRAY, TIP_EVERY, TIPS, above, board, busy, clock, first_tip,
+        lines, spins, tip_at, tips,
     };
     use crate::cli::i18n::{CATALOG, speaking};
     use crate::node::common::{Say, heard};
@@ -417,13 +418,17 @@ mod tests {
         crate::cli::ui::force_drawn(true);
         let _ = heard::take_printed();
         let say = Say { quiet: false };
-        // Which session is up, and how many times it put a spinner up.
+        // Which session is up, and how many spinners this test put up:
+        // the lines other tests say meanwhile take it down and put it up
+        // on their own threads.
+        let before = PUT_UP_HERE.with(std::cell::Cell::get);
         let session = || {
-            board()
+            let up = board()
                 .session
                 .as_ref()
                 .filter(|s| s.spinner.is_some())
-                .map(|s| (Arc::as_ptr(&s.stop), s.raised))
+                .map(|s| Arc::as_ptr(&s.stop));
+            up.map(|up| (up, PUT_UP_HERE.with(std::cell::Cell::get) - before))
         };
         let build = busy(&say, "building".to_owned());
         let first = session().expect("a spinner up").0;
@@ -447,6 +452,15 @@ mod tests {
         assert_eq!(heard::take_printed(), ["waiting for server 1, again"]);
         assert!(board().session.is_none(), "the last step took it down");
         crate::cli::ui::force_drawn(false);
+    }
+
+    /// With no spinner up, a line is printed with the board held, so that
+    /// none can be put up while it is half out.
+    #[test]
+    fn a_line_with_no_spinner_up_is_printed_with_the_board_held() {
+        let mut held = false;
+        above(|| held = BOARD.try_lock().is_err());
+        assert!(held);
     }
 
     /// Lines said from another thread while steps begin and end are never

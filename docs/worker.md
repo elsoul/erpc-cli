@@ -972,9 +972,14 @@ of apps (`workers.toml`) cannot be read, the error is that file's. The app is
 asked for before the command checks its own options, so a value it refuses
 (`erpc worker backup on --at 25:99`) is said after the pick.
 
-Only a command that reads, or that asks before it changes anything, asks
-for the app: a key typed ahead must not choose what a command that goes
-ahead without asking acts on. These ask nothing, and fail with `there is no
+The picker asks for a command that only reads, or that asks before it
+buys, ends, deletes, sends or changes anything: a key typed ahead must not
+choose what a command that goes ahead without asking acts on. Two of those
+do something free first, before their question: `server start` makes the
+app's and the environment's records in the ERPC account when they are
+missing (they cost nothing), and `deploy` looks at the Rust toolchain in the
+app's directory (it runs `rustc` and `rustup` there, and rustup can install
+the toolchain the app names). These ask nothing, and fail with `there is no
 erpc.toml in … or above it` as before:
 
 - any command given `--yes`;
@@ -988,7 +993,8 @@ erpc.toml in … or above it` as before:
 
 The commands that do ask are `check`, `key show`, `key balance`, `key send`
 (which always asks before it sends), `secret put` with a value typed,
-`secret list`, `server start`, `server end`, `deploy`, `bench`, `status`,
+`secret list`, `server start` and `deploy` (each after the free step above),
+`server end`, `bench`, `status`,
 `logs`, `api` with GET, `trades`, `start`, `stop`, `restart`, `rollback`,
 `releases`, `delete`, `move`, `firewall list`, `firewall allow`, `firewall
 deny`, `firewall sync`, `backup on`, `backup off` and `backup status`, each

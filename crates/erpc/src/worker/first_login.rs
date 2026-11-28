@@ -719,6 +719,9 @@ mod tests {
         confirm: impl FnOnce(&str) -> Result<bool, String>,
     ) -> Result<(), CliError> {
         let _ = pins;
+        // A wait that rounds draws no spinner from a test, wherever it is
+        // run from.
+        crate::cli::ui::force_drawn(false);
         run_with(
             account,
             ssh,
@@ -736,6 +739,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_started_server_is_waited_for_asked_about_logged_in_to_once_and_recorded() {
+        crate::cli::ui::force_drawn(false);
         let dir = tempfile::tempdir().expect("dir");
         let pins = dir.path().join("worker_account.json");
         // Not ready at the first read, then ready; ready again after the yes.

@@ -1061,7 +1061,10 @@ impl Action {
     /// `run` and `build` (cargo runs the app's build scripts), `key new`,
     /// `key import`, `secret put --generate` or `--from-account`, `secret
     /// rm`, `api` with a method other than GET, and `backup now`. The
-    /// others only read, or ask before they change anything.
+    /// others only read, or ask before they buy, end, delete, send or
+    /// change anything; `server start` (the account's records of the app
+    /// and environment, made when missing, free) and `deploy` (`rustc` and
+    /// `rustup` in the app's directory) each do one free thing first.
     fn app_slot(&mut self) -> Option<AppSlot<'_>> {
         let (dir, goes_ahead) = match self {
             Self::Init { .. }
@@ -3035,7 +3038,8 @@ mod tests {
         }
     }
 
-    /// The verbs that ask for the app: they read, or ask before they change anything.
+    /// The verbs that ask for the app: they read, or ask before they buy,
+    /// end, delete, send or change anything.
     const ASKING: [&str; 30] = [
         "check",
         "key show",
