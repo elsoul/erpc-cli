@@ -281,6 +281,15 @@ whose version has no entry below.
 
 ### Changed
 
+- The Server Security Check names no model to the person. The price
+  question asks to run the report with ERPC AI, the fallback question
+  asks to authorize a fallback model at its rate and maximum, and the
+  charge shows the tokens without a model. `modelReport` in `--json` no
+  longer carries the receipt's `model`, and no other part of the check's
+  JSON carries a model id. This release is the first whose archives
+  include the check, so no script built on a released archive reads that
+  field. The quote's model names are checked against the CLI's rules and
+  the receipt as before.
 - The first `erpc worker deploy` that starts a new server makes the app an
   ERPC Worker in the ERPC account, in that one command. For an environment
   `erpc.toml` has nothing for yet (no `[env.<name>]`, or an empty one),
@@ -355,6 +364,19 @@ whose version has no entry below.
 
 ### Fixed
 
+- The Server Security Check logs in with `~/.ssh/id_ed25519.pub` when
+  `ssh_key` is unset, as `erpc worker` does and as the setting's
+  description says. Before, it found no key unless `ssh_key` was set.
+- The Server Security Check checks that it has the `.pub` of the key it
+  logs in with and the rental's host key (erpc's pin of that VPS, or
+  `--host-key` with `--ssh-user`) once the rental is selected, before its
+  first question, and stops there, before anything is quoted or reserved,
+  saying which is missing: how to set the key with
+  `erpc config set ssh_key`, or the command to run again with
+  `--host-key` and `--ssh-user`. A `--host-key` that is not an Ed25519
+  host public key is named as such. Before, a run that could not log in
+  stopped only after the price was approved, with one message for every
+  case.
 - A gRPC or Shreds line start that user-api answers "This purchase was
   ended while it was starting" (what was bought under its key has been
   ended, and the key is refused from then on) leaves

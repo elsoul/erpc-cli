@@ -31,6 +31,7 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use crate::account::commands::{Outcome, Said};
+use crate::ai::vps_access::HostLogin;
 
 #[derive(clap::Args)]
 #[command(next_help_heading = "Server Security Check")]
@@ -86,6 +87,13 @@ impl Kind {
             Self::Vps => "vps",
             Self::BareMetal => "bare_metal",
         }
+    }
+
+    /// The kind as `--kind` takes it: `vps` or `bare-metal`.
+    fn flag(self) -> String {
+        clap::ValueEnum::to_possible_value(&self)
+            .map(|value| value.get_name().to_owned())
+            .unwrap_or_default()
     }
 }
 
@@ -545,32 +553,90 @@ impl Posture {
     }
 }
 
-fn target(
-    server: &AuthorizedServer,
+/// How the check logs in to `rental` at `address`, from `identity` (the
+/// key erpc logs in with) and the host key it checks: `--host-key` with
+/// `--ssh-user`, else erpc's pin of this VPS from `pinned`. When it cannot,
+/// a line for each piece it lacks. Read on this machine only: nothing
+/// reaches the server or the account.
+fn login(
+    (rental, address): (Server, Ipv4Addr),
     explicit_key: Option<(&str, &str)>,
-) -> Option<erpc_ssh::Target> {
-    let address = server.address.to_string();
-    if let Some((key, user)) = explicit_key {
-        return Some(erpc_ssh::Target {
-            host: address,
-            port: 22,
-            user: user.to_owned(),
-            host_key: erpc_ssh::HostKey::parse(key).ok()?,
-            identity: crate::ai::vps_access::security_identity()?,
-        });
+    identity: Option<erpc_ssh::Identity>,
+    pinned: impl FnOnce(&str, u64) -> Option<HostLogin>,
+) -> Result<erpc_ssh::Target, String> {
+    let host = address.to_string();
+    let host_login = match explicit_key {
+        Some((key, user)) => erpc_ssh::HostKey::parse(key)
+            .map(|host_key| HostLogin {
+                host_key,
+                user: user.to_owned(),
+                port: 22,
+            })
+            .map_err(|_| t!("node_check.login_bad_host_key")),
+        None => (rental.kind == Kind::Vps)
+            .then(|| pinned(&host, rental.id))
+            .flatten()
+            .ok_or_else(|| {
+                t!(
+                    "node_check.login_no_pin",
+                    kind = rental.kind.flag(),
+                    id = rental.id
+                )
+            }),
+    };
+    match (identity, host_login) {
+        (Some(identity), Ok(host_login)) => Ok(host_login.target(host, identity)),
+        (identity, host_login) => {
+            let mut missing = Vec::new();
+            if identity.is_none() {
+                missing.push(t!("node_check.login_no_identity"));
+            }
+            missing.extend(host_login.err());
+            Err(missing.join("\n"))
+        }
     }
-    if server.rental.kind == Kind::Vps {
-        return crate::ai::vps_access::security_target(&address, server.rental.id);
-    }
-    None
+}
+
+/// [`login`] with this machine's key and pins.
+fn login_here(
+    rental: Server,
+    address: Ipv4Addr,
+    explicit_key: Option<(&str, &str)>,
+) -> Result<erpc_ssh::Target, String> {
+    login(
+        (rental, address),
+        explicit_key,
+        crate::ai::vps_access::security_identity(),
+        crate::ai::vps_access::security_pin,
+    )
+}
+
+/// Stops a run that cannot log in to `server` before anything is asked or
+/// quoted, saying which piece is missing.
+fn able_to_log_in(
+    server: &EligibleServer,
+    login: Result<erpc_ssh::Target, String>,
+) -> Result<(), Outcome> {
+    login.map(drop).map_err(|missing| {
+        Outcome::Failed(format!(
+            "{}\n{missing}",
+            t!(
+                "node_check.login_unavailable",
+                server = server.rental.canonical_id()
+            )
+        ))
+    })
 }
 
 fn observe_remote(
     server: &AuthorizedServer,
     explicit_key: Option<(&str, &str)>,
 ) -> Result<Posture, Outcome> {
-    let target = target(server, explicit_key)
-        .ok_or_else(|| Outcome::Failed(t!("node_check.remote_pin_required")))?;
+    // Read again for the verified address: what was found before the
+    // questions may have changed since.
+    let target = login_here(server.rental, server.address, explicit_key).map_err(|missing| {
+        Outcome::Failed(format!("{}\n{missing}", t!("node_check.remote_failed")))
+    })?;
     collect_posture(&target).map_err(|failure| Outcome::Failed(failure.message()))
 }
 
@@ -707,8 +773,13 @@ async fn menu(
         Ok(None) => return Outcome::Done(String::new()),
         Err(outcome) => return outcome,
     };
+    let explicit = explicit_key
+        .as_ref()
+        .map(|(key, user)| (key.as_str(), user.as_str()));
+    let late_key = explicit_key.clone();
     let completed = run_selected(
         &server,
+        |server| able_to_log_in(server, login_here(server.rental, server.address, explicit)),
         ask_confirmation,
         || async {
             tokio::time::timeout(std::time::Duration::from_secs(45), account.read_quote())
@@ -716,7 +787,7 @@ async fn menu(
                 .map_err(|_| billing::QuoteFailure::Timeout.outcome())?
         },
         async |rental| account.select_rental(rental).await,
-        async |verified| collect_selected(verified, explicit_key).await,
+        async |verified| collect_selected(verified, late_key).await,
         async |submission| submission.submit(&account).await,
     )
     .await;
@@ -780,6 +851,7 @@ impl Completed {
 
 async fn run_selected(
     server: &EligibleServer,
+    reach: impl FnOnce(&EligibleServer) -> Result<(), Outcome>,
     mut confirm: impl FnMut(String) -> Result<bool, Outcome>,
     quote: impl AsyncFnOnce() -> Result<Zeroizing<String>, Outcome>,
     select: impl AsyncFnOnce(Server) -> Result<(u16, Zeroizing<String>), Outcome>,
@@ -788,6 +860,8 @@ async fn run_selected(
         billing::ReportSubmission,
     ) -> Result<billing::Receipt, billing::ReportFailure>,
 ) -> Result<Option<Completed>, Outcome> {
+    // A run that cannot log in stops before anything is asked or quoted.
+    reach(server)?;
     if !confirm(inspection_scope(server))? {
         return Ok(None);
     }
@@ -930,23 +1004,25 @@ mod tests {
         let mut eligible = parse_eligible(&json!({"servers": [listed.clone()]}).to_string())
             .expect("eligible fixture");
         let server = eligible.pop().expect("fixture server");
-        let completed = &["scope", "quote", "price", "verify", "ssh", "submit"][..];
+        let completed = &[
+            "login", "scope", "quote", "price", "verify", "ssh", "submit",
+        ][..];
         for (refusal, quote_valid, lease_valid, terms, expected) in [
-            (Some("scope"), true, true, Internal, &["scope"][..]),
-            (None, false, true, Internal, &["scope", "quote"]),
+            (Some("scope"), true, true, Internal, &["login", "scope"][..]),
+            (None, false, true, Internal, &["login", "scope", "quote"]),
             (
                 Some("price"),
                 true,
                 true,
                 WithFallback,
-                &["scope", "quote", "price"],
+                &["login", "scope", "quote", "price"],
             ),
             (
                 None,
                 true,
                 false,
                 Internal,
-                &["scope", "quote", "price", "verify"],
+                &["login", "scope", "quote", "price", "verify"],
             ),
             (None, true, true, Internal, completed),
             (None, true, true, Customer, completed),
@@ -955,7 +1031,12 @@ mod tests {
             let steps = RefCell::new(Vec::new());
             let result = super::run_selected(
                 &server,
+                |_| {
+                    steps.borrow_mut().push("login");
+                    Ok(())
+                },
                 |prompt| {
+                    assert!(!prompt.contains("fixture-model"), "{prompt}");
                     let stage = if prompt.contains("authorized to assess") {
                         "scope"
                     } else {
@@ -1004,6 +1085,193 @@ mod tests {
                     Ok(Some(super::Completed { model: Ok(_), .. }))
                 ));
             }
+        }
+    }
+
+    const LOGIN_KEY: &str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+    const HOST_KEY: &str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINUFbvp9NNSqiS0AfqlG4aRt4PZ125MdCaIRGfMurzG/";
+
+    /// A machine for the login check: a home with the default key and one
+    /// without, no `ssh_key` setting, `vps:9`'s pin, another VPS's pin at
+    /// `vps:10`'s address, and at `bare_metal:7`'s address a pin of VPS 7,
+    /// which a bare-metal rental never uses; and those three rentals.
+    struct LoginFixture {
+        dir: tempfile::TempDir,
+        servers: Vec<super::EligibleServer>,
+    }
+
+    impl LoginFixture {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().expect("dir");
+            let ssh = dir.path().join("home/.ssh");
+            std::fs::create_dir_all(&ssh).expect("ssh dir");
+            std::fs::write(ssh.join("id_ed25519.pub"), format!("{LOGIN_KEY} fixture\n"))
+                .expect("default key");
+            std::fs::create_dir_all(dir.path().join("empty")).expect("empty home");
+            let pin = |vps: u64| {
+                json!({"hostKey": HOST_KEY, "user": "ubuntu", "port": 22,
+                    "vpsId": vps, "keyOnly": true})
+            };
+            let pins = json!({"8.8.8.9": pin(9), "8.8.8.10": pin(11), "8.8.8.4": pin(7)});
+            std::fs::write(dir.path().join("vps_hosts.json"), pins.to_string()).expect("pins");
+            let row = |id: &str, kind: &str, address: &str| {
+                json!({"id": id, "kind": kind, "label": "fixture",
+                    "address": address, "region": "tokyo"})
+            };
+            let servers = parse_eligible(
+                &json!({"servers": [
+                    row("vps:9", "vps", "8.8.8.9"),
+                    row("vps:10", "vps", "8.8.8.10"),
+                    row("bare_metal:7", "bare_metal", "8.8.8.4"),
+                ]})
+                .to_string(),
+            )
+            .expect("eligible fixture");
+            Self { dir, servers }
+        }
+
+        fn home(&self, with_key: bool) -> std::path::PathBuf {
+            self.dir
+                .path()
+                .join(if with_key { "home" } else { "empty" })
+        }
+
+        /// [`super::login`] with this machine's key and pins, read as the
+        /// check reads them.
+        fn login(
+            &self,
+            server: &super::EligibleServer,
+            with_key: bool,
+            explicit: Option<(&str, &str)>,
+        ) -> Result<erpc_ssh::Target, String> {
+            let config = self.dir.path().join("config.toml");
+            let pins = self.dir.path().join("vps_hosts.json");
+            super::login(
+                (server.rental, server.address),
+                explicit,
+                crate::ai::vps_access::security_identity_from(
+                    Some(&config),
+                    Some(&self.home(with_key)),
+                    None,
+                ),
+                |ip, id| crate::ai::vps_access::security_pin_at(&pins, ip, id),
+            )
+        }
+    }
+
+    /// A run that cannot log in stops before the first question, and so
+    /// before the quote is asked for, saying which piece is missing: the key
+    /// erpc logs in with (`ssh_key`, else `~/.ssh/id_ed25519.pub`), or the
+    /// host key (erpc's pin of this VPS, or `--host-key` with `--ssh-user`).
+    #[tokio::test]
+    async fn a_run_that_cannot_log_in_stops_before_the_questions_and_the_quote() {
+        use crate::account::commands::Outcome;
+
+        let machine = LoginFixture::new();
+        let [pinned, unpinned, bare_metal] = &machine.servers[..] else {
+            panic!("three fixture servers");
+        };
+        let no_key = "erpc config set ssh_key /path/to/key.pub";
+        let no_pin = "--host-key '<public-key>' --ssh-user '<login>'";
+        let bad_key = "The --host-key value is not an Ed25519 SSH host public key";
+        for (server, with_key, explicit, said, unsaid) in [
+            (pinned, false, None, vec![no_key], vec![no_pin, bad_key]),
+            (
+                unpinned,
+                true,
+                None,
+                vec![no_pin, "--kind vps --id 10 "],
+                vec![no_key, bad_key],
+            ),
+            (
+                bare_metal,
+                true,
+                None,
+                vec![no_pin, "--kind bare-metal --id 7 "],
+                vec![no_key, bad_key],
+            ),
+            (unpinned, false, None, vec![no_key, no_pin], vec![bad_key]),
+            (
+                bare_metal,
+                true,
+                Some(("ssh-ed25519 not-base64", "root")),
+                vec![bad_key],
+                vec![no_key, no_pin],
+            ),
+        ] {
+            let result = super::run_selected(
+                server,
+                |server| super::able_to_log_in(server, machine.login(server, with_key, explicit)),
+                |_| panic!("a question was asked"),
+                async || panic!("the quote was asked for"),
+                async |_| panic!("the assignment was verified"),
+                async |_| panic!("SSH was opened"),
+                async |_| panic!("a report was sent"),
+            )
+            .await;
+            let Err(Outcome::Failed(text)) = result else {
+                panic!("a run that cannot log in must stop");
+            };
+            let lead = format!(
+                "The check cannot log in to {}, so it stopped before asking for approval: \
+                 nothing was quoted or reserved.\n",
+                server.rental.canonical_id()
+            );
+            assert!(text.starts_with(&lead), "{text}");
+            for piece in said {
+                assert!(text.contains(piece), "{piece} not in {text}");
+            }
+            for piece in unsaid {
+                assert!(!text.contains(piece), "{piece} in {text}");
+            }
+        }
+    }
+
+    /// With the key and the host key, the login is the pinned one (or the
+    /// one given) with the key beside home, and the run goes on to the
+    /// first question.
+    #[tokio::test]
+    async fn a_run_with_a_key_and_a_host_key_goes_on_to_the_questions() {
+        let machine = LoginFixture::new();
+        let [pinned, _, bare_metal] = &machine.servers[..] else {
+            panic!("three fixture servers");
+        };
+        let target = machine.login(pinned, true, None).expect("logs in");
+        assert_eq!(
+            (target.host.as_str(), target.port, target.user.as_str()),
+            ("8.8.8.9", 22, "ubuntu")
+        );
+        assert_eq!(target.host_key.to_openssh(), HOST_KEY);
+        assert_eq!(
+            target.identity,
+            erpc_ssh::Identity::File(machine.home(true).join(".ssh/id_ed25519"))
+        );
+        let given = Some((HOST_KEY, "root"));
+        let target = machine.login(bare_metal, true, given).expect("logs in");
+        assert_eq!(
+            (target.host.as_str(), target.port, target.user.as_str()),
+            ("8.8.8.4", 22, "root")
+        );
+        for (server, explicit) in [(pinned, None), (bare_metal, given)] {
+            let mut asked = Vec::new();
+            let result = super::run_selected(
+                server,
+                |server| super::able_to_log_in(server, machine.login(server, true, explicit)),
+                |prompt| {
+                    asked.push(prompt);
+                    Ok(false)
+                },
+                async || panic!("refused at the first question"),
+                async |_| panic!("refused at the first question"),
+                async |_| panic!("refused at the first question"),
+                async |_| panic!("refused at the first question"),
+            )
+            .await;
+            assert!(matches!(result, Ok(None)));
+            assert_eq!(asked.len(), 1);
+            assert!(asked[0].contains("authorized to assess"), "{}", asked[0]);
         }
     }
 
@@ -1071,6 +1339,7 @@ mod tests {
         for invalid in invalid_internal.into_iter().chain(invalid_external) {
             let result = super::run_selected(
                 &server,
+                |_| Ok(()),
                 |prompt| {
                     assert!(
                         prompt.contains("authorized to assess"),
@@ -1398,7 +1667,10 @@ mod tests {
                     observed_reference
                 );
                 if let Some((model, charged)) = receipt {
-                    assert!(text.contains(&format!("ERPC AI tokens charged: {charged} ({model},")));
+                    assert!(
+                        text.contains(&format!("ERPC AI tokens charged: {charged} (base 512,"))
+                    );
+                    assert!(!text.contains(model), "{text}");
                 } else {
                     assert!(text.contains("No AI tokens were charged"));
                 }
@@ -1420,13 +1692,67 @@ mod tests {
                     permission_counts
                 );
                 if let Some((model, charged)) = receipt {
-                    assert_eq!(record["modelReport"]["model"], model);
+                    assert!(record["modelReport"].get("model").is_none());
+                    assert!(!record.to_string().contains(model), "{record}");
                     assert_eq!(record["modelReport"]["billing"]["chargedCredits"], charged);
                 } else {
                     assert!(record.get("modelReport").is_none());
                     assert_eq!(record["settlement"], "no_charge");
                 }
             }
+        }
+    }
+
+    /// `--json` carries no model id: not the primary's nor the fallback's
+    /// a receipt names, while the receipt's status, findings and billing
+    /// stay as they came, and the receipt is still checked by its model.
+    #[test]
+    fn the_printed_json_carries_no_model_id() {
+        use crate::account::commands::Said;
+
+        let server = fixture_server();
+        for (terms, model, charged) in [
+            (FixtureQuote::Internal, "fixture-model-a", 527),
+            (FixtureQuote::WithFallback, "fixture-model-b", 516),
+        ] {
+            let approved = billing::ApprovedReport::from_quote(
+                &quote_fixture(true, terms),
+                server.rental,
+                |_| Ok(true),
+            )
+            .expect("approved quote")
+            .expect("approved");
+            let posture =
+                decode_posture(br#"{"listeners":"no_listener","nftables":"not_observed"}"#)
+                    .expect("fixture posture");
+            let submission = approved.submission(&posture);
+            let wire = json!({
+                "status":"completed", "model":model, "findings":["review_ssh_jail"],
+                "billing":{"meterVersion":"posture1","chargedCredits":charged,
+                    "baseCredits":512,"inputTokens":1,"outputTokens":1},
+            });
+            let receipt = submission
+                .fixture_receipt(&wire.to_string())
+                .expect("a receipt the quote allows");
+            // Checked by its model: another name at the same charge is refused.
+            let other = wire.to_string().replace(model, "fixture-model-c");
+            assert!(submission.fixture_receipt(&other).is_err());
+            let done = super::Completed {
+                id: "fixture-request".into(),
+                result: posture,
+                model: Ok(receipt),
+            };
+            let Said::Json(record) = done.render(&server, true) else {
+                panic!("JSON report expected");
+            };
+            let mut expected = wire;
+            expected
+                .as_object_mut()
+                .expect("receipt object")
+                .remove("model");
+            assert_eq!(record["modelReport"], expected);
+            let printed = record.to_string();
+            assert!(!printed.contains("fixture-model"), "{printed}");
         }
     }
 

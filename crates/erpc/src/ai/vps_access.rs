@@ -91,20 +91,33 @@ fn save_pin(path: &Path, ip: &str, pin: Pin) -> Result<(), String> {
     })
 }
 
+/// The `.pub` of the key erpc logs in with: the `ssh_key` setting in the
+/// config at `config`, else `~/.ssh/id_ed25519.pub` under `home`; none when
+/// that file is not there. A key set but not there is never passed over for
+/// the default. `erpc worker`, `erpc ai` and the Security Check all use it.
+fn public_key(config: Option<&Path>, home: Option<&Path>) -> Option<PathBuf> {
+    config
+        .and_then(|path| crate::account::config::get(path, "ssh_key").ok().flatten())
+        .map(PathBuf::from)
+        .or_else(|| home.map(|h| h.join(".ssh/id_ed25519.pub")))
+        .filter(|p| p.is_file())
+}
+
+/// This machine's config and home, for [`public_key`].
+fn key_places() -> (Option<PathBuf>, Option<PathBuf>) {
+    (
+        crate::account::session::config_path().ok(),
+        std::env::var_os("HOME").map(PathBuf::from),
+    )
+}
+
 /// The user's key: its `.pub` and how its private half is reached.
 pub(crate) fn login_key() -> Result<(PathBuf, Identity), String> {
-    let configured = crate::account::session::config_path()
-        .ok()
-        .and_then(|path| crate::account::config::get(&path, "ssh_key").ok().flatten())
-        .map(PathBuf::from);
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    let public = configured
-        .or_else(|| home.as_ref().map(|h| h.join(".ssh/id_ed25519.pub")))
-        .filter(|p| p.is_file())
-        .ok_or(
-            "no SSH key to log in with: make one (ssh-keygen -t ed25519) or point erpc at yours \
-             with `erpc config set ssh_key /path/to/key.pub`",
-        )?;
+    let (config, home) = key_places();
+    let public = public_key(config.as_deref(), home.as_deref()).ok_or(
+        "no SSH key to log in with: make one (ssh-keygen -t ed25519) or point erpc at yours \
+         with `erpc config set ssh_key /path/to/key.pub`",
+    )?;
     let line = crate::node::common::public_key_line(&public)?;
     // An agent counts only when it holds this key: 1Password's runs for
     // many people whose key is a plain file.
@@ -166,26 +179,79 @@ pub(crate) fn pinned_target(ip: &str) -> Result<Target, String> {
     target(ip, &pin, &identity)
 }
 
-/// Read an existing key-only pin for this exact rental, never just its IP.
+/// How the Security Check logs in to a server, but for its address and
+/// the key that logs in: the host key it checks, and the login and port.
 #[cfg(feature = "security-check-pilot")]
-pub(crate) fn security_target(ip: &str, id: u64) -> Option<Target> {
-    let pin = load_pins(&pins_path().ok()?)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HostLogin {
+    pub(crate) host_key: HostKey,
+    pub(crate) user: String,
+    pub(crate) port: u16,
+}
+
+#[cfg(feature = "security-check-pilot")]
+impl HostLogin {
+    /// The target at `host`, logging in with `identity`.
+    pub(crate) fn target(self, host: String, identity: Identity) -> Target {
+        Target {
+            host,
+            port: self.port,
+            user: self.user,
+            host_key: self.host_key,
+            identity,
+        }
+    }
+}
+
+/// The login erpc pinned for VPS `id` at `ip` once it made it key-only, read
+/// from this machine's pins: never a pin of the address alone.
+#[cfg(feature = "security-check-pilot")]
+pub(crate) fn security_pin(ip: &str, id: u64) -> Option<HostLogin> {
+    security_pin_at(&pins_path().ok()?, ip, id)
+}
+
+/// [`security_pin`], from the pins at `path`.
+#[cfg(feature = "security-check-pilot")]
+pub(crate) fn security_pin_at(path: &Path, ip: &str, id: u64) -> Option<HostLogin> {
+    let pin = load_pins(path)
         .ok()?
         .remove(ip)
         .filter(|pin| pin.key_only && u64::try_from(pin.vps_id).ok() == Some(id))?;
-    target(ip, &pin, &security_identity()?).ok()
+    Some(HostLogin {
+        host_key: HostKey::parse(&pin.host_key).ok()?,
+        user: pin.user,
+        port: pin.port,
+    })
 }
 
-/// Use the exact identity already configured in erpc and the current agent.
+/// The key the Security Check logs in with: [`login_key`]'s `.pub` (the
+/// `ssh_key` setting, else `~/.ssh/id_ed25519.pub`), with its private half
+/// in the `SSH_AUTH_SOCK` agent or beside it.
 #[cfg(feature = "security-check-pilot")]
 pub(crate) fn security_identity() -> Option<Identity> {
-    let config = crate::account::session::config_path().ok()?;
-    let public = PathBuf::from(crate::account::config::get(&config, "ssh_key").ok()??);
+    let (config, home) = key_places();
+    security_identity_from(
+        config.as_deref(),
+        home.as_deref(),
+        std::env::var_os("SSH_AUTH_SOCK").map(PathBuf::from),
+    )
+}
+
+/// [`security_identity`], from the config at `config`, the home `home` and
+/// the agent at `agent`. The `.pub` must be an absolute path to one public
+/// key line.
+#[cfg(feature = "security-check-pilot")]
+pub(crate) fn security_identity_from(
+    config: Option<&Path>,
+    home: Option<&Path>,
+    agent: Option<PathBuf>,
+) -> Option<Identity> {
+    let public = public_key(config, home)?;
     if !public.is_absolute() || public.extension()?.to_str()? != "pub" {
         return None;
     }
     let line = crate::node::common::public_key_line(&public).ok()?;
-    if let Some(socket) = std::env::var_os("SSH_AUTH_SOCK").map(PathBuf::from)
+    if let Some(socket) = agent
         && socket.is_absolute()
         && erpc_ssh::agent_holds(&socket, &line)
     {
@@ -1031,6 +1097,111 @@ mod tests {
             Some((KEY.to_owned(), "ubuntu".to_owned()))
         );
         assert_eq!(super::done_at(&path, IP, OTHER_KEY), None);
+    }
+
+    /// The key erpc logs in with is the `.pub` the `ssh_key` setting
+    /// names; with no setting, `~/.ssh/id_ed25519.pub`. A setting whose
+    /// file is gone is never passed over for the default.
+    #[test]
+    fn the_key_is_the_ssh_key_setting_else_the_default_under_home() {
+        let dir = tempfile::tempdir().expect("dir");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(home.join(".ssh")).expect("ssh dir");
+        let default = home.join(".ssh/id_ed25519.pub");
+        // No config file: no setting.
+        let config = dir.path().join("config.toml");
+        assert_eq!(super::public_key(Some(&config), Some(&home)), None);
+        std::fs::write(&default, format!("{KEY}\n")).expect("default key");
+        assert_eq!(
+            super::public_key(Some(&config), Some(&home)),
+            Some(default.clone())
+        );
+        assert_eq!(super::public_key(None, Some(&home)), Some(default));
+        let other = dir.path().join("other.pub");
+        std::fs::write(&other, format!("{OTHER_KEY}\n")).expect("other key");
+        crate::account::config::set(&config, "ssh_key", other.to_str().expect("a path"))
+            .expect("set");
+        assert_eq!(
+            super::public_key(Some(&config), Some(&home)),
+            Some(other.clone())
+        );
+        std::fs::remove_file(&other).expect("removed");
+        assert_eq!(super::public_key(Some(&config), Some(&home)), None);
+        assert_eq!(super::public_key(None, None), None);
+    }
+
+    /// The Security Check logs in with that key too: the default when
+    /// `ssh_key` is unset, its private half beside it with no agent. It
+    /// still takes only one public key line in a `.pub` file.
+    #[cfg(feature = "security-check-pilot")]
+    #[test]
+    fn the_security_check_logs_in_with_the_default_key_when_ssh_key_is_unset() {
+        use erpc_ssh::Identity;
+
+        use super::security_identity_from as identity;
+
+        let dir = tempfile::tempdir().expect("dir");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(home.join(".ssh")).expect("ssh dir");
+        let config = dir.path().join("config.toml");
+        assert_eq!(identity(Some(&config), Some(&home), None), None);
+        std::fs::write(home.join(".ssh/id_ed25519.pub"), format!("{KEY} fixture\n"))
+            .expect("default key");
+        assert_eq!(
+            identity(Some(&config), Some(&home), None),
+            Some(Identity::File(home.join(".ssh/id_ed25519")))
+        );
+        // Set: that key, and not the default.
+        let other = dir.path().join("other.pub");
+        std::fs::write(&other, format!("{OTHER_KEY}\n")).expect("other key");
+        crate::account::config::set(&config, "ssh_key", other.to_str().expect("a path"))
+            .expect("set");
+        assert_eq!(
+            identity(Some(&config), Some(&home), None),
+            Some(Identity::File(dir.path().join("other")))
+        );
+        // Set to a file that is not one public key line, or not a .pub.
+        std::fs::write(&other, format!("{KEY}\n{OTHER_KEY}\n")).expect("two keys");
+        assert_eq!(identity(Some(&config), Some(&home), None), None);
+        let bare = dir.path().join("bare");
+        std::fs::write(&bare, format!("{KEY}\n")).expect("no extension");
+        crate::account::config::set(&config, "ssh_key", bare.to_str().expect("a path"))
+            .expect("set");
+        assert_eq!(identity(Some(&config), Some(&home), None), None);
+    }
+
+    /// The Security Check takes only that VPS's pin, once erpc made it
+    /// key-only: never an unfinished one, another VPS's, one with no VPS
+    /// id, or one whose host key does not parse.
+    #[cfg(feature = "security-check-pilot")]
+    #[test]
+    fn the_security_check_takes_only_this_vps_key_only_pin() {
+        use super::security_pin_at;
+
+        let dir = tempfile::tempdir().expect("dir");
+        let path = dir.path().join("vps_hosts.json");
+        for (ip, held) in [
+            ("203.0.113.1", pin(KEY, 9, None, true)),
+            ("203.0.113.2", pin(KEY, 9, None, false)),
+            ("203.0.113.3", pin(KEY, 0, Some(SERVER), true)),
+            ("203.0.113.4", pin("ssh-ed25519 AAAA", 9, None, true)),
+        ] {
+            save_pin(&path, ip, held).expect("saved");
+        }
+        let login = security_pin_at(&path, "203.0.113.1", 9).expect("pinned");
+        assert_eq!(
+            (login.host_key.to_openssh(), login.user.as_str(), login.port),
+            (KEY.to_owned(), "ubuntu", 22)
+        );
+        for (ip, id) in [
+            ("203.0.113.1", 10),
+            ("203.0.113.2", 9),
+            ("203.0.113.3", 9),
+            ("203.0.113.4", 9),
+            ("203.0.113.9", 9),
+        ] {
+            assert!(security_pin_at(&path, ip, id).is_none(), "{ip} {id}");
+        }
     }
 
     #[test]
