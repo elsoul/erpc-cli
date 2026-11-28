@@ -21,6 +21,11 @@ unknown_hint = "`erpc worker list` 会列出已知的应用；其他应用请用
 unreadable = "erpc 认识 {name}，但它的 erpc.toml 目前无法读取：{path}"
 ambiguous = "有多个名为 {name} 的应用：{dirs}"
 ambiguous_hint = "请用 --dir <目录> 指定是哪一个"
+which = "哪个应用？当前目录及其上级目录中没有 {file}"
+none_known = "{dir} 及其上级目录中没有 {file}，本机上 erpc 也还不认识任何应用"
+none_known_hint = "运行 `erpc worker init` 创建应用，或用 `erpc worker import` 导入已有的应用"
+none_readable = "{dir} 及其上级目录中没有 {file}，本机上 erpc 认识的应用中也没有一个的 erpc.toml 可以读取"
+none_readable_hint = "运行 `erpc worker init` 创建应用；`erpc worker list` 会列出 erpc 认识的应用"
 
 [manifest]
 fix = "请修正 {file}，然后运行 `erpc worker check{dir_scope}`"

@@ -644,13 +644,12 @@ pub enum ResourceKind {
 }
 
 impl ResourceKind {
-    /// What the operator reads.
+    /// What the operator reads: an ERPC server of any of the VPS kinds is
+    /// an "ERPC Worker", never a VPS, and the same in every language.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Vps => "VPS",
-            Self::SuperVps => "Super VPS",
-            Self::PremiumVps => "Premium VPS",
+            Self::Vps | Self::SuperVps | Self::PremiumVps => "ERPC Worker",
             Self::BareMetal => "bare metal server",
         }
     }

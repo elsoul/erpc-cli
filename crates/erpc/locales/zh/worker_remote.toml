@@ -96,7 +96,7 @@ keeps_charging = "；这不会终止其按小时计费的 {items}：仍在运行
 
 [unreached]
 message = "无法连接服务器 {host}{vps}；它可能已被终止或已停机"
-which = "（服务器 {id}）"
+which = "（ERPC Worker {id}）"
 plain = "如果服务器已无法连接且 worker 不在那里运行，`{command}` 会在不连接服务器的情况下将其移除"
 charged = "如果服务器已无法连接且 worker 不在那里运行，`{command}` 会在不连接服务器的情况下将其移除，并终止按小时计费的资源"
 backup = "；无论服务器是否应答，`{command}` 都会立即吊销其备份密钥"
@@ -116,7 +116,7 @@ lines = "其数据线路已终止。"
 dropped = "{line} 不在账户的计费项中；已从记录中移除。"
 server = "按小时计费的服务器已终止。"
 server_gone = "{kind} {id} 不在当前登录的账户（{account}）中：未终止它，已将其从记录中移除。"
-no_server = "记录中没有需要终止的按小时计费 ERPC 服务器。"
+no_server = "记录中没有需要终止的按小时计费 ERPC Worker。"
 kept = "{line} 不按小时计费，因此 erpc 没有终止它；在控制面板中终止之前它会一直运行"
 
 [release]

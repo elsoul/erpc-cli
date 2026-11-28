@@ -310,6 +310,9 @@ async fn wait_ready(
 ) -> Result<(Ipv4Addr, Prepared), CliError> {
     let env = app.env.as_str();
     let secs = pause.as_secs().to_string();
+    // At a terminal, a spinner with tips from the first round that finds
+    // the server not ready until this returns ([`crate::worker::tips`]).
+    let mut waiting: Option<crate::worker::tips::Busy> = None;
     for read in 1..=WAIT_TRIES {
         let server = to_log_in(&record).filter(|s| s.id == id).ok_or_else(|| {
             failed(t!("worker_first_login.changed", env))
@@ -331,7 +334,11 @@ async fn wait_ready(
         if read == WAIT_TRIES {
             break;
         }
-        say.line(&t!("worker_first_login.waiting", env, secs = secs.as_str()));
+        let line = t!("worker_first_login.waiting", env, secs = secs.as_str());
+        match &waiting {
+            Some(waiting) => waiting.again(say, line),
+            None => waiting = Some(crate::worker::tips::busy(say, line)),
+        }
         tokio::time::sleep(pause).await;
         record = api
             .env(name, env)
@@ -712,6 +719,9 @@ mod tests {
         confirm: impl FnOnce(&str) -> Result<bool, String>,
     ) -> Result<(), CliError> {
         let _ = pins;
+        // A wait that rounds draws no spinner from a test, wherever it is
+        // run from.
+        crate::cli::ui::force_drawn(false);
         run_with(
             account,
             ssh,
@@ -729,6 +739,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_started_server_is_waited_for_asked_about_logged_in_to_once_and_recorded() {
+        crate::cli::ui::force_drawn(false);
         let dir = tempfile::tempdir().expect("dir");
         let pins = dir.path().join("worker_account.json");
         // Not ready at the first read, then ready; ready again after the yes.
@@ -888,6 +899,9 @@ mod tests {
         );
         assert_eq!(*account.calls.borrow(), ["env", "env"]);
         // Never ready: the wait runs out, and says to run the deploy again.
+        // Off a drawn terminal each round that waits says so, as a line.
+        crate::cli::ui::force_drawn(false);
+        let _ = crate::node::common::heard::take_printed();
         let account = Account::new(vec![started(3, false)]);
         let e = run(&account, &ssh, &pins, AT_TERMINAL, never)
             .await
@@ -895,6 +909,13 @@ mod tests {
         assert_eq!(
             e.message,
             "the server of environment prod was not ready to log in to after about ten minutes of waiting; nothing was changed on it"
+        );
+        let rounds = crate::node::common::heard::take_printed();
+        assert_eq!(rounds.len(), 39, "{rounds:?}");
+        assert!(
+            rounds.iter().all(|l| l
+                == "the server of environment prod is not ready to log in to yet; asking the ERPC account again in 0 s"),
+            "{rounds:?}"
         );
         assert_eq!(account.count("env"), 40);
         assert_eq!(account.count("first_login"), 0);

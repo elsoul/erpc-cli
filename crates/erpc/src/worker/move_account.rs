@@ -1134,6 +1134,10 @@ mod tests {
             Ok(written(self.detail()))
         }
 
+        async fn delete_app(&self, _: &str, _: u64) -> Result<account::Deleted, WorkerError> {
+            unreachable!("a move deletes no app")
+        }
+
         async fn delete_env_ending(
             &self,
             _: &str,
@@ -1872,7 +1876,7 @@ mod tests {
                             "another ERPC account does not see it",
                             "--yes and --json do not give it",
                             "when what the account says of the server changes, it is asked again at a terminal",
-                            "an ERPC server the account does not show as active is not reached, not even to stop the app",
+                            "an ERPC Worker the account does not show as active is not reached, not even to stop the app",
                         ],
                     ),
                     (
@@ -1888,7 +1892,8 @@ mod tests {
                         "worker_move.loses_deploy",
                         &[
                             "deploy no longer takes --host",
-                            "its server cannot be chosen or bought, no line can be added or taken off the record",
+                            "takes --new-server and --region only while the account's record names no server, address, line or deploy for it",
+                            "its server cannot be chosen, no line can be added or taken off the record",
                             "a deploy cannot bring it back into erpc.toml or 1Password",
                             "a deploy is refused while a line on the account's record that has not ended is not active",
                         ],
@@ -1943,7 +1948,7 @@ mod tests {
                             "ほかの ERPC アカウントからは見えません",
                             "--yes や --json では答えられません",
                             "アカウントが示すサーバーの内容が変わると、端末でもう一度尋ねます",
-                            "アカウントが active と示さない ERPC のサーバーには接続せず、アプリを止めることもできません",
+                            "アカウントが active と示さない ERPC Worker には接続せず、アプリを止めることもできません",
                         ],
                     ),
                     (
@@ -1958,8 +1963,8 @@ mod tests {
                     (
                         "worker_move.loses_deploy",
                         &[
-                            "を受けなくなります",
-                            "サーバーを選ぶことや買うことも、回線を足すことや記録から外すこともできず",
+                            "を受けなくなり",
+                            "サーバーを選ぶことも、回線を足すことや記録から外すこともできず",
                             "deploy で erpc.toml や 1Password に戻すこともできません",
                             "アカウントの記録に、終了しておらず active でもない回線がある間は、deploy は断られます",
                         ],
@@ -2016,7 +2021,7 @@ mod tests {
                             "其他 ERPC 账户则看不到它",
                             "--yes 和 --json 无法代替",
                             "账户所说的服务器信息一旦变化，就会在终端上再次询问",
-                            "账户未显示为 active 的 ERPC 服务器不会被连接，连停止应用也不行",
+                            "账户未显示为 active 的 ERPC Worker 不会被连接，连停止应用也不行",
                         ],
                     ),
                     (
@@ -2032,7 +2037,7 @@ mod tests {
                         "worker_move.loses_deploy",
                         &[
                             "deploy 不再接受 --host",
-                            "无法选择或购买其服务器，无法添加线路或将线路从记录中移除",
+                            "无法选择其服务器，无法添加线路或将线路从记录中移除",
                             "deploy 也无法再把它改回由 erpc.toml 或 1Password 保管",
                             "账户记录中有尚未终止且不处于 active 的线路时，deploy 会被拒绝",
                         ],
@@ -2087,7 +2092,7 @@ mod tests {
                             "другой же аккаунт ERPC его не видит",
                             "--yes и --json этого не дают",
                             "когда то, что аккаунт говорит о сервере, меняется, это снова спрашивается в терминале",
-                            "к серверу ERPC, который аккаунт не показывает активным, не подключаются — даже чтобы остановить приложение",
+                            "к ERPC Worker, который аккаунт не показывает активным, не подключаются — даже чтобы остановить приложение",
                         ],
                     ),
                     (
@@ -2103,7 +2108,7 @@ mod tests {
                         "worker_move.loses_deploy",
                         &[
                             "deploy больше не принимает --host",
-                            "сервер нельзя выбрать или купить, линию нельзя добавить или убрать из записей",
+                            "сервер нельзя выбрать, линию нельзя добавить или убрать из записей",
                             "а deploy не может вернуть окружение в erpc.toml или 1Password",
                             "deploy отклоняется, пока в записи аккаунта есть незавершённая линия не в состоянии active",
                         ],

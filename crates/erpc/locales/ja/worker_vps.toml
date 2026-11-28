@@ -34,10 +34,10 @@ ended = "user-api によると、この開始のキーで買ったものは既�
 ended_stays = "user-api によると、この開始のキーで買ったものは既に終了しており、このキーは今後受け付けられません。開始から終了までの分が時間単位で、少なくとも 1 時間分、課金された可能性があり、ダッシュボードで確認できます。erpc はこのリクエストを記録から外せませんでした（{error}）。同じコマンドを次に実行すると、そのキーをもう一度送信します"
 
 [vps]
-none = "このアカウントに VPS {id} はありません。--server は VPS の ID を受け取ります（ベアメタルサーバーは --host で指定）"
-no_address = "サーバー {id} にはまだアドレスがありません"
-not_key_only = "サーバー {id} を鍵認証のみにできませんでした"
-bad_id = "{id} はサーバーの ID ではありません"
+none = "このアカウントに ERPC Worker {id} はありません。--server は ERPC Worker の ID を受け取ります（ベアメタルサーバーは --host で指定）"
+no_address = "ERPC Worker {id} にはまだアドレスがありません"
+not_key_only = "ERPC Worker {id} を鍵認証のみにできませんでした"
+bad_id = "{id} は ERPC Worker の ID ではありません"
 
 [plan]
 not_offered = "{id} は現在時間課金で提供されている {family} プランではありません"
@@ -47,32 +47,32 @@ cheapest = "最安"
 
 [buy]
 bad_region = "`{region}` はサーバーのリージョンではありません。指定できるのは {regions} です"
-buying = "新しい時間課金のサーバー：{name}（{product}、{how}、1 時間あたり €{price}）、リージョン {region}（{why}）"
+buying = "新しい時間課金の {name}：商品 {product}、{how}、1 時間あたり €{price}、リージョン {region}（{why}）"
 region_asked = "指定どおり"
 region_nearest = "このマシンのタイムゾーンから最も近いもの"
 not_started = "user-api はサーバーを開始しませんでした（HTTP {status}）：{reason}"
 other_region_hint = "別の --region なら在庫があるかもしれません。`erpc worker deploy --region <name>{scope}`"
-started = "サーバー {id} を開始しました"
+started = "ERPC Worker {id} を開始しました"
 
 [ready]
-waiting = "サーバー {id} の準備ができるのを待っています（最大 5 分）"
-failed = "サーバー {id} の準備ができませんでした：{reason}"
+waiting = "ERPC Worker {id} の準備ができるのを待っています（最大 5 分）"
+failed = "ERPC Worker {id} の準備ができませんでした：{reason}"
 
 [end]
-not_hourly = "この環境のサーバーは時間課金の ERPC サーバーではありません。何も終了していません"
+not_hourly = "この環境のサーバーは時間課金の ERPC Worker ではありません。何も終了していません"
 ending = "時間課金の {kind} {id} を終了しています"
 failed = "user-api が {kind} {id} を終了しませんでした：{answer}"
 no_hourly_list = "user-api のクレジットスナップショットに時間課金の商品がありません。何も変更していません"
 
 [gone]
-looking = "VPS {id} はアカウントのサーバーにも課金対象にもありません。購入した直後の可能性があるため、1 分あまり確認を続けます"
-no_list = "user-api の VPS の状態に一覧がないため、VPS {id} がまだアカウントにあるかどうか分かりません"
+looking = "ERPC Worker {id} はアカウントのサーバーにも課金対象にもありません。購入した直後の可能性があるため、1 分あまり確認を続けます"
+no_list = "アカウントの ERPC Worker についての user-api の応答に一覧がないため、ERPC Worker {id} がまだアカウントにあるかどうか分かりません"
 
 [line]
 no_status = "erpc は {kind} 回線の状態を取得できません"
 no_list = "user-api が返した {kind} 回線の状態に一覧が含まれていません。何も変更していません"
 no_region = "Unlimited RPC はサーバーの ERPC リージョンで起動しますが、このサーバーにはリージョンの記録がありません"
-no_region_hint = "ERPC サーバーにデプロイしてください（`--server <id>` または `--new-server`）"
+no_region_hint = "ERPC Worker にデプロイしてください（`--server <id>` または `--new-server`）"
 buying = "新しい時間課金の {kind} 回線：{name}（{product}、{how}、1 時間あたり €{price}）、{ip} 用"
 not_started = "user-api は {kind} 回線を開始しませんでした（HTTP {status}）：{reason}"
 made_anyway = "user-api はそれでも回線 {id} を作成しており、記録済みです。`erpc worker delete --release-server{scope}` かダッシュボードで終了するまで課金される可能性があります"
@@ -95,7 +95,7 @@ ending = "時間課金の {kind} 回線 {id} を終了しています"
 end_failed = "user-api が {kind} 回線 {id} を終了しませんでした：{answer}"
 udp_no_port = "UDP Forwarding 回線はサーバーの UDP ポートに送信しますが、ポートが指定されていません"
 udp_no_region = "UDP Forwarding 回線は ERPC のリージョンから送信しますが、このサーバーにはリージョンの記録がありません"
-udp_no_region_hint = "ERPC サーバーにデプロイする（`--server <id>` または `--new-server`）か、`--udp-region` でリージョンを指定してください"
+udp_no_region_hint = "ERPC Worker にデプロイする（`--server <id>` または `--new-server`）か、`--udp-region` でリージョンを指定してください"
 udp_bad_region = "`{region}` は {name} のリージョンではありません。送信元に指定できるのは {regions} です"
 udp_region_elsewhere = "{name} は {region} から送信できます。`--udp-plan {product}` で選べます"
 buying_udp = "新しい時間課金の UDP Forwarding 回線：{name}（{product}、{how}、1 時間あたり €{price}）、{region} から {ip}:{port} へ送信"
@@ -129,3 +129,15 @@ otherwise = "引き継がない場合"
 a_second = "新しい回線の開始を次に確認します。この回線が別のアプリのデプロイで開始されたものなら、ここで「いいえ」と答えてください"
 not_under_yes = "このアカウントには、以前に開始され送信先がどのサーバーにも設定されていない {name} 回線 {id} があります。このデプロイがそれを引き継ぐかどうかは --yes では決められません（別のアプリの回線かもしれません）"
 not_under_yes_hint = "端末でこのデプロイを実行すると確認されます。回線 {id} がどこにも使われていないなら、先に終了してから（`erpc ai` またはダッシュボード）もう一度実行してください"
+
+[worker]
+bare = "ERPC Worker"
+bare_id = "ERPC Worker {id}"
+named = "ERPC Worker（{spec}）"
+named_id = "ERPC Worker {id}（{spec}）"
+cores = "{cores} vCPU"
+memory = "メモリ {memory} GB"
+disk_nvme = "NVMe {disk} GB"
+disk_ssd = "SSD {disk} GB"
+disk = "ディスク {disk} GB"
+sep = "、"

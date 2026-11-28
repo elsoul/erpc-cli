@@ -6,8 +6,22 @@
 //! holds (a line bought as part of a Bundle is taken off instead, not
 //! ended), at most a few in one request, then deletes its record; this
 //! machine's record of what it trusts for the environment, and its table
-//! in `erpc.toml`, go after. The app's record in the account stays, with
-//! its secrets: this command deletes an environment, not an app.
+//! in `erpc.toml`, go after. When it is the app's last environment in the
+//! account, the question says so, and the app's record is deleted too,
+//! with the settings and secrets the account keeps for the app, once the
+//! environment's is gone: what the first deploy made goes as a whole.
+//! While the app has another environment there, its record stays.
+//!
+//! The app's record is deleted with `delete_app`, which ends nothing and
+//! is refused while an environment of the app still holds a server, a
+//! line or an open start: everything ended was ended by the environment's
+//! own delete, under the question. (Its sibling that ends what the app's
+//! environments hold would end at the app's revision whatever another
+//! sign-in put in an environment after the question.) It is sent only
+//! when the account, read again, names the app the person was asked about
+//! with no environment left, and a run that stopped before it, or at it,
+//! is finished by the same command: `erpc.toml` and this machine's records
+//! stay until then.
 //!
 //! The account decides what is ended, from its own record, and checks
 //! first that it can end all of it, a Bundle's lines aside. It ends a few at a time, and one end
@@ -415,6 +429,10 @@ pub(crate) struct Agreed {
     /// delete takes off without ending: one gone since was not ended.
     #[serde(default)]
     pub(crate) parts: Vec<String>,
+    /// Whether the person was told the environment is the app's last in
+    /// the account, and agreed to the app's record going with it.
+    #[serde(default)]
+    pub(crate) app_too: bool,
 }
 
 /// What was agreed to, by environment.
@@ -632,7 +650,11 @@ const fn ending_say() -> Say {
 /// agreement (`earlier`) agreed to added; and whether that earlier run
 /// ended something the record no longer holds. A Bundle's line it took
 /// off was not ended.
-fn agreement(record: &EnvDetail, app_id: String, earlier: Option<Agreed>) -> (Agreed, bool) {
+fn agreement(
+    record: &EnvDetail,
+    (app_id, app_too): (String, bool),
+    earlier: Option<Agreed>,
+) -> (Agreed, bool) {
     let mut ids: Vec<String> = ids(record).into_iter().map(ToOwned::to_owned).collect();
     let mut parts: Vec<String> = parts(record).iter().map(|l| l.id.clone()).collect();
     let (earlier, earlier_parts) = earlier.map(|b| (b.ids, b.parts)).unwrap_or_default();
@@ -654,13 +676,15 @@ fn agreement(record: &EnvDetail, app_id: String, earlier: Option<Agreed>) -> (Ag
         host: record.facts.host.clone(),
         ids,
         parts,
+        app_too,
     };
     (agreed, ended_earlier)
 }
 
-/// Asks about, ends and deletes `record`, the account's environment.
-/// Whether what it ran on there was ended, now or by an earlier run of the
-/// same agreement.
+/// Asks about, ends and deletes `record`, the account's environment, and
+/// says whether it is the app's last one there, whose record then goes
+/// too. Whether what it ran on there was ended, now or by an earlier run of
+/// the same agreement; and the app's id when its record is to go.
 async fn end_kept(
     api: &impl Account,
     app: &App,
@@ -669,15 +693,18 @@ async fn end_kept(
     local: &Local<'_>,
     asking: Asking,
     confirm: impl FnOnce(&str) -> Result<bool, String>,
-) -> Result<bool, CliError> {
+) -> Result<(bool, Option<String>), CliError> {
     let env = app.env.as_str();
     let scope = app.scope();
     kept::current_format(app, record)?;
-    let app_id = api
+    let app_record = api
         .app(name)
         .await
-        .map_err(|e| kept::worker_error(name, app, &e))?
-        .id;
+        .map_err(|e| kept::worker_error(name, app, &e))?;
+    let app_id = app_record.id;
+    // The app's last environment there: its record goes with it.
+    // Listed alone: a reply that lists none says nothing of the others.
+    let last = matches!(app_record.envs.as_slice(), [only] if only.name == env);
     // Unreadable is read as nothing agreed to: asked, never taken as yes.
     let before = agreed(&local.agreed, &local.pin_key).ok().flatten();
     let agreed_before = covers(before.as_ref(), &app_id, record);
@@ -686,7 +713,8 @@ async fn end_kept(
     let shared = shared(record, local, asking, app)?;
     let parts_note =
         parts_said(&parts(record)).map(|lines| t!("worker_delete_account.parts_note", lines));
-    let note = [shared, parts_note]
+    let last_note = last.then(|| t!("worker_delete_account.last_note", env, app = name));
+    let note = [shared, parts_note, last_note]
         .into_iter()
         .flatten()
         .reduce(|a, b| format!("{a}{}{b}", t!("worker_delete_account.sentence_sep")));
@@ -748,7 +776,11 @@ async fn end_kept(
     asked?;
     // What was agreed to, recorded before anything is sent; nothing is
     // sent when it cannot be.
-    let (agreement, ended_earlier) = agreement(record, app_id, before.filter(|_| agreed_before));
+    let (agreement, ended_earlier) = agreement(
+        record,
+        (app_id.clone(), last),
+        before.filter(|_| agreed_before),
+    );
     record_agreed(&local.agreed, &local.pin_key, Some(&agreement))
         .map_err(|error| failed(t!("worker_delete_account.not_agreed", env, error)))?;
     let say = Say { quiet: asking.json };
@@ -758,8 +790,80 @@ async fn end_kept(
     if let Some(ends) = &now {
         ending_say().line(&t!("worker_delete_account.ending", env, ends));
     }
+    // So is the app's record going, which `--yes` asked nobody about.
+    if last {
+        ending_say().line(&t!("worker_delete_account.ending_app", env, app = name));
+    }
     end_and_delete(api, app, name, record, PAUSE, &say).await?;
-    Ok(now.is_some() || ended_earlier)
+    Ok((now.is_some() || ended_earlier, last.then_some(app_id)))
+}
+
+/// What became of the app's record after its last environment was deleted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AppRecord {
+    /// Deleted, now or before.
+    Gone,
+    /// It stays: the account has an environment of it again, or names
+    /// another app by that name.
+    Stays,
+}
+
+/// How many times the app's delete is sent when the record moved under
+/// it.
+const APP_TRIES: u32 = 3;
+
+/// Deletes the record of the app named `name`, the one with id `app_id`
+/// the person agreed to delete with its last environment, once the account
+/// names it with no environment: read first, then deleted at the revision
+/// read.
+async fn delete_app_record(
+    api: &impl Account,
+    app: &App,
+    name: &str,
+    app_id: &str,
+) -> Result<AppRecord, CliError> {
+    let env = app.env.as_str();
+    let not_deleted = |e: &WorkerError| {
+        let e = kept::worker_error(name, app, e);
+        let why = e.message.as_str();
+        CliError::new(
+            e.code,
+            t!(
+                "worker_delete_account.app_not_deleted",
+                env,
+                app = name,
+                why
+            ),
+        )
+        .hint(t!("worker_delete_account.app_again", scope = app.scope()))
+    };
+    for _ in 0..APP_TRIES {
+        let record = match api.app(name).await {
+            Ok(record) => record,
+            Err(e) if not_found(&e) => return Ok(AppRecord::Gone),
+            Err(e) => return Err(not_deleted(&e)),
+        };
+        if record.id != app_id || !record.envs.is_empty() {
+            return Ok(AppRecord::Stays);
+        }
+        match api.delete_app(name, record.revision).await {
+            Ok(_) => return Ok(AppRecord::Gone),
+            Err(e) if not_found(&e) => return Ok(AppRecord::Gone),
+            // Moved since it was read: read again.
+            Err(WorkerError::Refused(r)) if r.code == Some(AccountCode::RevisionConflict) => {}
+            Err(e) => return Err(not_deleted(&e)),
+        }
+    }
+    Err(CliError::new(
+        Code::Failed,
+        t!(
+            "worker_delete_account.app_not_deleted",
+            env,
+            app = name,
+            why = t!("worker_delete_account.app_moving")
+        ),
+    )
+    .hint(t!("worker_delete_account.app_again", scope = app.scope())))
 }
 
 /// The delete, through `api`: read and checked, asked, ended and deleted
@@ -783,13 +887,15 @@ pub(crate) async fn run_with(
     // The Bundle's parts the delete takes off, read before it.
     let mut taken_off: Vec<String> = Vec::new();
     let mut taken_off_said = None;
-    let ended = match api.env(name, env).await {
+    // With the app whose record goes with its last environment, by its id.
+    let (ended, app_to_go) = match api.env(name, env).await {
         Ok(record) => {
-            let ended = end_kept(api, app, name, &record, local, asking, confirm).await?;
+            let (ended, app_too) =
+                end_kept(api, app, name, &record, local, asking, confirm).await?;
             let parts = parts(&record);
             taken_off = parts.iter().map(|l| l.kind.as_str().to_owned()).collect();
             taken_off_said = parts_said(&parts);
-            Some(ended)
+            (Some(ended), app_too)
         }
         Err(e) if not_found(&e) => {
             // Signed in to another account, it would look the same: what
@@ -807,9 +913,23 @@ pub(crate) async fn run_with(
                 let question = t!("worker_delete_account.question_gone", env, app = name);
                 ask(asking, true, &question, nobody, confirm)?;
             }
-            None
+            // A run that deleted the environment and stopped before the
+            // app's record, which the person agreed to delete with it, is
+            // finished: the agreement stays until then.
+            let app_too = agreed(&local.agreed, &local.pin_key)
+                .ok()
+                .flatten()
+                .filter(|a| a.app_too)
+                .map(|a| a.app_id);
+            (None, app_too)
         }
         Err(e) => return Err(kept::worker_error(name, app, &e)),
+    };
+    // Before anything here is put away, so that the same command finishes
+    // it when it stops.
+    let app_record = match &app_to_go {
+        Some(app_id) => Some(delete_app_record(api, app, name, app_id).await?),
+        None => None,
     };
     let mut text = vec![match (ended, taken_off_said) {
         (None, _) => t!("worker_delete_account.already_gone", env),
@@ -818,6 +938,11 @@ pub(crate) async fn run_with(
         (Some(true), Some(lines)) => t!("worker_delete_account.deleted_but_parts", env, lines),
         (Some(false), Some(lines)) => t!("worker_delete_account.deleted_parts_only", env, lines),
     }];
+    match app_record {
+        Some(AppRecord::Gone) => text.push(t!("worker_delete_account.app_deleted", app = name)),
+        Some(AppRecord::Stays) => text.push(t!("worker_delete_account.app_stays", app = name)),
+        None => {}
+    }
     // What was agreed to goes first: once the account no longer has the
     // environment, nothing may be finished under it again.
     let forgotten = record_agreed(&local.agreed, &local.pin_key, None)
@@ -848,6 +973,7 @@ pub(crate) async fn run_with(
         "already_gone": ended.is_none(),
         "ended": ended.unwrap_or(false),
         "bundle_parts_taken_off": taken_off,
+        "app_deleted": app_record == Some(AppRecord::Gone),
         "erpc_toml": forgotten.is_ok(),
         "erpc_toml_error": forgotten.err(),
     });
@@ -1247,7 +1373,7 @@ mod tests {
         // A yes: deleted in the account, then put away here, this
         // environment only.
         let (answer, text) = run_with(&fake, &app(), "bot", &local, (false, false, true), |q| {
-            assert!(q.contains("1 server") && q.contains("gRPC"), "{q}");
+            assert!(q.contains("1 ERPC Worker") && q.contains("gRPC"), "{q}");
             Ok(true)
         })
         .await
@@ -1309,7 +1435,7 @@ mod tests {
         assert_eq!(
             asked.take(),
             format!(
-                "{NOTE} Delete environment prod of bot from the ERPC account, ending 1 server, its Shreds line? This cannot be undone."
+                "{NOTE} Delete environment prod of bot from the ERPC account, ending 1 ERPC Worker, its Shreds line? This cannot be undone."
             )
         );
         assert_eq!(
@@ -1373,7 +1499,7 @@ mod tests {
         .expect("deleted");
         assert_eq!(
             asked.take(),
-            "Delete environment prod of bot from the ERPC account, ending 1 server, its gRPC line? This cannot be undone."
+            "Delete environment prod of bot from the ERPC account, ending 1 ERPC Worker, its gRPC line? This cannot be undone."
         );
         assert_eq!(answer["bundle_parts_taken_off"], json!([]));
         assert_eq!(
@@ -1615,6 +1741,378 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_last_environment_takes_the_apps_record_with_it_and_the_question_says_so() {
+        let c = Checkout::new();
+        c.pin();
+        let local = c.local();
+        let fake = Fake::new(record());
+        *fake.app_envs.borrow_mut() = vec!["prod"];
+        let (answer, text) = run_with(&fake, &app(), "bot", &local, (false, false, true), |q| {
+            assert!(
+                q.contains("app bot's last environment")
+                    && q.contains("settings and secrets")
+                    && q.contains("Delete environment prod"),
+                "{q}"
+            );
+            Ok(true)
+        })
+        .await
+        .expect("deleted");
+        // The app's record goes after the environment's, at its revision.
+        assert_eq!(
+            *fake.log.borrow(),
+            ["delete env at 7".to_owned(), "delete app at 1".to_owned()]
+        );
+        assert!(*fake.app_gone.borrow());
+        assert_eq!(answer["app_deleted"], true);
+        assert!(text.contains("App bot's record is gone"), "{text}");
+        assert!(!c.names_prod());
+        assert_eq!(agreed(&local.agreed, "k").expect("readable"), None);
+    }
+
+    #[tokio::test]
+    async fn with_another_environment_the_apps_record_stays_and_is_not_asked_about() {
+        let c = Checkout::new();
+        c.pin();
+        let local = c.local();
+        let fake = Fake::new(record());
+        let (answer, text) = run_with(&fake, &app(), "bot", &local, (false, false, true), |q| {
+            assert!(!q.contains("last environment"), "{q}");
+            Ok(true)
+        })
+        .await
+        .expect("deleted");
+        assert_eq!(*fake.log.borrow(), ["delete env at 7".to_owned()]);
+        assert_eq!(answer["app_deleted"], false);
+        assert!(!text.contains("App bot"), "{text}");
+        // Nor when its other environment went while the person was asked:
+        // what they were told is what is done.
+        let c = Checkout::new();
+        c.pin();
+        let local = c.local();
+        let fake = Fake::new(record());
+        run_with(&fake, &app(), "bot", &local, (false, false, true), |_| {
+            fake.app_envs.borrow_mut().retain(|e| *e == "prod");
+            Ok(true)
+        })
+        .await
+        .expect("deleted");
+        assert!(
+            !fake
+                .log
+                .borrow()
+                .iter()
+                .any(|l| l.starts_with("delete app"))
+        );
+        assert!(!*fake.app_gone.borrow());
+        // Nor when the account's answer lists no environment at all, this
+        // one included: it says nothing of the others.
+        let c = Checkout::new();
+        c.pin();
+        let local = c.local();
+        let fake = Fake::new(record());
+        fake.app_envs.borrow_mut().clear();
+        let (answer, _) = run_with(&fake, &app(), "bot", &local, (false, false, true), |q| {
+            assert!(!q.contains("last environment"), "{q}");
+            Ok(true)
+        })
+        .await
+        .expect("deleted");
+        assert!(
+            !fake
+                .log
+                .borrow()
+                .iter()
+                .any(|l| l.starts_with("delete app"))
+        );
+        assert_eq!(answer["app_deleted"], false);
+    }
+
+    #[tokio::test]
+    async fn under_yes_the_apps_record_going_is_said_on_stderr() {
+        let c = Checkout::new();
+        c.pin();
+        let fake = Fake::new(record());
+        *fake.app_envs.borrow_mut() = vec!["prod"];
+        let _ = crate::node::common::heard::take_printed();
+        run_with(&fake, &app(), "bot", &c.local(), (true, true, false), never)
+            .await
+            .expect("deleted");
+        let printed = crate::node::common::heard::take_printed().join("\n");
+        assert!(
+            printed.contains("deleting app bot's record from the ERPC account too")
+                && printed.contains("settings and secrets"),
+            "{printed}"
+        );
+        assert!(*fake.app_gone.borrow());
+    }
+
+    #[tokio::test]
+    async fn only_this_environment_listed_alone_is_the_apps_last() {
+        // The app's record lists one environment, another one: this is not
+        // its last, and nothing of the app's goes.
+        let c = Checkout::new();
+        c.pin();
+        let fake = Fake::new(record());
+        *fake.app_envs.borrow_mut() = vec!["staging"];
+        let (answer, _) = run_with(
+            &fake,
+            &app(),
+            "bot",
+            &c.local(),
+            (false, false, true),
+            |q| {
+                assert!(!q.contains("last environment"), "{q}");
+                Ok(true)
+            },
+        )
+        .await
+        .expect("deleted");
+        assert_eq!(answer["app_deleted"], false);
+        assert!(
+            !fake
+                .log
+                .borrow()
+                .iter()
+                .any(|l| l.starts_with("delete app"))
+        );
+    }
+
+    #[tokio::test]
+    async fn another_app_by_the_name_by_then_keeps_its_record() {
+        let c = Checkout::new();
+        c.pin();
+        let fake = Fake::new(record());
+        *fake.app_envs.borrow_mut() = vec!["prod"];
+        *fake.app_id_after.borrow_mut() = Some("0d4b2c1a-9e8f-4a7b-b6c5-d4e3f2a1b0c9");
+        let (answer, text) = run_with(
+            &fake,
+            &app(),
+            "bot",
+            &c.local(),
+            (false, false, true),
+            |_| Ok(true),
+        )
+        .await
+        .expect("deleted");
+        assert_eq!(answer["app_deleted"], false);
+        assert!(text.contains("App bot's record stays"), "{text}");
+        assert!(
+            !fake
+                .log
+                .borrow()
+                .iter()
+                .any(|l| l.starts_with("delete app"))
+        );
+        assert!(!*fake.app_gone.borrow());
+    }
+
+    #[tokio::test]
+    async fn an_environment_gone_takes_the_apps_record_only_as_the_agreement_says() {
+        // The environment went in an earlier run whose question did not
+        // name the app (its other environment was there then); the app now
+        // has none: its record stays, not asked about.
+        let c = Checkout::new();
+        c.pin();
+        let local = c.local();
+        let fake = Fake::new(record());
+        *fake.app_envs.borrow_mut() = vec!["prod"];
+        *fake.gone.borrow_mut() = true;
+        record_agreed(
+            &local.agreed,
+            &local.pin_key,
+            Some(&Agreed {
+                app_id: APP_ID.to_owned(),
+                host: None,
+                ids: Vec::new(),
+                parts: Vec::new(),
+                app_too: false,
+            }),
+        )
+        .expect("recorded");
+        let (answer, text) = run_with(&fake, &app(), "bot", &local, (true, true, false), never)
+            .await
+            .expect("put away");
+        assert_eq!(answer["already_gone"], true);
+        assert_eq!(answer["app_deleted"], false);
+        assert!(!text.contains("App bot"), "{text}");
+        assert!(
+            !fake
+                .log
+                .borrow()
+                .iter()
+                .any(|l| l.starts_with("delete app"))
+        );
+        assert!(!*fake.app_gone.borrow());
+    }
+
+    #[tokio::test]
+    async fn an_apps_record_gone_by_the_time_a_stopped_run_finishes_is_gone() {
+        // The environment went, and the app's record with it, before this
+        // machine heard: the same command finds both gone and puts away here.
+        let c = Checkout::new();
+        c.pin();
+        let local = c.local();
+        let fake = Fake::new(record());
+        *fake.gone.borrow_mut() = true;
+        *fake.app_gone.borrow_mut() = true;
+        record_agreed(
+            &local.agreed,
+            &local.pin_key,
+            Some(&Agreed {
+                app_id: APP_ID.to_owned(),
+                host: None,
+                ids: Vec::new(),
+                parts: Vec::new(),
+                app_too: true,
+            }),
+        )
+        .expect("recorded");
+        let (answer, text) = run_with(&fake, &app(), "bot", &local, (true, true, false), never)
+            .await
+            .expect("finished");
+        assert_eq!(answer["already_gone"], true);
+        assert_eq!(answer["app_deleted"], true);
+        assert!(text.contains("App bot's record is gone"), "{text}");
+        assert!(
+            !fake
+                .log
+                .borrow()
+                .iter()
+                .any(|l| l.starts_with("delete app"))
+        );
+        assert!(!c.names_prod());
+    }
+
+    #[tokio::test]
+    async fn an_app_that_has_an_environment_again_by_then_keeps_its_record() {
+        let c = Checkout::new();
+        c.pin();
+        let local = c.local();
+        let fake = Fake::new(record());
+        *fake.app_envs.borrow_mut() = vec!["prod"];
+        // Another sign-in makes one while the person is asked.
+        let (answer, text) = run_with(&fake, &app(), "bot", &local, (false, false, true), |_| {
+            fake.app_envs.borrow_mut().push("staging");
+            Ok(true)
+        })
+        .await
+        .expect("deleted");
+        assert!(
+            !fake
+                .log
+                .borrow()
+                .iter()
+                .any(|l| l.starts_with("delete app"))
+        );
+        assert_eq!(answer["app_deleted"], false);
+        assert!(text.contains("App bot's record stays"), "{text}");
+        assert!(!c.names_prod());
+    }
+
+    #[tokio::test]
+    async fn a_run_that_stopped_at_the_apps_record_is_finished_by_the_same_command() {
+        let c = Checkout::new();
+        c.pin();
+        let local = c.local();
+        let fake = Fake::new(record());
+        *fake.app_envs.borrow_mut() = vec!["prod"];
+        fake.app_answers.borrow_mut().push(no_code(503));
+        // --yes, nobody there: the environment goes, the app's record not.
+        let e = run_with(&fake, &app(), "bot", &local, (true, true, false), never)
+            .await
+            .expect_err("stopped");
+        assert!(*fake.gone.borrow());
+        assert!(
+            e.message.contains(
+                "environment prod is deleted from the ERPC account, and app bot's record is not yet"
+            ),
+            "{}",
+            e.message
+        );
+        assert!(
+            e.hint
+                .unwrap_or_default()
+                .contains("`erpc worker delete --release-server --env prod")
+        );
+        // Nothing here is put away: the same command finds it again.
+        assert!(c.names_prod());
+        assert!(kept::pinned(&local.pins, "k").expect("readable").is_some());
+        let agreement = agreed(&local.agreed, "k")
+            .expect("readable")
+            .expect("recorded");
+        assert!(agreement.app_too);
+        let (answer, text) = run_with(&fake, &app(), "bot", &local, (true, true, false), never)
+            .await
+            .expect("finished");
+        assert_eq!(answer["already_gone"], true);
+        assert_eq!(answer["app_deleted"], true);
+        assert!(text.contains("App bot's record is gone"), "{text}");
+        assert_eq!(
+            fake.log
+                .borrow()
+                .iter()
+                .filter(|l| l.starts_with("delete app"))
+                .count(),
+            2
+        );
+        assert!(!c.names_prod());
+        assert_eq!(agreed(&local.agreed, "k").expect("readable"), None);
+    }
+
+    #[tokio::test]
+    async fn the_apps_delete_is_sent_again_when_its_record_moved_and_a_gone_one_is_gone() {
+        let c = Checkout::new();
+        c.pin();
+        let local = c.local();
+        let fake = Fake::new(record());
+        *fake.app_envs.borrow_mut() = vec!["prod"];
+        fake.app_answers.borrow_mut().extend([
+            refused(409, "revision_conflict", Value::Null),
+            refused(404, "worker_not_found", Value::Null),
+        ]);
+        let (answer, _) = run_with(&fake, &app(), "bot", &local, (true, true, false), never)
+            .await
+            .expect("deleted");
+        assert_eq!(answer["app_deleted"], true);
+        assert_eq!(
+            fake.log
+                .borrow()
+                .iter()
+                .filter(|l| l.starts_with("delete app"))
+                .count(),
+            2
+        );
+        // Out of tries while it keeps moving: stopped, said, finished later.
+        let c = Checkout::new();
+        c.pin();
+        let local = c.local();
+        let fake = Fake::new(record());
+        *fake.app_envs.borrow_mut() = vec!["prod"];
+        fake.app_answers
+            .borrow_mut()
+            .extend((0..APP_TRIES).map(|_| refused(409, "revision_conflict", Value::Null)));
+        let e = run_with(&fake, &app(), "bot", &local, (true, true, false), never)
+            .await
+            .expect_err("stopped");
+        assert!(e.message.contains("kept changing"), "{}", e.message);
+        assert!(c.names_prod());
+    }
+
+    #[test]
+    fn an_agreement_recorded_before_the_apps_record_could_go_with_it_is_read_without_it() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let path = dir.path().join("worker_delete.json");
+        std::fs::write(
+            &path,
+            r#"{ "agreed": { "k": { "appId": "a", "host": null, "ids": [] } } }"#,
+        )
+        .expect("written");
+        let read = agreed(&path, "k").expect("readable").expect("there");
+        assert!(!read.app_too);
+    }
+
+    #[tokio::test]
     async fn an_address_with_no_server_and_nothing_agreed_is_asked_at_a_terminal_only() {
         let c = Checkout::new();
         let local = c.local();
@@ -1639,12 +2137,14 @@ mod tests {
                 host: Some("198.51.100.77".to_owned()),
                 ids: vec![],
                 parts: vec![],
+                app_too: false,
             },
             Agreed {
                 app_id: "1a2b3c4d-0000-4000-8000-000000000000".to_owned(),
                 host: Some("203.0.113.10".to_owned()),
                 ids: vec![],
                 parts: vec![],
+                app_too: false,
             },
         ] {
             record_agreed(&local.agreed, "k", Some(&stale)).expect("recorded");
@@ -1691,6 +2191,7 @@ mod tests {
                 host: Some("203.0.113.10".to_owned()),
                 ids: vec![],
                 parts: vec![],
+                app_too: false,
             }),
         )
         .expect("recorded");
@@ -1763,6 +2264,7 @@ mod tests {
                 host: Some("203.0.113.10".to_owned()),
                 ids: vec!["0b8e7c52-91d4-4f6a-8e23-7d1a5c9b3e60".to_owned()],
                 parts: vec![],
+                app_too: false,
             }),
         )
         .expect("recorded");
@@ -2024,7 +2526,7 @@ mod tests {
                     assert!(q.contains("names no server in use"), "{q}");
                     assert!(
                         q.contains(
-                            "an ERPC server the account no longer lists for this environment, \
+                            "an ERPC Worker the account no longer lists for this environment, \
                              it is ended already"
                         ),
                         "{q}"
@@ -2111,7 +2613,7 @@ mod tests {
             .expect("deleted");
         let printed = crate::node::common::heard::take_printed().join("\n");
         assert!(
-            printed.contains("ending 1 server, its gRPC line and deleting environment prod"),
+            printed.contains("ending 1 ERPC Worker, its gRPC line and deleting environment prod"),
             "{printed}"
         );
     }

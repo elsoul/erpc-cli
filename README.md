@@ -334,8 +334,17 @@ powershell and elvish).
 erpc worker init                 # a HelloWorld API in Rust, a pump.fun bot, ... or `erpc worker import` for an app you have
 erpc worker run                  # build it and run it here first
 erpc worker deploy --new-server  # a new hourly server, its price shown first, your app on it
-erpc worker status               # running? which release? what it costs per hour, how long your credit lasts
+erpc worker status               # running? which release? on which server?
 ```
+
+Run them in the app's directory, or name the app (`erpc worker status hft-bot`);
+at a terminal, one run where there is no app asks which of the apps on this
+machine you mean. It asks nothing under `--yes` or `--json`, with `TERM=dumb`,
+or for a command that changes something without asking, such as `build`, `run`
+or `secret rm`. It asks for a command that only reads, or that asks before it
+buys, ends, deletes, sends or changes anything; four of those may do something
+free after the pick, before their own question or with none in that run, which
+[the guide](docs/worker.md#running-it) names.
 
 `erpc worker` compiles your app to a native Linux binary and runs it on a
 latest-generation ERPC server, or a server of your own. No Docker and no runtime
@@ -343,7 +352,10 @@ in between: the binary runs under a hardened systemd unit with the whole
 machine to itself, which is what a trading bot's latency budget asks for. A
 release that does not come up healthy is rolled back to the one before, and
 several apps can share one server, each on a port of its own. You can also
-build one by talking to `erpc ai`.
+build one by talking to `erpc ai`. For a new environment, `deploy
+--new-server` starts the server in your ERPC account, which keeps the app as
+an ERPC Worker (the [Worker guide](docs/worker.md) says when it stays in
+`erpc.toml` instead).
 
 | | |
 |---|---|
@@ -420,7 +432,7 @@ api-prod on 203.0.113.10: running, release 20261101T093000Z-1a2b3c4d, pid 4217, 
   current 20261101T093000Z-1a2b3c4d, previous 20261028T171500Z-9f8e7d6c, 2 releases kept
   WAF: listening on port 8080, forwarding to 127.0.0.1:3000, since 2026-11-01T09:30:12Z; requests 5120, forwarded 5043, blocked 71, connections refused 12, app errors 6, addresses banned now 1
   Charged by the hour, from ERPC Credit:
-    VPS 100001  €0.07 per hour
+    ERPC Worker 100001  €0.07 per hour
   The account has €12.00 of credit and spends €0.07 per hour on all it runs: about 171 hours.
   `erpc worker delete --release-server --env prod` ends what this app is charged for.
 ```

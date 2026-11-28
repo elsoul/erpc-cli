@@ -13,8 +13,11 @@
 //!    secret gate lets this process read the trading key.
 //! 2. The server: the one `[env.<name>]` names, an ERPC VPS of the account,
 //!    a new hourly one ([`crate::worker::vps`]), or `--host`, chosen and
-//!    agreed to now. Its host key is pinned here, or, for a VPS bought or
-//!    taken up, once it is up and the build is done (step 3), before
+//!    agreed to now. (A new server for an environment `erpc.toml` has
+//!    nothing for is started in the ERPC account instead, before this
+//!    deploy, which then deploys there: [`crate::worker::first_deploy`].)
+//!    Its host key is pinned here, or, for a VPS bought or taken up, once
+//!    it is up and the build is done (step 3), before
 //!    anything connects to it. A VPS bought here
 //!    is on record the moment user-api names it, before it is ready, so a
 //!    deploy that stops after that leaves it where the next deploy takes it
@@ -84,9 +87,11 @@
 //! 11. `[env.<name>]` in erpc.toml gets the server, its pinned key, the
 //!     allow list and the lines, or, for an inventory environment, its
 //!     1Password item does and erpc.toml names the vault (decision 9). A
-//!     new environment is an inventory one when `erpc login` keeps the
-//!     session in 1Password (`--vault` names another vault, `--inline`
-//!     keeps it in erpc.toml). The app is entered in this machine's
+//!     new environment that comes this way is an inventory one when `erpc
+//!     login` keeps the session in 1Password (`--vault` names another
+//!     vault, `--inline` keeps it in erpc.toml); one whose new server the
+//!     first deploy starts in the ERPC account is kept there instead
+//!     ([`crate::worker::first_deploy`]). The app is entered in this machine's
 //!     index. This is written right after step 5, and again after each
 //!     line, so a failure later leaves the server and the lines on record.
 
@@ -1779,25 +1784,43 @@ async fn server(
         )
         .hint(t!("worker_deploy.server.no_terminal_hint")));
     }
-    let running = vps::running(&api).await?;
-    let mut options: Vec<String> = running
-        .iter()
-        .map(|(id, ip, region, plan)| format!("{}  {ip}  {region}  {plan}", server_named(id)))
-        .collect();
     let region = vps::nearest_region();
-    options.push(t!("worker_deploy.server.new_vps", region));
-    let question = t!("worker_deploy.server.which");
-    let i = crate::cli::prompt::pick(&question, &options, None).map_err(failed)?;
-    if let Some((id, ..)) = running.get(i) {
-        Ok(found(
-            Waiting::Ready(vps::existing(&api, *id, false).await?),
+    match pick(&api, t!("worker_deploy.server.new_vps", region)).await? {
+        Picked::Server(id) => Ok(found(
+            Waiting::Ready(vps::existing(&api, id, false).await?),
             true,
             false,
-        ))
-    } else {
-        let server = buy_picked(api, at, region, start(), on_record, say).await?;
-        Ok(found(server, true, true))
+        )),
+        Picked::New => {
+            let server = buy_picked(api, at, region, start(), on_record, say).await?;
+            Ok(found(server, true, true))
+        }
     }
+}
+
+/// What the person picked to run a new environment on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Picked {
+    /// A server of the account, by its id.
+    Server(i64),
+    /// A new one.
+    New,
+}
+
+/// Asks at the terminal which server a new environment runs on: one of the
+/// account's running servers, or a new one, offered last as `new` says.
+pub(crate) async fn pick(api: &Api, new: String) -> Result<Picked, CliError> {
+    let running = vps::running(api).await?;
+    let mut options: Vec<String> = running
+        .iter()
+        .map(|(id, ip, region, spec)| format!("{}  {ip}  {region}", vps::worker_id(id, spec)))
+        .collect();
+    options.push(new);
+    let question = t!("worker_deploy.server.which");
+    let i = crate::cli::prompt::pick(&question, &options, None).map_err(failed)?;
+    Ok(running
+        .get(i)
+        .map_or(Picked::New, |(id, ..)| Picked::Server(*id)))
 }
 
 /// Buys the new VPS picked at the terminal, in `--region`, else `nearest`:
@@ -2220,31 +2243,8 @@ where
     O: FnOnce() -> F,
     F: core::future::Future<Output = Result<Api, CliError>>,
 {
-    let (path, m) = app_ready(app, at)?;
+    let (path, m) = ready_here(app, at, login)?;
     let id = UnitId::new(&m.unit_id(&app.env)).map_err(failed)?;
-    // A build that fails after a VPS was bought leaves it charged; so does
-    // a Rust too old for the app, which only a probe that asks `rustc`
-    // finds.
-    let root = crate::worker::build::app_root(&path);
-    let mut lacking =
-        crate::worker::build::missing_tools(&m, &root, crate::worker::build::Probe::Toolchain);
-    if let Err(no_key) = login() {
-        lacking.push((no_key, String::new()));
-    }
-    if !lacking.is_empty() {
-        let what: Vec<&str> = lacking.iter().map(|(what, _)| what.as_str()).collect();
-        let hints: Vec<&str> = lacking
-            .iter()
-            .map(|(_, hint)| hint.as_str())
-            .filter(|h| !h.is_empty())
-            .collect();
-        let e = failed(t!("worker_deploy.not_ready", what = what.join("; ")));
-        return Err(if hints.is_empty() {
-            e
-        } else {
-            e.hint(hints.join("; "))
-        });
-    }
     // Lines to forget are checked now, before anything is built or bought.
     take_lines(
         &mut m.env.get(&app.env).cloned().unwrap_or_default(),
@@ -2275,6 +2275,51 @@ where
         id,
         env_before,
     })
+}
+
+/// What refuses a deploy on this machine whatever server it goes to, the
+/// first part of [`before_buying`]: the app and its settings, key and
+/// secrets ([`app_ready`]), what the build needs here, the Rust that would
+/// build the app asked in its directory (`rustc`, `rustup`), and the key to
+/// log in with (`login`).
+fn ready_here(
+    app: &App,
+    at: &Where,
+    login: impl FnOnce() -> Result<(), String>,
+) -> Result<(PathBuf, Manifest), CliError> {
+    let (path, m) = app_ready(app, at)?;
+    // A build that fails after a VPS was bought leaves it charged; so does
+    // a Rust too old for the app, which only a probe that asks `rustc`
+    // finds.
+    let root = crate::worker::build::app_root(&path);
+    let mut lacking =
+        crate::worker::build::missing_tools(&m, &root, crate::worker::build::Probe::Toolchain);
+    if let Err(no_key) = login() {
+        lacking.push((no_key, String::new()));
+    }
+    if !lacking.is_empty() {
+        let what: Vec<&str> = lacking.iter().map(|(what, _)| what.as_str()).collect();
+        let hints: Vec<&str> = lacking
+            .iter()
+            .map(|(_, hint)| hint.as_str())
+            .filter(|h| !h.is_empty())
+            .collect();
+        let e = failed(t!("worker_deploy.not_ready", what = what.join("; ")));
+        return Err(if hints.is_empty() {
+            e
+        } else {
+            e.hint(hints.join("; "))
+        });
+    }
+    Ok((path, m))
+}
+
+/// [`ready_here`] with this machine's key to log in with: what the first
+/// deploy that starts a new server checks before it is started
+/// ([`crate::worker::first_deploy`]). `at.kept` is erpc.toml as read when
+/// it keeps the environment in the account already.
+pub(crate) fn ready_to_start(app: &App, at: &Where) -> Result<(PathBuf, Manifest), CliError> {
+    ready_here(app, at, || crate::ai::vps_access::login_key().map(drop))
 }
 
 #[allow(
@@ -3568,7 +3613,7 @@ mod tests {
         let taken_up = super::Waiting::Vps(super::Api::offline(), bought());
         let line = super::go_ahead_line(&taken_up, false, "bot", "erpc-worker-bot")
             .expect("a VPS taken up from an earlier deploy asks");
-        assert!(line.contains("server 100001"), "{line}");
+        assert!(line.contains("ERPC Worker 100001"), "{line}");
         assert!(super::go_ahead_line(&taken_up, true, "bot", "erpc-worker-bot").is_none());
     }
 
@@ -3593,7 +3638,7 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(*log.borrow(), ["saved 100001", "waited for 100001"]);
         // The failure is then told what is charged (deploy's wrapper).
-        assert_eq!(*on_record.borrow(), ["server 100001"]);
+        assert_eq!(*on_record.borrow(), ["ERPC Worker 100001"]);
     }
 
     #[tokio::test]
@@ -5453,7 +5498,7 @@ mod tests {
 
         assert!(forget_missing(&missing, "100001", scope, true, answer(true)).expect("yes"));
         assert!(
-            asked.borrow()[0].contains("VPS 100001")
+            asked.borrow()[0].contains("ERPC Worker 100001")
                 && asked.borrow()[0].contains("(Example Account)"),
             "{:?}",
             asked.borrow()

@@ -619,7 +619,8 @@ pub(crate) fn prebuilt_here(
 /// the binary it built. cargo's own lines (compiling, the app's warnings)
 /// are kept in a log beside the build, not shown: they are the app's, and
 /// read as erpc's trouble. A failed build shows them on stderr, with
-/// --json too, since they say what to fix.
+/// --json too, since they say what to fix. At a terminal the build is a
+/// spinner with tips while cargo runs ([`crate::worker::tips`]).
 fn cargo(
     m: &Manifest,
     root: &Path,
@@ -630,7 +631,8 @@ fn cargo(
     let rest = cargo_build_args(m)?;
     let triple = m.build.target.triple();
     let args = rest.join(" ");
-    say.line(&t!("worker_build.building", subcommand, target, args));
+    let building =
+        crate::worker::tips::busy(say, t!("worker_build.building", subcommand, target, args));
     let out = Command::new("cargo")
         .arg(subcommand)
         .args(&rest)
@@ -639,12 +641,15 @@ fn cargo(
         .stdin(Stdio::null())
         .output()
         .map_err(|e| failed(t!("worker_build.could_not_run", subcommand, error = e)))?;
+    drop(building);
     let log = target_dir(root).join(BUILD_LOG);
     let mut text = out.stdout;
     text.extend_from_slice(&out.stderr);
     let kept = std::fs::create_dir_all(target_dir(root)).and_then(|()| std::fs::write(&log, &text));
     if !out.status.success() {
-        eprint!("{}", String::from_utf8_lossy(&out.stderr));
+        // Above a deploy's spinner, which may still wait for the server.
+        let cargo_said = String::from_utf8_lossy(&out.stderr);
+        crate::worker::tips::above(|| eprint!("{cargo_said}"));
         let status = out.status;
         let e = failed(t!("worker_build.failed", triple, status));
         return Err(match failure_hint(kept.is_ok(), &log) {

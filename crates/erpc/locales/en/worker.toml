@@ -21,6 +21,11 @@ unknown_hint = "`erpc worker list` shows the apps it knows; pass --dir <director
 unreadable = "erpc knows {name}, and its erpc.toml cannot be read as it is: {path}"
 ambiguous = "more than one app is named {name}: {dirs}"
 ambiguous_hint = "pass --dir <directory> to say which"
+which = "Which app? There is no {file} in this directory or above it"
+none_known = "there is no {file} in {dir} or above it, and erpc knows no app on this machine yet"
+none_known_hint = "run `erpc worker init` to make an app, or `erpc worker import` to take in one you already have"
+none_readable = "there is no {file} in {dir} or above it, and none of the apps erpc knows on this machine has an erpc.toml it can read"
+none_readable_hint = "run `erpc worker init` to make an app; `erpc worker list` shows the apps erpc knows"
 
 [manifest]
 fix = "fix {file} and run `erpc worker check{dir_scope}`"

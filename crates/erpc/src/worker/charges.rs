@@ -445,7 +445,8 @@ mod tests {
             })
         );
         let text = charges.lines(" --env prod").join("\n");
-        assert!(text.contains("VPS 100001"), "{text}");
+        assert!(text.contains("ERPC Worker 100001"), "{text}");
+        assert!(!text.contains("VPS"), "{text}");
         assert!(text.contains("€0.07 per hour"), "{text}");
         assert!(text.contains("€0.34 per hour"), "{text}");
         assert!(text.contains("together"), "{text}");
