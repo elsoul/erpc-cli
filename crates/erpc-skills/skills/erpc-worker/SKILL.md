@@ -32,7 +32,9 @@ in the erpc repository.
   paid from prepaid ERPC Credit and refused when the credit does not cover it. Start one only
   when the user asked for it, and say what it costs per hour and that `erpc worker delete
   --release-server` ends it all. End it only when the user asked: `erpc worker delete <app>
-  --release-server --yes` then ends the lines and the server and prints each. It stops, and
+  --release-server --yes` then ends the lines and the server and prints each; for the app's
+  last environment kept in the ERPC account it also deletes the app's record there, with the
+  settings and secrets the account keeps for the app, and prints that too. It stops, and
   removes nothing, when another app or environment on this machine is, or may be, on that
   server: say so to the user. An app deployed there from another machine is not seen.
 - **1Password approvals:** reading a secret or using an SSH key in 1Password may show an
@@ -91,12 +93,17 @@ directory.
   command again takes it up.
 - **Starting hourly products yourself:** when the user asked for a server or a line, and the
   build is done, run the deploy with the flags that name them and `--yes` (`erpc worker
-  deploy <app> --new-server --yes`, `--server <ID>`, `--grpc`, …). Say first what each costs per
-  hour (`hourly_catalog`) and what the credit is; read the price lines the command prints
-  back to the user after. Without `--yes` the command refuses from `run_command` and says
-  so. Never add `--yes` to a start the user did not ask for. `--yes` also answers the first
-  login to a server erpc has not made key-only yet (a new one, or `--server <ID>`): its key
-  goes in and password logins go off.
+  deploy <app> --new-server --inline --yes`, `--server <ID>`, `--grpc`, …). Say first what each
+  costs per hour (`hourly_catalog`) and what the credit is; read the price lines the command
+  prints back to the user after. Without `--yes` the command refuses from `run_command` and
+  says so. Never add `--yes` to a start the user did not ask for. `--yes` also answers the
+  first login to a server erpc has not made key-only yet (a new one, or `--server <ID>`): its
+  key goes in and password logins go off. A new server for an environment erpc.toml has
+  nothing for yet is started in the ERPC account instead, which makes the app an ERPC Worker
+  there, unless the deploy has `--inline` or `--vault`, `--plan`, a line's flag, or the app a
+  `[wallet]`; its first login is asked at a terminal only, so from `run_command` that deploy
+  is refused before anything is bought. Hand the user `erpc worker deploy <app>` to run at a
+  terminal for that, or add `--inline` to keep the environment in erpc.toml as before.
 - **A start with no outcome:** when a deploy says a start "may or may not have gone
   through", that the purchase "is still being made", or that the answer "says nothing
   about the earlier one", its request stays on record. Run the same command again, with
@@ -128,9 +135,12 @@ erpc worker delete hello-world --release-server   # removes it and ends the hour
 
 - It has no `[wallet]`, so the key gate does not apply: you can run `run --check`, `status`,
   `logs` and `api` for it yourself, and the whole deploy too: after `erpc worker build
-  <app>`, `erpc worker deploy <app> --new-server --yes` (or `--server <ID> --yes`) buys the
-  server, logs in to it and starts the app with nobody at a terminal, printing the price it
-  accepted. It takes about two minutes.
+  <app>`, `erpc worker deploy <app> --new-server --inline --yes` (or `--server <ID> --yes`)
+  buys the server, logs in to it and starts the app with nobody at a terminal, printing the
+  price it accepted, and keeps the environment in erpc.toml. It takes about two minutes.
+  Without `--inline` the new server is started in the ERPC account, which makes the app an
+  ERPC Worker there and asks its first login at a terminal: the user runs `erpc worker
+  deploy <app>` for that.
 - `erpc worker api <PATH>` sends no token for an app with no `API_TOKEN` in `[secrets]`.
 - Suggest it as the first step to a beginner who asks for a bot: the bot is deployed with the
   same commands, plus its key, its settings and its lines.
@@ -243,7 +253,7 @@ erpc worker deploy --new-server --grpc # a new hourly server and gRPC line, pric
   1.98.1 or newer (`rustup update`); `deploy` names an older one before it buys anything
   (`check` does not run Rust, so it cannot).
 
-- The server: `[env.<name>]` in erpc.toml, else `--server <ID>` (a VPS of the account, by its id),
+- The server: `[env.<name>]` in erpc.toml, else `--server <ID>` (an ERPC Worker of the account, by its id),
   `--new-server` (cheapest, nearest region; `--region`, `--plan`), or `--host <ADDRESS>` (a server
   of their own, with `--user`, `--port`, `--fingerprint`).
 - Lines: `--grpc` sets `GRPC_ENDPOINT`, `--shreds` sets `SHREDS_ENDPOINT`, `--unlimited` sets
